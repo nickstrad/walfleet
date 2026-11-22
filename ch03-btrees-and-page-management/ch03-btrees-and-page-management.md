@@ -25,7 +25,7 @@
 >   ```
 >   In the container, scratch databases and tables are written under `/work/3.1/`, `/work/3.2/`, and `/work/3.3/` (the `lab-work` volume); run directly, under `_work/3.1/`, `_work/3.2/`, and `_work/3.3/`, which are git-ignored and safe to delete.
 > - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch03-btrees-and-page-management/experiments/3.1-pages-per-insert`). Run this way it prints only its verdict and leaves its tables under `_work/3.1/results/`. Nothing in Chapter 3 is Linux-only (no `strace`, no `/proc`, no CLI), so it runs in full on macOS too. Experiment 3.3's `dbhash` column then needs `_tools/bin/dbhash` (`go run ./cmd/course fetch-source`, then `go run ./cmd/course build-tools`, which requires a C compiler such as Xcode Command Line Tools); without it, Experiment 3.3 prints a `NO-DBHASH:` line, skips the `dbhash` checks, and still exits 0.
-> - **Measured platform:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). The checked values are identical to the earlier `linux/amd64` capture.
+> - **Measured platform:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26).
 
 ---
 

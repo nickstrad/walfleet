@@ -27,7 +27,7 @@
 >   Experiment 6.4 also accepts `-hold read` (the default, stored as evidence) or `-hold immediate`. `course run` cannot pass experiment flags, so run the variant directly in the container: `docker compose run --rm lab go run ./ch06-locking-and-concurrency/experiments/6.4-live-snapshot -hold immediate`. In the container, scratch databases and tables are written under `/work/6.1/` through `/work/6.4/` (the `lab-work` volume); run directly, under `_work/6.1/` through `_work/6.4/`, which are git-ignored and safe to delete.
 > - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch06-locking-and-concurrency/experiments/6.2-busy-rules`). Run this way it prints only its verdict and leaves its tables under `_work/6.2/results/`.
 > - **Linux only (Experiment 6.1 `/proc/locks` view) and macOS:** Experiment 6.1's `/proc/locks` kernel lock listing (and its 11 `/proc/locks:` checks) is **Linux only**; `course run` runs it in full in the Linux `lab` container. Run directly on macOS, Experiment 6.1 prints a `LINUX-ONLY:` notice, skips `/proc/locks`, and still runs the portable `fcntl(F_GETLK)` probe and all 32 remaining checks. Experiments 6.2, 6.3, and 6.4 use nothing Linux-specific and also run directly on macOS.
-> - **Measurement environment:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). The checked values are identical to the earlier `linux/amd64` capture; process ids and the work directory differ between runs and are not part of the stored evidence.
+> - **Measurement environment:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). Process ids and the work directory differ between runs and are not part of the stored evidence.
 
 ---
 
@@ -268,85 +268,49 @@ func openTables() {
 	tables.infoProcesses = set.Table("info_processes", "part", "process", "pid")
 }
 
-// recorder is a procs.Lab that writes each step, lock view and claim to the
-// tables instead of printing them.
-type recorder struct{ *procs.Lab }
-
-func newRecorder() *recorder {
-	lab := procs.NewLab(os.Stdout)
-	lab.Script.Out = nil
-	return &recorder{lab}
-}
-
-func (l *recorder) Do(child *procs.Child, action string, args ...string) procs.Result {
-	return l.step(child, action, args, l.Lab.Do(child, action, args...))
-}
-
-func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
-	return l.step(child, action, args, l.Lab.Must(child, action, args...))
-}
-
-func (l *recorder) step(child *procs.Child, action string, args []string, r procs.Result) procs.Result {
-	value := r.Value
-	if r.Code == procs.CodeNotSQLite {
-		value = r.Error
-	}
-	tables.steps.Row(part, r.Step, child.Name, procs.ActionText(action, args), r.CodeName(), r.Code, value)
-	return r
-}
-
-func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
-
-// Locks probes ranges on path from the parent (fcntl F_GETLK) and, on Linux,
-// lists the children's /proc/locks entries for path.
-func (l *recorder) Locks(file, path string, ranges []procs.LockRange) procs.LockView {
-	states, err := procs.ProbeRanges(path, ranges)
-	if err != nil {
-		l.Fatal("probe locks", err)
-	}
-	step := l.Script.Step()
-	for _, s := range states {
-		// F_GETLK names one arbitrary holder of a shared read lock, so only a
-		// write lock has a holder worth naming.
-		var holder any
-		if s.Holder.Held && s.Holder.Write {
-			holder = l.PidName(s.Holder.Pid)
+// newLab returns a quiet procs.Lab whose hooks write each step, lock look and
+// claim to the tables.
+func newLab() *procs.Lab {
+	lab := procs.NewQuietLab(os.Stdout)
+	lab.OnStep = func(e procs.StepEvent) {
+		r := e.Result
+		value := r.Value
+		if r.Code == procs.CodeNotSQLite {
+			value = r.Error
 		}
-		tables.lockProbes.Row(part, step, file, s.Range.Name, s.Range.Start, s.Range.Start+s.Range.Length-1, s.Holder.Kind(), holder)
+		tables.steps.Row(part, r.Step, e.Child.Name, e.Action, r.CodeName(), r.Code, value)
 	}
-	view := procs.LockView{Ranges: states}
-	if procs.ProcLocksSupported {
-		view.Proc = l.procLocks(file, path, ranges, step)
-		view.ProcListed = true
+	lab.OnCheck = func(ok bool, claim string) { set.Check(part, ok, claim) }
+	lab.OnLocks = func(e procs.LocksEvent) {
+		for _, s := range e.View.Ranges {
+			// F_GETLK names one arbitrary holder of a shared read lock, so only a
+			// write lock has a holder worth naming.
+			var holder any
+			if s.Holder.Held && s.Holder.Write {
+				holder = lab.PidName(s.Holder.Pid)
+			}
+			tables.lockProbes.Row(part, e.Step, e.Label, s.Range.Name, s.Range.Start, s.Range.Start+s.Range.Length-1, s.Holder.Kind(), holder)
+		}
+		sorted := slices.SortedFunc(slices.Values(e.View.Proc), func(a, b procs.ProcLock) int {
+			return cmp.Or(cmp.Compare(e.Names[a.Pid], e.Names[b.Pid]), cmp.Compare(a.Type, b.Type), cmp.Compare(a.Start, b.Start))
+		})
+		ranges := lockRanges(e.View)
+		for _, lock := range sorted {
+			tables.procLocks.Row(part, e.Step, e.Label, e.Names[lock.Pid], lock.Class, lock.Type, lock.RangeText(), rangeLabel(lock, ranges))
+		}
+		viewSeq++
+		tables.lockViews.Row(viewSeq, part, e.Step, e.Label, e.View.ProcListed, len(e.View.Proc))
 	}
-	viewSeq++
-	tables.lockViews.Row(viewSeq, part, step, file, view.ProcListed, len(view.Proc))
-	return view
+	return lab
 }
 
-func (l *recorder) procLocks(file, path string, ranges []procs.LockRange, step int) []procs.ProcLock {
-	inode, err := procs.FileInode(path)
-	if err != nil {
-		l.Fatal("inode", err)
+// lockRanges returns the ranges that were probed for view.
+func lockRanges(view procs.LockView) []procs.LockRange {
+	ranges := make([]procs.LockRange, len(view.Ranges))
+	for i, s := range view.Ranges {
+		ranges[i] = s.Range
 	}
-	all, err := procs.ReadProcLocks()
-	if err != nil {
-		l.Fatal(procs.ProcLocksPath, err)
-	}
-	names := map[int]string{}
-	pids := map[int]bool{}
-	for _, child := range l.Script.Children() {
-		names[child.Pid] = child.Name
-		pids[child.Pid] = true
-	}
-	mine := procs.FilterProcLocks(all, inode, pids)
-	sorted := slices.SortedFunc(slices.Values(mine), func(a, b procs.ProcLock) int {
-		return cmp.Or(cmp.Compare(names[a.Pid], names[b.Pid]), cmp.Compare(a.Type, b.Type), cmp.Compare(a.Start, b.Start))
-	})
-	for _, lock := range sorted {
-		tables.procLocks.Row(part, step, file, names[lock.Pid], lock.Class, lock.Type, lock.RangeText(), rangeLabel(lock, ranges))
-	}
-	return mine
+	return ranges
 }
 
 // rangeLabel names the SQLite lock range a kernel lock covers exactly, or
@@ -367,11 +331,11 @@ func rangeLabel(lock procs.ProcLock, ranges []procs.LockRange) string {
 	return "(" + strings.Join(covered, "+") + ")"
 }
 
-func prepare(ctx context.Context, lab *recorder, dir, journal string) (string, *procs.Child, *procs.Child) {
+func prepare(ctx context.Context, lab *procs.Lab, dir, journal string) (string, *procs.Child, *procs.Child) {
 	return prepareIn(ctx, lab, filepath.Join(dir, journal), procs.SQLOptions{JournalMode: journal})
 }
 
-func prepareIn(ctx context.Context, lab *recorder, partDir string, options procs.SQLOptions) (string, *procs.Child, *procs.Child) {
+func prepareIn(ctx context.Context, lab *procs.Lab, partDir string, options procs.SQLOptions) (string, *procs.Child, *procs.Child) {
 	journal := options.JournalMode
 	db := filepath.Join(partDir, "lab.db")
 	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
@@ -388,21 +352,21 @@ func prepareIn(ctx context.Context, lab *recorder, partDir string, options procs
 	return db, holder, contender
 }
 
-func kernelHolders(lab *recorder, view procs.LockView, rangeName string, want map[int]string, claim string) {
+func kernelHolders(lab *procs.Lab, view procs.LockView, rangeName string, want map[int]string, claim string) {
 	if !view.ProcListed {
 		return
 	}
 	lab.Check(maps.Equal(view.ProcHolders(rangeName), want), claim)
 }
 
-func kernelNone(lab *recorder, view procs.LockView, claim string) {
+func kernelNone(lab *procs.Lab, view procs.LockView, claim string) {
 	if !view.ProcListed {
 		return
 	}
 	lab.Check(len(view.Proc) == 0, claim)
 }
 
-func finalRows(ctx context.Context, lab *recorder, db, journal string) procs.Inspection {
+func finalRows(ctx context.Context, lab *procs.Lab, db, journal string) procs.Inspection {
 	lab.StopChildren()
 	inspection, err := procs.InspectDatabase(ctx, db, journal, rowsQuery)
 	if err != nil {
@@ -416,7 +380,7 @@ func finalRows(ctx context.Context, lab *recorder, db, journal string) procs.Ins
 // the database file drops RESERVED and SHARED, admits a second writer whose
 // COMMIT returns SQLITE_OK, and causes the holder's later COMMIT to overwrite
 // the page and fail with SQLITE_IOERR_DELETE_NOENT (5898, src/os_unix.c:6842-6847).
-func rollbackMode(ctx context.Context, lab *recorder, dir string) {
+func rollbackMode(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "A"
 	db, holder, contender := prepare(ctx, lab, dir, sqlitex.JournalDelete)
 	ranges := procs.DatabaseLockRanges()
@@ -457,7 +421,7 @@ func rollbackMode(ctx context.Context, lab *recorder, dir string) {
 // -shm drops all -shm locks, admits the contender, and sends the holder's
 // COMMIT (on WAL_READ_LOCK(0)) into walRestartLog -> walTryBeginRead retries
 // until SQLITE_PROTOCOL (15, src/wal.c:2963, 3053-3056, 3261-3265, 3875-3915).
-func walMode(ctx context.Context, lab *recorder, dir string) {
+func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "B"
 	db, holder, contender := prepare(ctx, lab, dir, sqlitex.JournalWAL)
 	shm := db + "-shm"
@@ -510,7 +474,7 @@ func walMode(ctx context.Context, lab *recorder, dir string) {
 // runs when pWal->readLock == 0 (src/wal.c:3879), the holder skips the header
 // check after the stray close of -shm, writes its frames over the contender's,
 // and both COMMITs return SQLITE_OK while the contender's row silently vanishes.
-func walWithFrames(ctx context.Context, lab *recorder, dir string) {
+func walWithFrames(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "C"
 	db, holder, contender := prepareIn(ctx, lab, filepath.Join(dir, "wal-with-frames"), procs.SQLOptions{JournalMode: sqlitex.JournalWAL})
 	shm := db + "-shm"
@@ -544,7 +508,7 @@ func walWithFrames(ctx context.Context, lab *recorder, dir string) {
 // sqlite3WalClose (src/wal.c:2507-2571) closes as the last connection and unlinks
 // -wal and -shm; the holder then commits SQLITE_OK into its unlinked -wal fd and
 // only the holder's row survives.
-func walContenderExits(ctx context.Context, lab *recorder, dir string) {
+func walContenderExits(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "D"
 	db, holder, contender := prepareIn(ctx, lab, filepath.Join(dir, "wal-contender-exits"), procs.SQLOptions{JournalMode: sqlitex.JournalWAL})
 	lab.Must(holder, "begin", "immediate")
@@ -604,7 +568,7 @@ func main() {
 	set = results.MustOpen(dir)
 	openTables()
 	tables.infoRun.Row(sqlitex.DisplayPath(dir), runtime.GOOS)
-	lab := newRecorder()
+	lab := newLab()
 	rollbackMode(ctx, lab, dir)
 	walMode(ctx, lab, dir)
 	walWithFrames(ctx, lab, dir)
@@ -1222,76 +1186,31 @@ func openTables() {
 	tables.recipeResult = set.Table("recipe_result", "part", "user_version", "matched_step", "exact")
 }
 
-// recorder is a procs.Lab that writes each step and claim to the tables
-// instead of printing them.
-type recorder struct {
-	*procs.Lab
-	sent map[*procs.Call]*sentCall
-}
-
-// sentCall is a step sent with Begin: who runs it and, once StillWaiting has
-// looked, whether it was still unanswered.
-type sentCall struct {
-	child   *procs.Child
-	waiting any
-}
-
-func newRecorder() *recorder {
-	lab := procs.NewLab(os.Stdout)
-	lab.Script.Out = nil
-	return &recorder{Lab: lab, sent: map[*procs.Call]*sentCall{}}
-}
-
-func (l *recorder) Do(child *procs.Child, action string, args ...string) procs.Result {
-	return l.step(child, procs.ActionText(action, args), nil, l.Lab.Do(child, action, args...))
-}
-
-func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
-	return l.step(child, procs.ActionText(action, args), nil, l.Lab.Must(child, action, args...))
-}
-
-// Begin sends a step without waiting for its answer.
-func (l *recorder) Begin(child *procs.Child, action string, args ...string) *procs.Call {
-	call, err := l.Script.Begin(child, action, args...)
-	if err != nil {
-		l.Fatal(fmt.Sprintf("step %d", l.Script.Step()), err)
+// newLab returns a quiet procs.Lab whose hooks write each step and claim to
+// the tables.
+func newLab() *procs.Lab {
+	lab := procs.NewQuietLab(os.Stdout)
+	lab.OnStep = func(e procs.StepEvent) {
+		r := e.Result
+		value := r.Value
+		if r.Code == procs.CodeNotSQLite {
+			value = r.Error
+		}
+		// waiting stays empty unless StillWaiting looked at the step.
+		var waiting any
+		if e.Polled {
+			waiting = e.Waiting
+		}
+		stepSeq++
+		tables.steps.Row(stepSeq, part, r.Step, e.Child.Name, e.Action, waiting, r.CodeName(), r.Code, value)
 	}
-	l.sent[call] = &sentCall{child: child}
-	return call
+	lab.OnCheck = func(ok bool, claim string) { set.Check(part, ok, claim) }
+	return lab
 }
-
-// StillWaiting reports whether call is still unanswered after procs.StillWaitingWindow.
-func (l *recorder) StillWaiting(call *procs.Call) bool {
-	answered, err := call.AnsweredWithin(procs.StillWaitingWindow)
-	if err != nil {
-		l.Fatal("poll", err)
-	}
-	l.sent[call].waiting = !answered
-	return !answered
-}
-
-func (l *recorder) Finish(call *procs.Call) procs.Result {
-	sent := l.sent[call]
-	delete(l.sent, call)
-	request := call.Request()
-	return l.step(sent.child, procs.ActionText(request.Action, request.Args), sent.waiting, l.Lab.Finish(call))
-}
-
-func (l *recorder) step(child *procs.Child, action string, waiting any, r procs.Result) procs.Result {
-	value := r.Value
-	if r.Code == procs.CodeNotSQLite {
-		value = r.Error
-	}
-	stepSeq++
-	tables.steps.Row(stepSeq, part, r.Step, child.Name, action, waiting, r.CodeName(), r.Code, value)
-	return r
-}
-
-func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
 
 func insert(who string) string { return fmt.Sprintf(insertPattern, who) }
 
-func database(ctx context.Context, lab *recorder, dir, name, journal string) string {
+func database(ctx context.Context, lab *procs.Lab, dir, name, journal string) string {
 	db := filepath.Join(dir, name, "lab.db")
 	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
 		lab.Fatal("mkdir", err)
@@ -1302,7 +1221,7 @@ func database(ctx context.Context, lab *recorder, dir, name, journal string) str
 	return db
 }
 
-func pair(ctx context.Context, lab *recorder, dir, name, journal string, timeout time.Duration, first, second string) (*procs.Child, *procs.Child) {
+func pair(ctx context.Context, lab *procs.Lab, dir, name, journal string, timeout time.Duration, first, second string) (*procs.Child, *procs.Child) {
 	db := database(ctx, lab, dir, name, journal)
 	options := procs.SQLOptions{Path: db, JournalMode: journal, BusyTimeout: timeout}
 	tables.settings.Row(part, journal, timeout.Milliseconds())
@@ -1311,7 +1230,7 @@ func pair(ctx context.Context, lab *recorder, dir, name, journal string, timeout
 
 // readersAndWriter runs Part A: with busy_timeout=0 in WAL mode, readers and
 // writers never block each other, and BEGIN EXCLUSIVE behaves like BEGIN IMMEDIATE.
-func readersAndWriter(ctx context.Context, lab *recorder, dir string) {
+func readersAndWriter(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "A"
 	reader, writer := pair(ctx, lab, dir, "a-reader-writer", sqlitex.JournalWAL, 0, "reader", "writer")
 	lab.Must(reader, "begin", "deferred")
@@ -1341,7 +1260,7 @@ func readersAndWriter(ctx context.Context, lab *recorder, dir string) {
 // writersWithoutTimeout runs Part B: with busy_timeout=0, BEGIN DEFERRED defers
 // SQLITE_BUSY (5) until the first write statement, whereas BEGIN IMMEDIATE fails
 // at BEGIN itself (src/build.c:5245-5274).
-func writersWithoutTimeout(ctx context.Context, lab *recorder, dir string) {
+func writersWithoutTimeout(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "B"
 	first, second := pair(ctx, lab, dir, "b-writers-no-timeout", sqlitex.JournalWAL, 0, "writer-1", "writer-2")
 	lab.Must(first, "begin", "immediate")
@@ -1363,7 +1282,7 @@ func writersWithoutTimeout(ctx context.Context, lab *recorder, dir string) {
 // on the busy handler (src/main.c:1730-1792), while a deferred transaction that
 // already read (C3) skips the busy handler (src/btree.c:3740-3741) and gets
 // SQLITE_BUSY (5) then SQLITE_BUSY_SNAPSHOT (517, src/wal.c:3734-3737) at once.
-func writersWithTimeout(ctx context.Context, lab *recorder, dir string) {
+func writersWithTimeout(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "C"
 	first, second := pair(ctx, lab, dir, "c-writers-timeout", sqlitex.JournalWAL, longTimeout, "writer-1", "writer-2")
 
@@ -1408,7 +1327,7 @@ func writersWithTimeout(ctx context.Context, lab *recorder, dir string) {
 // rollbackContrast runs Part D: in rollback mode a reader's SHARED lock blocks
 // the writer's COMMIT (EXCLUSIVE), and the failed COMMIT retains PENDING so new
 // readers are blocked until the writer retries (src/os_unix.c:1898-1905).
-func rollbackContrast(ctx context.Context, lab *recorder, dir string) {
+func rollbackContrast(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "D"
 	reader, writer := pair(ctx, lab, dir, "d-rollback", sqlitex.JournalDelete, 0, "reader", "writer")
 	lab.Must(reader, "begin", "deferred")
@@ -1430,7 +1349,7 @@ func rollbackContrast(ctx context.Context, lab *recorder, dir string) {
 // recipeUnderContention runs Part E: two processes alternate recipe steps 6-15
 // using BEGIN IMMEDIATE and a 120s busy_timeout; each waiter sends BEGIN IMMEDIATE
 // while the holder still owns WAL_WRITE_LOCK so contention is verified by StillWaiting.
-func recipeUnderContention(ctx context.Context, lab *recorder, dir string) {
+func recipeUnderContention(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "E"
 	r := recipe.Default()
 	db := filepath.Join(dir, "e-recipe", "r.db")
@@ -1494,7 +1413,7 @@ func main() {
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
 	set = results.MustOpen(dir)
 	openTables()
-	lab := newRecorder()
+	lab := newLab()
 	lab.Script.Timeout = stepDeadline
 	readersAndWriter(ctx, lab, dir)
 	writersWithoutTimeout(ctx, lab, dir)
@@ -1918,7 +1837,7 @@ The script sets a `30s` per-step deadline (`stepDeadline`) against a `120,000ms`
 | D (delete, `0ms`) | — | Writer `COMMIT`, then reader `count` | `SQLITE_OK`, then `SQLITE_OK 2` |
 | E (WAL, `120s`) | Two writers alternating recipe steps 6–15 | Each waiter sends `BEGIN IMMEDIATE` while holder owns lock | All 5 waiting steps report `no answer` at 250ms, then `SQLITE_OK`; closed file equals recipe step `15` |
 
-- **What `no answer` at 250ms proves (and its limit):** `modernc.org/sqlite` does not expose a Go callback for `sqlite3_busy_handler`, so the experiment cannot print an in-process busy-handler call count. Instead, `Lab.StillWaiting` waits `250ms` (`StillWaitingWindow`) via `Call.AnsweredWithin` without killing the child. A non-waiting failure (`busy_timeout=0`) answers over the local pipe in well under `250ms` and is recorded as `answered` (`internal/procs` prints `.. already answered`) (verified by `TestStillWaitingSeesImmediateBusy` and adversarial test `BUSY-09`, whose `strace` of Experiment 6.2 recorded `87` `EAGAIN` return values on `-shm` byte `120`).
+- **What `no answer` at 250ms proves (and its limit):** `modernc.org/sqlite` does not expose a Go callback for `sqlite3_busy_handler`, so the experiment cannot print an in-process busy-handler call count. Instead, `Lab.StillWaiting` waits `250ms` (`StillWaitingWindow`) via `Call.AnsweredWithin` without killing the child. A non-waiting failure (`busy_timeout=0`) answers over the local pipe in well under `250ms` and is recorded as answered (`at_250ms` is `answered` in the walkthrough; a printing `Lab` shows `.. already answered`) (verified by `TestStillWaitingSeesImmediateBusy` and adversarial test `BUSY-09`, whose `strace` of Experiment 6.2 recorded `87` `EAGAIN` return values on `-shm` byte `120`).
 - **Part E match (E3):** `user_version` `15`, matched step `15`, exact `false`: the closed file equals recipe step 15 except the change counter at bytes 24-27 and 92-95. Because two long-lived connections applied steps 6–15 instead of opening a fresh connection per step, the file's change-counter bytes differ from the per-step reference build while every other byte of every page is identical (the Chapter 1 and Chapter 2 rule).
 
 ---
@@ -2589,7 +2508,7 @@ func (b *tailBuffer) String() string {
 }
 ```
 
-- **Transcript and lab harness (`script.go`, `lab.go`):** `Script` assigns global step numbers across all children and prints aligned transcript lines. `Lab` adds `Must`, `Check`, `Begin`/`StillWaiting`/`Finish`, `Locks` (returning `LockView` with `ProcHolders`), and `Report`.
+- **Transcript and lab harness (`script.go`, `lab.go`):** `Script` assigns global step numbers across all children and prints aligned transcript lines. `Lab` adds `Must`, `Check`, `Begin`/`StillWaiting`/`Finish`, `Locks` (returning `LockView` with `ProcHolders`), and `Report`. A lab made with `NewQuietLab` prints no transcript; it hands each answered step, each claim and each lock look to the `OnStep`, `OnCheck` and `OnLocks` hooks, which is how this chapter's experiments write their tables.
 
 <!-- include: ../internal/procs/script.go -->
 ```go
@@ -2739,17 +2658,55 @@ const StillWaitingWindow = 250 * time.Millisecond
 
 // Lab wraps Script with experiment ergonomics: fatal-on-infrastructure-error
 // helpers, claim assertions, lock inspection, and final pass/fail reporting.
+// The optional hooks hand each answered step, check and lock look to the
+// experiment, whether or not the lab also prints them.
 type Lab struct {
-	Out      io.Writer
-	Script   *Script
+	Out    io.Writer
+	Script *Script
+
+	// OnStep, if set, is called for every step answered through Do, Must or Finish.
+	OnStep func(StepEvent)
+	// OnCheck, if set, is called for every Check.
+	OnCheck func(ok bool, claim string)
+	// OnLocks, if set, is called for every Locks look.
+	OnLocks func(LocksEvent)
+
+	quiet    bool
+	polled   map[*Call]bool
 	failures []string
 	exit     func(int)
+}
+
+// StepEvent is one answered step as OnStep receives it.
+type StepEvent struct {
+	Child  *Child
+	Action string // ActionText of the action and its arguments
+	Result Result
+	// Polled is true when the step was sent with Begin and StillWaiting looked
+	// at it; Waiting then says whether it was still unanswered.
+	Polled  bool
+	Waiting bool
+}
+
+// LocksEvent is one Locks look as OnLocks receives it.
+type LocksEvent struct {
+	Step  int // Script.Step() when the locks were probed
+	Label string
+	View  LockView
+	Names map[int]string // child PID -> child name at the time of the look
 }
 
 // NewLab creates a Lab that writes transcripts and check results to out and
 // exits the process via os.Exit on Fatal or a failing Report.
 func NewLab(out io.Writer) *Lab {
 	return &Lab{Out: out, Script: NewScript(out), exit: os.Exit}
+}
+
+// NewQuietLab creates a Lab that prints no step transcript, check lines or
+// lock dumps; experiments receive them through the hooks instead. Fatal and
+// Report still print to out and exit via os.Exit as they do for NewLab.
+func NewQuietLab(out io.Writer) *Lab {
+	return &Lab{Out: out, Script: NewScript(nil), quiet: true, exit: os.Exit}
 }
 
 // Fatal kills all children, prints an error line, and exits with status 1.
@@ -2759,15 +2716,21 @@ func (l *Lab) Fatal(what string, err error) {
 	l.exit(1)
 }
 
-// Check prints one "check ok:" or "check FAILED:" line and records any failed
-// claim so Report exits non-zero at the end of the experiment.
+// Check prints one "check ok:" or "check FAILED:" line (unless quiet), calls
+// OnCheck, and records any failed claim so Report exits non-zero at the end of
+// the experiment.
 func (l *Lab) Check(ok bool, claim string) bool {
 	status := "ok"
 	if !ok {
 		status = "FAILED"
 		l.failures = append(l.failures, claim)
 	}
-	fmt.Fprintf(l.Out, "check %s: %s\n", status, claim)
+	if !l.quiet {
+		fmt.Fprintf(l.Out, "check %s: %s\n", status, claim)
+	}
+	if l.OnCheck != nil {
+		l.OnCheck(ok, claim)
+	}
 	return ok
 }
 
@@ -2791,6 +2754,22 @@ func (l *Lab) SpawnSQL(name string, options SQLOptions) *Child {
 // Do runs action on child and returns its Result (whether SQLITE_OK or an error
 // code); transport or child-death errors are fatal.
 func (l *Lab) Do(child *Child, action string, args ...string) Result {
+	result := l.do(child, action, args)
+	l.stepDone(StepEvent{Child: child, Action: ActionText(action, args), Result: result})
+	return result
+}
+
+// Must runs action on child and aborts via Fatal unless the result is SQLITE_OK.
+func (l *Lab) Must(child *Child, action string, args ...string) Result {
+	result := l.do(child, action, args)
+	if !result.OK() {
+		l.Fatal(fmt.Sprintf("step %d", l.Script.Step()), fmt.Errorf("%s %s: %s %s", child.Name, ActionText(action, args), result.Outcome(), result.Error))
+	}
+	l.stepDone(StepEvent{Child: child, Action: ActionText(action, args), Result: result})
+	return result
+}
+
+func (l *Lab) do(child *Child, action string, args []string) Result {
 	result, err := l.Script.Do(child, action, args...)
 	if err != nil {
 		l.Fatal(fmt.Sprintf("step %d", l.Script.Step()), err)
@@ -2798,21 +2777,21 @@ func (l *Lab) Do(child *Child, action string, args ...string) Result {
 	return result
 }
 
-// Must runs action on child and aborts via Fatal unless the result is SQLITE_OK.
-func (l *Lab) Must(child *Child, action string, args ...string) Result {
-	result := l.Do(child, action, args...)
-	if !result.OK() {
-		l.Fatal(fmt.Sprintf("step %d", l.Script.Step()), fmt.Errorf("%s %s: %s %s", child.Name, ActionText(action, args), result.Outcome(), result.Error))
+func (l *Lab) stepDone(event StepEvent) {
+	if l.OnStep != nil {
+		l.OnStep(event)
 	}
-	return result
 }
 
-// Begin sends action to child without waiting for the reply and logs that the
-// step is in flight.
+// Begin sends action to child without waiting for the reply and, unless quiet,
+// logs that the step is in flight.
 func (l *Lab) Begin(child *Child, action string, args ...string) *Call {
 	call, err := l.Script.Begin(child, action, args...)
 	if err != nil {
 		l.Fatal(fmt.Sprintf("step %d", l.Script.Step()), err)
+	}
+	if l.quiet {
+		return call
 	}
 	request := call.Request()
 	fmt.Fprintf(l.Out, "step %2d  %-10s %-36s .. sent, not waiting for the answer\n", request.Step, child.Name, ActionText(request.Action, request.Args))
@@ -2820,11 +2799,19 @@ func (l *Lab) Begin(child *Child, action string, args ...string) *Call {
 }
 
 // StillWaiting waits StillWaitingWindow for call to answer, logs whether it
-// stayed unanswered, and returns true if the child is still blocked.
+// stayed unanswered (unless quiet), remembers the answer for OnStep, and
+// returns true if the child is still blocked.
 func (l *Lab) StillWaiting(call *Call) bool {
 	answered, err := call.AnsweredWithin(StillWaitingWindow)
 	if err != nil {
 		l.Fatal("poll", err)
+	}
+	if l.polled == nil {
+		l.polled = map[*Call]bool{}
+	}
+	l.polled[call] = !answered
+	if l.quiet {
+		return !answered
 	}
 	request := call.Request()
 	state := fmt.Sprintf("no answer after %v", StillWaitingWindow)
@@ -2835,12 +2822,17 @@ func (l *Lab) StillWaiting(call *Call) bool {
 	return !answered
 }
 
-// Finish waits for an in-flight Call started with Begin and prints its outcome.
+// Finish waits for an in-flight Call started with Begin and prints its outcome
+// (unless quiet).
 func (l *Lab) Finish(call *Call) Result {
 	result, err := l.Script.Finish(call)
 	if err != nil {
 		l.Fatal(fmt.Sprintf("step %d", call.Request().Step), err)
 	}
+	waiting, polled := l.polled[call]
+	delete(l.polled, call)
+	request := call.Request()
+	l.stepDone(StepEvent{Child: call.child, Action: ActionText(request.Action, request.Args), Result: result, Polled: polled, Waiting: waiting})
 	return result
 }
 
@@ -2889,24 +2881,34 @@ func (v LockView) ProcHolders(name string) map[int]string {
 // Locks probes ranges on path from the parent process (which holds no SQLite
 // connection, so opening and closing path here drops no SQLite locks) and, on
 // Linux, also lists and returns the children's /proc/locks entries for path.
+// Unless quiet it prints both views; it then calls OnLocks.
 func (l *Lab) Locks(label, path string, ranges []LockRange) LockView {
 	states, err := ProbeRanges(path, ranges)
 	if err != nil {
 		l.Fatal("probe locks", err)
 	}
-	fmt.Fprintf(l.Out, "  %s locks (fcntl F_GETLK from the parent):\n", label)
-	for _, line := range FormatRangeStates(states, l.PidName) {
-		fmt.Fprintf(l.Out, "    %s\n", line)
+	if !l.quiet {
+		fmt.Fprintf(l.Out, "  %s locks (fcntl F_GETLK from the parent):\n", label)
+		for _, line := range FormatRangeStates(states, l.PidName) {
+			fmt.Fprintf(l.Out, "    %s\n", line)
+		}
+	}
+	names := map[int]string{}
+	for _, child := range l.Script.Children() {
+		names[child.Pid] = child.Name
 	}
 	view := LockView{Ranges: states}
 	if ProcLocksSupported {
-		view.Proc = l.procLocks(label, path, ranges)
+		view.Proc = l.procLocks(label, path, ranges, names)
 		view.ProcListed = true
+	}
+	if l.OnLocks != nil {
+		l.OnLocks(LocksEvent{Step: l.Script.Step(), Label: label, View: view, Names: names})
 	}
 	return view
 }
 
-func (l *Lab) procLocks(label, path string, ranges []LockRange) []ProcLock {
+func (l *Lab) procLocks(label, path string, ranges []LockRange, names map[int]string) []ProcLock {
 	inode, err := FileInode(path)
 	if err != nil {
 		l.Fatal("inode", err)
@@ -2915,13 +2917,14 @@ func (l *Lab) procLocks(label, path string, ranges []LockRange) []ProcLock {
 	if err != nil {
 		l.Fatal(ProcLocksPath, err)
 	}
-	names := map[int]string{}
 	pids := map[int]bool{}
-	for _, child := range l.Script.Children() {
-		names[child.Pid] = child.Name
-		pids[child.Pid] = true
+	for pid := range names {
+		pids[pid] = true
 	}
 	mine := FilterProcLocks(all, inode, pids)
+	if l.quiet {
+		return mine
+	}
 	lines := DescribeProcLocks(mine, names, ranges)
 	if len(lines) == 0 {
 		fmt.Fprintf(l.Out, "  %s locks in %s: none\n", label, ProcLocksPath)
@@ -4237,23 +4240,17 @@ func openTables() {
 	tables.infoRun = set.Table("info_run", "work_dir", "db_bytes_at_copy")
 }
 
-// recorder is a procs.Lab that writes each step and claim to the tables
-// instead of printing them.
-type recorder struct{ *procs.Lab }
-
-func newRecorder() *recorder {
-	lab := procs.NewLab(os.Stdout)
-	lab.Script.Out = nil
-	return &recorder{lab}
+// newLab returns a quiet procs.Lab whose hooks write each step and claim to
+// the tables.
+func newLab() *procs.Lab {
+	lab := procs.NewQuietLab(os.Stdout)
+	lab.OnStep = func(e procs.StepEvent) {
+		r := e.Result
+		tables.steps.Row(part, r.Step, e.Child.Name, e.Action, r.CodeName(), r.Code, r.Value)
+	}
+	lab.OnCheck = func(ok bool, claim string) { set.Check(part, ok, claim) }
+	return lab
 }
-
-func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
-	r := l.Lab.Must(child, action, args...)
-	tables.steps.Row(part, r.Step, child.Name, procs.ActionText(action, args), r.CodeName(), r.Code, r.Value)
-	return r
-}
-
-func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
 
 type copyReport struct {
 	name       string
@@ -4264,7 +4261,7 @@ type copyReport struct {
 
 // examine verifies that inspecting path does not modify it, matches path against
 // the recipe's known states, and records its size, integrity_check result, and counts.
-func examine(ctx context.Context, lab *recorder, r recipe.Recipe, path, journal string) copyReport {
+func examine(ctx context.Context, lab *procs.Lab, r recipe.Recipe, path, journal string) copyReport {
 	info, err := os.Stat(path)
 	if err != nil {
 		lab.Fatal("stat", err)
@@ -4308,7 +4305,7 @@ func examine(ctx context.Context, lab *recorder, r recipe.Recipe, path, journal 
 	return report
 }
 
-func prepare(ctx context.Context, lab *recorder, r recipe.Recipe, dir, name, journal string) (string, string) {
+func prepare(ctx context.Context, lab *procs.Lab, r recipe.Recipe, dir, name, journal string) (string, string) {
 	root := filepath.Join(dir, name)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		lab.Fatal("mkdir", err)
@@ -4323,7 +4320,7 @@ func prepare(ctx context.Context, lab *recorder, r recipe.Recipe, dir, name, jou
 // walMode runs Part A: commits steps 6-10 with a PASSIVE checkpoint after step 8,
 // inspects a main-file-only copy (A1: valid step 8, commits 9-10 silently lost),
 // and splits a copy across a second checkpoint (A2: torn and corrupt).
-func walMode(ctx context.Context, lab *recorder, dir string) {
+func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "A"
 	r := recipe.Default()
 	db, root := prepare(ctx, lab, r, dir, "wal", sqlitex.JournalWAL)
@@ -4359,7 +4356,7 @@ func walMode(ctx context.Context, lab *recorder, dir string) {
 
 // rollbackMode runs Part B: copies the first half of a rollback-mode database,
 // commits recipe step 6, copies the second half, and verifies the torn copy fails.
-func rollbackMode(ctx context.Context, lab *recorder, dir string) {
+func rollbackMode(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "B"
 	r := recipe.Default().WithJournalMode(sqlitex.JournalDelete)
 	db, root := prepare(ctx, lab, r, dir, "rollback", sqlitex.JournalDelete)
@@ -4384,7 +4381,7 @@ func main() {
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
 	set = results.MustOpen(dir)
 	openTables()
-	lab := newRecorder()
+	lab := newLab()
 	walMode(ctx, lab, dir)
 	rollbackMode(ctx, lab, dir)
 	set.Finish("TORN COPY")
@@ -4717,27 +4714,21 @@ func openTables() {
 		"applied_frames", "distinct_pages", "skipped_beyond_size", "base_bytes", "output_bytes", "ignored")
 }
 
-// recorder is a procs.Lab that writes each step and claim to the tables
-// instead of printing them.
-type recorder struct{ *procs.Lab }
-
-func newRecorder() *recorder {
-	lab := procs.NewLab(os.Stdout)
-	lab.Script.Out = nil
-	return &recorder{lab}
+// newLab returns a quiet procs.Lab whose hooks write each step and claim to
+// the tables.
+func newLab() *procs.Lab {
+	lab := procs.NewQuietLab(os.Stdout)
+	lab.OnStep = func(e procs.StepEvent) {
+		r := e.Result
+		tables.steps.Row(part, r.Step, e.Child.Name, e.Action, r.CodeName(), r.Code, r.Value)
+	}
+	lab.OnCheck = func(ok bool, claim string) { set.Check(part, ok, claim) }
+	return lab
 }
-
-func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
-	r := l.Lab.Must(child, action, args...)
-	tables.steps.Row(part, r.Step, child.Name, procs.ActionText(action, args), r.CodeName(), r.Code, r.Value)
-	return r
-}
-
-func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
 
 type run struct {
 	ctx      context.Context
-	lab      *recorder
+	lab      *procs.Lab
 	r        recipe.Recipe
 	hold     string
 	dir      string
@@ -4898,7 +4889,7 @@ func main() {
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
 	set = results.MustOpen(dir)
 	openTables()
-	lab := newRecorder()
+	lab := newLab()
 	x := &run{ctx: ctx, lab: lab, r: recipe.Default(), hold: *hold, dir: dir}
 	live := filepath.Join(dir, "live")
 	if err := os.MkdirAll(live, 0o755); err != nil {

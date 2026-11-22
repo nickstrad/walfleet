@@ -27,7 +27,7 @@
 >   Experiment 9.2 also accepts `-portable` to run the non-`strace` path on Linux. `course run` cannot pass experiment flags, so run that variant directly in the container: `docker compose run --rm lab go run ./ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss -portable`. In the container, scratch files and tables are written under `/work/9.1/` through `/work/9.4/` (the `lab-work` volume); run directly, under `_work/9.1/` through `_work/9.4/`, which are git-ignored and safe to delete.
 > - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch09-backup-crash-recovery-integrity/experiments/9.4-point-in-time-rebuild`). Run this way it prints only its verdict and leaves its tables under `_work/9.4/results/`.
 > - **Linux-only parts and macOS:** Experiments 9.1, 9.3, and 9.4, plus `internal/walship` and Experiment 9.2's power-cut model (Part B's rule calculation and recovery), are portable. Experiment 9.2's `strace` confirmation of synced bytes (Part B) and syscall kill sweep (Part A) are **Linux only**; `course run` runs them in the Linux `lab` container. Run directly on macOS, Experiment 9.2 runs the process-crash test and the rule-based power-cut model natively and prints `LINUX-ONLY:` notices for the `strace` parts.
-> - **Measurement environment:** The stored evidence in this chapter, including the `strace` counts and kill sweeps, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). The checked values are identical to the earlier `linux/amd64` capture. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; nothing was run on macOS.
+> - **Measurement environment:** The stored evidence in this chapter, including the `strace` counts and kill sweeps, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; nothing was run on macOS.
 
 ---
 
@@ -288,12 +288,6 @@ func (x *run) openTables() {
 	x.tables.summary = x.set.Table("summary", "seq", "method", "strongest_level", "safe_under_writer", "blocks_the_writer")
 }
 
-// must runs one action on the writer child and records it in the steps table.
-func (x *run) must(action string, args ...string) {
-	result := x.lab.Must(x.writer, action, args...)
-	x.tables.steps.Row(result.Step, x.during, x.writer.Name, procs.ActionText(action, args), result.Outcome())
-}
-
 func (x *run) ref(k int) string { return filepath.Join(x.dir, "ref", fmt.Sprintf("step-%02d.db", k)) }
 
 func (x *run) canonicalRef(k int) string {
@@ -411,7 +405,7 @@ func (x *run) stateOf(capture string, vacuumed bool) (int, levels) {
 }
 
 func (x *run) commit() int {
-	x.must("recipe-session", strconv.Itoa(x.next))
+	x.lab.Must(x.writer, "recipe-session", strconv.Itoa(x.next))
 	x.next++
 	return x.next - 1
 }
@@ -656,12 +650,12 @@ func (x *run) underWriter() map[string]bool {
 	// sees the uncommitted writes.
 	x.during = methodVacuum
 	before := x.next - 1
-	x.must("begin", "immediate")
-	x.must("recipe-exec", strconv.Itoa(x.next))
+	x.lab.Must(x.writer, "begin", "immediate")
+	x.lab.Must(x.writer, "recipe-exec", strconv.Itoa(x.next))
 	if _, err := x.conn.ExecContext(x.ctx, "VACUUM INTO ?", x.path("b-vacuum.db")); err != nil {
 		x.lab.Fatal("vacuum into", err)
 	}
-	x.must("commit")
+	x.lab.Must(x.writer, "commit")
 	x.next++
 	safe[methodVacuum] = x.report(methodVacuum, "b-vacuum.db", true, before, vacuumLevels)
 
@@ -753,9 +747,12 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("9.1")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	lab := procs.NewLab(os.Stdout)
-	lab.Script.Out = nil // the steps table records each writer step
+	lab := procs.NewQuietLab(os.Stdout)
 	x := &run{ctx: ctx, lab: lab, r: recipe.Default(), dir: dir, live: filepath.Join(dir, "live.db"), set: results.MustOpen(dir)}
+	// The steps table records each writer step.
+	lab.OnStep = func(e procs.StepEvent) {
+		x.tables.steps.Row(e.Result.Step, x.during, e.Child.Name, e.Action, e.Result.Outcome())
+	}
 	x.openTables()
 	x.buildReferences()
 	x.quiet()
@@ -4531,15 +4528,9 @@ func (x *run) openShipper() {
 	}
 }
 
-func (x *run) must(child *procs.Child, action string, args ...string) procs.Result {
-	result := x.lab.Must(child, action, args...)
-	x.tables.steps.Row(result.Step, x.part, x.cycles+1, child.Name, procs.ActionText(action, args), result.Outcome())
-	return result
-}
-
 func (x *run) commit(steps ...int) {
 	for _, k := range steps {
-		x.must(x.writer, "recipe-session", strconv.Itoa(k))
+		x.lab.Must(x.writer, "recipe-session", strconv.Itoa(k))
 	}
 }
 
@@ -4698,9 +4689,12 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("9.4")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	lab := procs.NewLab(os.Stdout)
-	lab.Script.Out = nil // the steps table records each child step
+	lab := procs.NewQuietLab(os.Stdout)
 	x := &run{ctx: ctx, lab: lab, r: recipe.Default(), dir: dir, db: filepath.Join(dir, "live", "r.db"), set: results.MustOpen(dir), part: "A"}
+	// The steps table records each child step.
+	lab.OnStep = func(e procs.StepEvent) {
+		x.tables.steps.Row(e.Result.Step, x.part, x.cycles+1, e.Child.Name, e.Action, e.Result.Outcome())
+	}
 	x.openTables()
 	if err := os.MkdirAll(filepath.Dir(x.db), 0o755); err != nil {
 		lab.Fatal("mkdir", err)
@@ -4738,7 +4732,7 @@ func main() {
 	x.part = "B"
 	x.closeShipper()
 	x.commit(15, 16)
-	truncate := x.must(x.outsider, "checkpoint", sqlitex.CheckpointTruncate)
+	truncate := x.lab.Must(x.outsider, "checkpoint", sqlitex.CheckpointTruncate)
 	x.set.Check("B", truncate.Value == "busy=0 log=0 checkpointed=0", "the outsider's TRUNCATE checkpoint copied steps 15-16 into the database file and emptied the WAL")
 	x.commit(17)
 	x.openShipper()
