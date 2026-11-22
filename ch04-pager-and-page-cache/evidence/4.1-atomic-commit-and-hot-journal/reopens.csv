@@ -1,0 +1,7 @@
+seq,scenario,open_error,integrity,user_version,accounts,documents,events,outcome_name,outcome_pages
+1,pre-step file (step 2),,ok,2,15,7,108,,
+2,post-step file (step 3),,ok,3,21,10,147,,
+3,1. -journal deleted,open failed: open t.db: PRAGMA page_count: database disk image is malformed (11),,,,,,unreadable,
+4,2. copied without -journal,open failed: open t.db: PRAGMA page_count: database disk image is malformed (11),,,,,,unreadable,
+5,2. copied with -journal,,ok,2,15,7,108,pre-step except freelist leaves,22
+6,"3. late crash, -journal deleted",,ok,3,21,10,147,post-step exact,

@@ -1,0 +1,37 @@
+synchronous,kill_no,syscall,call_no,killed_call,signal,acknowledged,recovered_step,exact_bytes,integrity
+OFF,1,pwrite64,1,pwrite64 r.db-shm off=4095 len=1 = ? (process killed),SIGKILL,3,3,true,ok
+OFF,2,pwrite64,72,pwrite64 r.db-wal off=127752 len=24 = ? (process killed),SIGKILL,4,4,true,ok
+OFF,3,pwrite64,143,pwrite64 r.db-wal off=271976 len=4096 = ? (process killed),SIGKILL,6,6,false,ok
+OFF,4,pwrite64,214,pwrite64 r.db-wal off=24752 len=24 = ? (process killed),SIGKILL,7,7,false,ok
+OFF,5,pwrite64,285,pwrite64 r.db-wal off=168976 len=4096 = ? (process killed),SIGKILL,8,8,false,ok
+OFF,6,pwrite64,357,pwrite64 r.db-wal off=317296 len=4096 = ? (process killed),SIGKILL,10,10,false,ok
+NORMAL,1,fsync,1,fsync r.db-wal = ? (process killed),SIGKILL,3,3,true,ok
+NORMAL,2,fsync,2,fsync . = ? (process killed),SIGKILL,3,3,true,ok
+NORMAL,3,fsync,3,fsync r.db-wal = ? (process killed),SIGKILL,7,7,false,ok
+NORMAL,4,fsync,4,fsync r.db = ? (process killed),SIGKILL,7,7,false,ok
+NORMAL,5,fsync,5,fsync r.db-wal = ? (process killed),SIGKILL,7,7,false,ok
+NORMAL,6,pwrite64,1,pwrite64 r.db-shm off=4095 len=1 = ? (process killed),SIGKILL,3,3,true,ok
+NORMAL,7,pwrite64,72,pwrite64 r.db-wal off=127752 len=24 = ? (process killed),SIGKILL,4,4,true,ok
+NORMAL,8,pwrite64,143,pwrite64 r.db-wal off=271976 len=4096 = ? (process killed),SIGKILL,6,6,false,ok
+NORMAL,9,pwrite64,214,pwrite64 r.db-wal off=24752 len=24 = ? (process killed),SIGKILL,7,7,false,ok
+NORMAL,10,pwrite64,285,pwrite64 r.db-wal off=168976 len=4096 = ? (process killed),SIGKILL,8,8,false,ok
+NORMAL,11,pwrite64,357,pwrite64 r.db-wal off=317296 len=4096 = ? (process killed),SIGKILL,10,10,false,ok
+FULL,1,fsync,1,fsync r.db-wal = ? (process killed),SIGKILL,3,3,true,ok
+FULL,2,fsync,2,fsync . = ? (process killed),SIGKILL,3,3,true,ok
+FULL,3,fsync,3,fsync r.db-wal = ? (process killed),SIGKILL,3,4,true,ok
+FULL,4,fsync,4,fsync r.db-wal = ? (process killed),SIGKILL,4,5,false,ok
+FULL,5,fsync,5,fsync r.db-wal = ? (process killed),SIGKILL,5,6,false,ok
+FULL,6,fsync,6,fsync r.db-wal = ? (process killed),SIGKILL,6,7,false,ok
+FULL,7,fsync,7,fsync r.db-wal = ? (process killed),SIGKILL,7,7,false,ok
+FULL,8,fsync,8,fsync r.db = ? (process killed),SIGKILL,7,7,false,ok
+FULL,9,fsync,9,fsync r.db-wal = ? (process killed),SIGKILL,7,7,false,ok
+FULL,10,fsync,10,fsync r.db-wal = ? (process killed),SIGKILL,7,8,false,ok
+FULL,11,fsync,11,fsync r.db-wal = ? (process killed),SIGKILL,8,9,false,ok
+FULL,12,fsync,12,fsync r.db-wal = ? (process killed),SIGKILL,9,10,false,ok
+FULL,13,fsync,13,fsync r.db-wal = ? (process killed),SIGKILL,10,11,false,ok
+FULL,14,pwrite64,1,pwrite64 r.db-shm off=4095 len=1 = ? (process killed),SIGKILL,3,3,true,ok
+FULL,15,pwrite64,72,pwrite64 r.db-wal off=127752 len=24 = ? (process killed),SIGKILL,4,4,true,ok
+FULL,16,pwrite64,143,pwrite64 r.db-wal off=271976 len=4096 = ? (process killed),SIGKILL,6,6,false,ok
+FULL,17,pwrite64,214,pwrite64 r.db-wal off=24752 len=24 = ? (process killed),SIGKILL,7,7,false,ok
+FULL,18,pwrite64,285,pwrite64 r.db-wal off=168976 len=4096 = ? (process killed),SIGKILL,8,8,false,ok
+FULL,19,pwrite64,357,pwrite64 r.db-wal off=317296 len=4096 = ? (process killed),SIGKILL,10,10,false,ok

@@ -5,10 +5,10 @@
 // driver against the C CLI, and demonstrates the twin check's compile-option
 // limit with ANALYZE (ENABLE_STAT4).
 //
-// Run from the repo root (Linux for strace; on macOS run inside Docker via
-// docker compose run --rm lab go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert):
+// It prints only its verdict; the measurements go to CSV tables that
+// report.sql presents (Linux for strace; on macOS the runner uses Docker):
 //
-//	go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert
+//	go run ./cmd/course run 1.2
 package main
 
 import (
@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 )
@@ -42,16 +43,36 @@ const (
 	dbName         = "t.db"
 )
 
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables. part labels the claims of the part
+// that is running: A the EXPLAIN listing, B rollback mode, C WAL mode, D the
+// ANALYZE limit of the twin check.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		explain, runs, pageChanges, goSyscalls, cliSyscalls, walFrames, fileHashes, phases, phaseEvents, analyze *results.Table
+		infoRun, infoSync, infoRandomness                                                                        *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+)
+
+func openTables() {
+	tables.explain = set.Table("explain_ops", "addr", "opcode", "p1", "p2", "p3", "p4", "p5")
+	tables.runs = set.Table("runs", "mode", "base_pages", "base_sha256")
+	tables.pageChanges = set.Table("page_changes", "mode", "page", "before_sha256", "after_sha256")
+	tables.goSyscalls = set.Table("go_syscalls", "mode", "seq", "call", "norm")
+	tables.cliSyscalls = set.Table("cli_syscalls", "mode", "seq", "norm")
+	tables.walFrames = set.Table("wal_frames", "mode", "frame_no", "page", "commit_size")
+	tables.fileHashes = set.Table("file_hashes", "mode", "what", "sha256")
+	tables.phases = set.Table("phases", "mode", "phase_no", "statement", "opcode", "call_path")
+	tables.phaseEvents = set.Table("phase_events", "mode", "phase_no", "seq", "kind", "nested", "text")
+	tables.analyze = set.Table("analyze_runs", "stage", "build", "sha256", "stat4_compiled", "stat_tables")
+	tables.infoRun = set.Table("info_run", "key", "value")
+	tables.infoSync = set.Table("info_sync", "mode", "go_driver", "cli", "cli_path")
+	tables.infoRandomness = set.Table("info_randomness", "mode", "phase_no", "vfs_call")
 }
+
+func check(ok bool, claim string) { set.Check(part, ok, claim) }
 
 func fatal(what string, err error) {
 	fmt.Printf("FATAL %s: %v\n", what, err)
@@ -162,12 +183,7 @@ func changedPages(before, after []string) []int {
 	return changed
 }
 
-func short(hash string) string {
-	if hash == "" {
-		return "(none)"
-	}
-	return hash[:16]
-}
+func short(hash string) string { return hash[:16] }
 
 // printExplain queries SQLite's bytecode listing for insertSQL, which
 // sqlite3Step produces via sqlite3VdbeList (src/vdbeapi.c:863-865).
@@ -182,8 +198,6 @@ func printExplain(ctx context.Context, path string) {
 		fatal("EXPLAIN", err)
 	}
 	defer rows.Close()
-	fmt.Printf("EXPLAIN %s\n", insertSQL)
-	fmt.Printf("  %-4s %-14s %4s %4s %4s %-12s %s\n", "addr", "opcode", "p1", "p2", "p3", "p4", "p5")
 	for rows.Next() {
 		var addr, p1, p2, p3, p5 int
 		var opcode string
@@ -191,7 +205,11 @@ func printExplain(ctx context.Context, path string) {
 		if err := rows.Scan(&addr, &opcode, &p1, &p2, &p3, &p4, &p5, &comment); err != nil {
 			fatal("EXPLAIN scan", err)
 		}
-		fmt.Printf("  %-4d %-14s %4d %4d %4d %-12s %d\n", addr, opcode, p1, p2, p3, p4.String, p5)
+		var p4Value any
+		if p4.Valid && p4.String != "" {
+			p4Value = p4.String
+		}
+		tables.explain.Row(addr, opcode, p1, p2, p3, p4Value, p5)
 	}
 	if err := rows.Err(); err != nil {
 		fatal("EXPLAIN", err)
@@ -395,27 +413,6 @@ func isSync(call trace.Syscall) bool {
 	return syncName(call.Name)
 }
 
-func compareLists(label string, goList, cliList []string) bool {
-	if slices.Equal(goList, cliList) {
-		fmt.Printf("twin %s: identical (%d calls)\n", label, len(goList))
-		return true
-	}
-	fmt.Printf("twin %s: DIFFERENT (Go %d calls, CLI %d calls)\n", label, len(goList), len(cliList))
-	for i := range max(len(goList), len(cliList)) {
-		var g, c string
-		if i < len(goList) {
-			g = goList[i]
-		}
-		if i < len(cliList) {
-			c = cliList[i]
-		}
-		if g != c {
-			fmt.Printf("  #%d Go: %-50s CLI: %s\n", i+1, g, c)
-		}
-	}
-	return false
-}
-
 func syncCallNames(calls []trace.Syscall) string {
 	var names []string
 	for _, call := range calls {
@@ -427,6 +424,7 @@ func syncCallNames(calls []trace.Syscall) string {
 }
 
 type phase struct {
+	no        int
 	from, to  string
 	statement string
 	opcode    string
@@ -442,9 +440,9 @@ func phases(mode string) []phase {
 		commitPath = "sqlite3VdbeHalt -> vdbeCommit -> sqlite3BtreeCommitPhaseOne -> sqlite3PagerCommitPhaseOne -> pagerWalFrames -> sqlite3WalFrames"
 	}
 	return []phase{
-		{"1", "2", "BEGIN IMMEDIATE", "OP_Transaction", "sqlite3BtreeBeginTrans -> sqlite3PagerSharedLock, sqlite3PagerBegin"},
-		{"2", "3", insertSQL, "OP_Insert", insertPath},
-		{"3", "4", "COMMIT", "OP_AutoCommit (OP_Halt in an autocommit INSERT)", commitPath},
+		{1, "1", "2", "BEGIN IMMEDIATE", "OP_Transaction", "sqlite3BtreeBeginTrans -> sqlite3PagerSharedLock, sqlite3PagerBegin"},
+		{2, "2", "3", insertSQL, "OP_Insert", insertPath},
+		{3, "3", "4", "COMMIT", "OP_AutoCommit (OP_Halt in an autocommit INSERT)", commitPath},
 	}
 }
 
@@ -515,8 +513,7 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	}
 	path := filepath.Join(dir, dbName)
 	createMarkers(dir, "1", "2", "3", "4")
-	title := map[string]string{sqlitex.JournalDelete: "rollback journal (journal_mode=delete)", sqlitex.JournalWAL: "write-ahead log (journal_mode=wal, the platform default)"}[mode]
-	fmt.Printf("\n== %s ==\n", title)
+	part = map[string]string{sqlitex.JournalDelete: "B", sqlitex.JournalWAL: "C"}[mode]
 
 	createBase(ctx, path, mode)
 	before := pageHashes(ctx, path, mode)
@@ -524,7 +521,8 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	if err != nil {
 		fatal("hash", err)
 	}
-	fmt.Printf("base: table t with 1 row, %d pages, sha256 %s\n", len(before), short(baseHash))
+	tables.runs.Row(mode, len(before), short(baseHash))
+	tables.fileHashes.Row(mode, "base", short(baseHash))
 
 	// On non-Linux hosts, strace is unavailable; still run the INSERT in
 	// process so the reader sees which pages changed.
@@ -544,7 +542,7 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 		}
 		after := pageHashes(ctx, path, mode)
 		changed := changedPages(before, after)
-		printChanged(before, after, changed)
+		recordChanged(mode, before, after, changed)
 		checkChangedPages(mode, changed)
 		return
 	}
@@ -569,16 +567,16 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 		fatal("hash", err)
 	}
 	changed := changedPages(before, after)
-	printChanged(before, after, changed)
+	recordChanged(mode, before, after, changed)
 	checkChangedPages(mode, changed)
 
+	tables.fileHashes.Row(mode, "go_insert", short(goFileHash))
 	goCalls, err := segmentCalls(goRun.Log.Calls, dir, "1", "2")
 	if err != nil {
 		fatal("Go segment", err)
 	}
-	fmt.Printf("Go driver (modernc), file syscalls of the INSERT (%d):\n", len(goCalls))
-	for _, call := range goCalls {
-		fmt.Printf("  %s\n", call)
+	for i, call := range goCalls {
+		tables.goSyscalls.Row(mode, i+1, printed(call), normalized(call))
 	}
 
 	dbWrites := 0
@@ -592,7 +590,6 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 			if call.Offset%pageSize != 0 || call.Length != pageSize || !slices.Contains(changed, page) {
 				offsetsMatch = false
 			}
-			fmt.Printf("  db write at offset %d = (page %d - 1) * %d\n", call.Offset, page, pageSize)
 		}
 	}
 	if mode == sqlitex.JournalDelete {
@@ -612,7 +609,7 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 		frames := parseChildFrames(goRun.Stdout)
 		var framePages []int
 		for _, frame := range frames {
-			fmt.Printf("  WAL frame %d: page %d, commit size %d, header at offset %d, page image at offset %d\n", frame.Index, frame.Page, frame.CommitSize, walHeaderSize+(frame.Index-1)*(walFrameHeader+pageSize), walHeaderSize+(frame.Index-1)*(walFrameHeader+pageSize)+walFrameHeader)
+			tables.walFrames.Row(mode, frame.Index, frame.Page, frame.CommitSize)
 			framePages = append(framePages, int(frame.Page))
 		}
 		var walWrites []string
@@ -654,20 +651,17 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	if err != nil {
 		fatal("CLI segment", err)
 	}
-	fmt.Printf("C CLI, file syscalls of the same INSERT (%d, open/openat shown as open, fsync/fdatasync as sync):\n", len(cliCalls))
-	for _, line := range normalizedAll(cliCalls, nil) {
-		fmt.Printf("  %s\n", line)
+	tables.fileHashes.Row(mode, "cli_insert", short(cliFileHash))
+	for i, line := range normalizedAll(cliCalls, nil) {
+		tables.cliSyscalls.Row(mode, i+1, line)
 	}
-	fmt.Printf("INFO: sync syscall used: Go driver %s, CLI %s (%s)\n", syncCallNames(goCalls), syncCallNames(cliCalls), displayPath(cli.Path))
-	writesSame := compareLists("writes (file, offset, length, order)", normalizedAll(goCalls, isWrite), normalizedAll(cliCalls, isWrite))
-	syncsSame := compareLists("syncs (file, order)", normalizedAll(goCalls, isSync), normalizedAll(cliCalls, isSync))
+	tables.infoSync.Row(mode, syncCallNames(goCalls), syncCallNames(cliCalls), displayPath(cli.Path))
+	writesSame := slices.Equal(normalizedAll(goCalls, isWrite), normalizedAll(cliCalls, isWrite))
+	syncsSame := slices.Equal(normalizedAll(goCalls, isSync), normalizedAll(cliCalls, isSync))
 	goSyncs := normalizedAll(goCalls, isSync)
 	check(writesSame && syncsSame && len(goSyncs) > 0, "twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order")
-	goCloexec := normalizedAll(goCalls, isCloexecFcntl)
-	cliCloexec := normalizedAll(cliCalls, isCloexecFcntl)
-	fmt.Printf("twin difference: fcntl F_SETFD calls, Go driver %d [%s], CLI %d [%s]\n", len(goCloexec), strings.Join(goCloexec, "; "), len(cliCloexec), strings.Join(cliCloexec, "; "))
 	notCloexec := func(call trace.Syscall) bool { return !isCloexecFcntl(call) }
-	allSame := compareLists("every other file syscall (opens, reads, writes, syncs, locks, unlinks, closes)", normalizedAll(goCalls, notCloexec), normalizedAll(cliCalls, notCloexec))
+	allSame := slices.Equal(normalizedAll(goCalls, notCloexec), normalizedAll(cliCalls, notCloexec))
 	check(allSame, "apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)")
 	check(goFileHash == cliFileHash && goFileHash != baseHash, fmt.Sprintf("the database file after the INSERT is byte-identical from both builds (sha256 %s)", short(goFileHash)))
 
@@ -690,8 +684,7 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	if err != nil {
 		fatal("hash", err)
 	}
-	fmt.Println("call path, measured: the C CLI with -vfstrace under strace runs BEGIN IMMEDIATE; INSERT; COMMIT with a marker between statements.")
-	fmt.Println("Each phase lists the VFS calls (VFS) and the syscalls each one made (SYS, indented under its VFS call).")
+	tables.fileHashes.Row(mode, "cli_split", short(splitFileHash))
 	var concatenated []trace.Syscall
 	for _, p := range phases(mode) {
 		segment, err := mergedSegment(merged, dir, p.from, p.to)
@@ -699,30 +692,24 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 			fatal("merged segment", err)
 		}
 		concatenated = append(concatenated, segment.calls...)
-		fmt.Printf("phase %s | opcode %s | %s\n", p.statement, p.opcode, p.path)
-		vfsCount := 0
+		tables.phases.Row(mode, p.no, p.statement, p.opcode, p.path)
+		seq := 0
 		for _, event := range segment.events {
 			switch event.Kind {
 			case trace.EventVFS:
 				if event.VFS.Method == "xRandomness" {
 					// Different CLI builds seed SQLite's PRNG at different
 					// points, so keep xRandomness on an INFO line.
-					fmt.Printf("INFO: phase %s: VFS %s (SQLite seeds its PRNG on first use; this CLI build first needs randomness here)\n", p.statement, vfsLine(*event.VFS, dir))
+					tables.infoRandomness.Row(mode, p.no, vfsLine(*event.VFS, dir))
 					continue
 				}
-				vfsCount++
-				fmt.Printf("  VFS %s\n", vfsLine(*event.VFS, dir))
+				seq++
+				tables.phaseEvents.Row(mode, p.no, seq, "VFS", false, vfsLine(*event.VFS, dir))
 			case trace.EventSyscall:
 				relative := trace.RelativeTo(dir, []trace.Syscall{*event.Syscall})[0]
-				indent := "  "
-				if event.Enclosed >= 0 {
-					indent = "      "
-				}
-				fmt.Printf("%sSYS %s\n", indent, normalized(relative))
+				seq++
+				tables.phaseEvents.Row(mode, p.no, seq, "SYS", event.Enclosed >= 0, normalized(relative))
 			}
-		}
-		if vfsCount == 0 {
-			fmt.Println("  (no VFS calls)")
 		}
 	}
 	check(slices.Equal(normalizedAll(concatenated, nil), normalizedAll(cliCalls, nil)), "the three phases together make exactly the file syscalls of the autocommit INSERT (so the per-opcode split above is the INSERT's own I/O)")
@@ -765,18 +752,25 @@ func expectedFreshWALWrites(frames []walFrame) []string {
 	return want
 }
 
-func printChanged(before, after []string, changed []int) {
-	fmt.Printf("pages changed by the INSERT (sha256 of each page through sqlite_dbpage, before -> after): %v\n", changed)
+func recordChanged(mode string, before, after []string, changed []int) {
 	for _, page := range changed {
-		var b, a string
+		var b, a any
 		if page <= len(before) {
-			b = before[page-1]
+			b = short(before[page-1])
 		}
 		if page <= len(after) {
-			a = after[page-1]
+			a = short(after[page-1])
 		}
-		fmt.Printf("  page %d: %s -> %s\n", page, short(b), short(a))
+		tables.pageChanges.Row(mode, page, b, a)
 	}
+}
+
+// printed renders a syscall as strace shows it, with open/openat and
+// unlink/unlinkat spelled alike: which one libc calls depends on the platform.
+func printed(call trace.Syscall) string {
+	text := call.String()
+	text = strings.Replace(text, "openat ", "open ", 1)
+	return strings.Replace(text, "unlinkat ", "unlink ", 1)
 }
 
 func main() {
@@ -791,7 +785,9 @@ func main() {
 	if err != nil {
 		fatal("work dir", err)
 	}
-	fmt.Printf("INFO: work dir %s\n", displayPath(base))
+	set = results.MustOpen(work)
+	openTables()
+	tables.infoRun.Row("work dir", displayPath(base))
 	var cli sqlitex.CLI
 	haveCLI := false
 	if trace.Supported {
@@ -801,10 +797,12 @@ func main() {
 			fmt.Println(cli.PinLine())
 		} else {
 			fmt.Printf("sqlite3 CLI: unavailable: %v\n", cliErr)
-			failures = append(failures, "the pinned sqlite3 CLI is available")
+			part = "setup"
+			check(false, "the pinned sqlite3 CLI is available")
 		}
 	}
 
+	part = "A"
 	explainPath := filepath.Join(base, "explain.db")
 	createBase(ctx, explainPath, sqlitex.JournalDelete)
 	printExplain(ctx, explainPath)
@@ -819,12 +817,7 @@ func main() {
 		twinLimitAnalyze(ctx, base, cli)
 	}
 
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("ONE INSERT FAILED: %d claim(s) do not hold: %s\n", len(failures), strings.Join(failures, "; "))
-		os.Exit(1)
-	}
-	fmt.Println("ONE INSERT OK")
+	set.Finish("ONE INSERT")
 }
 
 const (
@@ -864,7 +857,7 @@ func statTables(ctx context.Context, path string) []string {
 // the ENABLE_STAT4-enabled Go driver but only sqlite_stat1 in the CLI, so the
 // resulting database files diverge.
 func twinLimitAnalyze(ctx context.Context, base string, cli sqlitex.CLI) {
-	fmt.Println("\n== a limit of the twin check: compile options that change file contents ==")
+	part = "D"
 	dir := filepath.Join(base, "analyze")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		fatal("mkdir", err)
@@ -895,7 +888,8 @@ func twinLimitAnalyze(ctx context.Context, base string, cli sqlitex.CLI) {
 	if err != nil {
 		fatal("hash", err)
 	}
-	fmt.Printf("base: table s with 100 rows and index s_by_k, built twice by the Go driver, sha256 %s and %s\n", short(baseGo), short(baseCLI))
+	tables.analyze.Row("base", "go.db", short(baseGo), nil, nil)
+	tables.analyze.Row("base", "cli.db", short(baseCLI), nil, nil)
 
 	db, err := sqlitex.Open(ctx, goPath, o)
 	if err != nil {
@@ -934,9 +928,8 @@ func twinLimitAnalyze(ctx context.Context, base string, cli sqlitex.CLI) {
 		fatal("hash", err)
 	}
 	goTables, cliTables := statTables(ctx, goPath), statTables(ctx, cliPath)
-	fmt.Printf("ENABLE_STAT4 compiled in: Go driver %d, CLI %d\n", goStat4, cliStat4)
-	fmt.Printf("after ANALYZE: Go driver file sha256 %s, statistics tables %v\n", short(goHash), goTables)
-	fmt.Printf("after ANALYZE: C CLI file sha256 %s, statistics tables %v\n", short(cliHash), cliTables)
+	tables.analyze.Row("after ANALYZE", "go.db", short(goHash), goStat4, strings.Join(goTables, " "))
+	tables.analyze.Row("after ANALYZE", "cli.db", short(cliHash), cliStat4, strings.Join(cliTables, " "))
 	check(baseGo == baseCLI, "both copies start byte-identical")
 	if goStat4 == 1 && cliStat4 == 0 {
 		check(goHash != cliHash && slices.Contains(goTables, "sqlite_stat4") && !slices.Contains(cliTables, "sqlite_stat4"),

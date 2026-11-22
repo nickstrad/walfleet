@@ -1,0 +1,3 @@
+seq,file,at_rest,bytes,sha256
+1,original.db,true,24576,6d566c958f17426cc0f7114d46ad61f044cac8a0952ba4c3c88ee26fad022172
+2,copy.db,true,24576,6d566c958f17426cc0f7114d46ad61f044cac8a0952ba4c3c88ee26fad022172

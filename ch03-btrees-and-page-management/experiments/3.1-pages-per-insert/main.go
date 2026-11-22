@@ -3,6 +3,9 @@
 // (Part A), a middle split into a full leaf (Part B), a table with two secondary
 // indexes (Part C), rollback-journal mode (Part D), and four boundary workloads
 // showing where "most inserts change one page" stops holding (Part E).
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 3.1
 package main
 
 import (
@@ -21,6 +24,7 @@ import (
 	"github.com/nickstrad/walfleet/internal/capture"
 	"github.com/nickstrad/walfleet/internal/dbfile"
 	"github.com/nickstrad/walfleet/internal/equal"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -32,15 +36,39 @@ const (
 	walFrameHead  = 24
 )
 
-var failures []string
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 3.1" runs both.
+// part and workloadName label the rows written while a part runs.
+var (
+	set          *results.Set
+	part         string
+	workloadName any
+	layoutSeq    int
+	workloadSeq  int
+	tables       struct {
+		inserts, steps, pageStates, predictions, unchangedFrames, workloads *results.Table
+	}
+)
+
+func openTables() {
+	tables.inserts = set.Table("inserts", "part", "workload", "journal_mode", "insert_no", "rowid", "pages_changed", "changed_pages", "changed_roles", "page1_changed", "pages_added", "page_count", "wal_frames", "wal_pages", "depth", "root_page", "integrity")
+	tables.steps = set.Table("steps", "part", "label", "insert_no")
+	tables.pageStates = set.Table("page_states", "seq", "part", "label", "insert_no", "page", "state", "kind", "cells", "keys", "content_start", "unused", "children", "note")
+	tables.predictions = set.Table("predictions", "seq", "name", "value", "how")
+	tables.unchangedFrames = set.Table("unchanged_frames", "part", "insert_no", "page", "sha256_before", "sha256_after")
+	tables.workloads = set.Table("workloads", "seq", "workload", "table_name", "row_bytes", "leaves", "min_rows_per_leaf", "max_rows_per_leaf", "final_depth")
+}
+
+func joinInts(xs []int) string {
+	parts := make([]string, len(xs))
+	for i, x := range xs {
+		parts[i] = fmt.Sprint(x)
+	}
+	return strings.Join(parts, " ")
+}
 
 func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -281,6 +309,13 @@ func (l *lab) exec(ctx context.Context, number int, rowid int64, table, statemen
 	s.rootPage = l.rootOf(table)
 	s.depth = l.depth(s.rootPage)
 	s.integrity = l.integrity(ctx)
+	var walFrames, walPages any
+	if l.mode == "wal" {
+		walFrames, walPages = len(s.walPages), joinInts(s.walPages)
+	}
+	tables.inserts.Row(part, workloadName, l.mode, number, rowid, len(s.changes), joinInts(s.pages()),
+		strings.Trim(equal.FormatPageChanges(s.changes), "[]"), len(s.changes) > 0 && s.changes[0].Page == 1,
+		s.after.PageCount()-s.before.PageCount(), s.after.PageCount(), walFrames, walPages, s.depth, s.rootPage, s.integrity)
 	return s
 }
 
@@ -362,34 +397,24 @@ func keysOf(p *dbfile.BTreePage) string {
 	return key(cells[0]) + ".." + key(cells[len(cells)-1])
 }
 
-func describePage(f *dbfile.File, n int) string {
-	if f == nil || n > f.PageCount() {
-		return "(not in the file)"
+// childrenOf lists the child pages of an interior page, shortened when there are more than eight.
+func childrenOf(p *dbfile.BTreePage) any {
+	if p.Type.IsLeaf() {
+		return nil
 	}
-	if n == 1 {
-		return fmt.Sprintf("page 1 header: in-header size %d, freelist %d; sqlite_schema leaf with %d cell(s)", f.Header.DatabaseSize, f.Header.FreelistCount, mustPage(f, 1).CellCount)
-	}
-	p, err := f.BTreePage(n)
+	cells, err := p.Cells()
 	if err != nil {
-		return "not a b-tree page"
+		fatal("cells", err)
 	}
-	text := fmt.Sprintf("%s cells=%d keys=%s content-start=%d unused=%d", p.Type, p.CellCount, keysOf(p), p.CellContentStart, p.Unused())
-	if !p.Type.IsLeaf() {
-		cells, err := p.Cells()
-		if err != nil {
-			fatal("cells", err)
-		}
-		var children []string
-		for _, c := range cells {
-			children = append(children, fmt.Sprint(c.LeftChild))
-		}
-		children = append(children, fmt.Sprint(p.RightChild))
-		if len(children) > 8 {
-			children = append(children[:3], "...", children[len(children)-1])
-		}
-		text += " children=[" + strings.Join(children, " ") + "]"
+	var children []string
+	for _, c := range cells {
+		children = append(children, fmt.Sprint(c.LeftChild))
 	}
-	return text
+	children = append(children, fmt.Sprint(p.RightChild))
+	if len(children) > 8 {
+		children = append(children[:3], "...", children[len(children)-1])
+	}
+	return strings.Join(children, " ")
 }
 
 func mustPage(f *dbfile.File, n int) *dbfile.BTreePage {
@@ -400,28 +425,35 @@ func mustPage(f *dbfile.File, n int) *dbfile.BTreePage {
 	return p
 }
 
-func printLayout(s step) {
+// pageStateRow writes one page_states row: what page n of f holds.
+func pageStateRow(label string, insert int, state string, f *dbfile.File, n int) {
+	layoutSeq++
+	var kind, cells, keys, contentStart, unused, children, note any
+	if f == nil || n > f.PageCount() {
+		note = "not in the file"
+	} else if p, err := f.BTreePage(n); err != nil {
+		note = "not a b-tree page"
+	} else {
+		kind, cells, keys, contentStart, unused, children = p.Type, p.CellCount, keysOf(p), p.CellContentStart, p.Unused(), childrenOf(p)
+		if n == 1 {
+			keys = nil
+			note = fmt.Sprintf("sqlite_schema; header says %d pages", f.Header.DatabaseSize)
+		}
+	}
+	tables.pageStates.Row(layoutSeq, part, label, insert, n, state, kind, cells, keys, contentStart, unused, children, note)
+}
+
+// recordStep names one insert in the steps table so the report can point at it.
+func recordStep(label string, s step) {
+	tables.steps.Row(part, label, s.number)
+}
+
+// recordLayout writes every changed page of a step, before and after, to page_states.
+func recordLayout(label string, s step) {
 	for _, c := range s.changes {
-		fmt.Printf("    page %d before: %s\n", c.Page, describePage(s.before, c.Page))
-		fmt.Printf("    page %d after:  %s\n", c.Page, describePage(s.after, c.Page))
+		pageStateRow(label, s.number, "before", s.before, c.Page)
+		pageStateRow(label, s.number, "after", s.after, c.Page)
 	}
-}
-
-func formatInts(xs []int) string {
-	parts := make([]string, len(xs))
-	for i, x := range xs {
-		parts[i] = fmt.Sprint(x)
-	}
-	return "[" + strings.Join(parts, " ") + "]"
-}
-
-func printStep(label string, s step) {
-	frames := "WAL frames for this commit: " + formatInts(s.walPages)
-	if s.walPages == nil {
-		frames = "no WAL (rollback mode)"
-	}
-	fmt.Printf("%s: insert #%d (rowid %d): %d page(s) changed %s; %s; depth %d; root page %d\n",
-		label, s.number, s.rowid, len(s.changes), equal.FormatPageChanges(s.changes), frames, s.depth, s.rootPage)
 }
 
 type arithmetic struct {
@@ -435,7 +467,8 @@ type arithmetic struct {
 }
 
 // predict computes leaf capacity, first split, and root interior capacity from
-// SQLite's cell format (btreeInt.h:149-228) before any row is inserted.
+// SQLite's cell format (btreeInt.h:149-228) before any row is inserted, and
+// writes each step of the arithmetic to the predictions table.
 func predict() arithmetic {
 	usable := pageSize
 	serialBlob := uint64(12 + 2*blobBytes)
@@ -446,24 +479,16 @@ func predict() arithmetic {
 	}
 	payload := header + blobBytes
 	maxLocal := dbfile.MaxLocalPayload(usable, dbfile.TableLeaf)
-	fmt.Println("arithmetic (from cell size and page size, before inserting anything):")
-	fmt.Printf("  row = (id INTEGER PRIMARY KEY, v BLOB of %d bytes); the id is the rowid, so the record stores it as NULL\n", blobBytes)
-	fmt.Printf("  record header = 1 (header-size varint) + 1 (serial type 0, NULL) + %d (serial type %d = blob of %d bytes) = %d bytes\n", dbfile.VarintLength(serialBlob), serialBlob, blobBytes, header)
-	fmt.Printf("  payload = %d header + %d body = %d bytes; table-leaf max local payload at usable size %d is %d, so no overflow page\n", header, blobBytes, payload, usable, maxLocal)
+	payloadVarint := dbfile.VarintLength(uint64(payload))
 	cell := func(rowid uint64) int {
-		return dbfile.VarintLength(uint64(payload)) + dbfile.VarintLength(rowid) + payload
+		return payloadVarint + dbfile.VarintLength(rowid) + payload
 	}
 	small, large := cell(127), cell(128)
-	fmt.Printf("  cell = %d (payload-size varint) + rowid varint (1 byte for rowid <= 127, 2 bytes for 128..16383) + %d = %d or %d bytes, plus a 2-byte cell pointer = %d or %d\n", dbfile.VarintLength(uint64(payload)), payload, small, large, small+2, large+2)
 	space := usable - 8
 	perLeaf := space / (large + 2)
 	if space/(small+2) != perLeaf {
 		fatal("arithmetic", errors.New("rows per leaf depends on the rowid size"))
 	}
-	fmt.Printf("  a leaf page other than page 1 has %d - 8 (leaf header) = %d bytes for pointers and cells\n", usable, space)
-	fmt.Printf("  rows per leaf = floor(%d / %d) = %d (%d x %d = %d fits; %d x %d = %d does not)\n", space, large+2, perLeaf, perLeaf, large+2, perLeaf*(large+2), perLeaf+1, small+2, (perLeaf+1)*(small+2))
-	fmt.Printf("  prediction: inserts 1..%d fill the root leaf; insert #%d (rowid %d) does not fit, so it is the first split, and every %d inserts after it another leaf fills: splits at inserts #%d, #%d, #%d, ... (#%d m + 1)\n",
-		perLeaf, perLeaf+1, rowidStep*(perLeaf+1), perLeaf, perLeaf+1, 2*perLeaf+1, 3*perLeaf+1, perLeaf)
 	interiorSpace := usable - 12
 	used, fit := 0, 0
 	for leaf := 1; ; leaf++ {
@@ -482,20 +507,37 @@ func predict() arithmetic {
 		}
 	}
 	deeper := perLeaf*(fit+1) + 1
-	fmt.Printf("  each split adds one divider cell to the root: 4-byte child page number + varint of the left leaf's largest rowid, plus a 2-byte pointer\n")
-	fmt.Printf("  the root as an interior page has %d - 12 = %d bytes; %d dividers of 7 bytes (keys <= 127) + %d of 8 bytes = %d bytes fit, one more does not\n", usable, interiorSpace, small1, fit-small1, used)
-	fmt.Printf("  prediction: divider %d arrives with the split at insert #%d (rowid %d); the root overflows and the tree gains a third level\n", fit+1, deeper, rowidStep*deeper)
+	for i, p := range []struct {
+		name  string
+		value int
+		how   string
+	}{
+		{"record_header_bytes", header, fmt.Sprintf("1 size varint + 1 type (NULL: the id is the rowid) + %d type %d (blob of %d bytes)", dbfile.VarintLength(serialBlob), serialBlob, blobBytes)},
+		{"payload_bytes", payload, fmt.Sprintf("%d header + %d body", header, blobBytes)},
+		{"max_local_payload", maxLocal, fmt.Sprintf("table-leaf limit at usable size %d; the payload is below it: no overflow", usable)},
+		{"cell_bytes_rowid_to_127", small + 2, fmt.Sprintf("%d payload-size varint + 1 rowid varint + %d payload + 2 cell pointer", payloadVarint, payload)},
+		{"cell_bytes_rowid_from_128", large + 2, "the rowid varint is 2 bytes for rowids 128..16383"},
+		{"leaf_space_bytes", space, fmt.Sprintf("%d - 8 (leaf header)", usable)},
+		{"rows_per_leaf", perLeaf, fmt.Sprintf("floor(%d / %d): %d x %d = %d fits, %d x %d = %d does not", space, large+2, perLeaf, large+2, perLeaf*(large+2), perLeaf+1, small+2, (perLeaf+1)*(small+2))},
+		{"first_split_insert", perLeaf + 1, fmt.Sprintf("inserts 1..%d fill the root leaf; rowid %d does not fit", perLeaf, rowidStep*(perLeaf+1))},
+		{"split_every_inserts", perLeaf, fmt.Sprintf("a new leaf fills after %d appends: splits at inserts #%d, #%d, #%d, ...", perLeaf, perLeaf+1, 2*perLeaf+1, 3*perLeaf+1)},
+		{"root_space_bytes", interiorSpace, fmt.Sprintf("%d - 12 (interior header)", usable)},
+		{"dividers_fit_in_root", fit, fmt.Sprintf("%d dividers of 7 bytes (keys <= 127) + %d of 8 bytes = %d bytes; no room for one more", small1, fit-small1, used)},
+		{"third_level_insert", deeper, fmt.Sprintf("the split that brings divider %d (rowid %d): the root overflows", fit+1, rowidStep*deeper)},
+	} {
+		tables.predictions.Row(i+1, p.name, p.value, p.how)
+	}
 	return arithmetic{payload: payload, cellSmall: small, cellLarge: large, rowsPerLeaf: perLeaf, dividersFit: fit, firstSplit: perLeaf + 1, deeperInsert: deeper}
 }
 
+// partA appends one row per transaction into an empty table, with a page
+// manifest after every insert (WAL, a checkpoint before each manifest).
 func partA(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== A. appends: one row per transaction into an empty table, a page manifest after every insert (WAL, checkpoint before each manifest)")
+	part, workloadName = "A", nil
 	a := predict()
 	l := openLab(ctx, filepath.Join(dir, "append.db"), "wal", "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)")
 	defer l.close()
 	root := l.rootOf("t")
-	fmt.Printf("table t: root page %d (sqlite_schema.rootpage), page count %d\n", root, l.file.PageCount())
 	total := a.deeperInsert + 2*a.rowsPerLeaf
 	interesting := map[int]bool{a.firstSplit: true, a.firstSplit + a.rowsPerLeaf: true, a.firstSplit + 2*a.rowsPerLeaf: true, a.firstSplit + 2*a.rowsPerLeaf + 1: true}
 	kept := map[int]step{}
@@ -503,14 +545,12 @@ func partA(ctx context.Context, dir string) {
 	var splits []int
 	ordinaryOnePage, ordinaryLeafOnly := true, true
 	walMatches, integrityOK, rootConstant := true, true, true
-	var walMismatch []string
 	firstDeeper := map[int]step{}
-	prevDepth, frames, inserts := 1, 0, 0
+	prevDepth, inserts := 1, 0
 	for n := 1; n <= total; n++ {
 		rowid := int64(rowidStep * n)
 		s := l.exec(ctx, n, rowid, "t", "INSERT INTO t(id, v) VALUES(?, ?)", rowid, rowBlob(rowid))
 		inserts++
-		frames += len(s.walPages)
 		histogram[len(s.changes)]++
 		if s.integrity != "ok" {
 			integrityOK = false
@@ -520,9 +560,6 @@ func partA(ctx context.Context, dir string) {
 		}
 		if !sameInts(s.walPages, s.pages()) {
 			walMatches = false
-			if len(walMismatch) < 5 {
-				walMismatch = append(walMismatch, fmt.Sprintf("insert #%d: WAL %s vs changed %s", s.number, formatInts(s.walPages), formatInts(s.pages())))
-			}
 		}
 		if s.after.PageCount() > s.before.PageCount() {
 			splits = append(splits, s.number)
@@ -543,62 +580,45 @@ func partA(ctx context.Context, dir string) {
 			kept[n] = s
 		}
 	}
-	fmt.Printf("%d inserts done; final page count %d, depth %d\n", total, l.file.PageCount(), prevDepth)
 	check(l.verifyManifest(), "the last manifest equals capture.BuildManifest of the same image (unchanged pages reuse the previous sha256 only to save time)")
 
-	var counts []int
-	for k := range histogram {
-		counts = append(counts, k)
-	}
-	sort.Ints(counts)
-	fmt.Println("changed pages per insert -> number of inserts:")
-	for _, k := range counts {
-		fmt.Printf("  %d page(s): %d insert(s)\n", k, histogram[k])
-	}
 	predictedSplits := true
 	for i, n := range splits {
 		if n != a.firstSplit+i*a.rowsPerLeaf {
 			predictedSplits = false
 		}
 	}
-	fmt.Printf("splits (inserts that added pages): %d, at inserts #%d, #%d, #%d, ..., #%d\n", len(splits), splits[0], splits[1], splits[2], splits[len(splits)-1])
 	check(len(splits) > 0 && splits[0] == a.firstSplit, fmt.Sprintf("the first split happens at insert #%d (rowid %d), as the arithmetic predicts", a.firstSplit, rowidStep*a.firstSplit))
 	check(predictedSplits, fmt.Sprintf("every split happens exactly where predicted: insert #%d m + 1, every %d inserts", a.rowsPerLeaf, a.rowsPerLeaf))
 	check(ordinaryOnePage, "every insert that does not split changes exactly one page")
 	check(ordinaryLeafOnly, "that one page is the table leaf that now holds the new rowid, never page 1 (page 1 is not written)")
 	check(histogram[1] > inserts/2, fmt.Sprintf("most inserts change one page (%d of %d)", histogram[1], inserts))
 
-	fmt.Println()
-	printStep("first split, depth 1 -> 2", firstDeeper[2])
-	printLayout(firstDeeper[2])
+	recordStep("first split, depth 1 -> 2", firstDeeper[2])
+	recordLayout("first split, depth 1 -> 2", firstDeeper[2])
 	second := kept[a.firstSplit+a.rowsPerLeaf]
-	printStep("first append split at depth 2", second)
-	printLayout(second)
-	third := kept[a.firstSplit+2*a.rowsPerLeaf]
-	printStep("next append split", third)
+	recordStep("first append split at depth 2", second)
+	recordLayout("first append split at depth 2", second)
+	recordStep("next append split", kept[a.firstSplit+2*a.rowsPerLeaf])
 	ordinary := kept[a.firstSplit+2*a.rowsPerLeaf+1]
-	printStep("an ordinary insert", ordinary)
-	printLayout(ordinary)
+	recordStep("an ordinary insert", ordinary)
+	recordLayout("an ordinary insert", ordinary)
 	deeper, ok := firstDeeper[3]
 	check(ok && deeper.number == a.deeperInsert, fmt.Sprintf("the tree gains its third level at insert #%d (rowid %d), as the arithmetic predicts", a.deeperInsert, rowidStep*a.deeperInsert))
 	if ok {
-		printStep("depth 2 -> 3", deeper)
-		printLayout(deeper)
+		recordStep("depth 2 -> 3", deeper)
+		recordLayout("depth 2 -> 3", deeper)
 	}
 	check(firstDeeper[2].number == a.firstSplit && len(firstDeeper[2].changes) == 4, "the first split is also the first depth change: the root, a new page holding the root's old cells, a new leaf, and page 1")
 	check(len(second.changes) == 3, "an append split at depth 2 changes three pages: page 1 (database size), the parent (one new divider) and the new leaf; the full leaf is not rewritten")
 	check(rootConstant, fmt.Sprintf("the root stays page %d through both depth changes and always equals sqlite_schema.rootpage", root))
 	check(integrityOK, fmt.Sprintf("integrity_check = ok after every one of the %d inserts", inserts))
-	for _, line := range walMismatch {
-		fmt.Printf("  %s\n", line)
-	}
 	check(walMatches, "for every insert the WAL frames of its commit name exactly the pages the manifest shows changed: pages changed = frames shipped")
-	fmt.Printf("WAL frames for %d inserts: %d (%d bytes of frames at %d bytes each); the table itself is %d pages\n", inserts, frames, frames*(walFrameHead+pageSize), walFrameHead+pageSize, l.file.PageCount())
 }
 
+// partB inserts one row into the middle of a full leaf.
 func partB(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== B. a middle insert into a full leaf")
+	part, workloadName = "B", nil
 	l := openLab(ctx, filepath.Join(dir, "middle.db"), "wal", "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)")
 	defer l.close()
 	var last step
@@ -606,23 +626,22 @@ func partB(ctx context.Context, dir string) {
 		rowid := int64(rowidStep * n)
 		last = l.exec(ctx, n, rowid, "t", "INSERT INTO t(id, v) VALUES(?, ?)", rowid, rowBlob(rowid))
 	}
-	fmt.Printf("20 appends (rowids 2..40): page count %d, depth %d\n", l.file.PageCount(), last.depth)
 	root := mustPage(l.file, l.rootOf("t"))
-	fmt.Printf("  root: %s\n", describePage(l.file, root.Number))
+	pageStateRow("before the middle insert", last.number, "layout", l.file, root.Number)
 	cells, err := root.Cells()
 	if err != nil {
 		fatal("cells", err)
 	}
 	for _, c := range cells {
-		fmt.Printf("  leaf page %d: %s\n", c.LeftChild, describePage(l.file, int(c.LeftChild)))
+		pageStateRow("before the middle insert", last.number, "layout", l.file, int(c.LeftChild))
 	}
-	fmt.Printf("  leaf page %d: %s\n", root.RightChild, describePage(l.file, int(root.RightChild)))
+	pageStateRow("before the middle insert", last.number, "layout", l.file, int(root.RightChild))
 	// Insert rowid 11 into full leaf 4 (keys 10..16), forcing balance_nonroot
 	// (btree.c:8204-9027) to redistribute cells across sibling leaves.
 	rowid := int64(11)
 	s := l.exec(ctx, 21, rowid, "t", "INSERT INTO t(id, v) VALUES(?, ?)", rowid, rowBlob(rowid))
-	printStep("middle split", s)
-	printLayout(s)
+	recordStep("middle split", s)
+	recordLayout("middle split", s)
 	leaves := 0
 	for _, c := range s.changes {
 		if c.Page == 1 {
@@ -638,7 +657,6 @@ func partB(ctx context.Context, dir string) {
 	// old bytes still enters the WAL as a frame even though its SHA-256 is unchanged.
 	extra := subtract(s.walPages, s.pages())
 	check(len(subtract(s.pages(), s.walPages)) == 0, "every changed page is in the commit's WAL frames")
-	fmt.Printf("WAL frames whose page bytes did not change: %s\n", formatInts(extra))
 	unchanged := true
 	for _, n := range extra {
 		before, err := s.before.Page(n)
@@ -652,33 +670,30 @@ func partB(ctx context.Context, dir string) {
 		if !bytes.Equal(before, after) {
 			unchanged = false
 		}
-		fmt.Printf("  page %d: sha256 before %s, after %s\n", n, equal.SHA256Hex(before)[:16], equal.SHA256Hex(after)[:16])
+		tables.unchangedFrames.Row(part, s.number, n, equal.SHA256Hex(before)[:16], equal.SHA256Hex(after)[:16])
 	}
 	check(len(extra) > 0 && unchanged, "here the WAL ships more frames than pages changed: balance_nonroot rewrote a sibling leaf with the same cells it already held, and a written page is a shipped frame even when its bytes are unchanged")
 	check(s.integrity == "ok", "integrity_check = ok after the middle split")
-	var unused []string
 	walker := dbfile.TreeWalker{File: s.after, OnPage: func(p *dbfile.BTreePage, parent, depth int) error {
 		if p.Type.IsLeaf() {
-			unused = append(unused, fmt.Sprintf("%d:%d", p.Number, p.CellCount))
+			pageStateRow("leaves in key order after the middle split", s.number, "layout", s.after, p.Number)
 		}
 		return nil
 	}}
 	if err := walker.Walk(l.rootOf("t")); err != nil {
 		fatal("walk", err)
 	}
-	fmt.Printf("leaves after the middle split (page:cells, in key order): %s\n", strings.Join(unused, " "))
 }
 
+// partC runs the same kind of insert into a table with two secondary indexes.
 func partC(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== C. the same kind of insert into a table with two indexes")
+	part, workloadName = "C", nil
 	l := openLab(ctx, filepath.Join(dir, "indexed.db"), "wal",
 		"CREATE TABLE t(id INTEGER PRIMARY KEY, email TEXT, score INTEGER, v BLOB)",
 		"CREATE INDEX t_email ON t(email)",
 		"CREATE INDEX t_score ON t(score)")
 	defer l.close()
 	histogram := map[int]int{}
-	var roleCounts []string
 	const inserts = 200
 	ok := true
 	for n := 1; n <= inserts; n++ {
@@ -691,9 +706,7 @@ func partC(ctx context.Context, dir string) {
 			ok = false
 		}
 		if n == 50 {
-			for _, c := range s.changes {
-				roleCounts = append(roleCounts, c.String())
-			}
+			recordStep("a common insert", s)
 		}
 	}
 	var counts []int
@@ -701,33 +714,27 @@ func partC(ctx context.Context, dir string) {
 		counts = append(counts, k)
 	}
 	sort.Ints(counts)
-	fmt.Println("changed pages per insert -> number of inserts:")
 	most, mostCount := 0, 0
 	for _, k := range counts {
-		fmt.Printf("  %d page(s): %d insert(s)\n", k, histogram[k])
 		if histogram[k] > mostCount {
 			most, mostCount = k, histogram[k]
 		}
 	}
-	fmt.Printf("insert #50 changed: %s\n", strings.Join(roleCounts, " "))
 	check(most == 3, "with two indexes the common insert changes three pages: the table leaf and one leaf in each index")
 	check(ok, "WAL frames equal the changed pages and integrity_check = ok for all 200 inserts")
 }
 
+// partD repeats the appends of part A in rollback mode (journal_mode=DELETE).
 func partD(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== D. the same appends in rollback mode (journal_mode=DELETE)")
+	part, workloadName = "D", nil
 	l := openLab(ctx, filepath.Join(dir, "rollback.db"), "delete", "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)")
 	defer l.close()
-	histogram := map[string]int{}
 	ok, ordinaryTwo, counterOnly := true, true, true
 	counterBytes := []equal.ByteRange{{Start: 24, End: 28}, {Start: 92, End: 96}}
 	for n := 1; n <= 12; n++ {
 		rowid := int64(rowidStep * n)
 		s := l.exec(ctx, n, rowid, "t", "INSERT INTO t(id, v) VALUES(?, ?)", rowid, rowBlob(rowid))
 		hasPage1 := len(s.changes) > 0 && s.changes[0].Page == 1
-		key := fmt.Sprintf("%d page(s), page 1 among them: %v", len(s.changes), hasPage1)
-		histogram[key]++
 		if !hasPage1 || s.integrity != "ok" {
 			ok = false
 		}
@@ -751,17 +758,6 @@ func partD(ctx context.Context, dir string) {
 				counterOnly = false
 			}
 		}
-		if n <= 2 {
-			printStep("rollback", s)
-		}
-	}
-	var keys []string
-	for k := range histogram {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		fmt.Printf("  %s: %d insert(s)\n", k, histogram[k])
 	}
 	check(ok, "in rollback mode every commit also rewrites page 1")
 	check(ordinaryTwo, "an insert that adds no page changes exactly two pages: page 1 and the table leaf that holds the new rowid")
@@ -783,8 +779,6 @@ type workloadResult struct {
 	rebalanced     int
 	minChanged     int
 	maxChanged     int
-	depth          int
-	rowsPerLeaf    string
 	walCovers      bool
 	integrityOK    bool
 	splitsAtDepth2 []int
@@ -809,6 +803,7 @@ func ascendingKeys(n int) []int64 {
 }
 
 func runWorkload(ctx context.Context, dir string, w workload) workloadResult {
+	workloadName = w.name
 	l := openLab(ctx, filepath.Join(dir, w.table+".db"), "wal", w.create)
 	defer l.close()
 	r := workloadResult{minChanged: -1, walCovers: true, integrityOK: true}
@@ -840,29 +835,25 @@ func runWorkload(ctx context.Context, dir string, w workload) workloadResult {
 			r.integrityOK = false
 		}
 		prevDepth = s.depth
-		r.depth = s.depth
 	}
 	var leaves []int
-	for n := 1; n <= l.census.PageCount; n++ {
+	for n := 2; n <= l.census.PageCount; n++ {
 		role := l.census.Page(n).Role
 		if role == dbfile.RoleTableLeaf || role == dbfile.RoleIndexLeaf {
-			if n == 1 {
-				continue
-			}
-			p := mustPage(l.file, n)
-			leaves = append(leaves, p.CellCount)
+			leaves = append(leaves, mustPage(l.file, n).CellCount)
 		}
 	}
 	sort.Ints(leaves)
 	if len(leaves) > 0 {
-		r.rowsPerLeaf = fmt.Sprintf("%d leaves holding %d..%d rows", len(leaves), leaves[0], leaves[len(leaves)-1])
+		workloadSeq++
+		tables.workloads.Row(workloadSeq, w.name, w.table, w.size, len(leaves), leaves[0], leaves[len(leaves)-1], prevDepth)
 	}
 	return r
 }
 
+// partE shows where "most inserts change one page" stops holding.
 func partE(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== E. where \"most inserts change one page\" stops holding (one row per transaction, WAL, the same manifest after every insert)")
+	part, workloadName = "E", nil
 	// Exercise four boundary workloads: random keys with few vs many rows per
 	// leaf, overflowing payloads (fillInCell allocates overflow pages at
 	// btree.c:7212), and WITHOUT ROWID (an index B-tree, excluded from
@@ -875,24 +866,9 @@ func partE(ctx context.Context, dir string) {
 	}
 	results := make([]workloadResult, len(workloads))
 	for i, w := range workloads {
-		r := runWorkload(ctx, dir, w)
-		results[i] = r
-		fmt.Printf("  %s: %d inserts; one page: %d; added a page: %d; several pages, none added: %d; pages changed per insert %d..%d; final depth %d, %s\n",
-			w.name, r.inserts, r.onePage, r.addedPages, r.rebalanced, r.minChanged, r.maxChanged, r.depth, r.rowsPerLeaf)
-		if len(r.splitsAtDepth2) > 0 {
-			byCount := map[int]int{}
-			for _, n := range r.splitsAtDepth2 {
-				byCount[n]++
-			}
-			var parts []string
-			for n := 1; n <= r.maxChanged; n++ {
-				if byCount[n] > 0 {
-					parts = append(parts, fmt.Sprintf("%d pages: %d", n, byCount[n]))
-				}
-			}
-			fmt.Printf("    inserts that added a page at depth 2, by pages changed: %s\n", strings.Join(parts, ", "))
-		}
+		results[i] = runWorkload(ctx, dir, w)
 	}
+	workloadName = nil
 	large, small, overflow, withoutRowid := results[0], results[1], results[2], results[3]
 	check(large.onePage*2 < large.inserts && large.rebalanced > 0, fmt.Sprintf("random keys with 4 rows per leaf: only %d of %d inserts change one page; %d split and %d more change several pages without adding one (balance_nonroot moves cells between siblings)", large.onePage, large.inserts, large.addedPages, large.rebalanced))
 	check(small.onePage*2 > small.inserts, fmt.Sprintf("random keys with small rows: most inserts change one page again (%d of %d): the rule depends on how many rows fit in a leaf, not on the key order alone", small.onePage, small.inserts))
@@ -918,21 +894,14 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("3.1")
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
-	fmt.Printf("settings: page_size=%d, journal_mode=wal (part D: delete), synchronous=OFF (no effect on file bytes; it only skips fsync), wal_autocheckpoint=0, one connection, a PRAGMA wal_checkpoint(TRUNCATE) after every insert\n", pageSize)
+	set = results.MustOpen(dir)
+	openTables()
 	partA(ctx, dir)
 	partB(ctx, dir)
 	partC(ctx, dir)
 	partD(ctx, dir)
 	partE(ctx, dir)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("PAGES PER INSERT FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("PAGES PER INSERT OK")
+	set.Finish("PAGES PER INSERT")
 }
 
 func displayPath(path string) string {

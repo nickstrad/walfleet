@@ -1,0 +1,185 @@
+journal,seq,method,file,amount,call
+wal,1,xShmBarrier,t.db,0,xShmBarrier t.db
+wal,2,xShmLock,t.db,1,xShmLock t.db ofst=3 n=1 flags=LOCK|SHARED -> 0
+wal,3,xShmBarrier,t.db,0,xShmBarrier t.db
+wal,4,xFileSize,t.db,0,xFileSize t.db -> 0 size=159744
+wal,5,xShmLock,t.db,1,xShmLock t.db ofst=0 n=1 flags=LOCK|EXCLUSIVE -> 0
+wal,6,xRead,t.db,4096,xRead t.db n=4096 ofst=4096 -> 0
+wal,7,xRead,t.db,4096,xRead t.db n=4096 ofst=8192 -> 0
+wal,8,xRead,t.db,4096,xRead t.db n=4096 ofst=151552 -> 0
+wal,9,xRead,t.db,4096,xRead t.db n=4096 ofst=12288 -> 0
+wal,10,xRead,t.db,4096,xRead t.db n=4096 ofst=155648 -> 0
+wal,11,xRead,t.db,4096,xRead t.db n=4096 ofst=139264 -> 0
+wal,12,xRead,t.db,4096,xRead t.db n=4096 ofst=143360 -> 0
+wal,13,xRead,t.db,4096,xRead t.db n=4096 ofst=147456 -> 0
+wal,14,xRead,t.db,4096,xRead t.db n=4096 ofst=81920 -> 0
+wal,15,xRead,t.db,4096,xRead t.db n=4096 ofst=110592 -> 0
+wal,16,xRead,t.db,4096,xRead t.db n=4096 ofst=114688 -> 0
+wal,17,xRead,t.db,4096,xRead t.db n=4096 ofst=94208 -> 0
+wal,18,xRead,t.db,4096,xRead t.db n=4096 ofst=73728 -> 0
+wal,19,xFileControl,t.db,0,xFileControl t.db op=PRAGMA -> 12
+wal,20,xShmLock,t.db,1,xShmLock t.db ofst=3 n=1 flags=UNLOCK|SHARED -> 0
+wal,21,xShmLock,t.db,1,xShmLock t.db ofst=4 n=1 flags=LOCK|EXCLUSIVE -> 0
+wal,22,xShmLock,t.db,1,xShmLock t.db ofst=4 n=1 flags=UNLOCK|EXCLUSIVE -> 0
+wal,23,xShmLock,t.db,1,xShmLock t.db ofst=4 n=1 flags=LOCK|SHARED -> 0
+wal,24,xShmBarrier,t.db,0,xShmBarrier t.db
+wal,25,xWrite,t.db-wal,32,xWrite t.db-wal n=32 ofst=0 -> 0
+wal,26,xSync,t.db-wal,0,xSync t.db-wal flags=NORMAL -> 0
+wal,27,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=32 -> 0
+wal,28,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=56 -> 0
+wal,29,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=4152 -> 0
+wal,30,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=4176 -> 0
+wal,31,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=8272 -> 0
+wal,32,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=8296 -> 0
+wal,33,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=12392 -> 0
+wal,34,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=12416 -> 0
+wal,35,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=16512 -> 0
+wal,36,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=16536 -> 0
+wal,37,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=20632 -> 0
+wal,38,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=20656 -> 0
+wal,39,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=24752 -> 0
+wal,40,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=24776 -> 0
+wal,41,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=28872 -> 0
+wal,42,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=28896 -> 0
+wal,43,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=32992 -> 0
+wal,44,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=33016 -> 0
+wal,45,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=37112 -> 0
+wal,46,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=37136 -> 0
+wal,47,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=41232 -> 0
+wal,48,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=41256 -> 0
+wal,49,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=45352 -> 0
+wal,50,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=45376 -> 0
+wal,51,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=49472 -> 0
+wal,52,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=49496 -> 0
+wal,53,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=53592 -> 0
+wal,54,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=53616 -> 0
+wal,55,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=57712 -> 0
+wal,56,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=57736 -> 0
+wal,57,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=61832 -> 0
+wal,58,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=61856 -> 0
+wal,59,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=65952 -> 0
+wal,60,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=65976 -> 0
+wal,61,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=70072 -> 0
+wal,62,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=70096 -> 0
+wal,63,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=74192 -> 0
+wal,64,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=74216 -> 0
+wal,65,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=78312 -> 0
+wal,66,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=78336 -> 0
+wal,67,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=82432 -> 0
+wal,68,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=82456 -> 0
+wal,69,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=86552 -> 0
+wal,70,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=86576 -> 0
+wal,71,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=90672 -> 0
+wal,72,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=90696 -> 0
+wal,73,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=94792 -> 0
+wal,74,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=94816 -> 0
+wal,75,xWrite,t.db-wal,24,xWrite t.db-wal n=24 ofst=98912 -> 0
+wal,76,xWrite,t.db-wal,4096,xWrite t.db-wal n=4096 ofst=98936 -> 0
+wal,77,xSync,t.db-wal,0,xSync t.db-wal flags=NORMAL -> 0
+wal,78,xShmBarrier,t.db,0,xShmBarrier t.db
+wal,79,xShmLock,t.db,1,xShmLock t.db ofst=0 n=1 flags=UNLOCK|EXCLUSIVE -> 0
+wal,80,xFileControl,t.db,0,xFileControl t.db op=COMMIT_PHASETWO -> 12
+wal,81,xShmLock,t.db,1,xShmLock t.db ofst=4 n=1 flags=UNLOCK|SHARED -> 0
+delete,1,xLock,t.db,0,xLock t.db level=SHARED -> 0
+delete,2,xAccess,t.db-journal,0,xAccess t.db-journal flags=0 -> 0 out=0
+delete,3,xRead,t.db,16,xRead t.db n=16 ofst=24 -> 0
+delete,4,xAccess,t.db-wal,0,xAccess t.db-wal flags=0 -> 0 out=0
+delete,5,xFileSize,t.db,0,xFileSize t.db -> 0 size=159744
+delete,6,xLock,t.db,0,xLock t.db level=RESERVED -> 0
+delete,7,xRead,t.db,4096,xRead t.db n=4096 ofst=4096 -> 0
+delete,8,xFileControl,t.db,0,xFileControl t.db op=HAS_MOVED -> 0
+delete,9,xOpen,t.db-journal,0,xOpen t.db-journal kind=main-journal flags=0x806 -> 0
+delete,10,xDeviceCharacteristics,t.db,0,xDeviceCharacteristics t.db -> 0x9000
+delete,11,xWrite,t.db-journal,512,xWrite t.db-journal n=512 ofst=0 -> 0
+delete,12,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=512 -> 0
+delete,13,xWrite,t.db-journal,4096,xWrite t.db-journal n=4096 ofst=516 -> 0
+delete,14,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=4612 -> 0
+delete,15,xRead,t.db,4096,xRead t.db n=4096 ofst=8192 -> 0
+delete,16,xRead,t.db,4096,xRead t.db n=4096 ofst=151552 -> 0
+delete,17,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=4616 -> 0
+delete,18,xWrite,t.db-journal,4096,xWrite t.db-journal n=4096 ofst=4620 -> 0
+delete,19,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=8716 -> 0
+delete,20,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=8720 -> 0
+delete,21,xWrite,t.db-journal,4096,xWrite t.db-journal n=4096 ofst=8724 -> 0
+delete,22,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=12820 -> 0
+delete,23,xRead,t.db,4096,xRead t.db n=4096 ofst=12288 -> 0
+delete,24,xRead,t.db,4096,xRead t.db n=4096 ofst=155648 -> 0
+delete,25,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=12824 -> 0
+delete,26,xWrite,t.db-journal,4096,xWrite t.db-journal n=4096 ofst=12828 -> 0
+delete,27,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=16924 -> 0
+delete,28,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=16928 -> 0
+delete,29,xWrite,t.db-journal,4096,xWrite t.db-journal n=4096 ofst=16932 -> 0
+delete,30,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=21028 -> 0
+delete,31,xRead,t.db,4096,xRead t.db n=4096 ofst=139264 -> 0
+delete,32,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=21032 -> 0
+delete,33,xWrite,t.db-journal,4096,xWrite t.db-journal n=4096 ofst=21036 -> 0
+delete,34,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=25132 -> 0
+delete,35,xRead,t.db,4096,xRead t.db n=4096 ofst=143360 -> 0
+delete,36,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=25136 -> 0
+delete,37,xWrite,t.db-journal,4096,xWrite t.db-journal n=4096 ofst=25140 -> 0
+delete,38,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=29236 -> 0
+delete,39,xRead,t.db,4096,xRead t.db n=4096 ofst=147456 -> 0
+delete,40,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=29240 -> 0
+delete,41,xWrite,t.db-journal,4096,xWrite t.db-journal n=4096 ofst=29244 -> 0
+delete,42,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=33340 -> 0
+delete,43,xRead,t.db,4096,xRead t.db n=4096 ofst=81920 -> 0
+delete,44,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=33344 -> 0
+delete,45,xWrite,t.db-journal,4096,xWrite t.db-journal n=4096 ofst=33348 -> 0
+delete,46,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=37444 -> 0
+delete,47,xRead,t.db,4096,xRead t.db n=4096 ofst=110592 -> 0
+delete,48,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=37448 -> 0
+delete,49,xWrite,t.db-journal,4096,xWrite t.db-journal n=4096 ofst=37452 -> 0
+delete,50,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=41548 -> 0
+delete,51,xRead,t.db,4096,xRead t.db n=4096 ofst=114688 -> 0
+delete,52,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=41552 -> 0
+delete,53,xWrite,t.db-journal,4096,xWrite t.db-journal n=4096 ofst=41556 -> 0
+delete,54,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=45652 -> 0
+delete,55,xRead,t.db,4096,xRead t.db n=4096 ofst=94208 -> 0
+delete,56,xRead,t.db,4096,xRead t.db n=4096 ofst=73728 -> 0
+delete,57,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=45656 -> 0
+delete,58,xWrite,t.db-journal,4096,xWrite t.db-journal n=4096 ofst=45660 -> 0
+delete,59,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=49756 -> 0
+delete,60,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=49760 -> 0
+delete,61,xWrite,t.db-journal,4096,xWrite t.db-journal n=4096 ofst=49764 -> 0
+delete,62,xWrite,t.db-journal,4,xWrite t.db-journal n=4 ofst=53860 -> 0
+delete,63,xFileControl,t.db,0,xFileControl t.db op=PRAGMA -> 12
+delete,64,xLock,t.db,0,xLock t.db level=EXCLUSIVE -> 0
+delete,65,xDeviceCharacteristics,t.db,0,xDeviceCharacteristics t.db -> 0x9000
+delete,66,xRead,t.db-journal,8,xRead t.db-journal n=8 ofst=54272 -> 522
+delete,67,xSync,t.db-journal,0,xSync t.db-journal flags=NORMAL -> 0
+delete,68,xWrite,t.db-journal,12,xWrite t.db-journal n=12 ofst=0 -> 0
+delete,69,xSync,t.db-journal,0,xSync t.db-journal flags=NORMAL -> 0
+delete,70,xFileControl,t.db,0,xFileControl t.db op=SIZE_HINT -> 0
+delete,71,xWrite,t.db,4096,xWrite t.db n=4096 ofst=0 -> 0
+delete,72,xWrite,t.db,4096,xWrite t.db n=4096 ofst=4096 -> 0
+delete,73,xWrite,t.db,4096,xWrite t.db n=4096 ofst=8192 -> 0
+delete,74,xWrite,t.db,4096,xWrite t.db n=4096 ofst=73728 -> 0
+delete,75,xWrite,t.db,4096,xWrite t.db n=4096 ofst=81920 -> 0
+delete,76,xWrite,t.db,4096,xWrite t.db n=4096 ofst=94208 -> 0
+delete,77,xWrite,t.db,4096,xWrite t.db n=4096 ofst=110592 -> 0
+delete,78,xWrite,t.db,4096,xWrite t.db n=4096 ofst=114688 -> 0
+delete,79,xWrite,t.db,4096,xWrite t.db n=4096 ofst=139264 -> 0
+delete,80,xWrite,t.db,4096,xWrite t.db n=4096 ofst=143360 -> 0
+delete,81,xWrite,t.db,4096,xWrite t.db n=4096 ofst=147456 -> 0
+delete,82,xWrite,t.db,4096,xWrite t.db n=4096 ofst=151552 -> 0
+delete,83,xWrite,t.db,4096,xWrite t.db n=4096 ofst=155648 -> 0
+delete,84,xWrite,t.db,4096,xWrite t.db n=4096 ofst=159744 -> 0
+delete,85,xWrite,t.db,4096,xWrite t.db n=4096 ofst=163840 -> 0
+delete,86,xWrite,t.db,4096,xWrite t.db n=4096 ofst=167936 -> 0
+delete,87,xWrite,t.db,4096,xWrite t.db n=4096 ofst=172032 -> 0
+delete,88,xWrite,t.db,4096,xWrite t.db n=4096 ofst=176128 -> 0
+delete,89,xWrite,t.db,4096,xWrite t.db n=4096 ofst=180224 -> 0
+delete,90,xWrite,t.db,4096,xWrite t.db n=4096 ofst=184320 -> 0
+delete,91,xWrite,t.db,4096,xWrite t.db n=4096 ofst=188416 -> 0
+delete,92,xWrite,t.db,4096,xWrite t.db n=4096 ofst=192512 -> 0
+delete,93,xWrite,t.db,4096,xWrite t.db n=4096 ofst=196608 -> 0
+delete,94,xWrite,t.db,4096,xWrite t.db n=4096 ofst=200704 -> 0
+delete,95,xWrite,t.db,4096,xWrite t.db n=4096 ofst=204800 -> 0
+delete,96,xFileControl,t.db,0,xFileControl t.db op=SYNC -> 12
+delete,97,xSync,t.db,0,xSync t.db flags=NORMAL -> 0
+delete,98,xClose,t.db-journal,0,xClose t.db-journal -> 0
+delete,99,xDelete,t.db-journal,0,xDelete t.db-journal syncDir=0 -> 0
+delete,100,xFileControl,t.db,0,xFileControl t.db op=COMMIT_PHASETWO -> 12
+delete,101,xUnlock,t.db,0,xUnlock t.db level=SHARED -> 0
+delete,102,xDeviceCharacteristics,t.db,0,xDeviceCharacteristics t.db -> 0x9000
+delete,103,xUnlock,t.db,0,xUnlock t.db level=NONE -> 0

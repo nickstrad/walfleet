@@ -1,0 +1,5 @@
+seq,file,pragma,problem_no,problem
+1,site-1.db,integrity_check,1,Fragmentation of 46 bytes reported as 0 on page 26
+1,site-1.db,integrity_check,2,wrong # of entries in index events_by_account
+1,site-1.db,quick_check,1,Fragmentation of 46 bytes reported as 0 on page 26
+3,site-3.db,integrity_check,1,row 66 missing from index events_by_account

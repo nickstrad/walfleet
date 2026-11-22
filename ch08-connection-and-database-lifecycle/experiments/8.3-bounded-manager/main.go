@@ -3,11 +3,17 @@
 // open connections versus an unbounded run (Part A), and six concrete cases
 // where a closed WAL database is not a single checkpointed file at rest or
 // changes while closed (Part B).
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 8.3. Each stream of Part A
+// runs in a child process that reports its counts to the parent as one
+// RESULT line of JSON; only the parent writes tables.
 package main
 
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -24,6 +30,7 @@ import (
 	"github.com/nickstrad/walfleet/internal/connmgr"
 	"github.com/nickstrad/walfleet/internal/procstat"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -34,7 +41,6 @@ const (
 )
 
 var (
-	failures      []string
 	databases     = flag.Int("dbs", 1000, "database files")
 	capacity      = flag.Int("k", 64, "connections the bounded manager keeps open")
 	operations    = flag.Int("ops", 4000, "operations in the seeded stream")
@@ -50,13 +56,38 @@ var (
 	childRoleFlag = flag.String("role", "", "internal: child role for part B")
 )
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. part labels
+// the claims written while a part runs; caseID labels the part B observations.
+var (
+	set    *results.Set
+	part   string
+	caseID string
+	tables struct {
+		setup, streams, uncleanEvictions, observations, problems, infoStreams, infoLimits *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	setupSeq, observationSeq, problemSeq int
+)
+
+func openTables() {
+	tables.setup = set.Table("setup", "seq", "name", "value")
+	tables.streams = set.Table("streams", "mode", "capacity", "operations", "reads", "writes", "distinct_dbs",
+		"hits", "misses", "evictions", "evicted_at_rest", "evicted_not_at_rest", "verified_reopens", "refused_reopens", "first_opens", "peak_open",
+		"fd_samples", "peak_fds", "fd_mismatches", "fds_after_close", "read_mismatches", "files_exact", "files_masked", "files_wrong",
+		"warm_reads", "cold_reads", "memory_budget")
+	tables.uncleanEvictions = set.Table("unclean_evictions", "mode", "status")
+	tables.observations = set.Table("observations", "seq", "case_id", "moment", "file", "at_rest", "bytes", "sha256", "recipe_step", "exact", "note")
+	tables.problems = set.Table("problems", "seq", "observation", "problem", "why")
+	tables.infoStreams = set.Table("info_streams", "mode", "peak_rss", "warm_ns", "cold_ns", "elapsed_ms")
+	tables.infoLimits = set.Table("info_limits", "soft", "hard")
+}
+
+func setup(name string, value any) {
+	setupSeq++
+	tables.setup.Row(setupSeq, name, value)
+}
+
+func check(ok bool, claim string) {
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -193,7 +224,30 @@ func settledRSS() int64 {
 	return m.RSS
 }
 
-func mib(n int64) string { return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20)) }
+// streamResult is what a stream child reports to its parent.
+type streamResult struct {
+	Mode             string
+	Capacity         int
+	Reads, Writes    int
+	Stats            connmgr.Stats
+	EvictedAtRest    int
+	EvictedNotAtRest int
+	NotAtRest        []string
+	FDSamples        int
+	PeakFDs          int
+	FDMismatches     int
+	FDsAfterClose    int
+	ReadMismatches   int
+	Exact            int
+	Masked           int
+	Wrong            int
+	WarmReads        int
+	ColdReads        int
+	PeakRSS          int64
+	Budget           int64
+	WarmNs, ColdNs   int64
+	ElapsedMs        int64
+}
 
 func runStream(ctx context.Context, mode, dir string) {
 	limit := *capacity
@@ -313,38 +367,19 @@ func runStream(ctx context.Context, mode, dir string) {
 			masked++
 		}
 	}
-	fmt.Printf("\n%s run: capacity %d\n", mode, limit)
-	fmt.Printf("  operations: %d (%d reads, %d writes); distinct databases touched: %d\n", *operations, reads, writes, stats.DistinctDatabases)
-	fmt.Printf("  manager: hits %d, misses (opens) %d, evictions %d (at rest %d, not at rest %d), reopens verified against the recorded sha256 %d, refused %d, first opens %d, peak open %d\n",
-		stats.Hits, stats.Misses, evictedAtRest+evictedNotAtRest, evictedAtRest, evictedNotAtRest, stats.VerifiedReopens, stats.RefusedReopens, stats.UnverifiedOpens, stats.MaxOpen)
-	fmt.Printf("  descriptors: %d samples, peak %d above the baseline; samples where descriptors != 3 x open connections: %d; after Close: %d\n", fdSamples, maxFDs, fdMismatches, afterClose)
-	fmt.Printf("  reads whose user_version disagreed with the model: %d\n", readMismatches)
-	fmt.Printf("  final files vs the recipe state the model expects: %d exact bytes, %d equal except the change counter, %d wrong\n", exact, masked, wrong)
 	budget := int64(limit)*(2*cacheBudgetBytes()+uncountedPerConnection) + memoryConstant
-	fmt.Printf("INFO: %s peak process-memory growth %s; budget %d x (2 x %d KiB cache + %d KiB) + %s = %s\n", mode, mib(maxRSS), limit, cacheBudgetBytes()/1024, uncountedPerConnection/1024, mib(memoryConstant), mib(budget))
-	fmt.Printf("INFO: %s mean read latency: warm (connection already open) %s over %d, cold (open + verify + read) %s over %d; stream took %s\n",
-		mode, meanOf(warm, warmCount), warmCount, meanOf(cold, coldCount), coldCount, elapsed.Round(time.Millisecond))
-	fmt.Printf("RESULT %s peak-fds=%d peak-rss=%d budget=%d warm-ns=%d cold-ns=%d\n", mode, maxFDs, maxRSS, budget, nanos(warm, warmCount), nanos(cold, coldCount))
-	for _, reason := range notAtRestReasons {
-		fmt.Printf("  not at rest at eviction: %s\n", reason)
+	result := streamResult{
+		Mode: mode, Capacity: limit, Reads: reads, Writes: writes, Stats: stats,
+		EvictedAtRest: evictedAtRest, EvictedNotAtRest: evictedNotAtRest, NotAtRest: notAtRestReasons,
+		FDSamples: fdSamples, PeakFDs: maxFDs, FDMismatches: fdMismatches, FDsAfterClose: afterClose, ReadMismatches: readMismatches,
+		Exact: exact, Masked: masked, Wrong: wrong, WarmReads: warmCount, ColdReads: coldCount,
+		PeakRSS: maxRSS, Budget: budget, WarmNs: nanos(warm, warmCount), ColdNs: nanos(cold, coldCount), ElapsedMs: elapsed.Milliseconds(),
 	}
-	check(fdMismatches == 0 && maxFDs == 3*stats.MaxOpen && afterClose == 0, fmt.Sprintf("%s: at every sample the process held exactly 3 descriptors per open connection, at most %d; none after Close", mode, 3*stats.MaxOpen))
-	check(stats.MaxOpen <= limit, fmt.Sprintf("%s: never more than %d connections open", mode, limit))
-	check(evictedNotAtRest == 0 && stats.RefusedReopens == 0 && stats.VerifiedReopens == stats.Misses-stats.UnverifiedOpens, fmt.Sprintf("%s: every eviction left the file at rest, and every reopen matched the sha256 recorded at its eviction", mode))
-	check(readMismatches == 0 && wrong == 0, fmt.Sprintf("%s: every read saw the model's step, and every final file equals the recipe state for its step", mode))
-	if mode == "bounded" {
-		check(maxRSS <= budget, fmt.Sprintf("bounded: peak process-memory growth stayed within K x (2 x cache budget + %d KiB) + %d MiB", uncountedPerConnection/1024, memoryConstant>>20))
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		fatal("json", err)
 	}
-	if len(failures) > 0 {
-		os.Exit(1)
-	}
-}
-
-func meanOf(total time.Duration, n int) time.Duration {
-	if n == 0 {
-		return 0
-	}
-	return (total / time.Duration(n)).Round(time.Microsecond)
+	fmt.Printf("RESULT %s\n", encoded)
 }
 
 func nanos(total time.Duration, n int) int64 {
@@ -354,11 +389,7 @@ func nanos(total time.Duration, n int) int64 {
 	return int64(total) / int64(n)
 }
 
-type runResult struct {
-	peakFDs, peakRSS, budget, warm, cold int64
-}
-
-func runChild(ctx context.Context, mode, dir string) runResult {
+func runChild(ctx context.Context, mode, dir string) streamResult {
 	self, err := os.Executable()
 	if err != nil {
 		fatal("executable", err)
@@ -378,18 +409,17 @@ func runChild(ctx context.Context, mode, dir string) runResult {
 	if err := cmd.Start(); err != nil {
 		fatal("start "+mode, err)
 	}
-	var result runResult
+	var result streamResult
 	found := false
 	scanner := bufio.NewScanner(out)
 	scanner.Buffer(make([]byte, 1<<20), 1<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "RESULT ") {
-			if _, err := fmt.Sscanf(line, "RESULT "+mode+" peak-fds=%d peak-rss=%d budget=%d warm-ns=%d cold-ns=%d", &result.peakFDs, &result.peakRSS, &result.budget, &result.warm, &result.cold); err != nil {
+		if encoded, ok := strings.CutPrefix(line, "RESULT "); ok {
+			if err := json.Unmarshal([]byte(encoded), &result); err != nil {
 				fatal("parse "+line, err)
 			}
 			found = true
-			fmt.Println("INFO: " + line)
 			continue
 		}
 		fmt.Println(line)
@@ -398,8 +428,7 @@ func runChild(ctx context.Context, mode, dir string) runResult {
 		fatal("read child", err)
 	}
 	if err := cmd.Wait(); err != nil {
-		failures = append(failures, mode+" run: "+err.Error())
-		fmt.Printf("check FAILED: the %s run exited with %v\n", mode, err)
+		check(false, fmt.Sprintf("the %s run exited with %v", mode, err))
 	}
 	if !found {
 		fatal(mode, errors.New("child printed no RESULT line"))
@@ -407,28 +436,60 @@ func runChild(ctx context.Context, mode, dir string) runResult {
 	return result
 }
 
+// writeStream writes one stream's row and checks its claims.
+func writeStream(r streamResult) {
+	stats := r.Stats
+	tables.streams.Row(r.Mode, r.Capacity, *operations, r.Reads, r.Writes, stats.DistinctDatabases,
+		stats.Hits, stats.Misses, r.EvictedAtRest+r.EvictedNotAtRest, r.EvictedAtRest, r.EvictedNotAtRest, stats.VerifiedReopens, stats.RefusedReopens, stats.UnverifiedOpens, stats.MaxOpen,
+		r.FDSamples, r.PeakFDs, r.FDMismatches, r.FDsAfterClose, r.ReadMismatches, r.Exact, r.Masked, r.Wrong,
+		r.WarmReads, r.ColdReads, r.Budget)
+	for _, reason := range r.NotAtRest {
+		tables.uncleanEvictions.Row(r.Mode, reason)
+	}
+	tables.infoStreams.Row(r.Mode, r.PeakRSS, r.WarmNs, r.ColdNs, r.ElapsedMs)
+	mode, limit := r.Mode, r.Capacity
+	check(r.FDMismatches == 0 && r.PeakFDs == 3*stats.MaxOpen && r.FDsAfterClose == 0, fmt.Sprintf("%s: at every sample the process held exactly 3 descriptors per open connection, at most %d; none after Close", mode, 3*stats.MaxOpen))
+	check(stats.MaxOpen <= limit, fmt.Sprintf("%s: never more than %d connections open", mode, limit))
+	check(r.EvictedNotAtRest == 0 && stats.RefusedReopens == 0 && stats.VerifiedReopens == stats.Misses-stats.UnverifiedOpens, fmt.Sprintf("%s: every eviction left the file at rest, and every reopen matched the sha256 recorded at its eviction", mode))
+	check(r.ReadMismatches == 0 && r.Wrong == 0, fmt.Sprintf("%s: every read saw the model's step, and every final file equals the recipe state for its step", mode))
+	if mode == "bounded" {
+		check(r.PeakRSS <= r.Budget, fmt.Sprintf("bounded: peak process-memory growth stayed within K x (2 x cache budget + %d KiB) + %d MiB", uncountedPerConnection/1024, memoryConstant>>20))
+	}
+}
+
 func partA(ctx context.Context, work, master string) {
+	part = "A"
 	soft, hard, err := procstat.FileLimit()
 	if err != nil {
 		fatal("limit", err)
 	}
-	fmt.Printf("\n== A. %d databases, a seeded stream of %d operations, LRU manager with K = %d ==\n", *databases, *operations, *capacity)
-	fmt.Printf("INFO: descriptor limit: soft %d, hard %d; the unbounded run needs about 3 x %d\n", soft, hard, *databases)
+	tables.infoLimits.Row(soft, hard)
 	// Verify RLIMIT_NOFILE up front: K above the process descriptor limit is a
 	// configuration error (budget K <= (soft limit - reserve) / 3 in WAL mode),
 	// and the unbounded contrast needs roughly 3 * dbs descriptors.
 	if uint64(3**databases+64) > soft {
 		fatal("descriptor limit", fmt.Errorf("soft limit %d is below the %d descriptors the unbounded run may need; lower -dbs", soft, 3**databases+64))
 	}
-	fmt.Printf("every database: a copy of recipe step 0 (sha256 %s); a write applies the database's next recipe step (up to %d); a read runs: %s\n", fileHash(master), *maxStep, readQuery)
-	fmt.Printf("stream: seed %d, %d%% of operations to the hot %d databases, %d%% writes; connections: recipe settings with cache_size=%d\n", *seed, *hotPercent, max(1, *databases/20), *writePercent, *cacheSize)
-	fmt.Println("each run happens in its own child process, on its own copies of the files, so descriptor and memory baselines are clean")
+	setup("databases", *databases)
+	setup("K (bounded capacity)", *capacity)
+	setup("operations", *operations)
+	setup("seed", *seed)
+	setup("hot databases", max(1, *databases/20))
+	setup("% of operations to hot", *hotPercent)
+	setup("% writes", *writePercent)
+	setup("every database", "a copy of recipe step 0")
+	setup("step 0 sha256", fileHash(master))
+	setup("a write applies", fmt.Sprintf("the next recipe step of that database, up to step %d", *maxStep))
+	setup("a read runs", readQuery)
+	setup("connections", fmt.Sprintf("recipe settings with cache_size=%d", *cacheSize))
+	setup("descriptor sample", fmt.Sprintf("every %d operations", *sampleEvery))
+	setup("memory sample", fmt.Sprintf("every %d operations", *memoryEvery))
 	bounded := runChild(ctx, "bounded", filepath.Join(work, "bounded"))
 	unbounded := runChild(ctx, "unbounded", filepath.Join(work, "unbounded"))
-	fmt.Println("\ncontrast:")
-	check(unbounded.peakFDs > 3*int64(*capacity), fmt.Sprintf("the unbounded run's peak descriptors exceed the bounded run's limit 3 x K = %d", 3**capacity))
-	check(unbounded.peakRSS > bounded.peakRSS, "the unbounded run's peak process-memory growth exceeds the bounded run's (SHAPE)")
-	fmt.Printf("INFO: peak memory growth bounded %s vs unbounded %s; cold read %s vs warm %s (bounded run)\n", mib(bounded.peakRSS), mib(unbounded.peakRSS), time.Duration(bounded.cold), time.Duration(bounded.warm))
+	writeStream(bounded)
+	writeStream(unbounded)
+	check(unbounded.PeakFDs > 3**capacity, fmt.Sprintf("the unbounded run's peak descriptors exceed the bounded run's limit 3 x K = %d", 3**capacity))
+	check(unbounded.PeakRSS > bounded.PeakRSS, "the unbounded run's peak process-memory growth exceeds the bounded run's (SHAPE)")
 }
 
 func fileHash(path string) string {
@@ -439,12 +500,26 @@ func fileHash(path string) string {
 	return status.SHA256
 }
 
-func walSize(path string) string {
-	info, err := os.Stat(path + "-wal")
-	if err != nil {
-		return "no -wal"
+// observe writes one observations row for a file at a moment of part B and
+// returns its seq. Every argument after file may be nil.
+func observe(moment, file string, atRest, bytes, sha256, step, exact, note any) int {
+	observationSeq++
+	tables.observations.Row(observationSeq, caseID, moment, file, atRest, bytes, sha256, step, exact, note)
+	return observationSeq
+}
+
+// observeStatus records what CheckAtRest reported, one problems row per problem.
+func observeStatus(moment, file string, status connmgr.Status) {
+	if status.AtRest {
+		observe(moment, file, true, status.Size, status.SHA256, nil, nil, nil)
+		return
 	}
-	return fmt.Sprintf("-wal %d bytes", info.Size())
+	seq := observe(moment, file, false, nil, nil, nil, nil, nil)
+	for _, problem := range status.Problems {
+		what, why, _ := strings.Cut(problem, ": ")
+		problemSeq++
+		tables.problems.Row(problemSeq, seq, what, why)
+	}
 }
 
 func expectStep(ctx context.Context, path string, want int, claim string) {
@@ -452,7 +527,11 @@ func expectStep(ctx context.Context, path string, want int, claim string) {
 	if err != nil {
 		fatal("match "+path, err)
 	}
-	fmt.Printf("    %s: %s\n", filepath.Base(path), match)
+	var step any
+	if match.Found() {
+		step = match.Step
+	}
+	observe("recipe step held by the file", filepath.Base(path), true, nil, nil, step, match.Exact, nil)
 	check(match.Step == want, claim)
 }
 
@@ -542,7 +621,7 @@ func evict(m *connmgr.Manager, id string) connmgr.Status {
 	if e.CloseErr != nil || e.StatusErr != nil {
 		fatal("evict "+id, errors.Join(e.CloseErr, e.StatusErr))
 	}
-	fmt.Printf("    eviction of %s: %s\n", id, e.Status)
+	observeStatus("eviction by the manager", id+".db", e.Status)
 	return e.Status
 }
 
@@ -555,7 +634,7 @@ func atRest(path string) connmgr.Status {
 }
 
 func partB(ctx context.Context, work, master string) {
-	fmt.Println("\n== B. when a closed WAL database is NOT a single file at rest ==")
+	part = "B"
 	dir := filepath.Join(work, "B")
 	populate(master, dir, 6)
 	m := newManager(dir)
@@ -564,7 +643,7 @@ func partB(ctx context.Context, work, master string) {
 	// B1: sqlite3WalClose (src/wal.c:2507-2571) cannot take an EXCLUSIVE lock
 	// while another process holds the file open, so it skips the checkpoint
 	// and leaves -wal and -shm on disk.
-	fmt.Println("B1. another process still has the database open when the manager closes its connection")
+	caseID = "B1"
 	writeNext(ctx, m, dbID(0)).Release()
 	reader := startChild(ctx, "reader", path(0))
 	status := evict(m, dbID(0))
@@ -575,14 +654,14 @@ func partB(ctx context.Context, work, master string) {
 	if err := reader.cmd.Wait(); err != nil {
 		fatal("reader exit", err)
 	}
-	fmt.Printf("    after the other process closed: %s\n", atRest(path(0)))
+	observeStatus("after the other process closed", dbID(0)+".db", atRest(path(0)))
 	expectStep(ctx, path(0), 1, "B1: the last connection to close (the other process) checkpointed and deleted the WAL: at rest, holding step 1")
 
 	// B2: (*sql.DB).Close closes only idle pool connections and returns nil
 	// while *sql.Rows holds a connection checked out; connmgr detects
 	// OpenConnections > 0 and skips CheckAtRest so it does not drop the live
 	// connection's POSIX locks.
-	fmt.Println("B2. a statement left open (rows not closed) when the handle is released")
+	caseID = "B2"
 	h := writeNext(ctx, m, dbID(1))
 	rows, err := h.DB.QueryContext(ctx, "SELECT id FROM accounts ORDER BY id")
 	if err != nil {
@@ -597,10 +676,10 @@ func partB(ctx context.Context, work, master string) {
 	if err := rows.Close(); err != nil {
 		fatal("rows close", err)
 	}
-	fmt.Printf("    after rows.Close: %s\n", atRest(path(1)))
+	observeStatus("after rows.Close", dbID(1)+".db", atRest(path(1)))
 	expectStep(ctx, path(1), 1, "B2: closing the rows let the connection close: at rest, holding step 1")
 
-	fmt.Println("B3. the process that wrote is killed before it closes")
+	caseID = "B3"
 	writer := startChild(ctx, "writer", path(2))
 	if err := writer.cmd.Process.Kill(); err != nil {
 		fatal("kill", err)
@@ -609,7 +688,7 @@ func partB(ctx context.Context, work, master string) {
 		fatal("writer", errors.New("killed child exited cleanly"))
 	}
 	status = atRest(path(2))
-	fmt.Printf("    after the kill: %s\n", status)
+	observeStatus("after the kill", dbID(2)+".db", status)
 	check(!status.AtRest && len(status.Problems) == 2, "B3: a killed writer leaves a -wal with its committed frames and a -shm")
 	naive := filepath.Join(dir, "naive-copy.db")
 	if err := copyFile(path(2), naive); err != nil {
@@ -623,13 +702,13 @@ func partB(ctx context.Context, work, master string) {
 	if err := opened.Close(); err != nil {
 		fatal("close", err)
 	}
-	fmt.Printf("    after one clean open and close: %s\n", atRest(path(2)))
+	observeStatus("after one clean open and close", dbID(2)+".db", atRest(path(2)))
 	expectStep(ctx, path(2), 1, "B3: one clean open and close recovers the WAL, checkpoints it and deletes it: at rest, holding step 1")
 
 	// B4: SQLITE_FCNTL_PERSIST_WAL causes sqlite3WalClose (src/wal.c:2533-2551)
 	// to checkpoint into .db but leave -wal and -shm (walIndexClose with
 	// isDelete=0, src/wal.c:1619-1630).
-	fmt.Println("B4. SQLITE_FCNTL_PERSIST_WAL is set on the connection")
+	caseID = "B4"
 	h = writeNext(ctx, m, dbID(3))
 	conn, err := h.DB.Conn(ctx)
 	if err != nil {
@@ -655,20 +734,25 @@ func partB(ctx context.Context, work, master string) {
 	// (src/pager.c:4188-4205 -> fileHasMoved, src/os_unix.c:1623-1632) and
 	// omits the checkpoint buffer when the file's inode no longer matches its
 	// path, leaving step 1 in the old -wal while moved.db looks at rest.
-	fmt.Println("B5. the file is renamed while its connection is open")
+	caseID = "B5"
 	writeNext(ctx, m, dbID(4)).Release()
 	moved := filepath.Join(dir, "moved.db")
 	if err := os.Rename(path(4), moved); err != nil {
 		fatal("rename", err)
 	}
 	status = evict(m, dbID(4))
-	leftBehind := walSize(path(4))
-	fmt.Printf("    left at the old name: %s\n", leftBehind)
+	var walBytes int64
+	if info, err := os.Stat(path(4) + "-wal"); err == nil {
+		walBytes = info.Size()
+		observe("left at the old name", dbID(4)+".db-wal", nil, walBytes, nil, nil, nil, nil)
+	} else {
+		observe("left at the old name", dbID(4)+".db-wal", nil, nil, nil, nil, nil, "no -wal")
+	}
 	check(!status.AtRest && len(status.Problems) > 0 && status.Problems[0] == "database file missing", "B5: the manager reports the database file missing at its path")
-	check(leftBehind != "no -wal" && leftBehind != "-wal 0 bytes", "B5: a -wal with content stays behind at the old name")
+	check(walBytes > 0, "B5: a -wal with content stays behind at the old name")
 	expectStep(ctx, moved, 0, "B5: the moved file looks at rest but holds step 0: close saw the file had moved, skipped the checkpoint, and step 1 stayed in the -wal under the old name")
 
-	fmt.Println("B6. the file changes while it is closed")
+	caseID = "B6"
 	writeNext(ctx, m, dbID(5)).Release()
 	recorded := evict(m, dbID(5))
 	outside, err := openManaged(ctx, path(5))
@@ -683,7 +767,11 @@ func partB(ctx context.Context, work, master string) {
 	}
 	_, err = m.Acquire(ctx, dbID(5))
 	var changed *connmgr.ChangedWhileClosedError
-	fmt.Printf("    reopen: %v\n", err)
+	if errors.As(err, &changed) {
+		observe("reopen refused: changed while closed", dbID(5)+".db", changed.Found.AtRest, changed.Found.Size, changed.Found.SHA256, nil, nil, err.Error())
+	} else {
+		observe("reopen", dbID(5)+".db", nil, nil, nil, nil, nil, fmt.Sprint(err))
+	}
 	check(recorded.AtRest && errors.As(err, &changed) && changed.Found.AtRest && changed.Found.SHA256 != recorded.SHA256, "B6: a write made outside the manager while the file was closed changes its sha256, and the manager refuses to reopen it")
 	if err := m.Close(); err != nil {
 		fatal("close manager", err)
@@ -706,6 +794,8 @@ func main() {
 		fatal("flags", fmt.Errorf("need -dbs >= 20, 1 <= -k < -dbs, -ops >= 1, 1 <= -max-step <= %d, positive sample intervals, percentages 0..100, -cache-size != 0", recipe.DefaultSteps))
 	}
 	work := sqlitex.MustWorkDir("8.3")
+	set = results.MustOpen(work)
+	openTables()
 	master := filepath.Join(work, "master.db")
 	if err := theRecipe().Build(ctx, master, 0); err != nil {
 		fatal("build master", err)
@@ -714,9 +804,5 @@ func main() {
 	populate(master, filepath.Join(work, "unbounded"), *databases)
 	partA(ctx, work, master)
 	partB(ctx, work, master)
-	if len(failures) > 0 {
-		fmt.Printf("\n%d check(s) FAILED\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("\nall checks passed")
+	set.Finish("BOUNDED MANAGER")
 }

@@ -12,29 +12,20 @@
 
 > **How to run the experiments**
 >
-> - **Prerequisites:** Go 1.26 (`go.mod` specifies `go 1.26.0`).
-> - **Fetch the pinned SQLite source tree** into `_src/sqlite-3.53.4` (or point `SQLITE_SRC` at an existing checkout of tag `version-3.53.4`):
+> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to start the runner from the host. Build the `lab` image once, from the repository root:
 >   ```text
->   go run ./cmd/course fetch-source
+>   docker compose build lab
 >   ```
-> - **Build the pinned C tools** (`sqlite3`, `showwal`, `dbhash`) into `_tools/bin/` for Experiment 3.3's `dbhash` cross-check column (no `sqlite3` CLI is needed by any Chapter 3 experiment; without `_tools/bin/dbhash`, Experiment 3.3 prints a `NO-DBHASH:` line, skips the `dbhash` checks, and still exits 0):
+>   The image already contains the pinned SQLite `3.53.4` source tree, the C tools (`sqlite3`, `showwal`, and `dbhash` in `/opt/course-tools/bin`, used by Experiment 3.3's `dbhash` cross-check column), `strace`, and the DuckDB CLI that presents the results.
+> - **Run the experiments** from the repository root. Each command starts the `lab` container, runs the experiment in it, and prints its walkthrough; add `-i` (`go run ./cmd/course run -i 3.1`) to stay in DuckDB afterwards with the tables loaded:
 >   ```text
->   go run ./cmd/course build-tools
+>   go run ./cmd/course run 3.1
+>   go run ./cmd/course run 3.2
+>   go run ./cmd/course run 3.3
 >   ```
-> - **Run the experiments** from the repository root:
->   ```text
->   go run ./ch03-btrees-and-page-management/experiments/3.1-pages-per-insert
->   go run ./ch03-btrees-and-page-management/experiments/3.2-delete-and-reuse
->   go run ./ch03-btrees-and-page-management/experiments/3.3-same-rows-different-bytes
->   ```
->   Scratch databases are written under `_work/3.1/`, `_work/3.2/`, and `_work/3.3/`, which are git-ignored and safe to delete.
-> - **Cross-platform notes and macOS:** Nothing in Chapter 3 is Linux-only (no `strace`, no `/proc`, no CLI). On macOS, run the same `go run` commands directly (building `_tools/bin/dbhash` requires a C compiler such as Xcode Command Line Tools), or run inside the repository's Linux `lab` container, which includes `dbhash` in `/opt/course-tools/bin`:
->   ```text
->   docker compose run --rm lab go run ./ch03-btrees-and-page-management/experiments/3.1-pages-per-insert
->   docker compose run --rm lab go run ./ch03-btrees-and-page-management/experiments/3.2-delete-and-reuse
->   docker compose run --rm lab go run ./ch03-btrees-and-page-management/experiments/3.3-same-rows-different-bytes
->   ```
-> - **Measured platform:** All captured evidence in this chapter was measured on Linux (`linux/amd64`, Go 1.26.8, ext4). All three experiments were also run inside the Debian `lab` container during the build round with identical non-`INFO:` output (the repair round re-ran on the Linux host). macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and vetted only, not run.
+>   In the container, scratch databases and tables are written under `/work/3.1/`, `/work/3.2/`, and `/work/3.3/` (the `lab-work` volume); run directly, under `_work/3.1/`, `_work/3.2/`, and `_work/3.3/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch03-btrees-and-page-management/experiments/3.1-pages-per-insert`). Run this way it prints only its verdict and leaves its tables under `_work/3.1/results/`. Nothing in Chapter 3 is Linux-only (no `strace`, no `/proc`, no CLI), so it runs in full on macOS too. Experiment 3.3's `dbhash` column then needs `_tools/bin/dbhash` (`go run ./cmd/course fetch-source`, then `go run ./cmd/course build-tools`, which requires a C compiler such as Xcode Command Line Tools); without it, Experiment 3.3 prints a `NO-DBHASH:` line, skips the `dbhash` checks, and still exits 0.
+> - **Measured platform:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). The checked values are identical to the earlier `linux/amd64` capture.
 
 ---
 
@@ -214,6 +205,9 @@ All source citations below are at tag `version-3.53.4`. Two files are copied who
 // (Part A), a middle split into a full leaf (Part B), a table with two secondary
 // indexes (Part C), rollback-journal mode (Part D), and four boundary workloads
 // showing where "most inserts change one page" stops holding (Part E).
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 3.1
 package main
 
 import (
@@ -232,6 +226,7 @@ import (
 	"github.com/nickstrad/walfleet/internal/capture"
 	"github.com/nickstrad/walfleet/internal/dbfile"
 	"github.com/nickstrad/walfleet/internal/equal"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -243,15 +238,39 @@ const (
 	walFrameHead  = 24
 )
 
-var failures []string
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 3.1" runs both.
+// part and workloadName label the rows written while a part runs.
+var (
+	set          *results.Set
+	part         string
+	workloadName any
+	layoutSeq    int
+	workloadSeq  int
+	tables       struct {
+		inserts, steps, pageStates, predictions, unchangedFrames, workloads *results.Table
+	}
+)
+
+func openTables() {
+	tables.inserts = set.Table("inserts", "part", "workload", "journal_mode", "insert_no", "rowid", "pages_changed", "changed_pages", "changed_roles", "page1_changed", "pages_added", "page_count", "wal_frames", "wal_pages", "depth", "root_page", "integrity")
+	tables.steps = set.Table("steps", "part", "label", "insert_no")
+	tables.pageStates = set.Table("page_states", "seq", "part", "label", "insert_no", "page", "state", "kind", "cells", "keys", "content_start", "unused", "children", "note")
+	tables.predictions = set.Table("predictions", "seq", "name", "value", "how")
+	tables.unchangedFrames = set.Table("unchanged_frames", "part", "insert_no", "page", "sha256_before", "sha256_after")
+	tables.workloads = set.Table("workloads", "seq", "workload", "table_name", "row_bytes", "leaves", "min_rows_per_leaf", "max_rows_per_leaf", "final_depth")
+}
+
+func joinInts(xs []int) string {
+	parts := make([]string, len(xs))
+	for i, x := range xs {
+		parts[i] = fmt.Sprint(x)
+	}
+	return strings.Join(parts, " ")
+}
 
 func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -492,6 +511,13 @@ func (l *lab) exec(ctx context.Context, number int, rowid int64, table, statemen
 	s.rootPage = l.rootOf(table)
 	s.depth = l.depth(s.rootPage)
 	s.integrity = l.integrity(ctx)
+	var walFrames, walPages any
+	if l.mode == "wal" {
+		walFrames, walPages = len(s.walPages), joinInts(s.walPages)
+	}
+	tables.inserts.Row(part, workloadName, l.mode, number, rowid, len(s.changes), joinInts(s.pages()),
+		strings.Trim(equal.FormatPageChanges(s.changes), "[]"), len(s.changes) > 0 && s.changes[0].Page == 1,
+		s.after.PageCount()-s.before.PageCount(), s.after.PageCount(), walFrames, walPages, s.depth, s.rootPage, s.integrity)
 	return s
 }
 
@@ -573,34 +599,24 @@ func keysOf(p *dbfile.BTreePage) string {
 	return key(cells[0]) + ".." + key(cells[len(cells)-1])
 }
 
-func describePage(f *dbfile.File, n int) string {
-	if f == nil || n > f.PageCount() {
-		return "(not in the file)"
+// childrenOf lists the child pages of an interior page, shortened when there are more than eight.
+func childrenOf(p *dbfile.BTreePage) any {
+	if p.Type.IsLeaf() {
+		return nil
 	}
-	if n == 1 {
-		return fmt.Sprintf("page 1 header: in-header size %d, freelist %d; sqlite_schema leaf with %d cell(s)", f.Header.DatabaseSize, f.Header.FreelistCount, mustPage(f, 1).CellCount)
-	}
-	p, err := f.BTreePage(n)
+	cells, err := p.Cells()
 	if err != nil {
-		return "not a b-tree page"
+		fatal("cells", err)
 	}
-	text := fmt.Sprintf("%s cells=%d keys=%s content-start=%d unused=%d", p.Type, p.CellCount, keysOf(p), p.CellContentStart, p.Unused())
-	if !p.Type.IsLeaf() {
-		cells, err := p.Cells()
-		if err != nil {
-			fatal("cells", err)
-		}
-		var children []string
-		for _, c := range cells {
-			children = append(children, fmt.Sprint(c.LeftChild))
-		}
-		children = append(children, fmt.Sprint(p.RightChild))
-		if len(children) > 8 {
-			children = append(children[:3], "...", children[len(children)-1])
-		}
-		text += " children=[" + strings.Join(children, " ") + "]"
+	var children []string
+	for _, c := range cells {
+		children = append(children, fmt.Sprint(c.LeftChild))
 	}
-	return text
+	children = append(children, fmt.Sprint(p.RightChild))
+	if len(children) > 8 {
+		children = append(children[:3], "...", children[len(children)-1])
+	}
+	return strings.Join(children, " ")
 }
 
 func mustPage(f *dbfile.File, n int) *dbfile.BTreePage {
@@ -611,28 +627,35 @@ func mustPage(f *dbfile.File, n int) *dbfile.BTreePage {
 	return p
 }
 
-func printLayout(s step) {
+// pageStateRow writes one page_states row: what page n of f holds.
+func pageStateRow(label string, insert int, state string, f *dbfile.File, n int) {
+	layoutSeq++
+	var kind, cells, keys, contentStart, unused, children, note any
+	if f == nil || n > f.PageCount() {
+		note = "not in the file"
+	} else if p, err := f.BTreePage(n); err != nil {
+		note = "not a b-tree page"
+	} else {
+		kind, cells, keys, contentStart, unused, children = p.Type, p.CellCount, keysOf(p), p.CellContentStart, p.Unused(), childrenOf(p)
+		if n == 1 {
+			keys = nil
+			note = fmt.Sprintf("sqlite_schema; header says %d pages", f.Header.DatabaseSize)
+		}
+	}
+	tables.pageStates.Row(layoutSeq, part, label, insert, n, state, kind, cells, keys, contentStart, unused, children, note)
+}
+
+// recordStep names one insert in the steps table so the report can point at it.
+func recordStep(label string, s step) {
+	tables.steps.Row(part, label, s.number)
+}
+
+// recordLayout writes every changed page of a step, before and after, to page_states.
+func recordLayout(label string, s step) {
 	for _, c := range s.changes {
-		fmt.Printf("    page %d before: %s\n", c.Page, describePage(s.before, c.Page))
-		fmt.Printf("    page %d after:  %s\n", c.Page, describePage(s.after, c.Page))
+		pageStateRow(label, s.number, "before", s.before, c.Page)
+		pageStateRow(label, s.number, "after", s.after, c.Page)
 	}
-}
-
-func formatInts(xs []int) string {
-	parts := make([]string, len(xs))
-	for i, x := range xs {
-		parts[i] = fmt.Sprint(x)
-	}
-	return "[" + strings.Join(parts, " ") + "]"
-}
-
-func printStep(label string, s step) {
-	frames := "WAL frames for this commit: " + formatInts(s.walPages)
-	if s.walPages == nil {
-		frames = "no WAL (rollback mode)"
-	}
-	fmt.Printf("%s: insert #%d (rowid %d): %d page(s) changed %s; %s; depth %d; root page %d\n",
-		label, s.number, s.rowid, len(s.changes), equal.FormatPageChanges(s.changes), frames, s.depth, s.rootPage)
 }
 
 type arithmetic struct {
@@ -646,7 +669,8 @@ type arithmetic struct {
 }
 
 // predict computes leaf capacity, first split, and root interior capacity from
-// SQLite's cell format (btreeInt.h:149-228) before any row is inserted.
+// SQLite's cell format (btreeInt.h:149-228) before any row is inserted, and
+// writes each step of the arithmetic to the predictions table.
 func predict() arithmetic {
 	usable := pageSize
 	serialBlob := uint64(12 + 2*blobBytes)
@@ -657,24 +681,16 @@ func predict() arithmetic {
 	}
 	payload := header + blobBytes
 	maxLocal := dbfile.MaxLocalPayload(usable, dbfile.TableLeaf)
-	fmt.Println("arithmetic (from cell size and page size, before inserting anything):")
-	fmt.Printf("  row = (id INTEGER PRIMARY KEY, v BLOB of %d bytes); the id is the rowid, so the record stores it as NULL\n", blobBytes)
-	fmt.Printf("  record header = 1 (header-size varint) + 1 (serial type 0, NULL) + %d (serial type %d = blob of %d bytes) = %d bytes\n", dbfile.VarintLength(serialBlob), serialBlob, blobBytes, header)
-	fmt.Printf("  payload = %d header + %d body = %d bytes; table-leaf max local payload at usable size %d is %d, so no overflow page\n", header, blobBytes, payload, usable, maxLocal)
+	payloadVarint := dbfile.VarintLength(uint64(payload))
 	cell := func(rowid uint64) int {
-		return dbfile.VarintLength(uint64(payload)) + dbfile.VarintLength(rowid) + payload
+		return payloadVarint + dbfile.VarintLength(rowid) + payload
 	}
 	small, large := cell(127), cell(128)
-	fmt.Printf("  cell = %d (payload-size varint) + rowid varint (1 byte for rowid <= 127, 2 bytes for 128..16383) + %d = %d or %d bytes, plus a 2-byte cell pointer = %d or %d\n", dbfile.VarintLength(uint64(payload)), payload, small, large, small+2, large+2)
 	space := usable - 8
 	perLeaf := space / (large + 2)
 	if space/(small+2) != perLeaf {
 		fatal("arithmetic", errors.New("rows per leaf depends on the rowid size"))
 	}
-	fmt.Printf("  a leaf page other than page 1 has %d - 8 (leaf header) = %d bytes for pointers and cells\n", usable, space)
-	fmt.Printf("  rows per leaf = floor(%d / %d) = %d (%d x %d = %d fits; %d x %d = %d does not)\n", space, large+2, perLeaf, perLeaf, large+2, perLeaf*(large+2), perLeaf+1, small+2, (perLeaf+1)*(small+2))
-	fmt.Printf("  prediction: inserts 1..%d fill the root leaf; insert #%d (rowid %d) does not fit, so it is the first split, and every %d inserts after it another leaf fills: splits at inserts #%d, #%d, #%d, ... (#%d m + 1)\n",
-		perLeaf, perLeaf+1, rowidStep*(perLeaf+1), perLeaf, perLeaf+1, 2*perLeaf+1, 3*perLeaf+1, perLeaf)
 	interiorSpace := usable - 12
 	used, fit := 0, 0
 	for leaf := 1; ; leaf++ {
@@ -693,20 +709,37 @@ func predict() arithmetic {
 		}
 	}
 	deeper := perLeaf*(fit+1) + 1
-	fmt.Printf("  each split adds one divider cell to the root: 4-byte child page number + varint of the left leaf's largest rowid, plus a 2-byte pointer\n")
-	fmt.Printf("  the root as an interior page has %d - 12 = %d bytes; %d dividers of 7 bytes (keys <= 127) + %d of 8 bytes = %d bytes fit, one more does not\n", usable, interiorSpace, small1, fit-small1, used)
-	fmt.Printf("  prediction: divider %d arrives with the split at insert #%d (rowid %d); the root overflows and the tree gains a third level\n", fit+1, deeper, rowidStep*deeper)
+	for i, p := range []struct {
+		name  string
+		value int
+		how   string
+	}{
+		{"record_header_bytes", header, fmt.Sprintf("1 size varint + 1 type (NULL: the id is the rowid) + %d type %d (blob of %d bytes)", dbfile.VarintLength(serialBlob), serialBlob, blobBytes)},
+		{"payload_bytes", payload, fmt.Sprintf("%d header + %d body", header, blobBytes)},
+		{"max_local_payload", maxLocal, fmt.Sprintf("table-leaf limit at usable size %d; the payload is below it: no overflow", usable)},
+		{"cell_bytes_rowid_to_127", small + 2, fmt.Sprintf("%d payload-size varint + 1 rowid varint + %d payload + 2 cell pointer", payloadVarint, payload)},
+		{"cell_bytes_rowid_from_128", large + 2, "the rowid varint is 2 bytes for rowids 128..16383"},
+		{"leaf_space_bytes", space, fmt.Sprintf("%d - 8 (leaf header)", usable)},
+		{"rows_per_leaf", perLeaf, fmt.Sprintf("floor(%d / %d): %d x %d = %d fits, %d x %d = %d does not", space, large+2, perLeaf, large+2, perLeaf*(large+2), perLeaf+1, small+2, (perLeaf+1)*(small+2))},
+		{"first_split_insert", perLeaf + 1, fmt.Sprintf("inserts 1..%d fill the root leaf; rowid %d does not fit", perLeaf, rowidStep*(perLeaf+1))},
+		{"split_every_inserts", perLeaf, fmt.Sprintf("a new leaf fills after %d appends: splits at inserts #%d, #%d, #%d, ...", perLeaf, perLeaf+1, 2*perLeaf+1, 3*perLeaf+1)},
+		{"root_space_bytes", interiorSpace, fmt.Sprintf("%d - 12 (interior header)", usable)},
+		{"dividers_fit_in_root", fit, fmt.Sprintf("%d dividers of 7 bytes (keys <= 127) + %d of 8 bytes = %d bytes; no room for one more", small1, fit-small1, used)},
+		{"third_level_insert", deeper, fmt.Sprintf("the split that brings divider %d (rowid %d): the root overflows", fit+1, rowidStep*deeper)},
+	} {
+		tables.predictions.Row(i+1, p.name, p.value, p.how)
+	}
 	return arithmetic{payload: payload, cellSmall: small, cellLarge: large, rowsPerLeaf: perLeaf, dividersFit: fit, firstSplit: perLeaf + 1, deeperInsert: deeper}
 }
 
+// partA appends one row per transaction into an empty table, with a page
+// manifest after every insert (WAL, a checkpoint before each manifest).
 func partA(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== A. appends: one row per transaction into an empty table, a page manifest after every insert (WAL, checkpoint before each manifest)")
+	part, workloadName = "A", nil
 	a := predict()
 	l := openLab(ctx, filepath.Join(dir, "append.db"), "wal", "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)")
 	defer l.close()
 	root := l.rootOf("t")
-	fmt.Printf("table t: root page %d (sqlite_schema.rootpage), page count %d\n", root, l.file.PageCount())
 	total := a.deeperInsert + 2*a.rowsPerLeaf
 	interesting := map[int]bool{a.firstSplit: true, a.firstSplit + a.rowsPerLeaf: true, a.firstSplit + 2*a.rowsPerLeaf: true, a.firstSplit + 2*a.rowsPerLeaf + 1: true}
 	kept := map[int]step{}
@@ -714,14 +747,12 @@ func partA(ctx context.Context, dir string) {
 	var splits []int
 	ordinaryOnePage, ordinaryLeafOnly := true, true
 	walMatches, integrityOK, rootConstant := true, true, true
-	var walMismatch []string
 	firstDeeper := map[int]step{}
-	prevDepth, frames, inserts := 1, 0, 0
+	prevDepth, inserts := 1, 0
 	for n := 1; n <= total; n++ {
 		rowid := int64(rowidStep * n)
 		s := l.exec(ctx, n, rowid, "t", "INSERT INTO t(id, v) VALUES(?, ?)", rowid, rowBlob(rowid))
 		inserts++
-		frames += len(s.walPages)
 		histogram[len(s.changes)]++
 		if s.integrity != "ok" {
 			integrityOK = false
@@ -731,9 +762,6 @@ func partA(ctx context.Context, dir string) {
 		}
 		if !sameInts(s.walPages, s.pages()) {
 			walMatches = false
-			if len(walMismatch) < 5 {
-				walMismatch = append(walMismatch, fmt.Sprintf("insert #%d: WAL %s vs changed %s", s.number, formatInts(s.walPages), formatInts(s.pages())))
-			}
 		}
 		if s.after.PageCount() > s.before.PageCount() {
 			splits = append(splits, s.number)
@@ -754,62 +782,45 @@ func partA(ctx context.Context, dir string) {
 			kept[n] = s
 		}
 	}
-	fmt.Printf("%d inserts done; final page count %d, depth %d\n", total, l.file.PageCount(), prevDepth)
 	check(l.verifyManifest(), "the last manifest equals capture.BuildManifest of the same image (unchanged pages reuse the previous sha256 only to save time)")
 
-	var counts []int
-	for k := range histogram {
-		counts = append(counts, k)
-	}
-	sort.Ints(counts)
-	fmt.Println("changed pages per insert -> number of inserts:")
-	for _, k := range counts {
-		fmt.Printf("  %d page(s): %d insert(s)\n", k, histogram[k])
-	}
 	predictedSplits := true
 	for i, n := range splits {
 		if n != a.firstSplit+i*a.rowsPerLeaf {
 			predictedSplits = false
 		}
 	}
-	fmt.Printf("splits (inserts that added pages): %d, at inserts #%d, #%d, #%d, ..., #%d\n", len(splits), splits[0], splits[1], splits[2], splits[len(splits)-1])
 	check(len(splits) > 0 && splits[0] == a.firstSplit, fmt.Sprintf("the first split happens at insert #%d (rowid %d), as the arithmetic predicts", a.firstSplit, rowidStep*a.firstSplit))
 	check(predictedSplits, fmt.Sprintf("every split happens exactly where predicted: insert #%d m + 1, every %d inserts", a.rowsPerLeaf, a.rowsPerLeaf))
 	check(ordinaryOnePage, "every insert that does not split changes exactly one page")
 	check(ordinaryLeafOnly, "that one page is the table leaf that now holds the new rowid, never page 1 (page 1 is not written)")
 	check(histogram[1] > inserts/2, fmt.Sprintf("most inserts change one page (%d of %d)", histogram[1], inserts))
 
-	fmt.Println()
-	printStep("first split, depth 1 -> 2", firstDeeper[2])
-	printLayout(firstDeeper[2])
+	recordStep("first split, depth 1 -> 2", firstDeeper[2])
+	recordLayout("first split, depth 1 -> 2", firstDeeper[2])
 	second := kept[a.firstSplit+a.rowsPerLeaf]
-	printStep("first append split at depth 2", second)
-	printLayout(second)
-	third := kept[a.firstSplit+2*a.rowsPerLeaf]
-	printStep("next append split", third)
+	recordStep("first append split at depth 2", second)
+	recordLayout("first append split at depth 2", second)
+	recordStep("next append split", kept[a.firstSplit+2*a.rowsPerLeaf])
 	ordinary := kept[a.firstSplit+2*a.rowsPerLeaf+1]
-	printStep("an ordinary insert", ordinary)
-	printLayout(ordinary)
+	recordStep("an ordinary insert", ordinary)
+	recordLayout("an ordinary insert", ordinary)
 	deeper, ok := firstDeeper[3]
 	check(ok && deeper.number == a.deeperInsert, fmt.Sprintf("the tree gains its third level at insert #%d (rowid %d), as the arithmetic predicts", a.deeperInsert, rowidStep*a.deeperInsert))
 	if ok {
-		printStep("depth 2 -> 3", deeper)
-		printLayout(deeper)
+		recordStep("depth 2 -> 3", deeper)
+		recordLayout("depth 2 -> 3", deeper)
 	}
 	check(firstDeeper[2].number == a.firstSplit && len(firstDeeper[2].changes) == 4, "the first split is also the first depth change: the root, a new page holding the root's old cells, a new leaf, and page 1")
 	check(len(second.changes) == 3, "an append split at depth 2 changes three pages: page 1 (database size), the parent (one new divider) and the new leaf; the full leaf is not rewritten")
 	check(rootConstant, fmt.Sprintf("the root stays page %d through both depth changes and always equals sqlite_schema.rootpage", root))
 	check(integrityOK, fmt.Sprintf("integrity_check = ok after every one of the %d inserts", inserts))
-	for _, line := range walMismatch {
-		fmt.Printf("  %s\n", line)
-	}
 	check(walMatches, "for every insert the WAL frames of its commit name exactly the pages the manifest shows changed: pages changed = frames shipped")
-	fmt.Printf("WAL frames for %d inserts: %d (%d bytes of frames at %d bytes each); the table itself is %d pages\n", inserts, frames, frames*(walFrameHead+pageSize), walFrameHead+pageSize, l.file.PageCount())
 }
 
+// partB inserts one row into the middle of a full leaf.
 func partB(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== B. a middle insert into a full leaf")
+	part, workloadName = "B", nil
 	l := openLab(ctx, filepath.Join(dir, "middle.db"), "wal", "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)")
 	defer l.close()
 	var last step
@@ -817,23 +828,22 @@ func partB(ctx context.Context, dir string) {
 		rowid := int64(rowidStep * n)
 		last = l.exec(ctx, n, rowid, "t", "INSERT INTO t(id, v) VALUES(?, ?)", rowid, rowBlob(rowid))
 	}
-	fmt.Printf("20 appends (rowids 2..40): page count %d, depth %d\n", l.file.PageCount(), last.depth)
 	root := mustPage(l.file, l.rootOf("t"))
-	fmt.Printf("  root: %s\n", describePage(l.file, root.Number))
+	pageStateRow("before the middle insert", last.number, "layout", l.file, root.Number)
 	cells, err := root.Cells()
 	if err != nil {
 		fatal("cells", err)
 	}
 	for _, c := range cells {
-		fmt.Printf("  leaf page %d: %s\n", c.LeftChild, describePage(l.file, int(c.LeftChild)))
+		pageStateRow("before the middle insert", last.number, "layout", l.file, int(c.LeftChild))
 	}
-	fmt.Printf("  leaf page %d: %s\n", root.RightChild, describePage(l.file, int(root.RightChild)))
+	pageStateRow("before the middle insert", last.number, "layout", l.file, int(root.RightChild))
 	// Insert rowid 11 into full leaf 4 (keys 10..16), forcing balance_nonroot
 	// (btree.c:8204-9027) to redistribute cells across sibling leaves.
 	rowid := int64(11)
 	s := l.exec(ctx, 21, rowid, "t", "INSERT INTO t(id, v) VALUES(?, ?)", rowid, rowBlob(rowid))
-	printStep("middle split", s)
-	printLayout(s)
+	recordStep("middle split", s)
+	recordLayout("middle split", s)
 	leaves := 0
 	for _, c := range s.changes {
 		if c.Page == 1 {
@@ -849,7 +859,6 @@ func partB(ctx context.Context, dir string) {
 	// old bytes still enters the WAL as a frame even though its SHA-256 is unchanged.
 	extra := subtract(s.walPages, s.pages())
 	check(len(subtract(s.pages(), s.walPages)) == 0, "every changed page is in the commit's WAL frames")
-	fmt.Printf("WAL frames whose page bytes did not change: %s\n", formatInts(extra))
 	unchanged := true
 	for _, n := range extra {
 		before, err := s.before.Page(n)
@@ -863,33 +872,30 @@ func partB(ctx context.Context, dir string) {
 		if !bytes.Equal(before, after) {
 			unchanged = false
 		}
-		fmt.Printf("  page %d: sha256 before %s, after %s\n", n, equal.SHA256Hex(before)[:16], equal.SHA256Hex(after)[:16])
+		tables.unchangedFrames.Row(part, s.number, n, equal.SHA256Hex(before)[:16], equal.SHA256Hex(after)[:16])
 	}
 	check(len(extra) > 0 && unchanged, "here the WAL ships more frames than pages changed: balance_nonroot rewrote a sibling leaf with the same cells it already held, and a written page is a shipped frame even when its bytes are unchanged")
 	check(s.integrity == "ok", "integrity_check = ok after the middle split")
-	var unused []string
 	walker := dbfile.TreeWalker{File: s.after, OnPage: func(p *dbfile.BTreePage, parent, depth int) error {
 		if p.Type.IsLeaf() {
-			unused = append(unused, fmt.Sprintf("%d:%d", p.Number, p.CellCount))
+			pageStateRow("leaves in key order after the middle split", s.number, "layout", s.after, p.Number)
 		}
 		return nil
 	}}
 	if err := walker.Walk(l.rootOf("t")); err != nil {
 		fatal("walk", err)
 	}
-	fmt.Printf("leaves after the middle split (page:cells, in key order): %s\n", strings.Join(unused, " "))
 }
 
+// partC runs the same kind of insert into a table with two secondary indexes.
 func partC(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== C. the same kind of insert into a table with two indexes")
+	part, workloadName = "C", nil
 	l := openLab(ctx, filepath.Join(dir, "indexed.db"), "wal",
 		"CREATE TABLE t(id INTEGER PRIMARY KEY, email TEXT, score INTEGER, v BLOB)",
 		"CREATE INDEX t_email ON t(email)",
 		"CREATE INDEX t_score ON t(score)")
 	defer l.close()
 	histogram := map[int]int{}
-	var roleCounts []string
 	const inserts = 200
 	ok := true
 	for n := 1; n <= inserts; n++ {
@@ -902,9 +908,7 @@ func partC(ctx context.Context, dir string) {
 			ok = false
 		}
 		if n == 50 {
-			for _, c := range s.changes {
-				roleCounts = append(roleCounts, c.String())
-			}
+			recordStep("a common insert", s)
 		}
 	}
 	var counts []int
@@ -912,33 +916,27 @@ func partC(ctx context.Context, dir string) {
 		counts = append(counts, k)
 	}
 	sort.Ints(counts)
-	fmt.Println("changed pages per insert -> number of inserts:")
 	most, mostCount := 0, 0
 	for _, k := range counts {
-		fmt.Printf("  %d page(s): %d insert(s)\n", k, histogram[k])
 		if histogram[k] > mostCount {
 			most, mostCount = k, histogram[k]
 		}
 	}
-	fmt.Printf("insert #50 changed: %s\n", strings.Join(roleCounts, " "))
 	check(most == 3, "with two indexes the common insert changes three pages: the table leaf and one leaf in each index")
 	check(ok, "WAL frames equal the changed pages and integrity_check = ok for all 200 inserts")
 }
 
+// partD repeats the appends of part A in rollback mode (journal_mode=DELETE).
 func partD(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== D. the same appends in rollback mode (journal_mode=DELETE)")
+	part, workloadName = "D", nil
 	l := openLab(ctx, filepath.Join(dir, "rollback.db"), "delete", "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)")
 	defer l.close()
-	histogram := map[string]int{}
 	ok, ordinaryTwo, counterOnly := true, true, true
 	counterBytes := []equal.ByteRange{{Start: 24, End: 28}, {Start: 92, End: 96}}
 	for n := 1; n <= 12; n++ {
 		rowid := int64(rowidStep * n)
 		s := l.exec(ctx, n, rowid, "t", "INSERT INTO t(id, v) VALUES(?, ?)", rowid, rowBlob(rowid))
 		hasPage1 := len(s.changes) > 0 && s.changes[0].Page == 1
-		key := fmt.Sprintf("%d page(s), page 1 among them: %v", len(s.changes), hasPage1)
-		histogram[key]++
 		if !hasPage1 || s.integrity != "ok" {
 			ok = false
 		}
@@ -962,17 +960,6 @@ func partD(ctx context.Context, dir string) {
 				counterOnly = false
 			}
 		}
-		if n <= 2 {
-			printStep("rollback", s)
-		}
-	}
-	var keys []string
-	for k := range histogram {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		fmt.Printf("  %s: %d insert(s)\n", k, histogram[k])
 	}
 	check(ok, "in rollback mode every commit also rewrites page 1")
 	check(ordinaryTwo, "an insert that adds no page changes exactly two pages: page 1 and the table leaf that holds the new rowid")
@@ -994,8 +981,6 @@ type workloadResult struct {
 	rebalanced     int
 	minChanged     int
 	maxChanged     int
-	depth          int
-	rowsPerLeaf    string
 	walCovers      bool
 	integrityOK    bool
 	splitsAtDepth2 []int
@@ -1020,6 +1005,7 @@ func ascendingKeys(n int) []int64 {
 }
 
 func runWorkload(ctx context.Context, dir string, w workload) workloadResult {
+	workloadName = w.name
 	l := openLab(ctx, filepath.Join(dir, w.table+".db"), "wal", w.create)
 	defer l.close()
 	r := workloadResult{minChanged: -1, walCovers: true, integrityOK: true}
@@ -1051,29 +1037,25 @@ func runWorkload(ctx context.Context, dir string, w workload) workloadResult {
 			r.integrityOK = false
 		}
 		prevDepth = s.depth
-		r.depth = s.depth
 	}
 	var leaves []int
-	for n := 1; n <= l.census.PageCount; n++ {
+	for n := 2; n <= l.census.PageCount; n++ {
 		role := l.census.Page(n).Role
 		if role == dbfile.RoleTableLeaf || role == dbfile.RoleIndexLeaf {
-			if n == 1 {
-				continue
-			}
-			p := mustPage(l.file, n)
-			leaves = append(leaves, p.CellCount)
+			leaves = append(leaves, mustPage(l.file, n).CellCount)
 		}
 	}
 	sort.Ints(leaves)
 	if len(leaves) > 0 {
-		r.rowsPerLeaf = fmt.Sprintf("%d leaves holding %d..%d rows", len(leaves), leaves[0], leaves[len(leaves)-1])
+		workloadSeq++
+		tables.workloads.Row(workloadSeq, w.name, w.table, w.size, len(leaves), leaves[0], leaves[len(leaves)-1], prevDepth)
 	}
 	return r
 }
 
+// partE shows where "most inserts change one page" stops holding.
 func partE(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== E. where \"most inserts change one page\" stops holding (one row per transaction, WAL, the same manifest after every insert)")
+	part, workloadName = "E", nil
 	// Exercise four boundary workloads: random keys with few vs many rows per
 	// leaf, overflowing payloads (fillInCell allocates overflow pages at
 	// btree.c:7212), and WITHOUT ROWID (an index B-tree, excluded from
@@ -1086,24 +1068,9 @@ func partE(ctx context.Context, dir string) {
 	}
 	results := make([]workloadResult, len(workloads))
 	for i, w := range workloads {
-		r := runWorkload(ctx, dir, w)
-		results[i] = r
-		fmt.Printf("  %s: %d inserts; one page: %d; added a page: %d; several pages, none added: %d; pages changed per insert %d..%d; final depth %d, %s\n",
-			w.name, r.inserts, r.onePage, r.addedPages, r.rebalanced, r.minChanged, r.maxChanged, r.depth, r.rowsPerLeaf)
-		if len(r.splitsAtDepth2) > 0 {
-			byCount := map[int]int{}
-			for _, n := range r.splitsAtDepth2 {
-				byCount[n]++
-			}
-			var parts []string
-			for n := 1; n <= r.maxChanged; n++ {
-				if byCount[n] > 0 {
-					parts = append(parts, fmt.Sprintf("%d pages: %d", n, byCount[n]))
-				}
-			}
-			fmt.Printf("    inserts that added a page at depth 2, by pages changed: %s\n", strings.Join(parts, ", "))
-		}
+		results[i] = runWorkload(ctx, dir, w)
 	}
+	workloadName = nil
 	large, small, overflow, withoutRowid := results[0], results[1], results[2], results[3]
 	check(large.onePage*2 < large.inserts && large.rebalanced > 0, fmt.Sprintf("random keys with 4 rows per leaf: only %d of %d inserts change one page; %d split and %d more change several pages without adding one (balance_nonroot moves cells between siblings)", large.onePage, large.inserts, large.addedPages, large.rebalanced))
 	check(small.onePage*2 > small.inserts, fmt.Sprintf("random keys with small rows: most inserts change one page again (%d of %d): the rule depends on how many rows fit in a leaf, not on the key order alone", small.onePage, small.inserts))
@@ -1129,21 +1096,14 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("3.1")
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
-	fmt.Printf("settings: page_size=%d, journal_mode=wal (part D: delete), synchronous=OFF (no effect on file bytes; it only skips fsync), wal_autocheckpoint=0, one connection, a PRAGMA wal_checkpoint(TRUNCATE) after every insert\n", pageSize)
+	set = results.MustOpen(dir)
+	openTables()
 	partA(ctx, dir)
 	partB(ctx, dir)
 	partC(ctx, dir)
 	partD(ctx, dir)
 	partE(ctx, dir)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("PAGES PER INSERT FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("PAGES PER INSERT OK")
+	set.Finish("PAGES PER INSERT")
 }
 
 func displayPath(path string) string {
@@ -1162,160 +1122,585 @@ func displayPath(path string) string {
 }
 ```
 
-Run from the repository root:
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
 
-```text
-go run ./ch03-btrees-and-page-management/experiments/3.1-pages-per-insert
+<!-- include: experiments/3.1-pages-per-insert/report.sql -->
+```sql
+-- Walkthrough of experiment 3.1. Run it with:
+--   go run ./cmd/course run 3.1        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   inserts            one row per single-row transaction, all parts
+--   steps              the inserts the walkthrough looks at closely, by label
+--   page_states        what the pages of those inserts hold, before and after
+--   predictions        part A arithmetic, computed before any insert
+--   unchanged_frames   part B: WAL frames whose page bytes did not change
+--   workloads          part E: the four workloads and the leaves they end with
+--   checks             every claim the experiment asserted (the runner lists it last)
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  3.1  How many pages does one INSERT change?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'Every row below is one single-row transaction. After each commit the'
+.print 'experiment reads the frames in -wal, runs a TRUNCATE checkpoint, and'
+.print 'compares a sha256 manifest of every page with the manifest before.'
+.print
+.print 'Settings: page_size=4096, one connection, wal_autocheckpoint=0,'
+.print 'synchronous=OFF (skips fsync only; no file byte depends on it).'
+.print
+.print 'What was measured, by part:'
+
+SELECT part,
+       journal_mode,
+       count(*)                                         AS inserts,
+       min(pages_changed) || '..' || max(pages_changed) AS pages_changed,
+       sum(wal_frames)                                  AS wal_frames
+FROM inserts
+GROUP BY part, journal_mode
+ORDER BY part;
+
+.print
+.print '── A. Appends into an empty table ─────────────────────────────────────'
+.print
+.print 'Table t(id INTEGER PRIMARY KEY, v BLOB of 1000 bytes), rowids 2, 4, 6, ...'
+.print
+.print 'A1. The prediction, from the cell format alone, before any insert:'
+
+SELECT name, value, how FROM predictions ORDER BY seq;
+
+.print
+.print 'A2. Prediction against measurement:'
+
+WITH a AS (SELECT * FROM inserts WHERE part = 'A'),
+     p AS (SELECT name, value FROM predictions)
+SELECT 'first split at insert #' AS what,
+       (SELECT value FROM p WHERE name = 'first_split_insert') AS predicted,
+       (SELECT min(insert_no) FROM a WHERE pages_added > 0)    AS measured
+UNION ALL
+SELECT 'inserts between splits',
+       (SELECT value FROM p WHERE name = 'split_every_inserts'),
+       (SELECT mode(gap) FROM (SELECT insert_no - lag(insert_no) OVER (ORDER BY insert_no) AS gap
+                               FROM a WHERE pages_added > 0))
+UNION ALL
+SELECT 'third level at insert #',
+       (SELECT value FROM p WHERE name = 'third_level_insert'),
+       (SELECT min(insert_no) FROM a WHERE depth = 3);
+
+.print
+.print 'A3. Pages changed per insert. Most inserts change one page: the leaf.'
+.print '    Every insert that changes more is a split (it adds pages).'
+
+SELECT pages_changed,
+       count(*)                                           AS inserts,
+       round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct,
+       bar(count(*), 0, max(count(*)) OVER (), 30)        AS share,
+       count(*) FILTER (pages_added > 0)                  AS splits,
+       min(insert_no)                                     AS first_at_insert
+FROM inserts
+WHERE part = 'A'
+GROUP BY pages_changed
+ORDER BY pages_changed;
+
+.print
+.print 'A4. The inserts worth a close look. Compare changed_pages with wal_pages:'
+.print '    the frames of a commit name exactly the pages the manifest shows changed.'
+
+SELECT s.label AS step,
+       i.insert_no, i.rowid, i.pages_changed, i.changed_pages, i.wal_pages, i.depth
+FROM steps s JOIN inserts i USING (part, insert_no)
+WHERE s.part = 'A'
+ORDER BY i.insert_no;
+
+.print
+.print 'A5. The same inserts page by page, before and after.'
+.print
+.print 'Insert #5, the first split. The root (page 2) stays the root: it turns'
+.print 'into an interior page, its four cells move to new page 3, and new page 4'
+.print 'takes the new row. Page 1 changes because the file grew.'
+
+SELECT page, state, kind, cells, keys, unused, children, note
+FROM page_states WHERE part = 'A' AND label = 'first split, depth 1 -> 2' ORDER BY seq;
+
+.print
+.print 'Insert #9, an append split at depth 2. Three pages: page 1, one more'
+.print 'divider in the root, one new leaf. The full leaf is not rewritten.'
+
+SELECT page, state, kind, cells, keys, unused, children, note
+FROM page_states WHERE part = 'A' AND label = 'first append split at depth 2' ORDER BY seq;
+
+.print
+.print 'Insert #14, an ordinary insert. One page: the leaf that holds the row.'
+
+SELECT page, state, kind, cells, keys, unused, children, note
+FROM page_states WHERE part = 'A' AND label = 'an ordinary insert' ORDER BY seq;
+
+.print
+.print 'Insert #2053. The root is full (unused = 3), so the tree gains a third'
+.print 'level: the root keeps one divider and two new interior pages share the rest.'
+
+SELECT page, state, kind, cells, keys, unused, children, note
+FROM page_states WHERE part = 'A' AND label = 'depth 2 -> 3' ORDER BY seq;
+
+.print
+.print 'A6. The whole run. The last column counts commits whose WAL frames'
+.print '    differ from the changed pages; it must be 0.'
+
+SELECT count(*)                      AS inserts,
+       sum(wal_frames)               AS wal_frames,
+       sum(wal_frames) * (4096 + 24) AS wal_bytes,
+       max(page_count)               AS final_pages,
+       max(depth)                    AS final_depth,
+       count(*) FILTER (wal_pages IS DISTINCT FROM changed_pages) AS frames_differ
+FROM inserts
+WHERE part = 'A';
+
+.print
+.print '── B. A middle insert into a full leaf ─────────────────────────────────'
+.print
+.print 'B1. The tree after 20 appends: a root and five full leaves.'
+
+SELECT page, kind, cells, keys, unused, children
+FROM page_states WHERE part = 'B' AND label = 'before the middle insert' ORDER BY seq;
+
+.print
+.print 'B2. Insert rowid 11. It belongs in page 4, which is full.'
+
+SELECT i.insert_no, i.rowid, i.pages_changed, i.changed_pages, i.wal_pages
+FROM steps s JOIN inserts i USING (part, insert_no)
+WHERE s.part = 'B';
+
+.print
+.print '    Not one new page as in part A: the full leaf and its right sibling'
+.print '    are rewritten, and the root gains a divider in the middle.'
+
+SELECT page, state, kind, cells, keys, unused, children, note
+FROM page_states WHERE part = 'B' AND label = 'middle split' ORDER BY seq;
+
+.print
+.print 'B3. wal_pages has one page more than changed_pages. balance_nonroot rewrote'
+.print '    that sibling with the cells it already held: same bytes, still a frame.'
+
+SELECT page, sha256_before, sha256_after, sha256_before = sha256_after AS same_bytes
+FROM unchanged_frames WHERE part = 'B';
+
+.print
+.print 'B4. The leaves in key order after the split:'
+
+SELECT page, cells, keys, unused
+FROM page_states WHERE part = 'B' AND label = 'leaves in key order after the middle split' ORDER BY seq;
+
+.print
+.print '── C. The same insert with two secondary indexes ──────────────────────'
+.print
+.print 'The common insert now changes three pages: the table leaf and one leaf'
+.print 'in each index.'
+
+SELECT pages_changed,
+       count(*)                                    AS inserts,
+       bar(count(*), 0, max(count(*)) OVER (), 30) AS share,
+       count(*) FILTER (pages_added > 0)           AS splits
+FROM inserts
+WHERE part = 'C'
+GROUP BY pages_changed
+ORDER BY pages_changed;
+
+.print
+.print 'One of the common inserts:'
+
+SELECT i.insert_no, i.changed_roles
+FROM steps s JOIN inserts i USING (part, insert_no)
+WHERE s.part = 'C';
+
+.print
+.print '── D. The same appends in rollback mode (journal_mode=DELETE) ─────────'
+.print
+.print 'There is no WAL. Every commit also rewrites page 1 (the change counter).'
+
+SELECT insert_no, rowid, changed_roles, wal_pages
+FROM inserts WHERE part = 'D' AND insert_no <= 2 ORDER BY insert_no;
+
+SELECT pages_changed, page1_changed, count(*) AS inserts,
+       first(changed_pages ORDER BY insert_no) AS first_example_pages
+FROM inserts
+WHERE part = 'D'
+GROUP BY pages_changed, page1_changed
+ORDER BY pages_changed;
+
+.print
+.print '── E. Where "most inserts change one page" stops holding ──────────────'
+.print
+.print 'Four workloads, one row per transaction, WAL. Each insert is one of:'
+.print '  one_page    it changed one page'
+.print '  added_page  the file grew (a split, or an overflow page)'
+.print '  rebalanced  several pages changed, none added (cells moved to siblings)'
+
+SELECT w.workload,
+       count(*)                                                    AS inserts,
+       count(*) FILTER (i.pages_added = 0 AND i.pages_changed = 1) AS one_page,
+       count(*) FILTER (i.pages_added > 0)                         AS added_page,
+       count(*) FILTER (i.pages_added = 0 AND i.pages_changed > 1) AS rebalanced,
+       min(i.pages_changed) || '..' || max(i.pages_changed)        AS pages_changed
+FROM inserts i
+JOIN workloads w USING (workload)
+WHERE i.part = 'E'
+GROUP BY w.seq, w.workload
+ORDER BY w.seq;
+
+.print
+.print 'The leaves each workload ends with:'
+
+SELECT workload, row_bytes, leaves,
+       min_rows_per_leaf || '..' || max_rows_per_leaf AS rows_per_leaf, final_depth
+FROM workloads ORDER BY seq;
+
+.print
+.print 'Splits at depth 2, by pages changed. An append split of a rowid table'
+.print 'costs 3 pages (part A); most splits here cost more.'
+
+WITH e AS (
+    SELECT *, lag(depth) OVER (PARTITION BY workload ORDER BY insert_no) AS depth_before
+    FROM inserts WHERE part = 'E'
+)
+SELECT w.workload, e.pages_changed, count(*) AS splits
+FROM e JOIN workloads w USING (workload)
+WHERE e.pages_added > 0 AND e.depth_before = 2 AND e.depth = 2
+GROUP BY w.seq, w.workload, e.pages_changed
+ORDER BY w.seq, e.pages_changed;
 ```
 
-Captured evidence:
+Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
+
+```text
+go run ./cmd/course run 3.1
+```
+
+Add `-i` (`go run ./cmd/course run -i 3.1`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/3.1-pages-per-insert/`](evidence/3.1-pages-per-insert/), and `go run ./cmd/course check evidence ch03` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/3.1-pages-per-insert.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/3.1
-settings: page_size=4096, journal_mode=wal (part D: delete), synchronous=OFF (no effect on file bytes; it only skips fsync), wal_autocheckpoint=0, one connection, a PRAGMA wal_checkpoint(TRUNCATE) after every insert
 
-== A. appends: one row per transaction into an empty table, a page manifest after every insert (WAL, checkpoint before each manifest)
-arithmetic (from cell size and page size, before inserting anything):
-  row = (id INTEGER PRIMARY KEY, v BLOB of 1000 bytes); the id is the rowid, so the record stores it as NULL
-  record header = 1 (header-size varint) + 1 (serial type 0, NULL) + 2 (serial type 2012 = blob of 1000 bytes) = 4 bytes
-  payload = 4 header + 1000 body = 1004 bytes; table-leaf max local payload at usable size 4096 is 4061, so no overflow page
-  cell = 2 (payload-size varint) + rowid varint (1 byte for rowid <= 127, 2 bytes for 128..16383) + 1004 = 1007 or 1008 bytes, plus a 2-byte cell pointer = 1009 or 1010
-  a leaf page other than page 1 has 4096 - 8 (leaf header) = 4088 bytes for pointers and cells
-  rows per leaf = floor(4088 / 1010) = 4 (4 x 1010 = 4040 fits; 5 x 1009 = 5045 does not)
-  prediction: inserts 1..4 fill the root leaf; insert #5 (rowid 10) does not fit, so it is the first split, and every 4 inserts after it another leaf fills: splits at inserts #5, #9, #13, ... (#4 m + 1)
-  each split adds one divider cell to the root: 4-byte child page number + varint of the left leaf's largest rowid, plus a 2-byte pointer
-  the root as an interior page has 4096 - 12 = 4084 bytes; 15 dividers of 7 bytes (keys <= 127) + 497 of 8 bytes = 4081 bytes fit, one more does not
-  prediction: divider 513 arrives with the split at insert #2053 (rowid 4106); the root overflows and the tree gains a third level
-table t: root page 2 (sqlite_schema.rootpage), page count 2
-2061 inserts done; final page count 520, depth 3
-check ok: the last manifest equals capture.BuildManifest of the same image (unchanged pages reuse the previous sha256 only to save time)
-changed pages per insert -> number of inserts:
-  1 page(s): 1546 insert(s)
-  3 page(s): 513 insert(s)
-  4 page(s): 1 insert(s)
-  5 page(s): 1 insert(s)
-splits (inserts that added pages): 515, at inserts #5, #9, #13, ..., #2061
-check ok: the first split happens at insert #5 (rowid 10), as the arithmetic predicts
-check ok: every split happens exactly where predicted: insert #4 m + 1, every 4 inserts
-check ok: every insert that does not split changes exactly one page
-check ok: that one page is the table leaf that now holds the new rowid, never page 1 (page 1 is not written)
-check ok: most inserts change one page (1546 of 2061)
+════════════════════════════════════════════════════════════════════════
+  3.1  How many pages does one INSERT change?
+════════════════════════════════════════════════════════════════════════
 
-first split, depth 1 -> 2: insert #5 (rowid 10): 4 page(s) changed [1(table-leaf) 2(table-leaf->table-interior) 3(new table-leaf) 4(new table-leaf)]; WAL frames for this commit: [1 2 3 4]; depth 2; root page 2
-    page 1 before: page 1 header: in-header size 2, freelist 0; sqlite_schema leaf with 1 cell(s)
-    page 1 after:  page 1 header: in-header size 4, freelist 0; sqlite_schema leaf with 1 cell(s)
-    page 2 before: table-leaf cells=4 keys=2,4,6,8 content-start=68 unused=52
-    page 2 after:  table-interior cells=1 keys=8 content-start=4091 unused=4077 children=[3 4]
-    page 3 before: (not in the file)
-    page 3 after:  table-leaf cells=4 keys=2,4,6,8 content-start=68 unused=52
-    page 4 before: (not in the file)
-    page 4 after:  table-leaf cells=1 keys=10 content-start=3089 unused=3079
-first append split at depth 2: insert #9 (rowid 18): 3 page(s) changed [1(table-leaf) 2(table-interior) 5(new table-leaf)]; WAL frames for this commit: [1 2 5]; depth 2; root page 2
-    page 1 before: page 1 header: in-header size 4, freelist 0; sqlite_schema leaf with 1 cell(s)
-    page 1 after:  page 1 header: in-header size 5, freelist 0; sqlite_schema leaf with 1 cell(s)
-    page 2 before: table-interior cells=1 keys=8 content-start=4091 unused=4077 children=[3 4]
-    page 2 after:  table-interior cells=2 keys=8,16 content-start=4086 unused=4070 children=[3 4 5]
-    page 5 before: (not in the file)
-    page 5 after:  table-leaf cells=1 keys=18 content-start=3089 unused=3079
-next append split: insert #13 (rowid 26): 3 page(s) changed [1(table-leaf) 2(table-interior) 6(new table-leaf)]; WAL frames for this commit: [1 2 6]; depth 2; root page 2
-an ordinary insert: insert #14 (rowid 28): 1 page(s) changed [6(table-leaf)]; WAL frames for this commit: [6]; depth 2; root page 2
-    page 6 before: table-leaf cells=1 keys=26 content-start=3089 unused=3079
-    page 6 after:  table-leaf cells=2 keys=26,28 content-start=2082 unused=2070
-check ok: the tree gains its third level at insert #2053 (rowid 4106), as the arithmetic predicts
-depth 2 -> 3: insert #2053 (rowid 4106): 5 page(s) changed [1(table-leaf) 2(table-interior) 516(new table-leaf) 517(new table-interior) 518(new table-interior)]; WAL frames for this commit: [1 2 516 517 518]; depth 3; root page 2
-    page 1 before: page 1 header: in-header size 515, freelist 0; sqlite_schema leaf with 1 cell(s)
-    page 1 after:  page 1 header: in-header size 518, freelist 0; sqlite_schema leaf with 1 cell(s)
-    page 2 before: table-interior cells=512 keys=8..4096 content-start=1039 unused=3 children=[3 4 5 ... 515]
-    page 2 after:  table-interior cells=1 keys=2064 content-start=4090 unused=4076 children=[517 518]
-    page 516 before: (not in the file)
-    page 516 after:  table-leaf cells=1 keys=4106 content-start=3088 unused=3078
-    page 517 before: (not in the file)
-    page 517 after:  table-interior cells=257 keys=8..2056 content-start=2569 unused=2043 children=[3 4 5 ... 260]
-    page 518 before: (not in the file)
-    page 518 after:  table-interior cells=255 keys=2072..4104 content-start=2566 unused=2044 children=[261 262 263 ... 516]
-check ok: the first split is also the first depth change: the root, a new page holding the root's old cells, a new leaf, and page 1
-check ok: an append split at depth 2 changes three pages: page 1 (database size), the parent (one new divider) and the new leaf; the full leaf is not rewritten
-check ok: the root stays page 2 through both depth changes and always equals sqlite_schema.rootpage
-check ok: integrity_check = ok after every one of the 2061 inserts
-check ok: for every insert the WAL frames of its commit name exactly the pages the manifest shows changed: pages changed = frames shipped
-WAL frames for 2061 inserts: 3094 (12747280 bytes of frames at 4120 bytes each); the table itself is 520 pages
+Every row below is one single-row transaction. After each commit the
+experiment reads the frames in -wal, runs a TRUNCATE checkpoint, and
+compares a sha256 manifest of every page with the manifest before.
 
-== B. a middle insert into a full leaf
-20 appends (rowids 2..40): page count 7, depth 2
-  root: table-interior cells=4 keys=8,16,24,32 content-start=4076 unused=4056 children=[3 4 5 6 7]
-  leaf page 3: table-leaf cells=4 keys=2,4,6,8 content-start=68 unused=52
-  leaf page 4: table-leaf cells=4 keys=10,12,14,16 content-start=68 unused=52
-  leaf page 5: table-leaf cells=4 keys=18,20,22,24 content-start=68 unused=52
-  leaf page 6: table-leaf cells=4 keys=26,28,30,32 content-start=68 unused=52
-  leaf page 7: table-leaf cells=4 keys=34,36,38,40 content-start=68 unused=52
-middle split: insert #21 (rowid 11): 5 page(s) changed [1(table-leaf) 2(table-interior) 4(table-leaf) 5(table-leaf) 8(new table-leaf)]; WAL frames for this commit: [1 2 3 4 5 8]; depth 2; root page 2
-    page 1 before: page 1 header: in-header size 7, freelist 0; sqlite_schema leaf with 1 cell(s)
-    page 1 after:  page 1 header: in-header size 8, freelist 0; sqlite_schema leaf with 1 cell(s)
-    page 2 before: table-interior cells=4 keys=8,16,24,32 content-start=4076 unused=4056 children=[3 4 5 6 7]
-    page 2 after:  table-interior cells=5 keys=8,14,20,24,32 content-start=4071 unused=4049 children=[3 4 5 8 6 7]
-    page 4 before: table-leaf cells=4 keys=10,12,14,16 content-start=68 unused=52
-    page 4 after:  table-leaf cells=4 keys=10,11,12,14 content-start=68 unused=52
-    page 5 before: table-leaf cells=4 keys=18,20,22,24 content-start=68 unused=52
-    page 5 after:  table-leaf cells=3 keys=16,18,20 content-start=1075 unused=1061
-    page 8 before: (not in the file)
-    page 8 after:  table-leaf cells=2 keys=22,24 content-start=2082 unused=2070
-check ok: a split in the middle rewrites the full leaf and its siblings (3 leaf pages changed), not just one new page
-check ok: every changed page is in the commit's WAL frames
-WAL frames whose page bytes did not change: [3]
-  page 3: sha256 before c0995adc833eadb1, after c0995adc833eadb1
-check ok: here the WAL ships more frames than pages changed: balance_nonroot rewrote a sibling leaf with the same cells it already held, and a written page is a shipped frame even when its bytes are unchanged
-check ok: integrity_check = ok after the middle split
-leaves after the middle split (page:cells, in key order): 3:4 4:4 5:3 8:2 6:4 7:4
+Settings: page_size=4096, one connection, wal_autocheckpoint=0,
+synchronous=OFF (skips fsync only; no file byte depends on it).
 
-== C. the same kind of insert into a table with two indexes
-changed pages per insert -> number of inserts:
-  3 page(s): 188 insert(s)
-  5 page(s): 10 insert(s)
-  6 page(s): 2 insert(s)
-insert #50 changed: 3(index-leaf) 4(index-leaf) 7(table-leaf)
-check ok: with two indexes the common insert changes three pages: the table leaf and one leaf in each index
-check ok: WAL frames equal the changed pages and integrity_check = ok for all 200 inserts
+What was measured, by part:
+┌──────┬──────────────┬─────────┬───────────────┬────────────┐
+│ part │ journal_mode │ inserts │ pages_changed │ wal_frames │
+├──────┼──────────────┼─────────┼───────────────┼────────────┤
+│ A    │ wal          │ 2061    │ 1..5          │ 3094       │
+│ B    │ wal          │ 21      │ 1..5          │ 35         │
+│ C    │ wal          │ 200     │ 3..6          │ 626        │
+│ D    │ delete       │ 12      │ 2..4          │            │
+│ E    │ wal          │ 905     │ 1..6          │ 1722       │
+└──────┴──────────────┴─────────┴───────────────┴────────────┘
 
-== D. the same appends in rollback mode (journal_mode=DELETE)
-rollback: insert #1 (rowid 2): 2 page(s) changed [1(table-leaf) 2(table-leaf)]; no WAL (rollback mode); depth 1; root page 2
-rollback: insert #2 (rowid 4): 2 page(s) changed [1(table-leaf) 2(table-leaf)]; no WAL (rollback mode); depth 1; root page 2
-  2 page(s), page 1 among them: true: 10 insert(s)
-  3 page(s), page 1 among them: true: 1 insert(s)
-  4 page(s), page 1 among them: true: 1 insert(s)
-check ok: in rollback mode every commit also rewrites page 1
-check ok: an insert that adds no page changes exactly two pages: page 1 and the table leaf that holds the new rowid
-check ok: on those inserts page 1 differs only in the change counter (bytes 24-27) and version-valid-for (bytes 92-95)
+── A. Appends into an empty table ─────────────────────────────────────
 
-== E. where "most inserts change one page" stops holding (one row per transaction, WAL, the same manifest after every insert)
-  random keys, 1000-byte rows (4 per leaf): 250 inserts; one page: 86; added a page: 70; several pages, none added: 94; pages changed per insert 1..6; final depth 2, 71 leaves holding 2..4 rows
-    inserts that added a page at depth 2, by pages changed: 5 pages: 40, 6 pages: 29
-  random keys, 40-byte rows (about 85 per leaf): 600 inserts; one page: 566; added a page: 7; several pages, none added: 27; pages changed per insert 1..6; final depth 2, 8 leaves holding 43..85 rows
-    inserts that added a page at depth 2, by pages changed: 5 pages: 1, 6 pages: 5
-  ascending keys, 5000-byte rows (each overflows): 25 inserts; one page: 0; added a page: 25; several pages, none added: 0; pages changed per insert 3..5; final depth 2, 7 leaves holding 1..4 rows
-    inserts that added a page at depth 2, by pages changed: 3 pages: 15, 4 pages: 5
-  ascending keys, 400-byte rows, WITHOUT ROWID: 30 inserts; one page: 23; added a page: 3; several pages, none added: 4; pages changed per insert 1..5; final depth 2, 4 leaves holding 4..9 rows
-    inserts that added a page at depth 2, by pages changed: 5 pages: 2
-check ok: random keys with 4 rows per leaf: only 86 of 250 inserts change one page; 70 split and 94 more change several pages without adding one (balance_nonroot moves cells between siblings)
-check ok: random keys with small rows: most inserts change one page again (566 of 600): the rule depends on how many rows fit in a leaf, not on the key order alone
-check ok: a row larger than the leaf's local limit also writes its overflow pages and page 1 (the file grows): no insert changes one page, each changes 3..5
-check ok: a WITHOUT ROWID table is an index b-tree, and balance_quick serves table leaves only: its append splits at depth 2 go through balance_nonroot and change more than three pages
-check ok: in all four, every changed page is in its commit's WAL frames
-check ok: integrity_check = ok after every insert of all four
+Table t(id INTEGER PRIMARY KEY, v BLOB of 1000 bytes), rowids 2, 4, 6, ...
 
-PAGES PER INSERT OK
+A1. The prediction, from the cell format alone, before any insert:
+┌───────────────────────────┬───────┬──────────────────────────────────────────────────────────────────────────────────────────┐
+│           name            │ value │                                           how                                            │
+├───────────────────────────┼───────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+│ record_header_bytes       │ 4     │ 1 size varint + 1 type (NULL: the id is the rowid) + 2 type 2012 (blob of 1000 bytes)    │
+│ payload_bytes             │ 1004  │ 4 header + 1000 body                                                                     │
+│ max_local_payload         │ 4061  │ table-leaf limit at usable size 4096; the payload is below it: no overflow               │
+│ cell_bytes_rowid_to_127   │ 1009  │ 2 payload-size varint + 1 rowid varint + 1004 payload + 2 cell pointer                   │
+│ cell_bytes_rowid_from_128 │ 1010  │ the rowid varint is 2 bytes for rowids 128..16383                                        │
+│ leaf_space_bytes          │ 4088  │ 4096 - 8 (leaf header)                                                                   │
+│ rows_per_leaf             │ 4     │ floor(4088 / 1010): 4 x 1010 = 4040 fits, 5 x 1009 = 5045 does not                       │
+│ first_split_insert        │ 5     │ inserts 1..4 fill the root leaf; rowid 10 does not fit                                   │
+│ split_every_inserts       │ 4     │ a new leaf fills after 4 appends: splits at inserts #5, #9, #13, ...                     │
+│ root_space_bytes          │ 4084  │ 4096 - 12 (interior header)                                                              │
+│ dividers_fit_in_root      │ 512   │ 15 dividers of 7 bytes (keys <= 127) + 497 of 8 bytes = 4081 bytes; no room for one more │
+│ third_level_insert        │ 2053  │ the split that brings divider 513 (rowid 4106): the root overflows                       │
+└───────────────────────────┴───────┴──────────────────────────────────────────────────────────────────────────────────────────┘
+
+A2. Prediction against measurement:
+┌─────────────────────────┬───────────┬──────────┐
+│          what           │ predicted │ measured │
+├─────────────────────────┼───────────┼──────────┤
+│ first split at insert # │ 5         │ 5        │
+│ inserts between splits  │ 4         │ 4        │
+│ third level at insert # │ 2053      │ 2053     │
+└─────────────────────────┴───────────┴──────────┘
+
+A3. Pages changed per insert. Most inserts change one page: the leaf.
+    Every insert that changes more is a split (it adds pages).
+┌───────────────┬─────────┬──────┬────────────────────────────────┬────────┬─────────────────┐
+│ pages_changed │ inserts │ pct  │             share              │ splits │ first_at_insert │
+├───────────────┼─────────┼──────┼────────────────────────────────┼────────┼─────────────────┤
+│ 1             │ 1546    │ 75.0 │ ██████████████████████████████ │ 0      │ 1               │
+│ 3             │ 513     │ 24.9 │ █████████▉                     │ 513    │ 9               │
+│ 4             │ 1       │ 0.0  │                                │ 1      │ 5               │
+│ 5             │ 1       │ 0.0  │                                │ 1      │ 2053            │
+└───────────────┴─────────┴──────┴────────────────────────────────┴────────┴─────────────────┘
+
+A4. The inserts worth a close look. Compare changed_pages with wal_pages:
+    the frames of a commit name exactly the pages the manifest shows changed.
+┌───────────────────────────────┬───────────┬───────┬───────────────┬─────────────────┬─────────────────┬───────┐
+│             step              │ insert_no │ rowid │ pages_changed │  changed_pages  │    wal_pages    │ depth │
+├───────────────────────────────┼───────────┼───────┼───────────────┼─────────────────┼─────────────────┼───────┤
+│ first split, depth 1 -> 2     │ 5         │ 10    │ 4             │ 1 2 3 4         │ 1 2 3 4         │ 2     │
+│ first append split at depth 2 │ 9         │ 18    │ 3             │ 1 2 5           │ 1 2 5           │ 2     │
+│ next append split             │ 13        │ 26    │ 3             │ 1 2 6           │ 1 2 6           │ 2     │
+│ an ordinary insert            │ 14        │ 28    │ 1             │ 6               │ 6               │ 2     │
+│ depth 2 -> 3                  │ 2053      │ 4106  │ 5             │ 1 2 516 517 518 │ 1 2 516 517 518 │ 3     │
+└───────────────────────────────┴───────────┴───────┴───────────────┴─────────────────┴─────────────────┴───────┘
+
+A5. The same inserts page by page, before and after.
+
+Insert #5, the first split. The root (page 2) stays the root: it turns
+into an interior page, its four cells move to new page 3, and new page 4
+takes the new row. Page 1 changes because the file grew.
+┌──────┬────────┬────────────────┬───────┬─────────┬────────┬──────────┬────────────────────────────────────┐
+│ page │ state  │      kind      │ cells │  keys   │ unused │ children │                note                │
+├──────┼────────┼────────────────┼───────┼─────────┼────────┼──────────┼────────────────────────────────────┤
+│ 1    │ before │ table-leaf     │ 1     │         │ 3924   │          │ sqlite_schema; header says 2 pages │
+│ 1    │ after  │ table-leaf     │ 1     │         │ 3924   │          │ sqlite_schema; header says 4 pages │
+│ 2    │ before │ table-leaf     │ 4     │ 2,4,6,8 │ 52     │          │                                    │
+│ 2    │ after  │ table-interior │ 1     │ 8       │ 4077   │ 3 4      │                                    │
+│ 3    │ before │                │       │         │        │          │ not in the file                    │
+│ 3    │ after  │ table-leaf     │ 4     │ 2,4,6,8 │ 52     │          │                                    │
+│ 4    │ before │                │       │         │        │          │ not in the file                    │
+│ 4    │ after  │ table-leaf     │ 1     │ 10      │ 3079   │          │                                    │
+└──────┴────────┴────────────────┴───────┴─────────┴────────┴──────────┴────────────────────────────────────┘
+
+Insert #9, an append split at depth 2. Three pages: page 1, one more
+divider in the root, one new leaf. The full leaf is not rewritten.
+┌──────┬────────┬────────────────┬───────┬──────┬────────┬──────────┬────────────────────────────────────┐
+│ page │ state  │      kind      │ cells │ keys │ unused │ children │                note                │
+├──────┼────────┼────────────────┼───────┼──────┼────────┼──────────┼────────────────────────────────────┤
+│ 1    │ before │ table-leaf     │ 1     │      │ 3924   │          │ sqlite_schema; header says 4 pages │
+│ 1    │ after  │ table-leaf     │ 1     │      │ 3924   │          │ sqlite_schema; header says 5 pages │
+│ 2    │ before │ table-interior │ 1     │ 8    │ 4077   │ 3 4      │                                    │
+│ 2    │ after  │ table-interior │ 2     │ 8,16 │ 4070   │ 3 4 5    │                                    │
+│ 5    │ before │                │       │      │        │          │ not in the file                    │
+│ 5    │ after  │ table-leaf     │ 1     │ 18   │ 3079   │          │                                    │
+└──────┴────────┴────────────────┴───────┴──────┴────────┴──────────┴────────────────────────────────────┘
+
+Insert #14, an ordinary insert. One page: the leaf that holds the row.
+┌──────┬────────┬────────────┬───────┬───────┬────────┬──────────┬──────┐
+│ page │ state  │    kind    │ cells │ keys  │ unused │ children │ note │
+├──────┼────────┼────────────┼───────┼───────┼────────┼──────────┼──────┤
+│ 6    │ before │ table-leaf │ 1     │ 26    │ 3079   │          │      │
+│ 6    │ after  │ table-leaf │ 2     │ 26,28 │ 2070   │          │      │
+└──────┴────────┴────────────┴───────┴───────┴────────┴──────────┴──────┘
+
+Insert #2053. The root is full (unused = 3), so the tree gains a third
+level: the root keeps one divider and two new interior pages share the rest.
+┌──────┬────────┬────────────────┬───────┬────────────┬────────┬─────────────────────┬──────────────────────────────────────┐
+│ page │ state  │      kind      │ cells │    keys    │ unused │      children       │                 note                 │
+├──────┼────────┼────────────────┼───────┼────────────┼────────┼─────────────────────┼──────────────────────────────────────┤
+│ 1    │ before │ table-leaf     │ 1     │            │ 3924   │                     │ sqlite_schema; header says 515 pages │
+│ 1    │ after  │ table-leaf     │ 1     │            │ 3924   │                     │ sqlite_schema; header says 518 pages │
+│ 2    │ before │ table-interior │ 512   │ 8..4096    │ 3      │ 3 4 5 ... 515       │                                      │
+│ 2    │ after  │ table-interior │ 1     │ 2064       │ 4076   │ 517 518             │                                      │
+│ 516  │ before │                │       │            │        │                     │ not in the file                      │
+│ 516  │ after  │ table-leaf     │ 1     │ 4106       │ 3078   │                     │                                      │
+│ 517  │ before │                │       │            │        │                     │ not in the file                      │
+│ 517  │ after  │ table-interior │ 257   │ 8..2056    │ 2043   │ 3 4 5 ... 260       │                                      │
+│ 518  │ before │                │       │            │        │                     │ not in the file                      │
+│ 518  │ after  │ table-interior │ 255   │ 2072..4104 │ 2044   │ 261 262 263 ... 516 │                                      │
+└──────┴────────┴────────────────┴───────┴────────────┴────────┴─────────────────────┴──────────────────────────────────────┘
+
+A6. The whole run. The last column counts commits whose WAL frames
+    differ from the changed pages; it must be 0.
+┌─────────┬────────────┬───────────┬─────────────┬─────────────┬───────────────┐
+│ inserts │ wal_frames │ wal_bytes │ final_pages │ final_depth │ frames_differ │
+├─────────┼────────────┼───────────┼─────────────┼─────────────┼───────────────┤
+│ 2061    │ 3094       │ 12747280  │ 520         │ 3           │ 0             │
+└─────────┴────────────┴───────────┴─────────────┴─────────────┴───────────────┘
+
+── B. A middle insert into a full leaf ─────────────────────────────────
+
+B1. The tree after 20 appends: a root and five full leaves.
+┌──────┬────────────────┬───────┬─────────────┬────────┬───────────┐
+│ page │      kind      │ cells │    keys     │ unused │ children  │
+├──────┼────────────────┼───────┼─────────────┼────────┼───────────┤
+│ 2    │ table-interior │ 4     │ 8,16,24,32  │ 4056   │ 3 4 5 6 7 │
+│ 3    │ table-leaf     │ 4     │ 2,4,6,8     │ 52     │           │
+│ 4    │ table-leaf     │ 4     │ 10,12,14,16 │ 52     │           │
+│ 5    │ table-leaf     │ 4     │ 18,20,22,24 │ 52     │           │
+│ 6    │ table-leaf     │ 4     │ 26,28,30,32 │ 52     │           │
+│ 7    │ table-leaf     │ 4     │ 34,36,38,40 │ 52     │           │
+└──────┴────────────────┴───────┴─────────────┴────────┴───────────┘
+
+B2. Insert rowid 11. It belongs in page 4, which is full.
+┌───────────┬───────┬───────────────┬───────────────┬─────────────┐
+│ insert_no │ rowid │ pages_changed │ changed_pages │  wal_pages  │
+├───────────┼───────┼───────────────┼───────────────┼─────────────┤
+│ 21        │ 11    │ 5             │ 1 2 4 5 8     │ 1 2 3 4 5 8 │
+└───────────┴───────┴───────────────┴───────────────┴─────────────┘
+
+    Not one new page as in part A: the full leaf and its right sibling
+    are rewritten, and the root gains a divider in the middle.
+┌──────┬────────┬────────────────┬───────┬───────────────┬────────┬─────────────┬────────────────────────────────────┐
+│ page │ state  │      kind      │ cells │     keys      │ unused │  children   │                note                │
+├──────┼────────┼────────────────┼───────┼───────────────┼────────┼─────────────┼────────────────────────────────────┤
+│ 1    │ before │ table-leaf     │ 1     │               │ 3924   │             │ sqlite_schema; header says 7 pages │
+│ 1    │ after  │ table-leaf     │ 1     │               │ 3924   │             │ sqlite_schema; header says 8 pages │
+│ 2    │ before │ table-interior │ 4     │ 8,16,24,32    │ 4056   │ 3 4 5 6 7   │                                    │
+│ 2    │ after  │ table-interior │ 5     │ 8,14,20,24,32 │ 4049   │ 3 4 5 8 6 7 │                                    │
+│ 4    │ before │ table-leaf     │ 4     │ 10,12,14,16   │ 52     │             │                                    │
+│ 4    │ after  │ table-leaf     │ 4     │ 10,11,12,14   │ 52     │             │                                    │
+│ 5    │ before │ table-leaf     │ 4     │ 18,20,22,24   │ 52     │             │                                    │
+│ 5    │ after  │ table-leaf     │ 3     │ 16,18,20      │ 1061   │             │                                    │
+│ 8    │ before │                │       │               │        │             │ not in the file                    │
+│ 8    │ after  │ table-leaf     │ 2     │ 22,24         │ 2070   │             │                                    │
+└──────┴────────┴────────────────┴───────┴───────────────┴────────┴─────────────┴────────────────────────────────────┘
+
+B3. wal_pages has one page more than changed_pages. balance_nonroot rewrote
+    that sibling with the cells it already held: same bytes, still a frame.
+┌──────┬──────────────────┬──────────────────┬────────────┐
+│ page │  sha256_before   │   sha256_after   │ same_bytes │
+├──────┼──────────────────┼──────────────────┼────────────┤
+│ 3    │ c0995adc833eadb1 │ c0995adc833eadb1 │ true       │
+└──────┴──────────────────┴──────────────────┴────────────┘
+
+B4. The leaves in key order after the split:
+┌──────┬───────┬─────────────┬────────┐
+│ page │ cells │    keys     │ unused │
+├──────┼───────┼─────────────┼────────┤
+│ 3    │ 4     │ 2,4,6,8     │ 52     │
+│ 4    │ 4     │ 10,11,12,14 │ 52     │
+│ 5    │ 3     │ 16,18,20    │ 1061   │
+│ 8    │ 2     │ 22,24       │ 2070   │
+│ 6    │ 4     │ 26,28,30,32 │ 52     │
+│ 7    │ 4     │ 34,36,38,40 │ 52     │
+└──────┴───────┴─────────────┴────────┘
+
+── C. The same insert with two secondary indexes ──────────────────────
+
+The common insert now changes three pages: the table leaf and one leaf
+in each index.
+┌───────────────┬─────────┬────────────────────────────────┬────────┐
+│ pages_changed │ inserts │             share              │ splits │
+├───────────────┼─────────┼────────────────────────────────┼────────┤
+│ 3             │ 188     │ ██████████████████████████████ │ 0      │
+│ 5             │ 10      │ █▌                             │ 10     │
+│ 6             │ 2       │ ▎                              │ 2      │
+└───────────────┴─────────┴────────────────────────────────┴────────┘
+
+One of the common inserts:
+┌───────────┬───────────────────────────────────────────┐
+│ insert_no │               changed_roles               │
+├───────────┼───────────────────────────────────────────┤
+│ 50        │ 3(index-leaf) 4(index-leaf) 7(table-leaf) │
+└───────────┴───────────────────────────────────────────┘
+
+── D. The same appends in rollback mode (journal_mode=DELETE) ─────────
+
+There is no WAL. Every commit also rewrites page 1 (the change counter).
+┌───────────┬───────┬─────────────────────────────┬───────────┐
+│ insert_no │ rowid │        changed_roles        │ wal_pages │
+├───────────┼───────┼─────────────────────────────┼───────────┤
+│ 1         │ 2     │ 1(table-leaf) 2(table-leaf) │           │
+│ 2         │ 4     │ 1(table-leaf) 2(table-leaf) │           │
+└───────────┴───────┴─────────────────────────────┴───────────┘
+┌───────────────┬───────────────┬─────────┬─────────────────────┐
+│ pages_changed │ page1_changed │ inserts │ first_example_pages │
+├───────────────┼───────────────┼─────────┼─────────────────────┤
+│ 2             │ true          │ 10      │ 1 2                 │
+│ 3             │ true          │ 1       │ 1 2 5               │
+│ 4             │ true          │ 1       │ 1 2 3 4             │
+└───────────────┴───────────────┴─────────┴─────────────────────┘
+
+── E. Where "most inserts change one page" stops holding ──────────────
+
+Four workloads, one row per transaction, WAL. Each insert is one of:
+  one_page    it changed one page
+  added_page  the file grew (a split, or an overflow page)
+  rebalanced  several pages changed, none added (cells moved to siblings)
+┌─────────────────────────────────────────────────┬─────────┬──────────┬────────────┬────────────┬───────────────┐
+│                    workload                     │ inserts │ one_page │ added_page │ rebalanced │ pages_changed │
+├─────────────────────────────────────────────────┼─────────┼──────────┼────────────┼────────────┼───────────────┤
+│ random keys, 1000-byte rows (4 per leaf)        │ 250     │ 86       │ 70         │ 94         │ 1..6          │
+│ random keys, 40-byte rows (about 85 per leaf)   │ 600     │ 566      │ 7          │ 27         │ 1..6          │
+│ ascending keys, 5000-byte rows (each overflows) │ 25      │ 0        │ 25         │ 0          │ 3..5          │
+│ ascending keys, 400-byte rows, WITHOUT ROWID    │ 30      │ 23       │ 3          │ 4          │ 1..5          │
+└─────────────────────────────────────────────────┴─────────┴──────────┴────────────┴────────────┴───────────────┘
+
+The leaves each workload ends with:
+┌─────────────────────────────────────────────────┬───────────┬────────┬───────────────┬─────────────┐
+│                    workload                     │ row_bytes │ leaves │ rows_per_leaf │ final_depth │
+├─────────────────────────────────────────────────┼───────────┼────────┼───────────────┼─────────────┤
+│ random keys, 1000-byte rows (4 per leaf)        │ 1000      │ 71     │ 2..4          │ 2           │
+│ random keys, 40-byte rows (about 85 per leaf)   │ 40        │ 8      │ 43..85        │ 2           │
+│ ascending keys, 5000-byte rows (each overflows) │ 5000      │ 7      │ 1..4          │ 2           │
+│ ascending keys, 400-byte rows, WITHOUT ROWID    │ 400       │ 4      │ 4..9          │ 2           │
+└─────────────────────────────────────────────────┴───────────┴────────┴───────────────┴─────────────┘
+
+Splits at depth 2, by pages changed. An append split of a rowid table
+costs 3 pages (part A); most splits here cost more.
+┌─────────────────────────────────────────────────┬───────────────┬────────┐
+│                    workload                     │ pages_changed │ splits │
+├─────────────────────────────────────────────────┼───────────────┼────────┤
+│ random keys, 1000-byte rows (4 per leaf)        │ 5             │ 40     │
+│ random keys, 1000-byte rows (4 per leaf)        │ 6             │ 29     │
+│ random keys, 40-byte rows (about 85 per leaf)   │ 5             │ 1      │
+│ random keys, 40-byte rows (about 85 per leaf)   │ 6             │ 5      │
+│ ascending keys, 5000-byte rows (each overflows) │ 3             │ 15     │
+│ ascending keys, 5000-byte rows (each overflows) │ 4             │ 5      │
+│ ascending keys, 400-byte rows, WITHOUT ROWID    │ 5             │ 2      │
+└─────────────────────────────────────────────────┴───────────────┴────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the last manifest equals capture.BuildManifest of the same image (unchanged pages reuse the previous sha256 only to save time)
+A  ✓  the first split happens at insert #5 (rowid 10), as the arithmetic predicts
+A  ✓  every split happens exactly where predicted: insert #4 m + 1, every 4 inserts
+A  ✓  every insert that does not split changes exactly one page
+A  ✓  that one page is the table leaf that now holds the new rowid, never page 1 (page 1 is not written)
+A  ✓  most inserts change one page (1546 of 2061)
+A  ✓  the tree gains its third level at insert #2053 (rowid 4106), as the arithmetic predicts
+A  ✓  the first split is also the first depth change: the root, a new page holding the root's old cells, a new leaf, and page 1
+A  ✓  an append split at depth 2 changes three pages: page 1 (database size), the parent (one new divider) and the new leaf; the full leaf is not rewritten
+A  ✓  the root stays page 2 through both depth changes and always equals sqlite_schema.rootpage
+A  ✓  integrity_check = ok after every one of the 2061 inserts
+A  ✓  for every insert the WAL frames of its commit name exactly the pages the manifest shows changed: pages changed = frames shipped
+B  ✓  a split in the middle rewrites the full leaf and its siblings (3 leaf pages changed), not just one new page
+B  ✓  every changed page is in the commit's WAL frames
+B  ✓  here the WAL ships more frames than pages changed: balance_nonroot rewrote a sibling leaf with the same cells it already held, and a written page is a shipped frame even when its bytes are unchanged
+B  ✓  integrity_check = ok after the middle split
+C  ✓  with two indexes the common insert changes three pages: the table leaf and one leaf in each index
+C  ✓  WAL frames equal the changed pages and integrity_check = ok for all 200 inserts
+D  ✓  in rollback mode every commit also rewrites page 1
+D  ✓  an insert that adds no page changes exactly two pages: page 1 and the table leaf that holds the new rowid
+D  ✓  on those inserts page 1 differs only in the change counter (bytes 24-27) and version-valid-for (bytes 92-95)
+E  ✓  random keys with 4 rows per leaf: only 86 of 250 inserts change one page; 70 split and 94 more change several pages without adding one (balance_nonroot moves cells between siblings)
+E  ✓  random keys with small rows: most inserts change one page again (566 of 600): the rule depends on how many rows fit in a leaf, not on the key order alone
+E  ✓  a row larger than the leaf's local limit also writes its overflow pages and page 1 (the file grows): no insert changes one page, each changes 3..5
+E  ✓  a WITHOUT ROWID table is an index b-tree, and balance_quick serves table leaves only: its append splits at depth 2 go through balance_nonroot and change more than three pages
+E  ✓  in all four, every changed page is in its commit's WAL frames
+E  ✓  integrity_check = ok after every insert of all four
+
+27 of 27 claims hold
+
+Experiment verdict: PAGES PER INSERT OK
 ```
 
 **Reading the evidence:**
 
-- **Header and arithmetic (lines 1–17).** Line 1 confirms the pinned check-in `bf7c7f30…59bcc`. Before inserting any row, Part A derives the exact split schedule from SQLite's cell format: each `(id INTEGER PRIMARY KEY, v BLOB)` row stores a 4-byte record header (`1` header-size varint + `1` serial type `0` for the rowid-alias `NULL` + `2` bytes for serial type `2012`, a 1,000-byte blob) plus 1,000 payload bytes = `1,004` bytes (`<= 4,061` max local, so zero overflow pages). Adding the 2-byte payload-size varint, 1- or 2-byte rowid varint, and 2-byte cell pointer gives `1,009` or `1,010` bytes per row. A 4,096-byte leaf has `4,088` bytes after its 8-byte header, fitting `floor(4088 / 1010) = 4` rows (`4 × 1010 = 4040`; 5 rows would need `5,045`). That predicts splits at inserts `#5`, `#9`, `#13`, …, `#4m + 1`. For the interior root (`4,096 - 12 = 4,084` bytes), 15 dividers of 7 bytes (keys `<= 127`: `8, 16, …, 120`) plus 497 dividers of 8 bytes take `4,081` bytes (`3` bytes left), predicting that divider `513` at insert `#2053` (rowid `4106`) will push the tree to depth 3.
-- **Part A histogram and exact split match (lines 18–30).** After `2,061` appends, the table has `520` pages at depth `3`, and `verifyManifest` confirms the incrementally hashed manifest matches a full `capture.BuildManifest` byte for byte. Of `2,061` inserts, `1,546` changed 1 page, `513` changed 3 pages, `1` changed 4 pages, and `1` changed 5 pages. Every one of the `515` splits occurred at `#4m + 1`, and every non-split insert modified only the single table leaf holding the new rowid—never page 1.
-- **First split = first depth change, append splits, and depth 2→3 (lines 32–69).** **Correction to the outline:** in a table that starts empty, the first append split and the first depth change are the **same insert** (`#5`, rowid `10`): `balance()` calls `balance_deeper` to copy root page 2's four cells onto new page 3 and turn page 2 into an interior page, then loops once and calls `balance_quick` on page 3 to allocate new leaf 4 for rowid `10` (4 pages changed: `[1 2 3 4]`). At depth 2, insert `#9` (rowid `18`) takes `balance_quick` alone and changes 3 pages (`[1 2 5]`): full leaf 4 is untouched. At insert `#2053` (rowid `4106`), root page 2 starts with `512` cells and `unused=3` bytes—matching the `4,084 - 4,081 = 3` arithmetic to the byte—and splits via `balance_quick` (leaf `516`) + `balance_deeper` + `balance_nonroot` (new interior pages `517` with `257` cells and `518` with `255` cells, promoting divider `2064` to root page `2`; `257 + 255 + 1 = 513` dividers). None of the 513 existing leaves changed, root stayed page `2`, and `2,061` single-row inserts shipped `3,094` WAL frames (`12,747,280` bytes at `4,120` bytes/frame)—roughly 6× the final 520-page (`2.1 MB`) table.
-- **Part B — middle split and unchanged WAL frame (lines 71–96).** After 20 appends (5 full leaves `3..7` under root `2`), inserting rowid `11` into full leaf `4` triggers `balance_nonroot`. Five pages change bytes: `[1 2 4 5 8]` (page 1 size `7 -> 8`, root `2` gets five dividers `8,14,20,24,32`, leaf `4` holds `10,11,12,14`, leaf `5` drops to 3 rows `16,18,20`, new leaf `8` takes `22,24`). **Correction to the outline:** the commit wrote **6** WAL frames `[1 2 3 4 5 8]`, including left sibling page `3` whose SHA-256 was `c0995adc833eadb1` before and `c0995adc833eadb1` after. Because `balance_nonroot` marks every participating sibling writable with `sqlite3PagerWrite`, a page SQLite writes enters the WAL even if its rebuilt bytes are unchanged. Also notice the leaf counts after the split (`3:4 4:4 5:3 8:2 6:4 7:4`): middle inserts leave partly filled leaves, unlike sequential appends.
-- **Part C — two secondary indexes (lines 98–105).** Adding `t_email` and `t_score` shifts the mode from `1` page to `3` pages (`188` of `200` inserts changed 3 pages, `10` changed 5, `2` changed 6). Insert `#50` modified `3(index-leaf) 4(index-leaf) 7(table-leaf)`—one leaf per B-tree.
-- **Part D — rollback mode (lines 107–115).** Under `journal_mode=DELETE`, every single commit includes page `1` (`10` inserts changed 2 pages, `1` changed 3, `1` changed 4). Every non-growing insert modified exactly page `1` and the leaf holding the rowid, and `equal.CompareImagesIgnoring` proves page 1 differed only inside bytes `24-27` (change counter) and `92-95` (version-valid-for).
-- **Part E — where "most inserts change one page" stops holding (lines 117–131).** **Correction to the outline (from adversarial testing):**
+- **Overview and arithmetic (opening table, A1).** The opening table counts the inserts each part ran. Before inserting any row, Part A derives the exact split schedule from SQLite's cell format: each `(id INTEGER PRIMARY KEY, v BLOB)` row stores a 4-byte record header (`1` header-size varint + `1` serial type `0` for the rowid-alias `NULL` + `2` bytes for serial type `2012`, a 1,000-byte blob) plus 1,000 payload bytes = `1,004` bytes (`<= 4,061` max local, so zero overflow pages). Adding the 2-byte payload-size varint, 1- or 2-byte rowid varint, and 2-byte cell pointer gives `1,009` or `1,010` bytes per row. A 4,096-byte leaf has `4,088` bytes after its 8-byte header, fitting `floor(4088 / 1010) = 4` rows (`4 × 1010 = 4040`; 5 rows would need `5,045`). That predicts splits at inserts `#5`, `#9`, `#13`, …, `#4m + 1`. For the interior root (`4,096 - 12 = 4,084` bytes), 15 dividers of 7 bytes (keys `<= 127`: `8, 16, …, 120`) plus 497 dividers of 8 bytes take `4,081` bytes (`3` bytes left), predicting that divider `513` at insert `#2053` (rowid `4106`) will push the tree to depth 3.
+- **Part A histogram and exact split match (A2, A3, A6).** After `2,061` appends, the table has `520` pages at depth `3`, and `verifyManifest` confirms the incrementally hashed manifest matches a full `capture.BuildManifest` byte for byte. Of `2,061` inserts, `1,546` changed 1 page, `513` changed 3 pages, `1` changed 4 pages, and `1` changed 5 pages. Every one of the `515` splits occurred at `#4m + 1`, and every non-split insert modified only the single table leaf holding the new rowid—never page 1.
+- **First split = first depth change, append splits, and depth 2→3 (A4, A5, A6).** **Correction to the outline:** in a table that starts empty, the first append split and the first depth change are the **same insert** (`#5`, rowid `10`): `balance()` calls `balance_deeper` to copy root page 2's four cells onto new page 3 and turn page 2 into an interior page, then loops once and calls `balance_quick` on page 3 to allocate new leaf 4 for rowid `10` (4 pages changed: `[1 2 3 4]`). At depth 2, insert `#9` (rowid `18`) takes `balance_quick` alone and changes 3 pages (`[1 2 5]`): full leaf 4 is untouched. At insert `#2053` (rowid `4106`), root page 2 starts with `512` cells and `unused=3` bytes—matching the `4,084 - 4,081 = 3` arithmetic to the byte—and splits via `balance_quick` (leaf `516`) + `balance_deeper` + `balance_nonroot` (new interior pages `517` with `257` cells and `518` with `255` cells, promoting divider `2064` to root page `2`; `257 + 255 + 1 = 513` dividers). None of the 513 existing leaves changed, root stayed page `2`, and `2,061` single-row inserts shipped `3,094` WAL frames (`12,747,280` bytes at `4,120` bytes/frame)—roughly 6× the final 520-page (`2.1 MB`) table.
+- **Part B — middle split and unchanged WAL frame (B1–B4).** After 20 appends (5 full leaves `3..7` under root `2`), inserting rowid `11` into full leaf `4` triggers `balance_nonroot`. Five pages change bytes: `[1 2 4 5 8]` (page 1 size `7 -> 8`, root `2` gets five dividers `8,14,20,24,32`, leaf `4` holds `10,11,12,14`, leaf `5` drops to 3 rows `16,18,20`, new leaf `8` takes `22,24`). **Correction to the outline:** the commit wrote **6** WAL frames `[1 2 3 4 5 8]`, including left sibling page `3` whose SHA-256 was `c0995adc833eadb1` before and `c0995adc833eadb1` after. Because `balance_nonroot` marks every participating sibling writable with `sqlite3PagerWrite`, a page SQLite writes enters the WAL even if its rebuilt bytes are unchanged. Also notice the leaf cell counts after the split (B4: pages `3, 4, 5, 8, 6, 7` hold `4, 4, 3, 2, 4, 4` cells): middle inserts leave partly filled leaves, unlike sequential appends.
+- **Part C — two secondary indexes (section C).** Adding `t_email` and `t_score` shifts the mode from `1` page to `3` pages (`188` of `200` inserts changed 3 pages, `10` changed 5, `2` changed 6). Insert `#50` modified `3(index-leaf) 4(index-leaf) 7(table-leaf)`—one leaf per B-tree.
+- **Part D — rollback mode (section D).** Under `journal_mode=DELETE`, every single commit includes page `1` (`10` inserts changed 2 pages, `1` changed 3, `1` changed 4). Every non-growing insert modified exactly page `1` and the leaf holding the rowid, and `equal.CompareImagesIgnoring` proves page 1 differed only inside bytes `24-27` (change counter) and `92-95` (version-valid-for).
+- **Part E — where "most inserts change one page" stops holding (section E).** **Correction to the outline (from adversarial testing):**
   - Random keys with 1,000-byte rows (4/leaf): only `86` of `250` inserts changed one page; `70` added a page (5 pages `40` times, 6 pages `29` times at depth 2) and `94` more changed several pages without adding one because `balance_nonroot` shifted cells between partly empty siblings.
   - Random keys with 40-byte rows (~85/leaf): `566` of `600` inserts changed one page again (`7` splits, `27` rebalances). The one-page rule depends on rows per leaf, not key order alone.
   - Ascending 5,000-byte rows (each exceeding `4,061` max local): `0` of `25` inserts changed one page; every insert allocated an overflow page and updated page 1 (`3..5` pages each).
@@ -2559,6 +2944,9 @@ func RunDBHash(ctx context.Context, tool, dbPath string) (string, error) {
 // Experiment 3.2 tracks page freeing, freelist reuse, file growth, VACUUM,
 // auto_vacuum modes, and deleted-byte residue across secure_delete=OFF and
 // secure_delete=ON in both the database file at rest and the -wal file.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 3.2
 package main
 
 import (
@@ -2572,6 +2960,7 @@ import (
 
 	"github.com/nickstrad/walfleet/internal/dbfile"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -2586,15 +2975,26 @@ const (
 	rowsPerTx   = 4
 )
 
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 3.2" runs both.
+var (
+	set    *results.Set
+	tables struct {
+		settings, steps, deleteStep, reuseStep, growBatches, residue,
+		largeTransaction, autoVacuum, walResidue *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+)
+
+func openTables() {
+	tables.settings = set.Table("settings", "name", "value")
+	tables.steps = set.Table("steps", "secure_delete", "step", "what", "file_bytes", "pages", "freelist_pages", "trunk_pages", "freelist_leaves", "table_leaf_pages")
+	tables.deleteStep = set.Table("delete_step", "secure_delete", "rows_deleted", "held_on_leaf_pages", "freelist_pages", "former_leaves_freed", "wal_frames")
+	tables.reuseStep = set.Table("reuse_step", "secure_delete", "new_rows", "new_leaf_pages", "new_leaf_count", "taken_from_freelist")
+	tables.growBatches = set.Table("grow_batches", "secure_delete", "batch", "freelist_before", "freelist_after", "pages_before", "pages_after")
+	tables.residue = set.Table("residue", "secure_delete", "step", "markers_searched", "rows_sought", "rows_found", "pages_with_markers", "roles")
+	tables.largeTransaction = set.Table("large_transaction", "rows_inserted", "deleted_rows", "freelist_before", "page_count_before", "freelist_after", "page_count_after")
+	tables.autoVacuum = set.Table("auto_vacuum", "mode", "pages_created", "pages_after_delete", "freelist_after_delete", "pages_after_incremental_vacuum")
+	tables.walResidue = set.Table("wal_residue", "seq", "location", "rows_readable", "rows_total")
 }
 
 func fatal(what string, err error) {
@@ -2672,18 +3072,6 @@ func (s fileState) freePages() map[int]bool {
 		out[p] = true
 	}
 	return out
-}
-
-func (s fileState) summary() string {
-	return fmt.Sprintf("file %d bytes = %d pages; freelist %d page(s) (trunk %s, %d leaves)", s.size, s.pages, s.freelist, ints(s.trunks), len(s.leaves))
-}
-
-func ints(xs []int) string {
-	parts := make([]string, len(xs))
-	for i, x := range xs {
-		parts[i] = fmt.Sprint(x)
-	}
-	return "[" + strings.Join(parts, " ") + "]"
 }
 
 func compactPages(xs []int) string {
@@ -2764,17 +3152,28 @@ func (f finding) searchOne(s fileState, needle []byte) bool {
 	}
 }
 
-func (f finding) String() string {
+// roles lists the page roles that hold markers, such as "freelist-leaf=49 table-leaf=2".
+func (f finding) roles() any {
 	var roles []string
 	for role, n := range f.byRole {
 		roles = append(roles, fmt.Sprintf("%s=%d", role, n))
 	}
-	sort.Strings(roles)
-	text := fmt.Sprintf("%d of %d deleted rows still readable in the file, on %d page(s)", f.rowsFound, f.rowsSought, len(f.pages))
-	if len(roles) > 0 {
-		text += ": " + strings.Join(roles, " ")
+	if len(roles) == 0 {
+		return nil
 	}
-	return text
+	sort.Strings(roles)
+	return strings.Join(roles, " ")
+}
+
+func spaced(xs []int) any {
+	if len(xs) == 0 {
+		return nil
+	}
+	parts := make([]string, len(xs))
+	for i, x := range xs {
+		parts[i] = fmt.Sprint(x)
+	}
+	return strings.Join(parts, " ")
 }
 
 func open(ctx context.Context, path string, secureDelete bool) *sqlitex.DB {
@@ -2857,6 +3256,14 @@ func walFrames(path string) int {
 	return int((info.Size() - 32) / (24 + pageSize))
 }
 
+func recordStep(label string, step int, what string, s fileState) {
+	tables.steps.Row(label, step, what, s.size, s.pages, s.freelist, spaced(s.trunks), len(s.leaves), len(s.tableLeaf))
+}
+
+func recordResidue(label string, step int, markers string, f finding) {
+	tables.residue.Row(label, step, markers, f.rowsSought, f.rowsFound, len(f.pages), f.roles())
+}
+
 func run(ctx context.Context, dir string, secureDelete bool) outcome {
 	label := "OFF"
 	if secureDelete {
@@ -2866,8 +3273,10 @@ func run(ctx context.Context, dir string, secureDelete bool) outcome {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		fatal("mkdir", err)
 	}
-	fmt.Println()
-	fmt.Printf("== secure_delete=%s (WAL; every step is its own connection, so the file is at rest and checkpointed when it is read)\n", label)
+	part := "A"
+	if secureDelete {
+		part = "B"
+	}
 	var o outcome
 	insert := "INSERT INTO t(id, v) VALUES(?, ?)"
 	session(ctx, path, secureDelete, func(db *sqlitex.DB) {
@@ -2878,7 +3287,7 @@ func run(ctx context.Context, dir string, secureDelete bool) outcome {
 	})
 	base := readState(path)
 	o.sizes = append(o.sizes, base.size)
-	fmt.Printf("1. %d rows of %d-byte blobs (each blob repeats a marker like %q): %s; %d table-leaf pages\n", initialRows, blobBytes, marker("SECRET", 150), base.summary(), len(base.tableLeaf))
+	recordStep(label, 1, "insert the rows", base)
 	var held []int
 	for page, ids := range base.tableLeaf {
 		for _, id := range ids {
@@ -2901,7 +3310,7 @@ func run(ctx context.Context, dir string, secureDelete bool) outcome {
 	})
 	deleted := readState(path)
 	o.sizes = append(o.sizes, deleted.size)
-	fmt.Printf("2. DELETE FROM t WHERE id BETWEEN %d AND %d (%d rows, held on leaf pages %s): %s\n", deleteFirst, deleteLast, deleteLast-deleteFirst+1, compactPages(held), deleted.summary())
+	recordStep(label, 2, "delete rows", deleted)
 	free := deleted.freePages()
 	var freedFromHeld []int
 	for _, p := range held {
@@ -2909,12 +3318,11 @@ func run(ctx context.Context, dir string, secureDelete bool) outcome {
 			freedFromHeld = append(freedFromHeld, p)
 		}
 	}
-	fmt.Printf("   pages now on the freelist: %s; of them, former leaves of the deleted rows: %d\n", compactPages(append(append([]int(nil), deleted.trunks...), deleted.leaves...)), len(freedFromHeld))
-	fmt.Printf("   the DELETE's commit wrote %d WAL frames\n", o.deleteFrames)
-	check(deleted.size == base.size, "the file does not shrink on delete")
-	check(deleted.freelist > 0 && len(freedFromHeld) > 0, "pages emptied by the delete moved to the freelist")
+	tables.deleteStep.Row(label, deleteLast-deleteFirst+1, compactPages(held), compactPages(append(append([]int(nil), deleted.trunks...), deleted.leaves...)), len(freedFromHeld), o.deleteFrames)
+	set.Check(part, deleted.size == base.size, "the file does not shrink on delete")
+	set.Check(part, deleted.freelist > 0 && len(freedFromHeld) > 0, "pages emptied by the delete moved to the freelist")
 	o.afterDelete = searchDeleted(deleted)
-	fmt.Printf("   search for the deleted markers: %s\n", o.afterDelete)
+	recordResidue(label, 2, "SECRET", o.afterDelete)
 
 	session(ctx, path, secureDelete, func(db *sqlitex.DB) {
 		execAll(ctx, db, insert, insertRows("NEW", 1001, reuseRows))
@@ -2933,15 +3341,14 @@ func run(ctx context.Context, dir string, secureDelete bool) outcome {
 			}
 		}
 	}
-	fmt.Printf("3. %d new rows (ids 1001..%d): %s\n", reuseRows, 1000+reuseRows, reused.summary())
-	fmt.Printf("   leaf pages holding the new rows: %s; of them taken from the freelist: %d\n", compactPages(newPages), len(fromFreelist))
-	check(reused.size == base.size, "the new rows fit in the file: its size is unchanged")
-	check(len(newPages) > 0 && len(fromFreelist) == len(newPages), "every leaf page of the new rows is a former freelist page")
+	recordStep(label, 3, "insert new rows", reused)
+	tables.reuseStep.Row(label, reuseRows, compactPages(newPages), len(newPages), len(fromFreelist))
+	set.Check(part, reused.size == base.size, "the new rows fit in the file: its size is unchanged")
+	set.Check(part, len(newPages) > 0 && len(fromFreelist) == len(newPages), "every leaf page of the new rows is a former freelist page")
 	o.afterReuse = searchDeleted(reused)
-	fmt.Printf("   search for the deleted markers: %s\n", o.afterReuse)
+	recordResidue(label, 3, "SECRET", o.afterReuse)
 
 	grewBeforeEmpty := false
-	var growth []string
 	session(ctx, path, secureDelete, func(db *sqlitex.DB) {
 		next := int64(2001)
 		for batch := 1; batch <= growBatches; batch++ {
@@ -2954,23 +3361,14 @@ func run(ctx context.Context, dir string, secureDelete bool) outcome {
 			if pagesAfter > pagesBefore && freeAfter > 0 {
 				grewBeforeEmpty = true
 			}
-			if pagesAfter != pagesBefore || batch == 1 || freeBefore != freeAfter && freeAfter == 0 {
-				growth = append(growth, fmt.Sprintf("batch %d: freelist %d->%d, page_count %d->%d", batch, freeBefore, freeAfter, pagesBefore, pagesAfter))
-			}
+			tables.growBatches.Row(label, batch, freeBefore, freeAfter, pagesBefore, pagesAfter)
 		}
 	})
 	grown := readState(path)
 	o.sizes = append(o.sizes, grown.size)
-	fmt.Printf("4. %d more transactions of %d rows each: %s\n", growBatches, rowsPerTx, grown.summary())
-	for i, line := range growth {
-		if i < 4 || i == len(growth)-1 {
-			fmt.Printf("   %s\n", line)
-		} else if i == 4 {
-			fmt.Printf("   ... (%d more batches that grew the file)\n", len(growth)-5)
-		}
-	}
-	check(!grewBeforeEmpty, "page_count grows only once the freelist is used up: every transaction that added pages ended with an empty freelist")
-	check(grown.size > base.size && grown.freelist == 0, "once the freelist is used up, the file grows")
+	recordStep(label, 4, "grow with more inserts", grown)
+	set.Check(part, !grewBeforeEmpty, "page_count grows only once the freelist is used up: every transaction that added pages ended with an empty freelist")
+	set.Check(part, grown.size > base.size && grown.freelist == 0, "once the freelist is used up, the file grows")
 
 	session(ctx, path, secureDelete, func(db *sqlitex.DB) {
 		if _, err := db.ExecContext(ctx, "DELETE FROM t WHERE id >= 1001"); err != nil {
@@ -2979,10 +3377,10 @@ func run(ctx context.Context, dir string, secureDelete bool) outcome {
 	})
 	again := readState(path)
 	o.sizes = append(o.sizes, again.size)
-	fmt.Printf("5. DELETE FROM t WHERE id >= 1001: %s\n", again.summary())
-	check(again.size == grown.size, "the file still does not shrink")
+	recordStep(label, 5, "delete the new rows", again)
+	set.Check(part, again.size == grown.size, "the file still does not shrink")
 	o.afterSecondDelete = searchMarkers(again, secondDeletion)
-	fmt.Printf("   search for the NEW- and GROW- markers just deleted: %s\n", o.afterSecondDelete)
+	recordResidue(label, 5, "NEW, GROW", o.afterSecondDelete)
 
 	session(ctx, path, secureDelete, func(db *sqlitex.DB) {
 		if _, err := db.ExecContext(ctx, "VACUUM"); err != nil {
@@ -2992,10 +3390,10 @@ func run(ctx context.Context, dir string, secureDelete bool) outcome {
 	vacuumed := readState(path)
 	o.sizes = append(o.sizes, vacuumed.size)
 	o.afterVacuum = searchMarkers(vacuumed, append(append([]markerRange(nil), firstDeletion...), secondDeletion...))
-	fmt.Printf("6. VACUUM: %s\n", vacuumed.summary())
-	fmt.Printf("   search for the deleted markers: %s\n", o.afterVacuum)
-	check(vacuumed.freelist == 0 && vacuumed.pages <= again.pages-again.freelist, fmt.Sprintf("VACUUM is what returns space: %d pages -> %d, at least the %d freelist pages are gone", again.pages, vacuumed.pages, again.freelist))
-	check(o.afterVacuum.rowsFound == 0, "after VACUUM no marker of a row deleted in step 2 or step 5 is left in the file")
+	recordStep(label, 6, "VACUUM", vacuumed)
+	recordResidue(label, 6, "SECRET, NEW, GROW", o.afterVacuum)
+	set.Check(part, vacuumed.freelist == 0 && vacuumed.pages <= again.pages-again.freelist, fmt.Sprintf("VACUUM is what returns space: %d pages -> %d, at least the %d freelist pages are gone", again.pages, vacuumed.pages, again.freelist))
+	set.Check(part, o.afterVacuum.rowsFound == 0, "after VACUUM no marker of a row deleted in step 2 or step 5 is left in the file")
 	return o
 }
 
@@ -3017,8 +3415,6 @@ func execOne(ctx context.Context, db *sqlitex.DB, statement string, args ...any)
 // freelist pages before extending the file on a per-allocation basis, so one
 // transaction can drain the freelist and grow page_count in the same commit.
 func largeTransaction(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== a transaction that needs more pages than the freelist holds (secure_delete=ON, WAL)")
 	path := freshPath(dir, "large-transaction")
 	insert := "INSERT INTO t(id, v) VALUES(?, ?)"
 	var freeBefore, freeAfter, pagesBefore, pagesAfter int
@@ -3030,19 +3426,16 @@ func largeTransaction(ctx context.Context, dir string) {
 		execAll(ctx, db, insert, insertRows("NEW", 101, 32))
 		freeAfter, pagesAfter = pragmaInt(ctx, db, "freelist_count"), pragmaInt(ctx, db, "page_count")
 	})
-	fmt.Printf("40 rows, then DELETE of ids 1..8: freelist %d, page_count %d\n", freeBefore, pagesBefore)
-	fmt.Printf("one transaction of 32 new rows (8 leaves' worth): freelist %d -> %d, page_count %d -> %d\n", freeBefore, freeAfter, pagesBefore, pagesAfter)
-	check(freeBefore > 0 && freeAfter == 0 && pagesAfter > pagesBefore, "a transaction that needs more pages than the freelist holds takes the freelist pages first, then grows the file in the same transaction: so the rule is per page allocation, not per transaction")
+	tables.largeTransaction.Row(32, 8, freeBefore, pagesBefore, freeAfter, pagesAfter)
+	set.Check("D", freeBefore > 0 && freeAfter == 0 && pagesAfter > pagesBefore, "a transaction that needs more pages than the freelist holds takes the freelist pages first, then grows the file in the same transaction: so the rule is per page allocation, not per transaction")
 }
 
 // autoVacuumModes contrasts NONE (default, never shrinks without VACUUM), FULL
 // (relocates pages and truncates during the DELETE's own commit), and
 // INCREMENTAL (keeps freed pages on the freelist until PRAGMA incremental_vacuum).
 func autoVacuumModes(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== auto_vacuum: the file shrinks on its own only when the database was created with auto_vacuum FULL or INCREMENTAL")
 	type result struct{ created, afterDelete, freeAfterDelete, afterIncremental int64 }
-	results := map[string]result{}
+	outcomes := map[string]result{}
 	for _, mode := range []string{sqlitex.AutoVacuumNone, sqlitex.AutoVacuumFull, sqlitex.AutoVacuumIncremental} {
 		path := freshPath(dir, "auto-vacuum-"+strings.ToLower(mode))
 		options := sqlitex.DefaultOptions()
@@ -3083,13 +3476,13 @@ func autoVacuumModes(ctx context.Context, dir string) {
 			execOne(ctx, db, "PRAGMA incremental_vacuum")
 		})
 		r.afterIncremental = pages()
-		results[mode] = r
-		fmt.Printf("  auto_vacuum=%-11s 200 rows: %d pages; DELETE of 150 rows: %d pages, freelist %d; PRAGMA incremental_vacuum: %d pages\n", mode, r.created, r.afterDelete, r.freeAfterDelete, r.afterIncremental)
+		outcomes[mode] = r
+		tables.autoVacuum.Row(mode, r.created, r.afterDelete, r.freeAfterDelete, r.afterIncremental)
 	}
-	none, full, incremental := results[sqlitex.AutoVacuumNone], results[sqlitex.AutoVacuumFull], results[sqlitex.AutoVacuumIncremental]
-	check(none.afterDelete == none.created && none.afterIncremental == none.created && none.freeAfterDelete > 0, "auto_vacuum=NONE (SQLite's default and the recipe's): the file never shrinks on its own; PRAGMA incremental_vacuum does nothing")
-	check(full.afterDelete < full.created && full.freeAfterDelete == 0, "auto_vacuum=FULL: the DELETE's own commit moves pages and truncates the file, leaving no freelist")
-	check(incremental.afterDelete == incremental.created && incremental.freeAfterDelete > 0 && incremental.afterIncremental < incremental.afterDelete, "auto_vacuum=INCREMENTAL: freed pages wait on the freelist until PRAGMA incremental_vacuum truncates the file")
+	none, full, incremental := outcomes[sqlitex.AutoVacuumNone], outcomes[sqlitex.AutoVacuumFull], outcomes[sqlitex.AutoVacuumIncremental]
+	set.Check("E", none.afterDelete == none.created && none.afterIncremental == none.created && none.freeAfterDelete > 0, "auto_vacuum=NONE (SQLite's default and the recipe's): the file never shrinks on its own; PRAGMA incremental_vacuum does nothing")
+	set.Check("E", full.afterDelete < full.created && full.freeAfterDelete == 0, "auto_vacuum=FULL: the DELETE's own commit moves pages and truncates the file, leaving no freelist")
+	set.Check("E", incremental.afterDelete == incremental.created && incremental.freeAfterDelete > 0 && incremental.afterIncremental < incremental.afterDelete, "auto_vacuum=INCREMENTAL: freed pages wait on the freelist until PRAGMA incremental_vacuum truncates the file")
 }
 
 func countMarkers(data []byte, r markerRange) int {
@@ -3106,8 +3499,6 @@ func countMarkers(data []byte, r markerRange) int {
 // does not erase earlier INSERT frames already sitting in -wal until the WAL
 // is reset (for example by wal_checkpoint(TRUNCATE)).
 func walResidue(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== secure_delete=ON and the -wal file (wal_autocheckpoint=0, one connection)")
 	path := freshPath(dir, "wal-residue")
 	options := sqlitex.DefaultOptions()
 	options.SingleConnection = true
@@ -3151,44 +3542,36 @@ func walResidue(ctx context.Context, dir string) {
 	}
 	atRest := countMarkers(image, secrets)
 	total := int(secrets.last - secrets.first + 1)
-	fmt.Printf("%d rows inserted then deleted; deleted rows readable in the -wal: after the DELETE %d of %d, after wal_checkpoint(PASSIVE) %d, after wal_checkpoint(TRUNCATE) %d; in the database file at rest: %d\n", total, afterDelete, total, afterPassive, afterTruncate, atRest)
-	check(afterDelete == total && afterPassive == total, "secure_delete zeroes the database pages, but the -wal still holds the frames the INSERT wrote: every deleted row stays readable there, even after a PASSIVE checkpoint copied the zeroed pages back")
-	check(afterTruncate == 0 && atRest == 0, "only when the WAL is reset (here by wal_checkpoint(TRUNCATE)) are the deleted rows gone from the files on disk")
+	tables.walResidue.Row(1, "-wal after the DELETE", afterDelete, total)
+	tables.walResidue.Row(2, "-wal after wal_checkpoint(PASSIVE)", afterPassive, total)
+	tables.walResidue.Row(3, "-wal after wal_checkpoint(TRUNCATE)", afterTruncate, total)
+	tables.walResidue.Row(4, "database file at rest", atRest, total)
+	set.Check("F", afterDelete == total && afterPassive == total, "secure_delete zeroes the database pages, but the -wal still holds the frames the INSERT wrote: every deleted row stays readable there, even after a PASSIVE checkpoint copied the zeroed pages back")
+	set.Check("F", afterTruncate == 0 && atRest == 0, "only when the WAL is reset (here by wal_checkpoint(TRUNCATE)) are the deleted rows gone from the files on disk")
 }
 
 func main() {
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("3.2")
+	set = results.MustOpen(dir)
+	openTables()
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
-	fmt.Printf("settings: page_size=%d, journal_mode=wal, synchronous=FULL; files are read only after their connection closed\n", pageSize)
+	for _, setting := range [][2]any{{"page_size", pageSize}, {"blob_bytes", blobBytes}, {"initial_rows", initialRows}, {"delete_first", deleteFirst}, {"delete_last", deleteLast}, {"reuse_rows", reuseRows}, {"grow_batches", growBatches}, {"rows_per_tx", rowsPerTx}} {
+		tables.settings.Row(setting[0], setting[1])
+	}
 	off := run(ctx, dir, false)
 	on := run(ctx, dir, true)
-	fmt.Println()
-	fmt.Println("== comparison")
-	fmt.Printf("file sizes, secure_delete=OFF: %v\n", off.sizes)
-	fmt.Printf("file sizes, secure_delete=ON:  %v\n", on.sizes)
-	fmt.Printf("deleted rows readable after the delete: OFF %d, ON %d\n", off.afterDelete.rowsFound, on.afterDelete.rowsFound)
-	fmt.Printf("deleted rows readable after the reuse:  OFF %d, ON %d\n", off.afterReuse.rowsFound, on.afterReuse.rowsFound)
-	fmt.Printf("WAL frames written by the DELETE of %d rows: OFF %d, ON %d\n", deleteLast-deleteFirst+1, off.deleteFrames, on.deleteFrames)
-	check(on.deleteFrames > off.deleteFrames, "secure_delete costs WAL frames: the zeroed pages are written, while without it freed leaf pages are not written at all")
-	check(off.afterDelete.rowsFound > 0, "without secure_delete the deleted payload bytes are still in the file")
-	check(off.afterDelete.byRole["freelist-leaf"] > 0, "without secure_delete freelist leaf pages keep their old content")
-	check(off.afterSecondDelete.rowsFound > 0, "the second delete leaves its rows readable too without secure_delete")
-	check(on.afterDelete.rowsFound == 0 && on.afterReuse.rowsFound == 0 && on.afterSecondDelete.rowsFound == 0, "with secure_delete the deleted payload bytes are nowhere in the database file at rest")
-	check(fmt.Sprint(off.sizes) == fmt.Sprint(on.sizes), "secure_delete changes the bytes, not the layout: file sizes are the same at every step")
+	set.Check("C", on.deleteFrames > off.deleteFrames, "secure_delete costs WAL frames: the zeroed pages are written, while without it freed leaf pages are not written at all")
+	set.Check("C", off.afterDelete.rowsFound > 0, "without secure_delete the deleted payload bytes are still in the file")
+	set.Check("C", off.afterDelete.byRole["freelist-leaf"] > 0, "without secure_delete freelist leaf pages keep their old content")
+	set.Check("C", off.afterSecondDelete.rowsFound > 0, "the second delete leaves its rows readable too without secure_delete")
+	set.Check("C", on.afterDelete.rowsFound == 0 && on.afterReuse.rowsFound == 0 && on.afterSecondDelete.rowsFound == 0, "with secure_delete the deleted payload bytes are nowhere in the database file at rest")
+	set.Check("C", fmt.Sprint(off.sizes) == fmt.Sprint(on.sizes), "secure_delete changes the bytes, not the layout: file sizes are the same at every step")
 	largeTransaction(ctx, dir)
 	autoVacuumModes(ctx, dir)
 	walResidue(ctx, dir)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("DELETE AND REUSE FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("DELETE AND REUSE OK")
+	set.Finish("DELETE AND REUSE")
 }
 
 func displayPath(path string) string {
@@ -3207,122 +3590,439 @@ func displayPath(path string) string {
 }
 ```
 
-Run from the repository root:
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
 
-```text
-go run ./ch03-btrees-and-page-management/experiments/3.2-delete-and-reuse
+<!-- include: experiments/3.2-delete-and-reuse/report.sql -->
+```sql
+-- Walkthrough of experiment 3.2. Run it with:
+--   go run ./cmd/course run 3.2        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   settings           the constants of the experiment, one row per name
+--   steps              the file at rest after each of six steps, per secure_delete setting
+--   delete_step        step 2 in detail: the pages that held the rows, the freelist, the WAL frames
+--   reuse_step         step 3 in detail: the leaf pages of the new rows and where they came from
+--   grow_batches       step 4: one row per transaction of 4 rows, with freelist and page_count around it
+--   residue            one row per search of the file for the markers of deleted rows
+--   large_transaction  part D: the one transaction that needs more pages than the freelist holds
+--   auto_vacuum        part E: one row per auto_vacuum mode
+--   wal_residue        part F: deleted rows still readable in the -wal, by moment
+--   checks             every claim the experiment asserted (the runner lists it last)
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  3.2  Does a DELETE return space or erase bytes?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'Table t(id INTEGER PRIMARY KEY, v BLOB). Each blob is 1000 bytes and repeats'
+.print 'a marker such as SECRET-000150, so a deleted row can be searched for in the'
+.print 'file. Parts A and B run the same six steps with secure_delete=OFF and ON.'
+.print 'Every step is its own connection, so the file is at rest and checkpointed'
+.print 'when it is read. Settings: journal_mode=wal, synchronous=FULL.'
+.print
+.print 'The constants:'
+
+SELECT name, value FROM settings ORDER BY name;
+
+.print
+.print '── A. secure_delete=OFF (the default) ─────────────────────────────'
+.print
+.print 'A1. The file after each step. Steps: 1 insert the rows, 2 delete ids 99..302,'
+.print '    3 insert 100 new rows (ids 1001..1100), 4 insert 30 transactions of 4 rows,'
+.print '    5 delete ids >= 1001, 6 VACUUM. Only VACUUM makes the file smaller.'
+
+SELECT step, what, file_bytes, pages, freelist_pages,
+       trunk_pages AS trunk, freelist_leaves, table_leaf_pages
+FROM steps WHERE secure_delete = 'OFF' ORDER BY step;
+
+.print
+.print 'A2. Step 2: the delete empties leaf pages and moves them to the freelist.'
+.print '    Compare held_on_leaf_pages with freelist_pages. wal_frames is what the'
+.print '    commit of the DELETE wrote to the -wal.'
+
+SELECT rows_deleted, held_on_leaf_pages, freelist_pages, former_leaves_freed, wal_frames
+FROM delete_step WHERE secure_delete = 'OFF';
+
+.print
+.print 'A3. Step 3: the new rows go into former freelist pages, so the file does not grow.'
+
+SELECT new_rows, new_leaf_pages, new_leaf_count, taken_from_freelist
+FROM reuse_step WHERE secure_delete = 'OFF';
+
+.print
+.print 'A4. Step 4: page_count grows only when the freelist is empty. Batch 1, every'
+.print '    batch that grew the file, and the batch that emptied the freelist:'
+
+SELECT batch, freelist_before, freelist_after, pages_before, pages_after
+FROM grow_batches
+WHERE secure_delete = 'OFF'
+  AND (batch = 1 OR pages_after <> pages_before
+       OR (freelist_before <> freelist_after AND freelist_after = 0))
+ORDER BY batch;
+
+.print
+.print 'A5. Searching the file at rest for the markers of the deleted rows. roles names'
+.print '    the kind of page each marker was found on.'
+
+SELECT step, markers_searched, rows_sought, rows_found, pages_with_markers, roles
+FROM residue WHERE secure_delete = 'OFF' ORDER BY step;
+
+.print
+.print '── B. secure_delete=ON ─────────────────────────────'
+.print
+.print 'B1. The file after each step. Steps: 1 insert the rows, 2 delete ids 99..302,'
+.print '    3 insert 100 new rows (ids 1001..1100), 4 insert 30 transactions of 4 rows,'
+.print '    5 delete ids >= 1001, 6 VACUUM. Only VACUUM makes the file smaller.'
+
+SELECT step, what, file_bytes, pages, freelist_pages,
+       trunk_pages AS trunk, freelist_leaves, table_leaf_pages
+FROM steps WHERE secure_delete = 'ON' ORDER BY step;
+
+.print
+.print 'B2. Step 2: the delete empties leaf pages and moves them to the freelist.'
+.print '    Compare held_on_leaf_pages with freelist_pages. wal_frames is what the'
+.print '    commit of the DELETE wrote to the -wal.'
+
+SELECT rows_deleted, held_on_leaf_pages, freelist_pages, former_leaves_freed, wal_frames
+FROM delete_step WHERE secure_delete = 'ON';
+
+.print
+.print 'B3. Step 3: the new rows go into former freelist pages, so the file does not grow.'
+
+SELECT new_rows, new_leaf_pages, new_leaf_count, taken_from_freelist
+FROM reuse_step WHERE secure_delete = 'ON';
+
+.print
+.print 'B4. Step 4: page_count grows only when the freelist is empty. Batch 1, every'
+.print '    batch that grew the file, and the batch that emptied the freelist:'
+
+SELECT batch, freelist_before, freelist_after, pages_before, pages_after
+FROM grow_batches
+WHERE secure_delete = 'ON'
+  AND (batch = 1 OR pages_after <> pages_before
+       OR (freelist_before <> freelist_after AND freelist_after = 0))
+ORDER BY batch;
+
+.print
+.print 'B5. Searching the file at rest for the markers of the deleted rows. roles names'
+.print '    the kind of page each marker was found on.'
+
+SELECT step, markers_searched, rows_sought, rows_found, pages_with_markers, roles
+FROM residue WHERE secure_delete = 'ON' ORDER BY step;
+
+.print
+.print '── C. Comparison ───────────────────────────────────────────────────────'
+.print
+.print 'C1. secure_delete changes the bytes, not the layout: the file size after each'
+.print '    step is the same in both runs.'
+
+SELECT step, what,
+       max(file_bytes) FILTER (secure_delete = 'OFF') AS bytes_off,
+       max(file_bytes) FILTER (secure_delete = 'ON')  AS bytes_on
+FROM steps GROUP BY step, what ORDER BY step;
+
+.print
+.print 'C2. What a reader of the file finds, and what the DELETE cost in WAL frames:'
+
+SELECT d.secure_delete,
+       max(r.rows_found) FILTER (r.step = 2) AS readable_after_delete,
+       max(r.rows_found) FILTER (r.step = 3) AS readable_after_reuse,
+       max(r.rows_found) FILTER (r.step = 5) AS readable_after_second_delete,
+       any_value(d.wal_frames)               AS delete_wal_frames
+FROM delete_step d JOIN residue r USING (secure_delete)
+GROUP BY d.secure_delete ORDER BY d.secure_delete;
+
+.print
+.print '── D. A transaction that needs more pages than the freelist holds ──────'
+.print
+.print 'secure_delete=ON, WAL. 40 rows, DELETE of ids 1..8, then one transaction of 32'
+.print 'new rows (8 leaves worth). It takes the freelist pages first and then grows'
+.print 'the file, all in one transaction.'
+
+SELECT rows_inserted, deleted_rows,
+       freelist_before, freelist_after, page_count_before, page_count_after
+FROM large_transaction;
+
+.print
+.print '── E. auto_vacuum ──────────────────────────────────────────────────────'
+.print
+.print 'The file shrinks on its own only when the database was created with'
+.print 'auto_vacuum FULL or INCREMENTAL. Each mode: 200 rows, DELETE of 150 rows,'
+.print 'then PRAGMA incremental_vacuum, each in its own connection.'
+
+SELECT mode, pages_created, pages_after_delete, freelist_after_delete, pages_after_incremental_vacuum
+FROM auto_vacuum
+ORDER BY CASE mode WHEN 'NONE' THEN 1 WHEN 'FULL' THEN 2 ELSE 3 END;
+
+.print
+.print '── F. secure_delete=ON and the -wal file ───────────────────────────────'
+.print
+.print 'wal_autocheckpoint=0, one connection. 40 rows are inserted, then deleted. How'
+.print 'many of the 40 deleted rows can still be read in the -wal, and in the database'
+.print 'file at rest?'
+
+SELECT location, rows_readable, rows_total FROM wal_residue ORDER BY seq;
 ```
 
-Captured evidence:
+Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
+
+```text
+go run ./cmd/course run 3.2
+```
+
+Add `-i` (`go run ./cmd/course run -i 3.2`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/3.2-delete-and-reuse/`](evidence/3.2-delete-and-reuse/), and `go run ./cmd/course check evidence ch03` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/3.2-delete-and-reuse.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/3.2
-settings: page_size=4096, journal_mode=wal, synchronous=FULL; files are read only after their connection closed
 
-== secure_delete=OFF (WAL; every step is its own connection, so the file is at rest and checkpointed when it is read)
-1. 400 rows of 1000-byte blobs (each blob repeats a marker like "SECRET-000150"): file 417792 bytes = 102 pages; freelist 0 page(s) (trunk [], 0 leaves); 100 table-leaf pages
-2. DELETE FROM t WHERE id BETWEEN 99 AND 302 (204 rows, held on leaf pages 27-78): file 417792 bytes = 102 pages; freelist 50 page(s) (trunk [29], 49 leaves)
-   pages now on the freelist: 29-78; of them, former leaves of the deleted rows: 50
-   the DELETE's commit wrote 5 WAL frames
-check ok: the file does not shrink on delete
-check ok: pages emptied by the delete moved to the freelist
-   search for the deleted markers: 199 of 204 deleted rows still readable in the file, on 52 page(s): freelist-leaf=49 freelist-trunk=1 table-leaf=2
-3. 100 new rows (ids 1001..1100): file 417792 bytes = 102 pages; freelist 25 page(s) (trunk [29], 24 leaves)
-   leaf pages holding the new rows: 30,55-78; of them taken from the freelist: 25
-check ok: the new rows fit in the file: its size is unchanged
-check ok: every leaf page of the new rows is a former freelist page
-   search for the deleted markers: 104 of 204 deleted rows still readable in the file, on 27 page(s): freelist-leaf=24 freelist-trunk=1 table-leaf=2
-4. 30 more transactions of 4 rows each: file 438272 bytes = 107 pages; freelist 0 page(s) (trunk [], 0 leaves)
-   batch 1: freelist 25->24, page_count 102->102
-   batch 25: freelist 1->0, page_count 102->102
-   batch 26: freelist 0->0, page_count 102->103
-   batch 27: freelist 0->0, page_count 103->104
-   ... (2 more batches that grew the file)
-   batch 30: freelist 0->0, page_count 106->107
-check ok: page_count grows only once the freelist is used up: every transaction that added pages ended with an empty freelist
-check ok: once the freelist is used up, the file grows
-5. DELETE FROM t WHERE id >= 1001: file 438272 bytes = 107 pages; freelist 55 page(s) (trunk [102], 54 leaves)
-check ok: the file still does not shrink
-   search for the NEW- and GROW- markers just deleted: 217 of 220 deleted rows still readable in the file, on 55 page(s): freelist-leaf=54 freelist-trunk=1
-6. VACUUM: file 208896 bytes = 51 pages; freelist 0 page(s) (trunk [], 0 leaves)
-   search for the deleted markers: 0 of 424 deleted rows still readable in the file, on 0 page(s)
-check ok: VACUUM is what returns space: 107 pages -> 51, at least the 55 freelist pages are gone
-check ok: after VACUUM no marker of a row deleted in step 2 or step 5 is left in the file
+════════════════════════════════════════════════════════════════════════
+  3.2  Does a DELETE return space or erase bytes?
+════════════════════════════════════════════════════════════════════════
 
-== secure_delete=ON (WAL; every step is its own connection, so the file is at rest and checkpointed when it is read)
-1. 400 rows of 1000-byte blobs (each blob repeats a marker like "SECRET-000150"): file 417792 bytes = 102 pages; freelist 0 page(s) (trunk [], 0 leaves); 100 table-leaf pages
-2. DELETE FROM t WHERE id BETWEEN 99 AND 302 (204 rows, held on leaf pages 27-78): file 417792 bytes = 102 pages; freelist 50 page(s) (trunk [29], 49 leaves)
-   pages now on the freelist: 29-78; of them, former leaves of the deleted rows: 50
-   the DELETE's commit wrote 54 WAL frames
-check ok: the file does not shrink on delete
-check ok: pages emptied by the delete moved to the freelist
-   search for the deleted markers: 0 of 204 deleted rows still readable in the file, on 0 page(s)
-3. 100 new rows (ids 1001..1100): file 417792 bytes = 102 pages; freelist 25 page(s) (trunk [29], 24 leaves)
-   leaf pages holding the new rows: 30,55-78; of them taken from the freelist: 25
-check ok: the new rows fit in the file: its size is unchanged
-check ok: every leaf page of the new rows is a former freelist page
-   search for the deleted markers: 0 of 204 deleted rows still readable in the file, on 0 page(s)
-4. 30 more transactions of 4 rows each: file 438272 bytes = 107 pages; freelist 0 page(s) (trunk [], 0 leaves)
-   batch 1: freelist 25->24, page_count 102->102
-   batch 25: freelist 1->0, page_count 102->102
-   batch 26: freelist 0->0, page_count 102->103
-   batch 27: freelist 0->0, page_count 103->104
-   ... (2 more batches that grew the file)
-   batch 30: freelist 0->0, page_count 106->107
-check ok: page_count grows only once the freelist is used up: every transaction that added pages ended with an empty freelist
-check ok: once the freelist is used up, the file grows
-5. DELETE FROM t WHERE id >= 1001: file 438272 bytes = 107 pages; freelist 55 page(s) (trunk [102], 54 leaves)
-check ok: the file still does not shrink
-   search for the NEW- and GROW- markers just deleted: 0 of 220 deleted rows still readable in the file, on 0 page(s)
-6. VACUUM: file 208896 bytes = 51 pages; freelist 0 page(s) (trunk [], 0 leaves)
-   search for the deleted markers: 0 of 424 deleted rows still readable in the file, on 0 page(s)
-check ok: VACUUM is what returns space: 107 pages -> 51, at least the 55 freelist pages are gone
-check ok: after VACUUM no marker of a row deleted in step 2 or step 5 is left in the file
+Table t(id INTEGER PRIMARY KEY, v BLOB). Each blob is 1000 bytes and repeats
+a marker such as SECRET-000150, so a deleted row can be searched for in the
+file. Parts A and B run the same six steps with secure_delete=OFF and ON.
+Every step is its own connection, so the file is at rest and checkpointed
+when it is read. Settings: journal_mode=wal, synchronous=FULL.
 
-== comparison
-file sizes, secure_delete=OFF: [417792 417792 417792 438272 438272 208896]
-file sizes, secure_delete=ON:  [417792 417792 417792 438272 438272 208896]
-deleted rows readable after the delete: OFF 199, ON 0
-deleted rows readable after the reuse:  OFF 104, ON 0
-WAL frames written by the DELETE of 204 rows: OFF 5, ON 54
-check ok: secure_delete costs WAL frames: the zeroed pages are written, while without it freed leaf pages are not written at all
-check ok: without secure_delete the deleted payload bytes are still in the file
-check ok: without secure_delete freelist leaf pages keep their old content
-check ok: the second delete leaves its rows readable too without secure_delete
-check ok: with secure_delete the deleted payload bytes are nowhere in the database file at rest
-check ok: secure_delete changes the bytes, not the layout: file sizes are the same at every step
+The constants:
+┌──────────────┬───────┐
+│     name     │ value │
+├──────────────┼───────┤
+│ blob_bytes   │ 1000  │
+│ delete_first │ 99    │
+│ delete_last  │ 302   │
+│ grow_batches │ 30    │
+│ initial_rows │ 400   │
+│ page_size    │ 4096  │
+│ reuse_rows   │ 100   │
+│ rows_per_tx  │ 4     │
+└──────────────┴───────┘
 
-== a transaction that needs more pages than the freelist holds (secure_delete=ON, WAL)
-40 rows, then DELETE of ids 1..8: freelist 2, page_count 12
-one transaction of 32 new rows (8 leaves' worth): freelist 2 -> 0, page_count 12 -> 18
-check ok: a transaction that needs more pages than the freelist holds takes the freelist pages first, then grows the file in the same transaction: so the rule is per page allocation, not per transaction
+── A. secure_delete=OFF (the default) ─────────────────────────────
 
-== auto_vacuum: the file shrinks on its own only when the database was created with auto_vacuum FULL or INCREMENTAL
-  auto_vacuum=NONE        200 rows: 52 pages; DELETE of 150 rows: 52 pages, freelist 37; PRAGMA incremental_vacuum: 52 pages
-  auto_vacuum=FULL        200 rows: 53 pages; DELETE of 150 rows: 16 pages, freelist 0; PRAGMA incremental_vacuum: 16 pages
-  auto_vacuum=INCREMENTAL 200 rows: 53 pages; DELETE of 150 rows: 53 pages, freelist 37; PRAGMA incremental_vacuum: 16 pages
-check ok: auto_vacuum=NONE (SQLite's default and the recipe's): the file never shrinks on its own; PRAGMA incremental_vacuum does nothing
-check ok: auto_vacuum=FULL: the DELETE's own commit moves pages and truncates the file, leaving no freelist
-check ok: auto_vacuum=INCREMENTAL: freed pages wait on the freelist until PRAGMA incremental_vacuum truncates the file
+A1. The file after each step. Steps: 1 insert the rows, 2 delete ids 99..302,
+    3 insert 100 new rows (ids 1001..1100), 4 insert 30 transactions of 4 rows,
+    5 delete ids >= 1001, 6 VACUUM. Only VACUUM makes the file smaller.
+┌──────┬────────────────────────┬────────────┬───────┬────────────────┬───────┬─────────────────┬──────────────────┐
+│ step │          what          │ file_bytes │ pages │ freelist_pages │ trunk │ freelist_leaves │ table_leaf_pages │
+├──────┼────────────────────────┼────────────┼───────┼────────────────┼───────┼─────────────────┼──────────────────┤
+│ 1    │ insert the rows        │ 417792     │ 102   │ 0              │       │ 0               │ 100              │
+│ 2    │ delete rows            │ 417792     │ 102   │ 50             │ 29    │ 49              │ 50               │
+│ 3    │ insert new rows        │ 417792     │ 102   │ 25             │ 29    │ 24              │ 75               │
+│ 4    │ grow with more inserts │ 438272     │ 107   │ 0              │       │ 0               │ 105              │
+│ 5    │ delete the new rows    │ 438272     │ 107   │ 55             │ 102   │ 54              │ 50               │
+│ 6    │ VACUUM                 │ 208896     │ 51    │ 0              │       │ 0               │ 49               │
+└──────┴────────────────────────┴────────────┴───────┴────────────────┴───────┴─────────────────┴──────────────────┘
 
-== secure_delete=ON and the -wal file (wal_autocheckpoint=0, one connection)
-40 rows inserted then deleted; deleted rows readable in the -wal: after the DELETE 40 of 40, after wal_checkpoint(PASSIVE) 40, after wal_checkpoint(TRUNCATE) 0; in the database file at rest: 0
-check ok: secure_delete zeroes the database pages, but the -wal still holds the frames the INSERT wrote: every deleted row stays readable there, even after a PASSIVE checkpoint copied the zeroed pages back
-check ok: only when the WAL is reset (here by wal_checkpoint(TRUNCATE)) are the deleted rows gone from the files on disk
+A2. Step 2: the delete empties leaf pages and moves them to the freelist.
+    Compare held_on_leaf_pages with freelist_pages. wal_frames is what the
+    commit of the DELETE wrote to the -wal.
+┌──────────────┬────────────────────┬────────────────┬─────────────────────┬────────────┐
+│ rows_deleted │ held_on_leaf_pages │ freelist_pages │ former_leaves_freed │ wal_frames │
+├──────────────┼────────────────────┼────────────────┼─────────────────────┼────────────┤
+│ 204          │ 27-78              │ 29-78          │ 50                  │ 5          │
+└──────────────┴────────────────────┴────────────────┴─────────────────────┴────────────┘
 
-DELETE AND REUSE OK
+A3. Step 3: the new rows go into former freelist pages, so the file does not grow.
+┌──────────┬────────────────┬────────────────┬─────────────────────┐
+│ new_rows │ new_leaf_pages │ new_leaf_count │ taken_from_freelist │
+├──────────┼────────────────┼────────────────┼─────────────────────┤
+│ 100      │ 30,55-78       │ 25             │ 25                  │
+└──────────┴────────────────┴────────────────┴─────────────────────┘
+
+A4. Step 4: page_count grows only when the freelist is empty. Batch 1, every
+    batch that grew the file, and the batch that emptied the freelist:
+┌───────┬─────────────────┬────────────────┬──────────────┬─────────────┐
+│ batch │ freelist_before │ freelist_after │ pages_before │ pages_after │
+├───────┼─────────────────┼────────────────┼──────────────┼─────────────┤
+│ 1     │ 25              │ 24             │ 102          │ 102         │
+│ 25    │ 1               │ 0              │ 102          │ 102         │
+│ 26    │ 0               │ 0              │ 102          │ 103         │
+│ 27    │ 0               │ 0              │ 103          │ 104         │
+│ 28    │ 0               │ 0              │ 104          │ 105         │
+│ 29    │ 0               │ 0              │ 105          │ 106         │
+│ 30    │ 0               │ 0              │ 106          │ 107         │
+└───────┴─────────────────┴────────────────┴──────────────┴─────────────┘
+
+A5. Searching the file at rest for the markers of the deleted rows. roles names
+    the kind of page each marker was found on.
+┌──────┬───────────────────┬─────────────┬────────────┬────────────────────┬────────────────────────────────────────────────┐
+│ step │ markers_searched  │ rows_sought │ rows_found │ pages_with_markers │                     roles                      │
+├──────┼───────────────────┼─────────────┼────────────┼────────────────────┼────────────────────────────────────────────────┤
+│ 2    │ SECRET            │ 204         │ 199        │ 52                 │ freelist-leaf=49 freelist-trunk=1 table-leaf=2 │
+│ 3    │ SECRET            │ 204         │ 104        │ 27                 │ freelist-leaf=24 freelist-trunk=1 table-leaf=2 │
+│ 5    │ NEW, GROW         │ 220         │ 217        │ 55                 │ freelist-leaf=54 freelist-trunk=1              │
+│ 6    │ SECRET, NEW, GROW │ 424         │ 0          │ 0                  │                                                │
+└──────┴───────────────────┴─────────────┴────────────┴────────────────────┴────────────────────────────────────────────────┘
+
+── B. secure_delete=ON ─────────────────────────────
+
+B1. The file after each step. Steps: 1 insert the rows, 2 delete ids 99..302,
+    3 insert 100 new rows (ids 1001..1100), 4 insert 30 transactions of 4 rows,
+    5 delete ids >= 1001, 6 VACUUM. Only VACUUM makes the file smaller.
+┌──────┬────────────────────────┬────────────┬───────┬────────────────┬───────┬─────────────────┬──────────────────┐
+│ step │          what          │ file_bytes │ pages │ freelist_pages │ trunk │ freelist_leaves │ table_leaf_pages │
+├──────┼────────────────────────┼────────────┼───────┼────────────────┼───────┼─────────────────┼──────────────────┤
+│ 1    │ insert the rows        │ 417792     │ 102   │ 0              │       │ 0               │ 100              │
+│ 2    │ delete rows            │ 417792     │ 102   │ 50             │ 29    │ 49              │ 50               │
+│ 3    │ insert new rows        │ 417792     │ 102   │ 25             │ 29    │ 24              │ 75               │
+│ 4    │ grow with more inserts │ 438272     │ 107   │ 0              │       │ 0               │ 105              │
+│ 5    │ delete the new rows    │ 438272     │ 107   │ 55             │ 102   │ 54              │ 50               │
+│ 6    │ VACUUM                 │ 208896     │ 51    │ 0              │       │ 0               │ 49               │
+└──────┴────────────────────────┴────────────┴───────┴────────────────┴───────┴─────────────────┴──────────────────┘
+
+B2. Step 2: the delete empties leaf pages and moves them to the freelist.
+    Compare held_on_leaf_pages with freelist_pages. wal_frames is what the
+    commit of the DELETE wrote to the -wal.
+┌──────────────┬────────────────────┬────────────────┬─────────────────────┬────────────┐
+│ rows_deleted │ held_on_leaf_pages │ freelist_pages │ former_leaves_freed │ wal_frames │
+├──────────────┼────────────────────┼────────────────┼─────────────────────┼────────────┤
+│ 204          │ 27-78              │ 29-78          │ 50                  │ 54         │
+└──────────────┴────────────────────┴────────────────┴─────────────────────┴────────────┘
+
+B3. Step 3: the new rows go into former freelist pages, so the file does not grow.
+┌──────────┬────────────────┬────────────────┬─────────────────────┐
+│ new_rows │ new_leaf_pages │ new_leaf_count │ taken_from_freelist │
+├──────────┼────────────────┼────────────────┼─────────────────────┤
+│ 100      │ 30,55-78       │ 25             │ 25                  │
+└──────────┴────────────────┴────────────────┴─────────────────────┘
+
+B4. Step 4: page_count grows only when the freelist is empty. Batch 1, every
+    batch that grew the file, and the batch that emptied the freelist:
+┌───────┬─────────────────┬────────────────┬──────────────┬─────────────┐
+│ batch │ freelist_before │ freelist_after │ pages_before │ pages_after │
+├───────┼─────────────────┼────────────────┼──────────────┼─────────────┤
+│ 1     │ 25              │ 24             │ 102          │ 102         │
+│ 25    │ 1               │ 0              │ 102          │ 102         │
+│ 26    │ 0               │ 0              │ 102          │ 103         │
+│ 27    │ 0               │ 0              │ 103          │ 104         │
+│ 28    │ 0               │ 0              │ 104          │ 105         │
+│ 29    │ 0               │ 0              │ 105          │ 106         │
+│ 30    │ 0               │ 0              │ 106          │ 107         │
+└───────┴─────────────────┴────────────────┴──────────────┴─────────────┘
+
+B5. Searching the file at rest for the markers of the deleted rows. roles names
+    the kind of page each marker was found on.
+┌──────┬───────────────────┬─────────────┬────────────┬────────────────────┬───────┐
+│ step │ markers_searched  │ rows_sought │ rows_found │ pages_with_markers │ roles │
+├──────┼───────────────────┼─────────────┼────────────┼────────────────────┼───────┤
+│ 2    │ SECRET            │ 204         │ 0          │ 0                  │       │
+│ 3    │ SECRET            │ 204         │ 0          │ 0                  │       │
+│ 5    │ NEW, GROW         │ 220         │ 0          │ 0                  │       │
+│ 6    │ SECRET, NEW, GROW │ 424         │ 0          │ 0                  │       │
+└──────┴───────────────────┴─────────────┴────────────┴────────────────────┴───────┘
+
+── C. Comparison ───────────────────────────────────────────────────────
+
+C1. secure_delete changes the bytes, not the layout: the file size after each
+    step is the same in both runs.
+┌──────┬────────────────────────┬───────────┬──────────┐
+│ step │          what          │ bytes_off │ bytes_on │
+├──────┼────────────────────────┼───────────┼──────────┤
+│ 1    │ insert the rows        │ 417792    │ 417792   │
+│ 2    │ delete rows            │ 417792    │ 417792   │
+│ 3    │ insert new rows        │ 417792    │ 417792   │
+│ 4    │ grow with more inserts │ 438272    │ 438272   │
+│ 5    │ delete the new rows    │ 438272    │ 438272   │
+│ 6    │ VACUUM                 │ 208896    │ 208896   │
+└──────┴────────────────────────┴───────────┴──────────┘
+
+C2. What a reader of the file finds, and what the DELETE cost in WAL frames:
+┌───────────────┬───────────────────────┬──────────────────────┬──────────────────────────────┬───────────────────┐
+│ secure_delete │ readable_after_delete │ readable_after_reuse │ readable_after_second_delete │ delete_wal_frames │
+├───────────────┼───────────────────────┼──────────────────────┼──────────────────────────────┼───────────────────┤
+│ OFF           │ 199                   │ 104                  │ 217                          │ 5                 │
+│ ON            │ 0                     │ 0                    │ 0                            │ 54                │
+└───────────────┴───────────────────────┴──────────────────────┴──────────────────────────────┴───────────────────┘
+
+── D. A transaction that needs more pages than the freelist holds ──────
+
+secure_delete=ON, WAL. 40 rows, DELETE of ids 1..8, then one transaction of 32
+new rows (8 leaves worth). It takes the freelist pages first and then grows
+the file, all in one transaction.
+┌───────────────┬──────────────┬─────────────────┬────────────────┬───────────────────┬──────────────────┐
+│ rows_inserted │ deleted_rows │ freelist_before │ freelist_after │ page_count_before │ page_count_after │
+├───────────────┼──────────────┼─────────────────┼────────────────┼───────────────────┼──────────────────┤
+│ 32            │ 8            │ 2               │ 0              │ 12                │ 18               │
+└───────────────┴──────────────┴─────────────────┴────────────────┴───────────────────┴──────────────────┘
+
+── E. auto_vacuum ──────────────────────────────────────────────────────
+
+The file shrinks on its own only when the database was created with
+auto_vacuum FULL or INCREMENTAL. Each mode: 200 rows, DELETE of 150 rows,
+then PRAGMA incremental_vacuum, each in its own connection.
+┌─────────────┬───────────────┬────────────────────┬───────────────────────┬────────────────────────────────┐
+│    mode     │ pages_created │ pages_after_delete │ freelist_after_delete │ pages_after_incremental_vacuum │
+├─────────────┼───────────────┼────────────────────┼───────────────────────┼────────────────────────────────┤
+│ NONE        │ 52            │ 52                 │ 37                    │ 52                             │
+│ FULL        │ 53            │ 16                 │ 0                     │ 16                             │
+│ INCREMENTAL │ 53            │ 53                 │ 37                    │ 16                             │
+└─────────────┴───────────────┴────────────────────┴───────────────────────┴────────────────────────────────┘
+
+── F. secure_delete=ON and the -wal file ───────────────────────────────
+
+wal_autocheckpoint=0, one connection. 40 rows are inserted, then deleted. How
+many of the 40 deleted rows can still be read in the -wal, and in the database
+file at rest?
+┌─────────────────────────────────────┬───────────────┬────────────┐
+│              location               │ rows_readable │ rows_total │
+├─────────────────────────────────────┼───────────────┼────────────┤
+│ -wal after the DELETE               │ 40            │ 40         │
+│ -wal after wal_checkpoint(PASSIVE)  │ 40            │ 40         │
+│ -wal after wal_checkpoint(TRUNCATE) │ 0             │ 40         │
+│ database file at rest               │ 0             │ 40         │
+└─────────────────────────────────────┴───────────────┴────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the file does not shrink on delete
+A  ✓  pages emptied by the delete moved to the freelist
+A  ✓  the new rows fit in the file: its size is unchanged
+A  ✓  every leaf page of the new rows is a former freelist page
+A  ✓  page_count grows only once the freelist is used up: every transaction that added pages ended with an empty freelist
+A  ✓  once the freelist is used up, the file grows
+A  ✓  the file still does not shrink
+A  ✓  VACUUM is what returns space: 107 pages -> 51, at least the 55 freelist pages are gone
+A  ✓  after VACUUM no marker of a row deleted in step 2 or step 5 is left in the file
+B  ✓  the file does not shrink on delete
+B  ✓  pages emptied by the delete moved to the freelist
+B  ✓  the new rows fit in the file: its size is unchanged
+B  ✓  every leaf page of the new rows is a former freelist page
+B  ✓  page_count grows only once the freelist is used up: every transaction that added pages ended with an empty freelist
+B  ✓  once the freelist is used up, the file grows
+B  ✓  the file still does not shrink
+B  ✓  VACUUM is what returns space: 107 pages -> 51, at least the 55 freelist pages are gone
+B  ✓  after VACUUM no marker of a row deleted in step 2 or step 5 is left in the file
+C  ✓  secure_delete costs WAL frames: the zeroed pages are written, while without it freed leaf pages are not written at all
+C  ✓  without secure_delete the deleted payload bytes are still in the file
+C  ✓  without secure_delete freelist leaf pages keep their old content
+C  ✓  the second delete leaves its rows readable too without secure_delete
+C  ✓  with secure_delete the deleted payload bytes are nowhere in the database file at rest
+C  ✓  secure_delete changes the bytes, not the layout: file sizes are the same at every step
+D  ✓  a transaction that needs more pages than the freelist holds takes the freelist pages first, then grows the file in the same transaction: so the rule is per page allocation, not per transaction
+E  ✓  auto_vacuum=NONE (SQLite's default and the recipe's): the file never shrinks on its own; PRAGMA incremental_vacuum does nothing
+E  ✓  auto_vacuum=FULL: the DELETE's own commit moves pages and truncates the file, leaving no freelist
+E  ✓  auto_vacuum=INCREMENTAL: freed pages wait on the freelist until PRAGMA incremental_vacuum truncates the file
+F  ✓  secure_delete zeroes the database pages, but the -wal still holds the frames the INSERT wrote: every deleted row stays readable there, even after a PASSIVE checkpoint copied the zeroed pages back
+F  ✓  only when the WAL is reset (here by wal_checkpoint(TRUNCATE)) are the deleted rows gone from the files on disk
+
+30 of 30 claims hold
+
+Experiment verdict: DELETE AND REUSE OK
 ```
 
 **Reading the evidence:**
 
-- **Initial state and `DELETE` under `secure_delete=OFF` (lines 5–12).** Inserting `400` rows of 1,000-byte blobs (each repeating a marker such as `SECRET-000150`) produces a `417,792`-byte (`102`-page) file: page 1, root page 2, and `100` table leaves of 4 rows each. Deleting ids `99..302` (`204` rows, originally spanning leaves `27..78`) leaves the file size unchanged at `417,792` bytes (`102` pages) and moves `50` pages (`29..78`, all former leaves of the deleted rows) onto the freelist: trunk `[29]` plus `49` freelist leaves. Scanning the closed file finds **`199` of `204` deleted rows still readable** across `52` pages: `49` freelist leaves, `1` freelist trunk (whose bytes after offset `8 + 49×4` were never overwritten), and `2` live table leaves (`27` and `78`, which each kept 2 surviving rows plus freeblocks holding the deleted rows' bytes). That `DELETE` commit wrote only **`5` WAL frames** (page 1, root 2, trunk 29, and the two partial leaves 27 and 78): `freePage2` marked all 49 freelist leaves `PGHDR_DONT_WRITE` via `sqlite3PagerDontWrite`.
-- **Freelist reuse, growth, second delete, and `VACUUM` (lines 13–33).** Inserting `100` new rows (`ids 1001..1100`) keeps the file at `417,792` bytes (`102` pages) and drops the freelist from `50` to `25`: all `25` new leaf pages (`30, 55-78`) came straight from the freelist, while `104` of the `204` deleted rows remain readable on `27` pages (`24` freelist leaves, `1` trunk, `2` live leaves). Next, `30` batches of 4 rows drain the remaining `25` freelist pages one per batch (`batch 1`: freelist `25->24`, `page_count 102->102`; `batch 25`: `1->0`, `102->102`), and only `batches 26..30` grow the file (`102->107` pages, `438,272` bytes). Deleting `id >= 1001` (`220` rows) leaves `107` pages with `55` on the freelist (`trunk [102]`, `54` leaves) and `217` of `220` `NEW-`/`GROW-` markers still readable across all `55` freelist pages. Finally, `VACUUM` shrinks the file from `107` pages (`438,272` bytes) to `51` pages (`208,896` bytes: 49 leaves for 196 surviving rows + root + page 1), freelist `0`, and `0` of all `424` deleted rows readable anywhere in the file.
-- **`secure_delete=ON` and comparison (lines 35–76).** Every file size across all six steps is identical to `OFF` (`[417792 417792 417792 438272 438272 208896]`): `secure_delete` changes bytes, not layout. Zero deleted rows are readable in the database file at rest after step 2 (`0 of 204`), step 3 (`0 of 204`), step 5 (`0 of 220`), or step 6 (`0 of 424`). The cost shows up directly in the WAL: the step-2 `DELETE` wrote **`54` WAL frames** instead of `5` (`49` extra frames for the zeroed freelist leaves).
-- **Large transaction exceeding the freelist (lines 78–81; correction 10).** Starting with `freelist=2`, `page_count=12`, inserting `32` rows (8 leaves' worth) in a single transaction ends with `freelist=0` and `page_count=18`. `allocateBtreePage` pops freelist pages first on a per-allocation basis, then grows the file in the same commit once the freelist hits zero.
-- **`auto_vacuum` modes (lines 83–89; correction 8).** Deleting `150` of `200` rows: `NONE` stays `52 -> 52` pages (`freelist 37`), and `PRAGMA incremental_vacuum` does nothing (`52`); `FULL` starts one page larger for its pointer-map page (`53`) and shrinks immediately on the `DELETE`'s commit to `16` pages (`freelist 0`); `INCREMENTAL` stays `53 -> 53` (`freelist 37`) until `PRAGMA incremental_vacuum` truncates it to `16` pages.
-- **`secure_delete=ON` and the `-wal` file (lines 91–94; correction 9).** Inserting then deleting `40` secret rows with `secure_delete=ON` and `wal_autocheckpoint=0` leaves **`40` of `40` deleted rows readable inside `-wal`** after the `DELETE` commits—and still `40` of `40` after `PRAGMA wal_checkpoint(PASSIVE)` (which copies the zeroed pages back to `.db` without erasing earlier `INSERT` frames in `-wal`). Only after `PRAGMA wal_checkpoint(TRUNCATE)` resets `-wal` does the count drop to `0` on disk (`0` in `-wal` and `0` in `.db` at rest).
+- **Initial state and `DELETE` under `secure_delete=OFF` (A1, A2, A5).** Inserting `400` rows of 1,000-byte blobs (each repeating a marker such as `SECRET-000150`) produces a `417,792`-byte (`102`-page) file: page 1, root page 2, and `100` table leaves of 4 rows each. Deleting ids `99..302` (`204` rows, originally spanning leaves `27..78`) leaves the file size unchanged at `417,792` bytes (`102` pages) and moves `50` pages (`29..78`, all former leaves of the deleted rows) onto the freelist: trunk `[29]` plus `49` freelist leaves. Scanning the closed file finds **`199` of `204` deleted rows still readable** across `52` pages: `49` freelist leaves, `1` freelist trunk (whose bytes after offset `8 + 49×4` were never overwritten), and `2` live table leaves (`27` and `78`, which each kept 2 surviving rows plus freeblocks holding the deleted rows' bytes). That `DELETE` commit wrote only **`5` WAL frames** (page 1, root 2, trunk 29, and the two partial leaves 27 and 78): `freePage2` marked all 49 freelist leaves `PGHDR_DONT_WRITE` via `sqlite3PagerDontWrite`.
+- **Freelist reuse, growth, second delete, and `VACUUM` (A1, A3–A5).** Inserting `100` new rows (`ids 1001..1100`) keeps the file at `417,792` bytes (`102` pages) and drops the freelist from `50` to `25`: all `25` new leaf pages (`30, 55-78`) came straight from the freelist, while `104` of the `204` deleted rows remain readable on `27` pages (`24` freelist leaves, `1` trunk, `2` live leaves). Next, `30` batches of 4 rows drain the remaining `25` freelist pages one per batch (`batch 1`: freelist `25->24`, `page_count 102->102`; `batch 25`: `1->0`, `102->102`), and only `batches 26..30` grow the file (`102->107` pages, `438,272` bytes). Deleting `id >= 1001` (`220` rows) leaves `107` pages with `55` on the freelist (`trunk [102]`, `54` leaves) and `217` of `220` `NEW-`/`GROW-` markers still readable across all `55` freelist pages. Finally, `VACUUM` shrinks the file from `107` pages (`438,272` bytes) to `51` pages (`208,896` bytes: 49 leaves for 196 surviving rows + root + page 1), freelist `0`, and `0` of all `424` deleted rows readable anywhere in the file.
+- **`secure_delete=ON` and comparison (section B, C1–C2).** Every file size across all six steps is identical to `OFF` (`[417792 417792 417792 438272 438272 208896]`): `secure_delete` changes bytes, not layout. Zero deleted rows are readable in the database file at rest after step 2 (`0 of 204`), step 3 (`0 of 204`), step 5 (`0 of 220`), or step 6 (`0 of 424`). The cost shows up directly in the WAL: the step-2 `DELETE` wrote **`54` WAL frames** instead of `5` (`49` extra frames for the zeroed freelist leaves).
+- **Large transaction exceeding the freelist (section D; correction 10).** Starting with `freelist=2`, `page_count=12`, inserting `32` rows (8 leaves' worth) in a single transaction ends with `freelist=0` and `page_count=18`. `allocateBtreePage` pops freelist pages first on a per-allocation basis, then grows the file in the same commit once the freelist hits zero.
+- **`auto_vacuum` modes (section E; correction 8).** Deleting `150` of `200` rows: `NONE` stays `52 -> 52` pages (`freelist 37`), and `PRAGMA incremental_vacuum` does nothing (`52`); `FULL` starts one page larger for its pointer-map page (`53`) and shrinks immediately on the `DELETE`'s commit to `16` pages (`freelist 0`); `INCREMENTAL` stays `53 -> 53` (`freelist 37`) until `PRAGMA incremental_vacuum` truncates it to `16` pages.
+- **`secure_delete=ON` and the `-wal` file (section F; correction 9).** Inserting then deleting `40` secret rows with `secure_delete=ON` and `wal_autocheckpoint=0` leaves **`40` of `40` deleted rows readable inside `-wal`** after the `DELETE` commits—and still `40` of `40` after `PRAGMA wal_checkpoint(PASSIVE)` (which copies the zeroed pages back to `.db` without erasing earlier `INSERT` frames in `-wal`). Only after `PRAGMA wal_checkpoint(TRUNCATE)` resets `-wal` does the count drop to `0` on disk (`0` in `-wal` and `0` in `.db` at rest).
 
 ---
 
@@ -3340,6 +4040,9 @@ DELETE AND REUSE OK
 // and replay) and tests E1, E2, and E3 equality across different build
 // histories, a sqlite3_backup copy, dbhash blind spots, and VACUUM INTO's
 // canonical-form boundaries.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 3.3
 package main
 
 import (
@@ -3352,11 +4055,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/nickstrad/walfleet/internal/equal"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -3365,15 +4070,56 @@ const (
 	shuffleSeed = 3
 )
 
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 3.3" runs both.
+var (
+	set    *results.Set
+	tables struct {
+		builds, r0Tables, r0Facts, capture, captureLines, compare, headerValues,
+		canonicalHeader, pairs, limits *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+)
+
+func openTables() {
+	tables.builds = set.Table("builds", "seq", "name", "how", "bytes", "file_sha256", "logical_sha256", "dump_sha256", "dbhash", "canonical_sha256")
+	tables.r0Tables = set.Table("r0_tables", "table_name", "rows")
+	tables.r0Facts = set.Table("r0_facts", "name", "value")
+	tables.capture = set.Table("capture", "path", "bytes", "lines", "sha256")
+	tables.captureLines = set.Table("capture_lines", "line_no", "text")
+	tables.compare = set.Table("compare", "seq", "part", "subject", "what", "level", "equal", "differing_pages", "pages_total", "size_a", "size_b", "header_bytes_differing", "differences")
+	tables.headerValues = set.Table("header_values", "part", "subject", "field", "value_a", "value_b")
+	tables.canonicalHeader = set.Table("canonical_header", "bytes", "byte_18", "byte_19", "change_counter", "schema_cookie")
+	tables.pairs = set.Table("pairs", "seq", "pair", "ours_equal", "dbhash_equal", "first_difference")
+	tables.limits = set.Table("limits", "seq", "case_name", "dbhash_sources_equal", "captures_equal")
+}
+
+var compareSeq int
+
+// recordFiles writes an E1 or E2 comparison; level is "E1" or "E2".
+func recordFiles(part, subject, what, level string, r equal.Result) {
+	var header any
+	if len(r.IgnoredDiffering) > 0 {
+		parts := make([]string, len(r.IgnoredDiffering))
+		for i, b := range r.IgnoredDiffering {
+			parts[i] = fmt.Sprint(b)
+		}
+		header = strings.Join(parts, " ")
+	}
+	compareSeq++
+	tables.compare.Row(compareSeq, part, subject, what, level, r.Equal, r.DifferingPages, r.SizeA/int64(r.PageSize), r.SizeA, r.SizeB, header, nil)
+}
+
+// recordLogical writes an E3 comparison.
+func recordLogical(part, subject, what string, r equal.LogicalResult) {
+	compareSeq++
+	tables.compare.Row(compareSeq, part, subject, what, "E3", r.Equal, nil, nil, nil, nil, nil, strings.Join(r.Differences, "; "))
+}
+
+func orNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func fatal(what string, err error) {
@@ -3685,13 +4431,6 @@ func backupCopy(ctx context.Context, source, target string) {
 	}
 }
 
-func short(h string) string {
-	if len(h) > 16 {
-		return h[:16]
-	}
-	return h
-}
-
 type build struct {
 	name      string
 	how       string
@@ -3717,13 +4456,12 @@ func locateDBHash() string {
 		return ""
 	}
 	fmt.Printf("INFO: dbhash %s\n", displayPath(tool))
-	fmt.Println("dbhash: found (built from the pinned tree; it prints a SHA1 of the schema and every row it reads)")
 	return tool
 }
 
 func dbhashOf(ctx context.Context, tool, path string) string {
 	if tool == "" {
-		return "-"
+		return ""
 	}
 	h := must(equal.RunDBHash(ctx, tool, path))("dbhash " + filepath.Base(path))
 	atRest(path)
@@ -3739,8 +4477,6 @@ func distinct(values []string) int {
 }
 
 func partA(ctx context.Context, dir, tool string) content {
-	fmt.Println()
-	fmt.Println("== A. the same final rows built four ways, then captured as an ordered logical dump and replayed (rung R2)")
 	r0 := filepath.Join(dir, "builds", "r0.db")
 	if err := os.MkdirAll(filepath.Dir(r0), 0o755); err != nil {
 		fatal("mkdir", err)
@@ -3754,7 +4490,14 @@ func partA(ctx context.Context, dir, tool string) content {
 	for _, row := range c.rows {
 		perTable[row.table.Name]++
 	}
-	fmt.Printf("content of R0 (recipe seed 1, 30 steps of inserts, updates and deletes): %d schema statements, rows accounts=%d documents=%d events=%d, user_version %d\n", len(c.schema), perTable["accounts"], perTable["documents"], perTable["events"], c.userVersion)
+	var tableNames []string
+	for name := range perTable {
+		tableNames = append(tableNames, name)
+	}
+	sort.Strings(tableNames)
+	for _, name := range tableNames {
+		tables.r0Tables.Row(name, perTable[name])
+	}
 	builds := []*build{{name: "r0", how: "the recipe: 31 transactions with updates and deletes, index created at step 5"}}
 	builds[0].path = r0
 	oneTx := filepath.Join(dir, "builds", "one-transaction.db")
@@ -3784,15 +4527,13 @@ func partA(ctx context.Context, dir, tool string) content {
 		fatal("write dump", err)
 	}
 	lines := strings.Split(strings.TrimSuffix(script, "\n"), "\n")
-	fmt.Printf("capture: %s, %d bytes, %d lines, sha256 %s\n", "capture/r0.sql", len(script), len(lines), equal.SHA256Hex([]byte(script)))
+	tables.capture.Row("capture/r0.sql", len(script), len(lines), equal.SHA256Hex([]byte(script)))
 	for i, line := range lines {
 		if i < 9 || i >= len(lines)-4 {
 			if len(line) > 140 {
 				line = line[:140] + "..."
 			}
-			fmt.Printf("  %s\n", line)
-		} else if i == 9 {
-			fmt.Printf("  ... (%d INSERT lines)\n", len(lines)-13)
+			tables.captureLines.Row(i+1, line)
 		}
 	}
 	replayed := filepath.Join(dir, "builds", "replayed.db")
@@ -3822,19 +4563,25 @@ func partA(ctx context.Context, dir, tool string) content {
 			fatal("hash", fmt.Errorf("%s changed while it was hashed", b.name))
 		}
 	}
-	fmt.Println("builds:")
-	for _, b := range builds {
+	for i, b := range builds {
 		info := must(os.Stat(b.path))("stat")
-		fmt.Printf("  %-16s %s; %d bytes\n", b.name, b.how, info.Size())
+		tables.builds.Row(i+1, b.name, b.how, info.Size(), b.sha, b.logical.SHA256, b.dumpSHA, orNil(b.dbhash), b.canonSHA)
 	}
-	fmt.Println("each build against R0 (E1 = file sha256, E2 = page diff ignoring header bytes 24-27, 40-43, 92-99, E3 = logical hash + integrity_check + foreign_key_check):")
-	fmt.Printf("  %-16s %-16s %-44s %-44s %s\n", "build", "sha256", "E1 vs r0", "E2 vs r0", "E3 vs r0")
+	r0Logical := builds[0].logical
+	tables.r0Facts.Row("schema_rows", r0Logical.SchemaRows)
+	for _, p := range r0Logical.Pragmas {
+		tables.r0Facts.Row(p.Name, p.Value)
+	}
+	tables.r0Facts.Row("integrity_check", r0Logical.Integrity)
+	tables.r0Facts.Row("foreign_key_check_rows", len(r0Logical.ForeignKeyCheck))
 	var shas, logicals, dumps, hashes, canon []string
 	for _, b := range builds {
 		e1 := must(equal.CompareFiles(r0, b.path, pageSize))("E1")
 		e2 := must(equal.ComparePageFiles(r0, b.path, pageSize))("E2")
 		e3 := equal.CompareLogical(builds[0].logical, b.logical)
-		fmt.Printf("  %-16s %-16s %-44s %-44s %s\n", b.name, short(b.sha), verdict(e1), verdict(e2), logicalVerdict(e3))
+		recordFiles("A", b.name, "build vs r0", "E1", e1)
+		recordFiles("A", b.name, "build vs r0", "E2", e2)
+		recordLogical("A", b.name, "build vs r0", e3)
 		if b.name != "backup" {
 			shas = append(shas, b.sha)
 		}
@@ -3843,40 +4590,35 @@ func partA(ctx context.Context, dir, tool string) content {
 		hashes = append(hashes, b.dbhash)
 		canon = append(canon, b.canonSHA)
 		if b.name == "backup" {
-			check(!e1.Equal && e2.Equal, fmt.Sprintf("the backup copy differs from R0 in bytes (%s) but is equal at E2: only declared header bytes differ", e2))
+			set.Check("A", !e1.Equal && e2.Equal, fmt.Sprintf("the backup copy differs from R0 in bytes (%s) but is equal at E2: only declared header bytes differ", e2))
 		}
 	}
-	fmt.Println("the same builds, logically and canonically:")
-	fmt.Printf("  %-16s %-16s %-16s %-40s %s\n", "build", "logical sha256", "dump sha256", "dbhash", "VACUUM INTO sha256")
-	for _, b := range builds {
-		fmt.Printf("  %-16s %-16s %-16s %-40s %s\n", b.name, short(b.logical.SHA256), short(b.dumpSHA), b.dbhash, short(b.canonSHA))
-	}
-	fmt.Printf("logical hash of R0: %s\n", builds[0].logical.Summary())
-	fmt.Printf("distinct file sha256 among r0, one-transaction, per-statement, shuffled, replayed: %d\n", distinct(shas))
-	check(builds[1].sha == builds[2].sha, "in WAL mode one transaction and one transaction per statement give byte-identical files: commit boundaries alone leave no trace when rows are only appended")
-	check(builds[3].sha != builds[1].sha && builds[0].sha != builds[1].sha && builds[0].sha != builds[3].sha, "insert order (shuffled) and history (R0's updates and deletes) each give a different file")
-	check(distinct(logicals) == 1, "every build has the same logical hash")
+	set.Check("A", builds[1].sha == builds[2].sha, "in WAL mode one transaction and one transaction per statement give byte-identical files: commit boundaries alone leave no trace when rows are only appended")
+	set.Check("A", builds[3].sha != builds[1].sha && builds[0].sha != builds[1].sha && builds[0].sha != builds[3].sha, "insert order (shuffled) and history (R0's updates and deletes) each give a different file")
+	set.Check("A", distinct(logicals) == 1, "every build has the same logical hash")
 	allE3 := true
 	for _, b := range builds {
 		if !equal.CompareLogical(builds[0].logical, b.logical).Equal {
 			allE3 = false
 		}
 	}
-	check(allE3, "every build is equal to R0 at E3 (logical hash, integrity_check ok, foreign_key_check unchanged)")
-	check(distinct(dumps) == 1, "the ordered logical capture is itself identical for every build: it depends on content and the schema's creation order, not on insert order, batching or updates")
-	check(distinct(canon[:5]) == 1, "after VACUUM INTO every build, the replayed copy included, has the same sha256 (E1 between canonical forms)")
+	set.Check("A", allE3, "every build is equal to R0 at E3 (logical hash, integrity_check ok, foreign_key_check unchanged)")
+	set.Check("A", distinct(dumps) == 1, "the ordered logical capture is itself identical for every build: it depends on content and the schema's creation order, not on insert order, batching or updates")
+	set.Check("A", distinct(canon[:5]) == 1, "after VACUUM INTO every build, the replayed copy included, has the same sha256 (E1 between canonical forms)")
 	// sqlite3_backup_step sets the destination schema cookie to old+1
 	// (backup.c:448; 0+1=1 on a fresh file), and sqlite3RunVacuum copies the
 	// source schema cookie +1 (vacuum.c:143-427), leaving byte 43 differing.
 	backupCanon := builds[5].canonical
 	ce1 := must(equal.CompareFiles(builds[0].canonical, backupCanon, pageSize))("E1")
 	ce2 := must(equal.ComparePageFiles(builds[0].canonical, backupCanon, pageSize))("E2")
-	fmt.Printf("canonical form of the backup vs of R0: E1 %s; E2 %s; schema cookies %s\n", verdict(ce1), verdict(ce2), cookies(builds[0].canonical, backupCanon))
-	check(!ce1.Equal && ce2.Equal && fmt.Sprint(ce2.IgnoredDiffering) == "[43]", "except the backup copy: the backup API sets the copy's schema cookie to (old destination cookie + 1) = 1 (backup.c:448), VACUUM INTO carries the cookie + 1, so its canonical form differs at byte 43 only")
+	recordFiles("A", "backup", "canonical form vs canonical form of r0", "E1", ce1)
+	recordFiles("A", "backup", "canonical form vs canonical form of r0", "E2", ce2)
+	recordCookies("A", "backup", builds[0].canonical, backupCanon)
+	set.Check("A", !ce1.Equal && ce2.Equal && fmt.Sprint(ce2.IgnoredDiffering) == "[43]", "except the backup copy: the backup API sets the copy's schema cookie to (old destination cookie + 1) = 1 (backup.c:448), VACUUM INTO carries the cookie + 1, so its canonical form differs at byte 43 only")
 	if tool != "" {
-		check(distinct(hashes) == 1, "dbhash from the pinned tree also calls every build equal: it agrees with our logical hash on equality")
+		set.Check("A", distinct(hashes) == 1, "dbhash from the pinned tree also calls every build equal: it agrees with our logical hash on equality")
 	}
-	fmt.Printf("canonical form: %s\n", canonicalHeader(builds[0].canonical))
+	recordCanonicalHeader(builds[0].canonical)
 	ok := true
 	for _, b := range builds {
 		l := must(equal.LogicalHashFile(ctx, b.canonical))("logical hash")
@@ -3888,13 +4630,11 @@ func partA(ctx context.Context, dir, tool string) content {
 			ok = false
 		}
 	}
-	check(ok, "VACUUM INTO keeps every row, the schema and user_version/application_id, but writes a rollback-mode file: its logical hash differs from the source only in journal_mode")
+	set.Check("A", ok, "VACUUM INTO keeps every row, the schema and user_version/application_id, but writes a rollback-mode file: its logical hash differs from the source only in journal_mode")
 	return c
 }
 
 func rollbackPair(ctx context.Context, dir string, c content) {
-	fmt.Println()
-	fmt.Println("== A2. the same two batchings in rollback mode (journal_mode=DELETE)")
 	one := filepath.Join(dir, "builds", "rollback-one-transaction.db")
 	per := filepath.Join(dir, "builds", "rollback-per-statement.db")
 	buildOneTransaction(ctx, one, "delete", c)
@@ -3908,8 +4648,10 @@ func rollbackPair(ctx context.Context, dir string, c content) {
 	e1 := must(equal.CompareFiles(one, per, pageSize))("E1")
 	e2 := must(equal.ComparePageFiles(one, per, pageSize))("E2")
 	ia, ib := must(os.ReadFile(one))("read"), must(os.ReadFile(per))("read")
-	fmt.Printf("one transaction vs one per statement: E1 %s; E2 %s; change counters %d and %d\n", verdict(e1), verdict(e2), be32(ia[24:28]), be32(ib[24:28]))
-	check(!e1.Equal && e2.Equal, "in rollback mode the batching shows, but only in the change counter (bytes 24-27 and 92-95 count commits): E2 equal")
+	recordFiles("A2", "rollback-one-transaction", "vs rollback-per-statement", "E1", e1)
+	recordFiles("A2", "rollback-one-transaction", "vs rollback-per-statement", "E2", e2)
+	tables.headerValues.Row("A2", "rollback-one-transaction", "change_counter", be32(ia[24:28]), be32(ib[24:28]))
+	set.Check("A2", !e1.Equal && e2.Equal, "in rollback mode the batching shows, but only in the change counter (bytes 24-27 and 92-95 count commits): E2 equal")
 }
 
 func sameExceptJournalMode(a, b equal.Logical) bool {
@@ -3917,33 +4659,18 @@ func sameExceptJournalMode(a, b equal.Logical) bool {
 	return len(diff.Differences) == 1 && strings.HasPrefix(diff.Differences[0], "pragma journal_mode")
 }
 
-func canonicalHeader(path string) string {
+func recordCanonicalHeader(path string) {
 	image := must(os.ReadFile(path))("read")
-	return fmt.Sprintf("%d bytes, header bytes 18-19 = %d,%d (1 = rollback journal), change counter %d, schema cookie %d",
-		len(image), image[18], image[19], be32(image[24:28]), be32(image[40:44]))
+	tables.canonicalHeader.Row(len(image), image[18], image[19], be32(image[24:28]), be32(image[40:44]))
+}
+
+func recordCookies(part, subject, a, b string) {
+	ia, ib := must(os.ReadFile(a))("read"), must(os.ReadFile(b))("read")
+	tables.headerValues.Row(part, subject, "schema_cookie", be32(ia[40:44]), be32(ib[40:44]))
 }
 
 func be32(b []byte) uint32 {
 	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
-}
-
-func verdict(r equal.Result) string {
-	switch {
-	case r.Equal && len(r.IgnoredDiffering) > 0:
-		return fmt.Sprintf("equal except header bytes %v", r.IgnoredDiffering)
-	case r.Equal:
-		return "equal"
-	case r.SizeA != r.SizeB:
-		return fmt.Sprintf("differ (%d pages differ, sizes differ)", r.DifferingPages)
-	}
-	return fmt.Sprintf("differ (%d of %d pages)", r.DifferingPages, r.SizeA/int64(r.PageSize))
-}
-
-func logicalVerdict(r equal.LogicalResult) string {
-	if r.Equal {
-		return "equal"
-	}
-	return "differ: " + strings.Join(r.Differences, "; ")
 }
 
 func newDB(ctx context.Context, path string, statements ...string) string {
@@ -3978,8 +4705,6 @@ type pair struct {
 // including dbhash's unframed value concatenation and missing table boundaries
 // in tool/dbhash.c:281-360 and tool/dbhash.c:379-491.
 func partB(ctx context.Context, dir, tool string) {
-	fmt.Println()
-	fmt.Println("== B. pairs that differ in content where a weaker logical hash says equal")
 	pairs := []pair{
 		{"implicit rowids (1,2 vs 5,9)", []string{"CREATE TABLE t(v TEXT)", "INSERT INTO t(rowid, v) VALUES(1, 'x'), (2, 'y')"}, []string{"CREATE TABLE t(v TEXT)", "INSERT INTO t(rowid, v) VALUES(5, 'x'), (9, 'y')"}, "table t differs", true},
 		{"sqlite_sequence (1 vs 2)", []string{"CREATE TABLE t(id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)", "INSERT INTO t(v) VALUES('x')"}, []string{"CREATE TABLE t(id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)", "INSERT INTO t(v) VALUES('x')", "INSERT INTO t(v) VALUES('y')", "DELETE FROM t WHERE id = 2"}, "table sqlite_sequence differs", true},
@@ -3988,7 +4713,6 @@ func partB(ctx context.Context, dir, tool string) {
 		{"value boundary ('a3','b' vs 'a','3b')", []string{"CREATE TABLE t(id INTEGER PRIMARY KEY, a TEXT, b TEXT)", "INSERT INTO t VALUES(1, 'a3', 'b')"}, []string{"CREATE TABLE t(id INTEGER PRIMARY KEY, a TEXT, b TEXT)", "INSERT INTO t VALUES(1, 'a', '3b')"}, "table t differs", true},
 		{"row moved between tables", []string{"CREATE TABLE a(v TEXT)", "CREATE TABLE b(v TEXT)", "INSERT INTO a(rowid, v) VALUES(1, 'x'), (2, 'y')", "INSERT INTO b(rowid, v) VALUES(1, 'z')"}, []string{"CREATE TABLE a(v TEXT)", "CREATE TABLE b(v TEXT)", "INSERT INTO a(rowid, v) VALUES(1, 'x')", "INSERT INTO b(rowid, v) VALUES(1, 'y'), (2, 'z')"}, "table a differs", true},
 	}
-	fmt.Printf("  %-40s %-6s %-6s %s\n", "pair", "ours", "dbhash", "our first difference")
 	type claim struct {
 		ok   bool
 		text string
@@ -4001,23 +4725,22 @@ func partB(ctx context.Context, dir, tool string) {
 		if err != nil {
 			fatal("compare", err)
 		}
-		dbhashVerdict := "-"
+		var dbhashEqual any
 		if tool != "" {
 			ha, hb := dbhashOf(ctx, tool, a), dbhashOf(ctx, tool, b)
-			dbhashVerdict = sameWord(ha == hb)
-			claims = append(claims, claim{(ha == hb) == p.dbhash, fmt.Sprintf("%s: dbhash says %s", p.name, dbhashVerdict)})
+			dbhashEqual = ha == hb
+			claims = append(claims, claim{(ha == hb) == p.dbhash, fmt.Sprintf("%s: dbhash says %s", p.name, sameWord(ha == hb))})
 		}
 		first := ""
 		if len(result.Differences) > 0 {
 			first = result.Differences[0]
 		}
-		fmt.Printf("  %-40s %-6s %-6s %s\n", p.name, sameWord(result.Equal), dbhashVerdict, first)
+		tables.pairs.Row(i+1, p.name, result.Equal, dbhashEqual, orNil(first))
 		claims = append(claims, claim{!result.Equal && strings.Contains(first, p.ours), fmt.Sprintf("%s: our logical hash tells the two apart", p.name)})
 	}
 	for _, c := range claims {
-		check(c.ok, c.text)
+		set.Check("B", c.ok, c.text)
 	}
-	fmt.Println("  sqldiff is not built by build-tools; the research probe found it reports integer 1 and real 1.0 as equal (docs/knowledge/determinism-and-rebuild.md, Q4)")
 }
 
 func sameWord(equalValues bool) string {
@@ -4031,8 +4754,6 @@ func sameWord(equalValues bool) string {
 // (vacuum.c:143-427): table creation order, prior schema-cookie increments,
 // and index creation timing.
 func partC(ctx context.Context, dir, tool string) {
-	fmt.Println()
-	fmt.Println("== C. where VACUUM INTO stops being a canonical form")
 	cases := []struct {
 		name string
 		a, b []string
@@ -4056,53 +4777,48 @@ func partC(ctx context.Context, dir, tool string) {
 		vacuumInto(ctx, b, cb)
 		e1 := must(equal.CompareFiles(ca, cb, pageSize))("E1")
 		e2 := must(equal.ComparePageFiles(ca, cb, pageSize))("E2")
-		fmt.Printf("  %s: sources at E3: %s; VACUUM INTO outputs at E1: %s; at E2: %s; schema cookies %s\n", c.name, logicalVerdict(e3), verdict(e1), verdict(e2), cookies(ca, cb))
+		recordLogical("C", c.name, "sources", e3)
+		recordFiles("C", c.name, "VACUUM INTO outputs", "E1", e1)
+		recordFiles("C", c.name, "VACUUM INTO outputs", "E2", e2)
+		recordCookies("C", c.name, ca, cb)
+		var dbhashEqual, capturesEqual any
 		if tool != "" {
-			fmt.Printf("    dbhash of the sources: %s\n", sameWord(dbhashOf(ctx, tool, a) == dbhashOf(ctx, tool, b)))
+			dbhashEqual = dbhashOf(ctx, tool, a) == dbhashOf(ctx, tool, b)
 		}
 		switch i {
 		case 0:
-			check(e3.Equal && !e1.Equal && !e2.Equal, "same content, tables created in another order: logically equal, but VACUUM INTO copies tables in sqlite_schema order, so the canonical files differ beyond the header")
+			set.Check("C", e3.Equal && !e1.Equal && !e2.Equal, "same content, tables created in another order: logically equal, but VACUUM INTO copies tables in sqlite_schema order, so the canonical files differ beyond the header")
 			scriptA, scriptB := dump(ctx, a), dump(ctx, b)
 			rb := strings.TrimSuffix(b, ".db") + "-replayed.db"
 			replay(ctx, scriptB, rb)
 			crb := strings.TrimSuffix(rb, ".db") + "-vacuum.db"
 			vacuumInto(ctx, rb, crb)
 			replayE1 := must(equal.CompareFiles(cb, crb, pageSize))("E1")
-			fmt.Printf("    captures of the two sources: %s; the second source's capture replayed and canonicalized vs the second source's canonical form at E1: %s\n", sameWord(scriptA == scriptB), verdict(replayE1))
-			check(scriptA != scriptB && replayE1.Equal, "the capture writes CREATE TABLE in sqlite_schema order, so it records the creation order too: the replay of a source canonicalizes to the source's own canonical bytes")
+			capturesEqual = scriptA == scriptB
+			recordFiles("C", c.name, "replay of the second source's capture, canonicalized, vs the second source's canonical form", "E1", replayE1)
+			set.Check("C", scriptA != scriptB && replayE1.Equal, "the capture writes CREATE TABLE in sqlite_schema order, so it records the creation order too: the replay of a source canonicalizes to the source's own canonical bytes")
 		case 1:
-			check(e3.Equal && !e1.Equal && e2.Equal, "a schema change that left no trace in the content still raises the schema cookie, and VACUUM INTO carries the cookie (+1): the canonical files differ only at bytes 40-43")
+			set.Check("C", e3.Equal && !e1.Equal && e2.Equal, "a schema change that left no trace in the content still raises the schema cookie, and VACUUM INTO carries the cookie (+1): the canonical files differ only at bytes 40-43")
 		case 2:
-			check(e3.Equal && e1.Equal, "an index built before or after the rows canonicalizes to the same bytes: VACUUM INTO rebuilds every index")
+			set.Check("C", e3.Equal && e1.Equal, "an index built before or after the rows canonicalizes to the same bytes: VACUUM INTO rebuilds every index")
 		}
+		tables.limits.Row(i+1, c.name, dbhashEqual, capturesEqual)
 	}
-}
-
-func cookies(a, b string) string {
-	ia, ib := must(os.ReadFile(a))("read"), must(os.ReadFile(b))("read")
-	return fmt.Sprintf("%d and %d", be32(ia[40:44]), be32(ib[40:44]))
 }
 
 func main() {
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("3.3")
+	set = results.MustOpen(dir)
+	openTables()
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
 	tool := locateDBHash()
 	c := partA(ctx, dir, tool)
 	rollbackPair(ctx, dir, c)
 	partB(ctx, dir, tool)
 	partC(ctx, dir, tool)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("SAME ROWS FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("SAME ROWS OK")
+	set.Finish("SAME ROWS")
 }
 
 func displayPath(path string) string {
@@ -4121,137 +4837,460 @@ func displayPath(path string) string {
 }
 ```
 
-Run from the repository root:
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
 
-```text
-go run ./ch03-btrees-and-page-management/experiments/3.3-same-rows-different-bytes
+<!-- include: experiments/3.3-same-rows-different-bytes/report.sql -->
+```sql
+-- Walkthrough of experiment 3.3. Run it with:
+--   go run ./cmd/course run 3.3        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   builds           part A: one row per build of the same rows, with its hashes
+--   r0_tables        part A: rows per table of R0, the database of the recipe
+--   r0_facts         part A: schema, pragmas and checks of R0, as the logical hash saw them
+--   capture          part A: the ordered logical capture (rung R2) of R0, its size and hash
+--   capture_lines    part A: the first nine and the last four lines of that capture
+--   compare          one row per comparison of two files at one level (E1, E2, E3)
+--   header_values    schema cookies and change counters of the two files compared
+--   canonical_header part A: the header of the VACUUM INTO copy of R0
+--   pairs            part B: one row per pair of databases that differ in content
+--   limits           part C: dbhash and capture results for the three cases
+--   checks           every claim the experiment asserted (the runner lists it last)
+
+-- The words of one comparison, as a verdict.
+CREATE VIEW verdicts AS
+SELECT *,
+       CASE WHEN level = 'E3' AND equal THEN 'equal'
+            WHEN level = 'E3' THEN 'differ: ' || differences
+            WHEN equal AND header_bytes_differing IS NOT NULL
+                 THEN 'equal except header bytes [' || header_bytes_differing || ']'
+            WHEN equal THEN 'equal'
+            WHEN size_a <> size_b
+                 THEN 'differ (' || differing_pages || ' pages differ, sizes differ)'
+            ELSE 'differ (' || differing_pages || ' of ' || pages_total || ' pages)'
+       END AS verdict
+FROM compare;
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  3.3  The same rows, different bytes: which equality holds?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'Three levels of equality between two database files:'
+.print '  E1  the file sha256 is the same'
+.print '  E2  the pages are the same, ignoring header bytes 24-27, 40-43 and 92-99'
+.print '  E3  the logical hash is the same: schema, every row, the persistent pragmas,'
+.print '      integrity_check ok and foreign_key_check unchanged'
+.print 'dbhash is the SQLite tool, built from the pinned tree: it prints a SHA1 of'
+.print 'the schema and every row it reads. It is skipped, and its column is empty,'
+.print 'when the tool is not built.'
+
+
+.print
+.print '── A. The same rows built six ways ─────────────────────────────────────'
+.print
+.print 'A.1 R0 is the database of the recipe: seed 1, 30 steps of inserts, updates and'
+.print 'deletes. Its content, as the logical hash saw it:'
+
+SELECT table_name AS item, rows AS value FROM r0_tables
+UNION ALL
+SELECT name, value FROM r0_facts
+ORDER BY item;
+
+.print
+.print 'A.2 The ordered logical capture of R0 (rung R2): a SQL script of the schema,'
+.print 'the rows in a fixed order and the pragmas. Its size and hash:'
+
+SELECT path, bytes, lines, sha256 FROM capture;
+
+.print
+.print 'The first nine and the last four lines of the capture:'
+.mode list
+.separator ' | '
+
+SELECT line_no::VARCHAR AS line, text FROM capture_lines WHERE line_no <= 9
+UNION ALL
+SELECT '...', '(' || (SELECT lines - 13 FROM capture) || ' INSERT lines not shown)'
+UNION ALL
+SELECT line_no::VARCHAR, text FROM capture_lines WHERE line_no > 9
+ORDER BY CASE WHEN line = '...' THEN 9.5 ELSE line::DOUBLE END;
+
+.mode box
+
+.print
+.print 'A.3 The builds. All of them hold the same rows.'
+
+SELECT seq, name, bytes, how FROM builds ORDER BY seq;
+
+.print
+.print 'A.4 Each build against R0 at E1, E2 and E3. The files differ in size because'
+.print 'the builds lay the rows out differently. The backup is a page copy: it differs'
+.print 'from R0 only in header bytes.'
+
+SELECT subject AS build,
+       max(verdict) FILTER (level = 'E1') AS e1,
+       max(verdict) FILTER (level = 'E2') AS e2,
+       max(verdict) FILTER (level = 'E3') AS e3
+FROM verdicts
+WHERE part = 'A' AND what = 'build vs r0'
+GROUP BY subject
+ORDER BY min(seq);
+
+.print
+.print 'A.5 The same builds by hash (first 16 hex digits of each). The file'
+.print 'sha256 differs; the logical hash, the capture hash and dbhash agree for all of'
+.print 'them. After VACUUM INTO, every build but the backup has one sha256.'
+
+SELECT name,
+       left(file_sha256, 16)      AS file_sha256,
+       left(logical_sha256, 16)   AS logical_sha256,
+       left(dump_sha256, 16)      AS dump_sha256,
+       left(dbhash, 16)           AS dbhash,
+       left(canonical_sha256, 16) AS vacuum_into_sha256
+FROM builds ORDER BY seq;
+
+.print
+.print 'Distinct values among the builds:'
+
+SELECT count(DISTINCT file_sha256) FILTER (name <> 'backup')       AS file_sha256_without_backup,
+       count(DISTINCT logical_sha256)                              AS logical,
+       count(DISTINCT dump_sha256)                                 AS dump,
+       count(DISTINCT dbhash)                                      AS dbhash,
+       count(DISTINCT canonical_sha256) FILTER (name <> 'backup')  AS vacuum_into_without_backup
+FROM builds;
+
+.print
+.print 'A.6 The backup after VACUUM INTO, against R0 after VACUUM INTO: the files differ,'
+.print 'but at E2 only in the schema cookie (byte 43).'
+
+SELECT max(v.verdict) FILTER (v.level = 'E1') AS e1,
+       max(v.verdict) FILTER (v.level = 'E2') AS e2,
+       any_value(h.value_a)                    AS cookie_r0,
+       any_value(h.value_b)                    AS cookie_backup
+FROM verdicts v JOIN header_values h USING (part, subject)
+WHERE v.part = 'A' AND v.subject = 'backup' AND v.what LIKE 'canonical%';
+
+.print
+.print 'A.7 The header of R0 after VACUUM INTO. Bytes 18-19 = 1,1 mean a rollback'
+.print 'journal: VACUUM INTO writes a rollback-mode file, so its logical hash differs'
+.print 'from the source only in journal_mode.'
+
+SELECT bytes, byte_18, byte_19, change_counter, schema_cookie FROM canonical_header;
+
+.print
+.print '── A2. The same two batchings in rollback mode (journal_mode=DELETE) ───'
+.print
+.print 'A2.1 One transaction against one transaction per statement. The files differ at E1'
+.print 'and at E2 only in header bytes: the change counter (bytes 24-27 and 92-95)'
+.print 'counts commits.'
+
+SELECT subject, what, max(verdict) FILTER (level = 'E1') AS e1, max(verdict) FILTER (level = 'E2') AS e2
+FROM verdicts WHERE part = 'A2' GROUP BY subject, what;
+
+SELECT field, value_a AS one_transaction, value_b AS one_per_statement
+FROM header_values WHERE part = 'A2';
+
+.print
+.print '── B. Pairs that differ in content where a weaker hash says equal ──────'
+.print
+.print 'B.1 Six pairs of databases that differ in content. Our logical hash tells every'
+.print 'pair apart; dbhash misses all but integer 1 against real 1.0. (sqldiff is not'
+.print 'built by build-tools; the research probe found it reports integer 1 and real'
+.print '1.0 as equal: docs/knowledge/determinism-and-rebuild.md, Q4.)'
+
+SELECT pair,
+       CASE WHEN ours_equal THEN 'equal' ELSE 'differ' END   AS ours,
+       CASE WHEN dbhash_equal THEN 'equal' WHEN NOT dbhash_equal THEN 'differ' END AS dbhash,
+       first_difference AS our_first_difference
+FROM pairs ORDER BY seq;
+
+.print
+.print '── C. Where VACUUM INTO stops being a canonical form ───────────────────'
+.print
+.print 'C.1 Three cases of two databases with the same content. The sources are compared'
+.print 'at E3, their VACUUM INTO outputs at E1 and E2.'
+
+SELECT l.case_name,
+       max(v.verdict) FILTER (v.what = 'sources')                                   AS sources_e3,
+       max(v.verdict) FILTER (v.what = 'VACUUM INTO outputs' AND v.level = 'E1')     AS outputs_e1,
+       max(v.verdict) FILTER (v.what = 'VACUUM INTO outputs' AND v.level = 'E2')     AS outputs_e2
+FROM limits l JOIN verdicts v ON v.part = 'C' AND v.subject = l.case_name
+GROUP BY l.case_name, l.seq ORDER BY l.seq;
+
+.print
+.print 'C.2 The schema cookie of each output, and dbhash of the sources.'
+
+SELECT l.case_name, h.value_a AS cookie_a, h.value_b AS cookie_b,
+       CASE WHEN l.dbhash_sources_equal THEN 'equal' WHEN NOT l.dbhash_sources_equal THEN 'differ' END AS dbhash_of_sources
+FROM limits l JOIN header_values h ON h.part = 'C' AND h.subject = l.case_name
+ORDER BY l.seq;
+.print
+.print 'C.3 For the first case, the capture records the creation order too: the two'
+.print 'captures of the two sources differ, and replaying the second capture and'
+.print 'canonicalizing it gives the canonical bytes of the second source.'
+
+SELECT l.case_name,
+       CASE WHEN l.captures_equal THEN 'equal' ELSE 'differ' END AS captures_of_the_two_sources,
+       v.verdict AS replay_vs_canonical_form_e1
+FROM limits l JOIN verdicts v ON v.part = 'C' AND v.subject = l.case_name AND v.what LIKE 'replay%'
+ORDER BY l.seq;
 ```
 
-Captured evidence:
+Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
+
+```text
+go run ./cmd/course run 3.3
+```
+
+Add `-i` (`go run ./cmd/course run -i 3.3`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/3.3-same-rows-different-bytes/`](evidence/3.3-same-rows-different-bytes/), and `go run ./cmd/course check evidence ch03` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/3.3-same-rows-different-bytes.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/3.3
-INFO: dbhash _tools/bin/dbhash
-dbhash: found (built from the pinned tree; it prints a SHA1 of the schema and every row it reads)
 
-== A. the same final rows built four ways, then captured as an ordered logical dump and replayed (rung R2)
-content of R0 (recipe seed 1, 30 steps of inserts, updates and deletes): 4 schema statements, rows accounts=183 documents=96 events=1177, user_version 30
-capture: capture/r0.sql, 2005315 bytes, 1468 lines, sha256 92d3898538e25714f5943079b3b5046b31b4f637430abbc1aa5d642a2d95c687
-  PRAGMA page_size=4096;
-  PRAGMA auto_vacuum=NONE;
-  PRAGMA encoding='UTF-8';
-  PRAGMA journal_mode=WAL;
-  BEGIN;
-  CREATE TABLE accounts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, balance INTEGER NOT NULL);
-  CREATE TABLE documents(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, title TEXT NOT NULL, body BLOB NOT NULL);
-  CREATE TABLE events(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, kind TEXT NOT NULL, amount INTEGER NOT NULL, note TEXT NOT NULL);
-  INSERT INTO "accounts"(rowid, "id", "name", "balance") VALUES(1, 1, 'wxhyvco', 37188);
-  ... (1455 INSERT lines)
-  CREATE INDEX events_by_account ON events(account_id, id);
-  PRAGMA user_version=30;
-  PRAGMA application_id=1397836120;
-  COMMIT;
-builds:
-  r0               the recipe: 31 transactions with updates and deletes, index created at step 5; 1105920 bytes
-  one-transaction  schema and every row in one transaction, tables in order, ids ascending; 1089536 bytes
-  per-statement    the same order, one transaction per statement; 1089536 bytes
-  shuffled         one transaction per row, rows of all tables in a shuffled order (PCG seed 3); 1093632 bytes
-  replayed         the capture file replayed into an empty file (indexes created after the rows); 1089536 bytes
-  backup           sqlite3_backup of R0 (a page copy, for the E2 row); 1105920 bytes
-each build against R0 (E1 = file sha256, E2 = page diff ignoring header bytes 24-27, 40-43, 92-99, E3 = logical hash + integrity_check + foreign_key_check):
-  build            sha256           E1 vs r0                                     E2 vs r0                                     E3 vs r0
-  r0               24aa158fdf713808 equal                                        equal                                        equal
-  one-transaction  224810279caf4016 differ (268 pages differ, sizes differ)      differ (268 pages differ, sizes differ)      equal
-  per-statement    224810279caf4016 differ (268 pages differ, sizes differ)      differ (268 pages differ, sizes differ)      equal
-  shuffled         dc2b3bbb223253be differ (270 pages differ, sizes differ)      differ (270 pages differ, sizes differ)      equal
-  replayed         e3c97131367e136d differ (262 pages differ, sizes differ)      differ (262 pages differ, sizes differ)      equal
-  backup           a268f05a569a3c07 differ (1 of 270 pages)                      equal except header bytes [27 43 95]         equal
-check ok: the backup copy differs from R0 in bytes (E2 pages: equal ignoring header bytes 24-27, 40-43, 92-99 (bytes differ only at [27 43 95])) but is equal at E2: only declared header bytes differ
-the same builds, logically and canonically:
-  build            logical sha256   dump sha256      dbhash                                   VACUUM INTO sha256
-  r0               3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  one-transaction  3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  per-statement    3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  shuffled         3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  replayed         3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  backup           3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 9324d9446d407e55
-logical hash of R0: logical sha256 3de6a8870f70a57c3fe28ce66a186325180876f77a1358c1717dbc4bc26cf2f0; schema rows 4; table rows accounts=183 documents=96 events=1177; page_size=4096 encoding=UTF-8 auto_vacuum=none user_version=30 application_id=1397836120 journal_mode=wal default_cache_size=-2000; integrity_check ok; foreign_key_check 0 row(s)
-distinct file sha256 among r0, one-transaction, per-statement, shuffled, replayed: 4
-check ok: in WAL mode one transaction and one transaction per statement give byte-identical files: commit boundaries alone leave no trace when rows are only appended
-check ok: insert order (shuffled) and history (R0's updates and deletes) each give a different file
-check ok: every build has the same logical hash
-check ok: every build is equal to R0 at E3 (logical hash, integrity_check ok, foreign_key_check unchanged)
-check ok: the ordered logical capture is itself identical for every build: it depends on content and the schema's creation order, not on insert order, batching or updates
-check ok: after VACUUM INTO every build, the replayed copy included, has the same sha256 (E1 between canonical forms)
-canonical form of the backup vs of R0: E1 differ (1 of 266 pages); E2 equal except header bytes [43]; schema cookies 5 and 2
-check ok: except the backup copy: the backup API sets the copy's schema cookie to (old destination cookie + 1) = 1 (backup.c:448), VACUUM INTO carries the cookie + 1, so its canonical form differs at byte 43 only
-check ok: dbhash from the pinned tree also calls every build equal: it agrees with our logical hash on equality
-canonical form: 1089536 bytes, header bytes 18-19 = 1,1 (1 = rollback journal), change counter 1, schema cookie 5
-check ok: VACUUM INTO keeps every row, the schema and user_version/application_id, but writes a rollback-mode file: its logical hash differs from the source only in journal_mode
+════════════════════════════════════════════════════════════════════════
+  3.3  The same rows, different bytes: which equality holds?
+════════════════════════════════════════════════════════════════════════
 
-== A2. the same two batchings in rollback mode (journal_mode=DELETE)
-one transaction vs one per statement: E1 differ (1 of 266 pages); E2 equal except header bytes [26 27 94 95]; change counters 3 and 1463
-check ok: in rollback mode the batching shows, but only in the change counter (bytes 24-27 and 92-95 count commits): E2 equal
+Three levels of equality between two database files:
+  E1  the file sha256 is the same
+  E2  the pages are the same, ignoring header bytes 24-27, 40-43 and 92-99
+  E3  the logical hash is the same: schema, every row, the persistent pragmas,
+      integrity_check ok and foreign_key_check unchanged
+dbhash is the SQLite tool, built from the pinned tree: it prints a SHA1 of
+the schema and every row it reads. It is skipped, and its column is empty,
+when the tool is not built.
 
-== B. pairs that differ in content where a weaker logical hash says equal
-  pair                                     ours   dbhash our first difference
-  implicit rowids (1,2 vs 5,9)             differ equal  table t differs (2 vs 2 rows)
-  sqlite_sequence (1 vs 2)                 differ equal  table sqlite_sequence differs (1 vs 1 rows)
-  user_version (1 vs 2)                    differ equal  pragma user_version 1 vs 2
-  integer 1 vs real 1.0                    differ differ table t differs (1 vs 1 rows)
-  value boundary ('a3','b' vs 'a','3b')    differ equal  table t differs (1 vs 1 rows)
-  row moved between tables                 differ equal  table a differs (2 vs 1 rows)
-check ok: implicit rowids (1,2 vs 5,9): dbhash says equal
-check ok: implicit rowids (1,2 vs 5,9): our logical hash tells the two apart
-check ok: sqlite_sequence (1 vs 2): dbhash says equal
-check ok: sqlite_sequence (1 vs 2): our logical hash tells the two apart
-check ok: user_version (1 vs 2): dbhash says equal
-check ok: user_version (1 vs 2): our logical hash tells the two apart
-check ok: integer 1 vs real 1.0: dbhash says differ
-check ok: integer 1 vs real 1.0: our logical hash tells the two apart
-check ok: value boundary ('a3','b' vs 'a','3b'): dbhash says equal
-check ok: value boundary ('a3','b' vs 'a','3b'): our logical hash tells the two apart
-check ok: row moved between tables: dbhash says equal
-check ok: row moved between tables: our logical hash tells the two apart
-  sqldiff is not built by build-tools; the research probe found it reports integer 1 and real 1.0 as equal (docs/knowledge/determinism-and-rebuild.md, Q4)
+── A. The same rows built six ways ─────────────────────────────────────
 
-== C. where VACUUM INTO stops being a canonical form
-  tables created in another order: sources at E3: equal; VACUUM INTO outputs at E1: differ (3 of 3 pages); at E2: differ (3 of 3 pages); schema cookies 3 and 3
-    dbhash of the sources: equal
-check ok: same content, tables created in another order: logically equal, but VACUUM INTO copies tables in sqlite_schema order, so the canonical files differ beyond the header
-    captures of the two sources: differ; the second source's capture replayed and canonicalized vs the second source's canonical form at E1: equal
-check ok: the capture writes CREATE TABLE in sqlite_schema order, so it records the creation order too: the replay of a source canonicalizes to the source's own canonical bytes
-  a table created and dropped in the history: sources at E3: equal; VACUUM INTO outputs at E1: differ (1 of 2 pages); at E2: equal except header bytes [43]; schema cookies 2 and 4
-    dbhash of the sources: equal
-check ok: a schema change that left no trace in the content still raises the schema cookie, and VACUUM INTO carries the cookie (+1): the canonical files differ only at bytes 40-43
-  an index created before vs after the rows: sources at E3: equal; VACUUM INTO outputs at E1: equal; at E2: equal; schema cookies 3 and 3
-    dbhash of the sources: equal
-check ok: an index built before or after the rows canonicalizes to the same bytes: VACUUM INTO rebuilds every index
+A.1 R0 is the database of the recipe: seed 1, 30 steps of inserts, updates and
+deletes. Its content, as the logical hash saw it:
+┌────────────────────────┬────────────┐
+│          item          │   value    │
+├────────────────────────┼────────────┤
+│ accounts               │ 183        │
+│ application_id         │ 1397836120 │
+│ auto_vacuum            │ none       │
+│ default_cache_size     │ -2000      │
+│ documents              │ 96         │
+│ encoding               │ UTF-8      │
+│ events                 │ 1177       │
+│ foreign_key_check_rows │ 0          │
+│ integrity_check        │ ok         │
+│ journal_mode           │ wal        │
+│ page_size              │ 4096       │
+│ schema_rows            │ 4          │
+│ user_version           │ 30         │
+└────────────────────────┴────────────┘
 
-SAME ROWS OK
+A.2 The ordered logical capture of R0 (rung R2): a SQL script of the schema,
+the rows in a fixed order and the pragmas. Its size and hash:
+┌────────────────┬─────────┬───────┬──────────────────────────────────────────────────────────────────┐
+│      path      │  bytes  │ lines │                              sha256                              │
+├────────────────┼─────────┼───────┼──────────────────────────────────────────────────────────────────┤
+│ capture/r0.sql │ 2005315 │ 1468  │ 92d3898538e25714f5943079b3b5046b31b4f637430abbc1aa5d642a2d95c687 │
+└────────────────┴─────────┴───────┴──────────────────────────────────────────────────────────────────┘
+
+The first nine and the last four lines of the capture:
+line | text
+1 | PRAGMA page_size=4096;
+2 | PRAGMA auto_vacuum=NONE;
+3 | PRAGMA encoding='UTF-8';
+4 | PRAGMA journal_mode=WAL;
+5 | BEGIN;
+6 | CREATE TABLE accounts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, balance INTEGER NOT NULL);
+7 | CREATE TABLE documents(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, title TEXT NOT NULL, body BLOB NOT NULL);
+8 | CREATE TABLE events(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, kind TEXT NOT NULL, amount INTEGER NOT NULL, note TEXT NOT NULL);
+9 | INSERT INTO "accounts"(rowid, "id", "name", "balance") VALUES(1, 1, 'wxhyvco', 37188);
+... | (1455 INSERT lines not shown)
+1465 | CREATE INDEX events_by_account ON events(account_id, id);
+1466 | PRAGMA user_version=30;
+1467 | PRAGMA application_id=1397836120;
+1468 | COMMIT;
+
+A.3 The builds. All of them hold the same rows.
+┌─────┬─────────────────┬─────────┬───────────────────────────────────────────────────────────────────────────────┐
+│ seq │      name       │  bytes  │                                      how                                      │
+├─────┼─────────────────┼─────────┼───────────────────────────────────────────────────────────────────────────────┤
+│ 1   │ r0              │ 1105920 │ the recipe: 31 transactions with updates and deletes, index created at step 5 │
+│ 2   │ one-transaction │ 1089536 │ schema and every row in one transaction, tables in order, ids ascending       │
+│ 3   │ per-statement   │ 1089536 │ the same order, one transaction per statement                                 │
+│ 4   │ shuffled        │ 1093632 │ one transaction per row, rows of all tables in a shuffled order (PCG seed 3)  │
+│ 5   │ replayed        │ 1089536 │ the capture file replayed into an empty file (indexes created after the rows) │
+│ 6   │ backup          │ 1105920 │ sqlite3_backup of R0 (a page copy, for the E2 row)                            │
+└─────┴─────────────────┴─────────┴───────────────────────────────────────────────────────────────────────────────┘
+
+A.4 Each build against R0 at E1, E2 and E3. The files differ in size because
+the builds lay the rows out differently. The backup is a page copy: it differs
+from R0 only in header bytes.
+┌─────────────────┬─────────────────────────────────────────┬─────────────────────────────────────────┬───────┐
+│      build      │                   e1                    │                   e2                    │  e3   │
+├─────────────────┼─────────────────────────────────────────┼─────────────────────────────────────────┼───────┤
+│ r0              │ equal                                   │ equal                                   │ equal │
+│ one-transaction │ differ (268 pages differ, sizes differ) │ differ (268 pages differ, sizes differ) │ equal │
+│ per-statement   │ differ (268 pages differ, sizes differ) │ differ (268 pages differ, sizes differ) │ equal │
+│ shuffled        │ differ (270 pages differ, sizes differ) │ differ (270 pages differ, sizes differ) │ equal │
+│ replayed        │ differ (262 pages differ, sizes differ) │ differ (262 pages differ, sizes differ) │ equal │
+│ backup          │ differ (1 of 270 pages)                 │ equal except header bytes [27 43 95]    │ equal │
+└─────────────────┴─────────────────────────────────────────┴─────────────────────────────────────────┴───────┘
+
+A.5 The same builds by hash (first 16 hex digits of each). The file
+sha256 differs; the logical hash, the capture hash and dbhash agree for all of
+them. After VACUUM INTO, every build but the backup has one sha256.
+┌─────────────────┬──────────────────┬──────────────────┬──────────────────┬──────────────────┬────────────────────┐
+│      name       │   file_sha256    │  logical_sha256  │   dump_sha256    │      dbhash      │ vacuum_into_sha256 │
+├─────────────────┼──────────────────┼──────────────────┼──────────────────┼──────────────────┼────────────────────┤
+│ r0              │ 24aa158fdf713808 │ 3de6a8870f70a57c │ 92d3898538e25714 │ 9bee16896cb395b9 │ 927e39a45becbb84   │
+│ one-transaction │ 224810279caf4016 │ 3de6a8870f70a57c │ 92d3898538e25714 │ 9bee16896cb395b9 │ 927e39a45becbb84   │
+│ per-statement   │ 224810279caf4016 │ 3de6a8870f70a57c │ 92d3898538e25714 │ 9bee16896cb395b9 │ 927e39a45becbb84   │
+│ shuffled        │ dc2b3bbb223253be │ 3de6a8870f70a57c │ 92d3898538e25714 │ 9bee16896cb395b9 │ 927e39a45becbb84   │
+│ replayed        │ e3c97131367e136d │ 3de6a8870f70a57c │ 92d3898538e25714 │ 9bee16896cb395b9 │ 927e39a45becbb84   │
+│ backup          │ a268f05a569a3c07 │ 3de6a8870f70a57c │ 92d3898538e25714 │ 9bee16896cb395b9 │ 9324d9446d407e55   │
+└─────────────────┴──────────────────┴──────────────────┴──────────────────┴──────────────────┴────────────────────┘
+
+Distinct values among the builds:
+┌────────────────────────────┬─────────┬──────┬────────┬────────────────────────────┐
+│ file_sha256_without_backup │ logical │ dump │ dbhash │ vacuum_into_without_backup │
+├────────────────────────────┼─────────┼──────┼────────┼────────────────────────────┤
+│ 4                          │ 1       │ 1    │ 1      │ 1                          │
+└────────────────────────────┴─────────┴──────┴────────┴────────────────────────────┘
+
+A.6 The backup after VACUUM INTO, against R0 after VACUUM INTO: the files differ,
+but at E2 only in the schema cookie (byte 43).
+┌─────────────────────────┬────────────────────────────────┬───────────┬───────────────┐
+│           e1            │               e2               │ cookie_r0 │ cookie_backup │
+├─────────────────────────┼────────────────────────────────┼───────────┼───────────────┤
+│ differ (1 of 266 pages) │ equal except header bytes [43] │ 5         │ 2             │
+└─────────────────────────┴────────────────────────────────┴───────────┴───────────────┘
+
+A.7 The header of R0 after VACUUM INTO. Bytes 18-19 = 1,1 mean a rollback
+journal: VACUUM INTO writes a rollback-mode file, so its logical hash differs
+from the source only in journal_mode.
+┌─────────┬─────────┬─────────┬────────────────┬───────────────┐
+│  bytes  │ byte_18 │ byte_19 │ change_counter │ schema_cookie │
+├─────────┼─────────┼─────────┼────────────────┼───────────────┤
+│ 1089536 │ 1       │ 1       │ 1              │ 5             │
+└─────────┴─────────┴─────────┴────────────────┴───────────────┘
+
+── A2. The same two batchings in rollback mode (journal_mode=DELETE) ───
+
+A2.1 One transaction against one transaction per statement. The files differ at E1
+and at E2 only in header bytes: the change counter (bytes 24-27 and 92-95)
+counts commits.
+┌──────────────────────────┬───────────────────────────┬─────────────────────────┬─────────────────────────────────────────┐
+│         subject          │           what            │           e1            │                   e2                    │
+├──────────────────────────┼───────────────────────────┼─────────────────────────┼─────────────────────────────────────────┤
+│ rollback-one-transaction │ vs rollback-per-statement │ differ (1 of 266 pages) │ equal except header bytes [26 27 94 95] │
+└──────────────────────────┴───────────────────────────┴─────────────────────────┴─────────────────────────────────────────┘
+┌────────────────┬─────────────────┬───────────────────┐
+│     field      │ one_transaction │ one_per_statement │
+├────────────────┼─────────────────┼───────────────────┤
+│ change_counter │ 3               │ 1463              │
+└────────────────┴─────────────────┴───────────────────┘
+
+── B. Pairs that differ in content where a weaker hash says equal ──────
+
+B.1 Six pairs of databases that differ in content. Our logical hash tells every
+pair apart; dbhash misses all but integer 1 against real 1.0. (sqldiff is not
+built by build-tools; the research probe found it reports integer 1 and real
+1.0 as equal: docs/knowledge/determinism-and-rebuild.md, Q4.)
+┌───────────────────────────────────────┬────────┬────────┬─────────────────────────────────────────────┐
+│                 pair                  │  ours  │ dbhash │            our_first_difference             │
+├───────────────────────────────────────┼────────┼────────┼─────────────────────────────────────────────┤
+│ implicit rowids (1,2 vs 5,9)          │ differ │ equal  │ table t differs (2 vs 2 rows)               │
+│ sqlite_sequence (1 vs 2)              │ differ │ equal  │ table sqlite_sequence differs (1 vs 1 rows) │
+│ user_version (1 vs 2)                 │ differ │ equal  │ pragma user_version 1 vs 2                  │
+│ integer 1 vs real 1.0                 │ differ │ differ │ table t differs (1 vs 1 rows)               │
+│ value boundary ('a3','b' vs 'a','3b') │ differ │ equal  │ table t differs (1 vs 1 rows)               │
+│ row moved between tables              │ differ │ equal  │ table a differs (2 vs 1 rows)               │
+└───────────────────────────────────────┴────────┴────────┴─────────────────────────────────────────────┘
+
+── C. Where VACUUM INTO stops being a canonical form ───────────────────
+
+C.1 Three cases of two databases with the same content. The sources are compared
+at E3, their VACUUM INTO outputs at E1 and E2.
+┌────────────────────────────────────────────┬────────────┬───────────────────────┬────────────────────────────────┐
+│                 case_name                  │ sources_e3 │      outputs_e1       │           outputs_e2           │
+├────────────────────────────────────────────┼────────────┼───────────────────────┼────────────────────────────────┤
+│ tables created in another order            │ equal      │ differ (3 of 3 pages) │ differ (3 of 3 pages)          │
+│ a table created and dropped in the history │ equal      │ differ (1 of 2 pages) │ equal except header bytes [43] │
+│ an index created before vs after the rows  │ equal      │ equal                 │ equal                          │
+└────────────────────────────────────────────┴────────────┴───────────────────────┴────────────────────────────────┘
+
+C.2 The schema cookie of each output, and dbhash of the sources.
+┌────────────────────────────────────────────┬──────────┬──────────┬───────────────────┐
+│                 case_name                  │ cookie_a │ cookie_b │ dbhash_of_sources │
+├────────────────────────────────────────────┼──────────┼──────────┼───────────────────┤
+│ tables created in another order            │ 3        │ 3        │ equal             │
+│ a table created and dropped in the history │ 2        │ 4        │ equal             │
+│ an index created before vs after the rows  │ 3        │ 3        │ equal             │
+└────────────────────────────────────────────┴──────────┴──────────┴───────────────────┘
+
+C.3 For the first case, the capture records the creation order too: the two
+captures of the two sources differ, and replaying the second capture and
+canonicalizing it gives the canonical bytes of the second source.
+┌─────────────────────────────────┬─────────────────────────────┬─────────────────────────────┐
+│            case_name            │ captures_of_the_two_sources │ replay_vs_canonical_form_e1 │
+├─────────────────────────────────┼─────────────────────────────┼─────────────────────────────┤
+│ tables created in another order │ differ                      │ equal                       │
+└─────────────────────────────────┴─────────────────────────────┴─────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the backup copy differs from R0 in bytes (E2 pages: equal ignoring header bytes 24-27, 40-43, 92-99 (bytes differ only at [27 43 95])) but is equal at E2: only declared header bytes differ
+A  ✓  in WAL mode one transaction and one transaction per statement give byte-identical files: commit boundaries alone leave no trace when rows are only appended
+A  ✓  insert order (shuffled) and history (R0's updates and deletes) each give a different file
+A  ✓  every build has the same logical hash
+A  ✓  every build is equal to R0 at E3 (logical hash, integrity_check ok, foreign_key_check unchanged)
+A  ✓  the ordered logical capture is itself identical for every build: it depends on content and the schema's creation order, not on insert order, batching or updates
+A  ✓  after VACUUM INTO every build, the replayed copy included, has the same sha256 (E1 between canonical forms)
+A  ✓  except the backup copy: the backup API sets the copy's schema cookie to (old destination cookie + 1) = 1 (backup.c:448), VACUUM INTO carries the cookie + 1, so its canonical form differs at byte 43 only
+A  ✓  dbhash from the pinned tree also calls every build equal: it agrees with our logical hash on equality
+A  ✓  VACUUM INTO keeps every row, the schema and user_version/application_id, but writes a rollback-mode file: its logical hash differs from the source only in journal_mode
+A2  ✓  in rollback mode the batching shows, but only in the change counter (bytes 24-27 and 92-95 count commits): E2 equal
+B  ✓  implicit rowids (1,2 vs 5,9): dbhash says equal
+B  ✓  implicit rowids (1,2 vs 5,9): our logical hash tells the two apart
+B  ✓  sqlite_sequence (1 vs 2): dbhash says equal
+B  ✓  sqlite_sequence (1 vs 2): our logical hash tells the two apart
+B  ✓  user_version (1 vs 2): dbhash says equal
+B  ✓  user_version (1 vs 2): our logical hash tells the two apart
+B  ✓  integer 1 vs real 1.0: dbhash says differ
+B  ✓  integer 1 vs real 1.0: our logical hash tells the two apart
+B  ✓  value boundary ('a3','b' vs 'a','3b'): dbhash says equal
+B  ✓  value boundary ('a3','b' vs 'a','3b'): our logical hash tells the two apart
+B  ✓  row moved between tables: dbhash says equal
+B  ✓  row moved between tables: our logical hash tells the two apart
+C  ✓  same content, tables created in another order: logically equal, but VACUUM INTO copies tables in sqlite_schema order, so the canonical files differ beyond the header
+C  ✓  the capture writes CREATE TABLE in sqlite_schema order, so it records the creation order too: the replay of a source canonicalizes to the source's own canonical bytes
+C  ✓  a schema change that left no trace in the content still raises the schema cookie, and VACUUM INTO carries the cookie (+1): the canonical files differ only at bytes 40-43
+C  ✓  an index built before or after the rows canonicalizes to the same bytes: VACUUM INTO rebuilds every index
+
+27 of 27 claims hold
+
+Experiment verdict: SAME ROWS OK
 ```
 
 **Reading the evidence:**
 
-- **Part A — R0, five rebuilds, and rung R2 (lines 6–59).** R0 (recipe seed 1, 30 steps) has `4` schema statements, `accounts=183`, `documents=96`, `events=1177`, and `user_version=30`. Its rung R2 logical capture `capture/r0.sql` is `2,005,315` bytes (`1,468` lines, sha256 `92d38985…`, about 1.8× R0's `1,105,920`-byte size because blobs are hex-encoded). Comparing all six builds against R0:
+- **Part A — R0, five rebuilds, and rung R2 (A.1–A.7).** R0 (recipe seed 1, 30 steps) has `4` schema statements, `accounts=183`, `documents=96`, `events=1177`, and `user_version=30`. Its rung R2 logical capture `capture/r0.sql` is `2,005,315` bytes (`1,468` lines, sha256 `92d38985…`, about 1.8× R0's `1,105,920`-byte size because blobs are hex-encoded). Comparing all six builds against R0:
   - **Correction 1 (WAL append-only batching):** `one-transaction` and `per-statement` both produce `1,089,536` bytes with the **exact same SHA-256** (`224810279caf4016`). Commit boundaries alone leave no trace in a WAL-mode file when rows are only appended, because WAL mode only writes page 1's change counter when page 1 is already dirty. Among the five non-backup builds (`r0`, `one-transaction`, `per-statement`, `shuffled`, `replayed`), there are **`4` distinct file SHA-256s**: history (R0's updates/deletes, `24aa158f…`), append order (`22481027…`), shuffled order (`dc2b3bbb…`, `1,093,632` bytes), and post-load index creation (`e3c97131…`, `1,089,536` bytes).
   - **Level E2 (`backup`):** `sqlite3_backup` of R0 (`a268f05a…`) differs from R0 on `1 of 270 pages` at E1, and passes **E2** (`equal except header bytes [27 43 95]`): only the change counter, schema cookie, and version-valid-for differ.
   - **Level E3 and R2 capture:** All six builds share the exact same logical SHA-256 (`3de6a8870f70a57c…`), the exact same `capture/r0.sql` SHA-256 (`92d3898538e25714…`), and the exact same `dbhash` SHA-1 (`9bee16896cb395b91df1ef4de2cbf4095ab44d13`).
   - **`VACUUM INTO` canonicalization and the backup exception (correction 2):** All five non-backup builds—including `replayed`—canonicalize to one SHA-256 (`927e39a45becbb84`, `1,089,536` bytes, rollback header `1,1`, change counter `1`, schema cookie `5`). The backup copy canonicalizes to `9324d9446d407e55`, differing from R0's canonical form only at byte `43` (`E2` equal): `sqlite3_backup_step` set the backup's schema cookie to `0 + 1 = 1` (`backup.c:448`), and `VACUUM INTO` carried each source's cookie `+1` (`4 -> 5` vs `1 -> 2`). Every canonical file differs from its WAL source at E3 only in `pragma journal_mode` (`wal` vs `rollback`).
-- **Part A2 — rollback-mode batching (lines 61–63).** Repeating `one-transaction` vs `per-statement` in `journal_mode=DELETE` produces two files that differ at E1 (`1 of 266 pages`) and match at E2 (`equal except header bytes [26 27 94 95]`), with change counters `3` vs `1463` counting the commits.
-- **Part B — six blind spots of weaker logical hashes (lines 65–85; correction 3).** Our E3 logical hash distinguishes all six pairs, naming the exact table or pragma that differs, while `dbhash` calls **five of the six** `equal`:
+- **Part A2 — rollback-mode batching (A2.1).** Repeating `one-transaction` vs `per-statement` in `journal_mode=DELETE` produces two files that differ at E1 (`1 of 266 pages`) and match at E2 (`equal except header bytes [26 27 94 95]`), with change counters `3` vs `1463` counting the commits.
+- **Part B — six blind spots of weaker logical hashes (B.1; correction 3).** Our E3 logical hash distinguishes all six pairs, naming the exact table or pragma that differs, while `dbhash` calls **five of the six** `equal`:
   1. `implicit rowids (1,2 vs 5,9)` — `dbhash` blind (`SELECT *` omits hidden rowid).
   2. `sqlite_sequence (1 vs 2)` — `dbhash` blind (skips `sqlite_*` tables).
   3. `user_version (1 vs 2)` — `dbhash` blind (hashes no file-header pragmas).
   4. `integer 1 vs real 1.0` — `dbhash` distinguishes it, whereas `sqldiff` reports them equal (from `docs/knowledge/determinism-and-rebuild.md`, Q4; `sqldiff` is not built by `build-tools`).
   5. `value boundary ('a3','b' vs 'a','3b')` — `dbhash` blind (`hash_one_query` in `tool/dbhash.c:281-360` hashes `"3a33b"` for both because TEXT has no length prefix).
   6. `row moved between tables` — `dbhash` blind (no row or table delimiter between tables `a` and `b`).
-- **Part C — where `VACUUM INTO` stops being a canonical form (lines 87–98; correction 2).**
+- **Part C — where `VACUUM INTO` stops being a canonical form (C.1–C.3; correction 2).**
   1. **Tables created in another order:** `CREATE TABLE a` then `b` vs `b` then `a` are E3-equal (and `dbhash`-equal), but `VACUUM INTO` copies tables in `sqlite_schema` rowid order, so the canonical files differ at E1 **and** E2 (`3 of 3 pages`, both schema cookie `3`). Because our R2 `dump()` writes `CREATE TABLE` in `sqlite_schema` rowid order, the two sources' captures differ, and replaying the second source's capture and running `VACUUM INTO` matches the second source's canonical form at E1 (`equal`).
-  2. **A dropped scratch table in history:** Creating and dropping `scratch` leaves no logical trace (E3-equal, `dbhash`-equal), but raises the schema cookie, so `VACUUM INTO` outputs differ at byte `43` (`schema cookies 2 and 4`, E1 differ, E2 equal).
-  3. **Index created before vs after rows:** E3-equal and canonical E1-equal (`schema cookies 3 and 3`), because `VACUUM INTO` always rebuilds indexes from scratch.
+  2. **A dropped scratch table in history:** Creating and dropping `scratch` leaves no logical trace (E3-equal, `dbhash`-equal), but raises the schema cookie, so `VACUUM INTO` outputs differ at byte `43` (schema cookies `2` and `4`, E1 differ, E2 equal).
+  3. **Index created before vs after rows:** E3-equal and canonical E1-equal (schema cookies `3` and `3`), because `VACUUM INTO` always rebuilds indexes from scratch.
 
 ### 6.2 Summary of outline corrections
 

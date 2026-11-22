@@ -1,0 +1,89 @@
+journal,sync,seq,method,call,sync_flags,vfstrace_label,go_key,cli_method,cli_key
+delete,NORMAL,1,xLock,xLock t.db level=SHARED -> 0,,,xLock t.db SHARED,xLock,xLock t.db SHARED
+delete,NORMAL,2,xAccess,xAccess t.db-journal flags=0 -> 0 out=0,,,xAccess t.db-journal 0,xAccess,xAccess t.db-journal 0
+delete,NORMAL,3,xRead,xRead t.db n=16 ofst=24 -> 0,,,xRead t.db n=16 ofst=24,xRead,xRead t.db n=16 ofst=24
+delete,NORMAL,4,xAccess,xAccess t.db-wal flags=0 -> 0 out=0,,,xAccess t.db-wal 0,xAccess,xAccess t.db-wal 0
+delete,NORMAL,5,xFileSize,xFileSize t.db -> 0 size=8192,,,xFileSize t.db,xFileSize,xFileSize t.db
+delete,NORMAL,6,xLock,xLock t.db level=RESERVED -> 0,,,xLock t.db RESERVED,xLock,xLock t.db RESERVED
+delete,NORMAL,7,xFileControl,xFileControl t.db op=HAS_MOVED -> 0,,,xFileControl t.db HAS_MOVED,xFileControl,xFileControl t.db HAS_MOVED
+delete,NORMAL,8,xOpen,xOpen t.db-journal kind=main-journal flags=0x806 -> 0,,,xOpen t.db-journal flags=0x806,xOpen,xOpen t.db-journal flags=0x806
+delete,NORMAL,9,xDeviceCharacteristics,xDeviceCharacteristics t.db -> 0x9000,,,xDeviceCharacteristics t.db,xDeviceCharacteristics,xDeviceCharacteristics t.db
+delete,NORMAL,10,xWrite,xWrite t.db-journal n=512 ofst=0 -> 0,,,xWrite t.db-journal n=512 ofst=0,xWrite,xWrite t.db-journal n=512 ofst=0
+delete,NORMAL,11,xWrite,xWrite t.db-journal n=4 ofst=512 -> 0,,,xWrite t.db-journal n=4 ofst=512,xWrite,xWrite t.db-journal n=4 ofst=512
+delete,NORMAL,12,xWrite,xWrite t.db-journal n=4096 ofst=516 -> 0,,,xWrite t.db-journal n=4096 ofst=516,xWrite,xWrite t.db-journal n=4096 ofst=516
+delete,NORMAL,13,xWrite,xWrite t.db-journal n=4 ofst=4612 -> 0,,,xWrite t.db-journal n=4 ofst=4612,xWrite,xWrite t.db-journal n=4 ofst=4612
+delete,NORMAL,14,xLock,xLock t.db level=EXCLUSIVE -> 0,,,xLock t.db EXCLUSIVE,xLock,xLock t.db EXCLUSIVE
+delete,NORMAL,15,xWrite,xWrite t.db-journal n=4 ofst=4616 -> 0,,,xWrite t.db-journal n=4 ofst=4616,xWrite,xWrite t.db-journal n=4 ofst=4616
+delete,NORMAL,16,xWrite,xWrite t.db-journal n=4096 ofst=4620 -> 0,,,xWrite t.db-journal n=4096 ofst=4620,xWrite,xWrite t.db-journal n=4096 ofst=4620
+delete,NORMAL,17,xWrite,xWrite t.db-journal n=4 ofst=8716 -> 0,,,xWrite t.db-journal n=4 ofst=8716,xWrite,xWrite t.db-journal n=4 ofst=8716
+delete,NORMAL,18,xDeviceCharacteristics,xDeviceCharacteristics t.db -> 0x9000,,,xDeviceCharacteristics t.db,xDeviceCharacteristics,xDeviceCharacteristics t.db
+delete,NORMAL,19,xRead,xRead t.db-journal n=8 ofst=9216 -> 522,,,xRead t.db-journal n=8 ofst=9216,xRead,xRead t.db-journal n=8 ofst=9216
+delete,NORMAL,20,xWrite,xWrite t.db-journal n=12 ofst=0 -> 0,,,xWrite t.db-journal n=12 ofst=0,xWrite,xWrite t.db-journal n=12 ofst=0
+delete,NORMAL,21,xSync,xSync t.db-journal flags=NORMAL -> 0,0x2(NORMAL),FULL,xSync t.db-journal FULL,xSync,xSync t.db-journal FULL
+delete,NORMAL,22,xWrite,xWrite t.db n=4096 ofst=0 -> 0,,,xWrite t.db n=4096 ofst=0,xWrite,xWrite t.db n=4096 ofst=0
+delete,NORMAL,23,xWrite,xWrite t.db n=4096 ofst=4096 -> 0,,,xWrite t.db n=4096 ofst=4096,xWrite,xWrite t.db n=4096 ofst=4096
+delete,NORMAL,24,xFileControl,xFileControl t.db op=SYNC -> 12,,,xFileControl t.db SYNC,xFileControl,xFileControl t.db SYNC
+delete,NORMAL,25,xSync,xSync t.db flags=NORMAL -> 0,0x2(NORMAL),FULL,xSync t.db FULL,xSync,xSync t.db FULL
+delete,NORMAL,26,xClose,xClose t.db-journal -> 0,,,xClose t.db-journal,xClose,xClose t.db-journal
+delete,NORMAL,27,xDelete,xDelete t.db-journal syncDir=0 -> 0,,,xDelete t.db-journal 0,xDelete,xDelete t.db-journal 0
+delete,NORMAL,28,xFileControl,xFileControl t.db op=COMMIT_PHASETWO -> 12,,,xFileControl t.db COMMIT_PHASETWO,xFileControl,xFileControl t.db COMMIT_PHASETWO
+delete,NORMAL,29,xUnlock,xUnlock t.db level=SHARED -> 0,,,xUnlock t.db SHARED,xUnlock,xUnlock t.db SHARED
+delete,NORMAL,30,xDeviceCharacteristics,xDeviceCharacteristics t.db -> 0x9000,,,xDeviceCharacteristics t.db,xDeviceCharacteristics,xDeviceCharacteristics t.db
+delete,NORMAL,31,xUnlock,xUnlock t.db level=NONE -> 0,,,xUnlock t.db NONE,xUnlock,xUnlock t.db NONE
+delete,FULL,1,xLock,xLock t.db level=SHARED -> 0,,,xLock t.db SHARED,xLock,xLock t.db SHARED
+delete,FULL,2,xAccess,xAccess t.db-journal flags=0 -> 0 out=0,,,xAccess t.db-journal 0,xAccess,xAccess t.db-journal 0
+delete,FULL,3,xRead,xRead t.db n=16 ofst=24 -> 0,,,xRead t.db n=16 ofst=24,xRead,xRead t.db n=16 ofst=24
+delete,FULL,4,xAccess,xAccess t.db-wal flags=0 -> 0 out=0,,,xAccess t.db-wal 0,xAccess,xAccess t.db-wal 0
+delete,FULL,5,xFileSize,xFileSize t.db -> 0 size=8192,,,xFileSize t.db,xFileSize,xFileSize t.db
+delete,FULL,6,xLock,xLock t.db level=RESERVED -> 0,,,xLock t.db RESERVED,xLock,xLock t.db RESERVED
+delete,FULL,7,xFileControl,xFileControl t.db op=HAS_MOVED -> 0,,,xFileControl t.db HAS_MOVED,xFileControl,xFileControl t.db HAS_MOVED
+delete,FULL,8,xOpen,xOpen t.db-journal kind=main-journal flags=0x806 -> 0,,,xOpen t.db-journal flags=0x806,xOpen,xOpen t.db-journal flags=0x806
+delete,FULL,9,xDeviceCharacteristics,xDeviceCharacteristics t.db -> 0x9000,,,xDeviceCharacteristics t.db,xDeviceCharacteristics,xDeviceCharacteristics t.db
+delete,FULL,10,xWrite,xWrite t.db-journal n=512 ofst=0 -> 0,,,xWrite t.db-journal n=512 ofst=0,xWrite,xWrite t.db-journal n=512 ofst=0
+delete,FULL,11,xWrite,xWrite t.db-journal n=4 ofst=512 -> 0,,,xWrite t.db-journal n=4 ofst=512,xWrite,xWrite t.db-journal n=4 ofst=512
+delete,FULL,12,xWrite,xWrite t.db-journal n=4096 ofst=516 -> 0,,,xWrite t.db-journal n=4096 ofst=516,xWrite,xWrite t.db-journal n=4096 ofst=516
+delete,FULL,13,xWrite,xWrite t.db-journal n=4 ofst=4612 -> 0,,,xWrite t.db-journal n=4 ofst=4612,xWrite,xWrite t.db-journal n=4 ofst=4612
+delete,FULL,14,xLock,xLock t.db level=EXCLUSIVE -> 0,,,xLock t.db EXCLUSIVE,xLock,xLock t.db EXCLUSIVE
+delete,FULL,15,xWrite,xWrite t.db-journal n=4 ofst=4616 -> 0,,,xWrite t.db-journal n=4 ofst=4616,xWrite,xWrite t.db-journal n=4 ofst=4616
+delete,FULL,16,xWrite,xWrite t.db-journal n=4096 ofst=4620 -> 0,,,xWrite t.db-journal n=4096 ofst=4620,xWrite,xWrite t.db-journal n=4096 ofst=4620
+delete,FULL,17,xWrite,xWrite t.db-journal n=4 ofst=8716 -> 0,,,xWrite t.db-journal n=4 ofst=8716,xWrite,xWrite t.db-journal n=4 ofst=8716
+delete,FULL,18,xDeviceCharacteristics,xDeviceCharacteristics t.db -> 0x9000,,,xDeviceCharacteristics t.db,xDeviceCharacteristics,xDeviceCharacteristics t.db
+delete,FULL,19,xRead,xRead t.db-journal n=8 ofst=9216 -> 522,,,xRead t.db-journal n=8 ofst=9216,xRead,xRead t.db-journal n=8 ofst=9216
+delete,FULL,20,xSync,xSync t.db-journal flags=NORMAL -> 0,0x2(NORMAL),FULL,xSync t.db-journal FULL,xSync,xSync t.db-journal FULL
+delete,FULL,21,xWrite,xWrite t.db-journal n=12 ofst=0 -> 0,,,xWrite t.db-journal n=12 ofst=0,xWrite,xWrite t.db-journal n=12 ofst=0
+delete,FULL,22,xSync,xSync t.db-journal flags=NORMAL -> 0,0x2(NORMAL),FULL,xSync t.db-journal FULL,xSync,xSync t.db-journal FULL
+delete,FULL,23,xWrite,xWrite t.db n=4096 ofst=0 -> 0,,,xWrite t.db n=4096 ofst=0,xWrite,xWrite t.db n=4096 ofst=0
+delete,FULL,24,xWrite,xWrite t.db n=4096 ofst=4096 -> 0,,,xWrite t.db n=4096 ofst=4096,xWrite,xWrite t.db n=4096 ofst=4096
+delete,FULL,25,xFileControl,xFileControl t.db op=SYNC -> 12,,,xFileControl t.db SYNC,xFileControl,xFileControl t.db SYNC
+delete,FULL,26,xSync,xSync t.db flags=NORMAL -> 0,0x2(NORMAL),FULL,xSync t.db FULL,xSync,xSync t.db FULL
+delete,FULL,27,xClose,xClose t.db-journal -> 0,,,xClose t.db-journal,xClose,xClose t.db-journal
+delete,FULL,28,xDelete,xDelete t.db-journal syncDir=0 -> 0,,,xDelete t.db-journal 0,xDelete,xDelete t.db-journal 0
+delete,FULL,29,xFileControl,xFileControl t.db op=COMMIT_PHASETWO -> 12,,,xFileControl t.db COMMIT_PHASETWO,xFileControl,xFileControl t.db COMMIT_PHASETWO
+delete,FULL,30,xUnlock,xUnlock t.db level=SHARED -> 0,,,xUnlock t.db SHARED,xUnlock,xUnlock t.db SHARED
+delete,FULL,31,xDeviceCharacteristics,xDeviceCharacteristics t.db -> 0x9000,,,xDeviceCharacteristics t.db,xDeviceCharacteristics,xDeviceCharacteristics t.db
+delete,FULL,32,xUnlock,xUnlock t.db level=NONE -> 0,,,xUnlock t.db NONE,xUnlock,xUnlock t.db NONE
+wal,NORMAL,1,xShmBarrier,xShmBarrier t.db,,,xShmBarrier t.db,xShmBarrier,xShmBarrier t.db
+wal,NORMAL,2,xShmLock,xShmLock t.db ofst=4 n=1 flags=LOCK|EXCLUSIVE -> 0,,,xShmLock t.db ofst=4 n=1 LOCK|EXCLUSIVE,xShmLock,xShmLock t.db ofst=4 n=1 LOCK|EXCLUSIVE
+wal,NORMAL,3,xShmLock,xShmLock t.db ofst=4 n=1 flags=UNLOCK|EXCLUSIVE -> 0,,,xShmLock t.db ofst=4 n=1 UNLOCK|EXCLUSIVE,xShmLock,xShmLock t.db ofst=4 n=1 UNLOCK|EXCLUSIVE
+wal,NORMAL,4,xShmLock,xShmLock t.db ofst=4 n=1 flags=LOCK|SHARED -> 0,,,xShmLock t.db ofst=4 n=1 LOCK|SHARED,xShmLock,xShmLock t.db ofst=4 n=1 LOCK|SHARED
+wal,NORMAL,5,xShmBarrier,xShmBarrier t.db,,,xShmBarrier t.db,xShmBarrier,xShmBarrier t.db
+wal,NORMAL,6,xShmLock,xShmLock t.db ofst=0 n=1 flags=LOCK|EXCLUSIVE -> 0,,,xShmLock t.db ofst=0 n=1 LOCK|EXCLUSIVE,xShmLock,xShmLock t.db ofst=0 n=1 LOCK|EXCLUSIVE
+wal,NORMAL,7,xWrite,xWrite t.db-wal n=24 ofst=20632 -> 0,,,xWrite t.db-wal n=24 ofst=20632,xWrite,xWrite t.db-wal n=24 ofst=20632
+wal,NORMAL,8,xWrite,xWrite t.db-wal n=4096 ofst=20656 -> 0,,,xWrite t.db-wal n=4096 ofst=20656,xWrite,xWrite t.db-wal n=4096 ofst=20656
+wal,NORMAL,9,xShmBarrier,xShmBarrier t.db,,,xShmBarrier t.db,xShmBarrier,xShmBarrier t.db
+wal,NORMAL,10,xShmLock,xShmLock t.db ofst=0 n=1 flags=UNLOCK|EXCLUSIVE -> 0,,,xShmLock t.db ofst=0 n=1 UNLOCK|EXCLUSIVE,xShmLock,xShmLock t.db ofst=0 n=1 UNLOCK|EXCLUSIVE
+wal,NORMAL,11,xFileControl,xFileControl t.db op=COMMIT_PHASETWO -> 12,,,xFileControl t.db COMMIT_PHASETWO,xFileControl,xFileControl t.db COMMIT_PHASETWO
+wal,NORMAL,12,xShmLock,xShmLock t.db ofst=4 n=1 flags=UNLOCK|SHARED -> 0,,,xShmLock t.db ofst=4 n=1 UNLOCK|SHARED,xShmLock,xShmLock t.db ofst=4 n=1 UNLOCK|SHARED
+wal,FULL,1,xShmBarrier,xShmBarrier t.db,,,xShmBarrier t.db,xShmBarrier,xShmBarrier t.db
+wal,FULL,2,xShmLock,xShmLock t.db ofst=4 n=1 flags=LOCK|EXCLUSIVE -> 0,,,xShmLock t.db ofst=4 n=1 LOCK|EXCLUSIVE,xShmLock,xShmLock t.db ofst=4 n=1 LOCK|EXCLUSIVE
+wal,FULL,3,xShmLock,xShmLock t.db ofst=4 n=1 flags=UNLOCK|EXCLUSIVE -> 0,,,xShmLock t.db ofst=4 n=1 UNLOCK|EXCLUSIVE,xShmLock,xShmLock t.db ofst=4 n=1 UNLOCK|EXCLUSIVE
+wal,FULL,4,xShmLock,xShmLock t.db ofst=4 n=1 flags=LOCK|SHARED -> 0,,,xShmLock t.db ofst=4 n=1 LOCK|SHARED,xShmLock,xShmLock t.db ofst=4 n=1 LOCK|SHARED
+wal,FULL,5,xShmBarrier,xShmBarrier t.db,,,xShmBarrier t.db,xShmBarrier,xShmBarrier t.db
+wal,FULL,6,xShmLock,xShmLock t.db ofst=0 n=1 flags=LOCK|EXCLUSIVE -> 0,,,xShmLock t.db ofst=0 n=1 LOCK|EXCLUSIVE,xShmLock,xShmLock t.db ofst=0 n=1 LOCK|EXCLUSIVE
+wal,FULL,7,xWrite,xWrite t.db-wal n=24 ofst=20632 -> 0,,,xWrite t.db-wal n=24 ofst=20632,xWrite,xWrite t.db-wal n=24 ofst=20632
+wal,FULL,8,xWrite,xWrite t.db-wal n=4096 ofst=20656 -> 0,,,xWrite t.db-wal n=4096 ofst=20656,xWrite,xWrite t.db-wal n=4096 ofst=20656
+wal,FULL,9,xSync,xSync t.db-wal flags=NORMAL -> 0,0x2(NORMAL),FULL,xSync t.db-wal FULL,xSync,xSync t.db-wal FULL
+wal,FULL,10,xShmBarrier,xShmBarrier t.db,,,xShmBarrier t.db,xShmBarrier,xShmBarrier t.db
+wal,FULL,11,xShmLock,xShmLock t.db ofst=0 n=1 flags=UNLOCK|EXCLUSIVE -> 0,,,xShmLock t.db ofst=0 n=1 UNLOCK|EXCLUSIVE,xShmLock,xShmLock t.db ofst=0 n=1 UNLOCK|EXCLUSIVE
+wal,FULL,12,xFileControl,xFileControl t.db op=COMMIT_PHASETWO -> 12,,,xFileControl t.db COMMIT_PHASETWO,xFileControl,xFileControl t.db COMMIT_PHASETWO
+wal,FULL,13,xShmLock,xShmLock t.db ofst=4 n=1 flags=UNLOCK|SHARED -> 0,,,xShmLock t.db ofst=4 n=1 UNLOCK|SHARED,xShmLock,xShmLock t.db ofst=4 n=1 UNLOCK|SHARED

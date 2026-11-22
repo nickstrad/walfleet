@@ -1,0 +1,5 @@
+cycle,part,snapshot,reason,position,pages,user_version,state_sha256,after_frame,generation
+,A,snapshots/000000000002,initial,2,29,2,69490a2dc9c1980f,0,no WAL
+3,A,snapshots/000000000006,periodic,6,60,6,2d7996f5c596c99e,22,#3
+6,A,snapshots/000000000012,periodic,12,118,12,649990133c619869,44,#6
+9,B,snapshots/000000000015,discontinuity,15,162,17,4a1f971701e2b5cd,13,#9

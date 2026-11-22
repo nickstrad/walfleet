@@ -1,0 +1,4 @@
+seq,part,capture,db_bytes,wal_bytes
+1,A,quiet moment,16384,638632
+8,B,open transaction,323584,247232
+16,C,after rollback,323584,247232

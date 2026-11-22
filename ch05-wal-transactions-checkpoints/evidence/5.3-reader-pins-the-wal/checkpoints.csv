@@ -1,0 +1,4 @@
+seq,part,moment,busy,log_frames,checkpointed
+29,A,PASSIVE checkpoint,false,555,555
+32,B,PASSIVE checkpoint after step 6,false,22,22
+59,B,PASSIVE checkpoint after the reader ended,false,533,533

@@ -1,0 +1,5 @@
+part,mode,how,commands,acknowledged,command_thread_fsyncs,exit_code
+A,local-durable,"strace, not killed",12,12,77,0
+A,store-durable,"strace, not killed",12,12,85,0
+B,local-durable,"interactive, not killed",12,12,,
+B,store-durable,"interactive, not killed",12,12,,

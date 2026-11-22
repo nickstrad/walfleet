@@ -1,0 +1,19 @@
+seq,part,status,claim
+1,A,ok,model correct: no interleaving up to depth 16 and no random walk lets a fenced epoch get a commit accepted
+2,A,ok,self-test: with store-accepts-every-put the checker finds the violation
+3,A,ok,self-test: with resume-from-global-end the checker finds the violation
+4,B,ok,the real processes and the model agree at every command step (13 of 13)
+5,B,ok,"no node reported a problem (a failed final ship, an eviction that did not leave the shipped state at rest, an I/O error)"
+6,B,ok,after each of the 15 commands the node's descriptors and memory stayed within the standing bounds
+7,C,ok,"db-0001: the store holds exactly the slots the model predicts: one lineage, epochs never decreasing, no damaged object"
+8,C,ok,"db-0001: the catalog names the newest epoch and the last stored position, and the restored state is a recipe state"
+9,C,ok,db-0001: the owner's closed local file is byte-identical (E1) to the state rebuilt from the store
+10,C,ok,db-0001: the store-durable acknowledgement of user_version 1 is stored at position 2 by epoch 1
+11,C,ok,"db-0001: the local-durable acknowledgement of user_version 2 by epoch 1 was never shipped, and the takeover lost it, as that mode allows"
+12,C,ok,db-0001: the store-durable acknowledgement of user_version 2 is stored at position 4 by epoch 2
+13,C,ok,db-0001: the store-durable acknowledgement of user_version 3 is stored at position 5 by epoch 2
+14,C,ok,"db-0002: the store holds exactly the slots the model predicts: one lineage, epochs never decreasing, no damaged object"
+15,C,ok,"db-0002: the catalog names the newest epoch and the last stored position, and the restored state is a recipe state"
+16,C,ok,db-0002: the owner's closed local file is byte-identical (E1) to the state rebuilt from the store
+17,C,ok,db-0002: the store-durable acknowledgement of user_version 1 is stored at position 2 by epoch 1
+18,C,ok,db-0002: the store-durable acknowledgement of user_version 2 is stored at position 4 by epoch 2

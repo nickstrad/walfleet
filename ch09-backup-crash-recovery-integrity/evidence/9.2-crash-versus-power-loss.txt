@@ -1,126 +1,246 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/9.2
-== recipe built to step 3; a writer child commits steps 4-11 on one connection (wal_autocheckpoint=0) and runs one PASSIVE checkpoint after step 7
 
-== part B: what a process crash keeps, and what the simplest power cut keeps
--- synchronous=OFF: the writer acknowledged steps 4-11; checkpoint 7 busy=0 log=74 checkpointed=74; it exited without closing
-   the checkpoint copied 74 of 74 frames; the commits after it stayed in the same WAL generation: false
-   process crash (files as the kernel holds them): integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: synchronous=OFF: a process crash keeps every acknowledged step (11)
-   strace: -wal 0 sync(s); 306 write(s) after the last one, the lowest at offset 0
-   strace: database file 0 sync(s); 44 write(s) after the last one, the lowest at offset 0
-check ok: synchronous=OFF: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
-   power-cut model: not applicable at OFF: the checkpoint wrote the database file and nothing was ever synced, so a power cut can leave any mix of old and new database pages
-check ok: only synchronous=OFF leaves database-file writes that were never synced
--- synchronous=NORMAL: the writer acknowledged steps 4-11; checkpoint 7 busy=0 log=74 checkpointed=74; it exited without closing
-   the checkpoint copied 74 of 74 frames; the commits after it stayed in the same WAL generation: false
-   process crash (files as the kernel holds them): integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: synchronous=NORMAL: a process crash keeps every acknowledged step (11)
-   strace: -wal 3 sync(s); 156 write(s) after the last one, the lowest at offset 32
-   strace: database file 1 sync(s); no write after the last one
-check ok: synchronous=NORMAL: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
-   power-cut model: -wal kept up to byte 32 of 321392 (everything after the last sync removed), no -shm: integrity_check ok, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95); acknowledged commits past the cut: 4
-check ok: synchronous=NORMAL: the model recovers step 7, the last acknowledged step minus the 4 commit(s) written after the last sync
-check ok: synchronous=NORMAL: the acknowledged commits after the checkpoint at step 7 are lost in the model, yet the database is consistent
--- synchronous=FULL: the writer acknowledged steps 4-11; checkpoint 7 busy=0 log=74 checkpointed=74; it exited without closing
-   the checkpoint copied 74 of 74 frames; the commits after it stayed in the same WAL generation: false
-   process crash (files as the kernel holds them): integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: synchronous=FULL: a process crash keeps every acknowledged step (11)
-   strace: -wal 11 sync(s); no write after the last one
-   strace: database file 1 sync(s); no write after the last one
-check ok: synchronous=FULL: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
-   power-cut model: -wal kept up to byte 321392 of 321392 (everything after the last sync removed), no -shm: integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95); acknowledged commits past the cut: 0
-check ok: synchronous=FULL: the model recovers step 11, the last acknowledged step minus the 0 commit(s) written after the last sync
-check ok: FULL: no acknowledged commit is lost in the model
--- synchronous=NORMAL with a second connection holding a read transaction from step 5: the writer acknowledged steps 4-11; checkpoint 7 busy=0 log=74 checkpointed=36; it exited without closing
-   the checkpoint copied 36 of 74 frames; the commits after it stayed in the same WAL generation: true
-check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: the reader stopped the checkpoint short of the end and the WAL did not restart
-   process crash (files as the kernel holds them): integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: a process crash keeps every acknowledged step (11)
-   strace: -wal 2 sync(s); 156 write(s) after the last one, the lowest at offset 304912
-   strace: database file 0 sync(s); 15 write(s) after the last one, the lowest at offset 73728
-check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
-   power-cut model: -wal kept up to byte 304912 of 626272 (everything after the last sync removed), no -shm: integrity_check ok, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95); acknowledged commits past the cut: 4
-check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: the model recovers step 7, the last acknowledged step minus the 4 commit(s) written after the last sync
-   the checkpoint copied only part of the WAL, so it did not sync the database file; the same model with the database file as it was before the checkpoint (none of those writes kept): integrity_check ok, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: with or without the checkpoint's unsynced database writes the model recovers step 7, because the WAL frames they came from were synced before the checkpoint wrote them
-check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: the acknowledged commits after the checkpoint at step 7 are lost in the model, yet the database is consistent
+════════════════════════════════════════════════════════════════════════
+  9.2  Crash versus power loss
+════════════════════════════════════════════════════════════════════════
 
-== part A: kill the writer at chosen syscalls, reopen, identify the state
--- synchronous=OFF: the uninterrupted writer made 0 sync call(s) and 357 pwrite64 call(s); kill on entry to each sync and to 6 of the writes
-   kill at pwrite64 #1 (pwrite64 r.db-shm off=4095 len=1 = ? (process killed)): acknowledged 3, recovered step 3 (exact bytes), integrity_check ok
-check ok: OFF kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
-   kill at pwrite64 #72 (pwrite64 r.db-wal off=127752 len=24 = ? (process killed)): acknowledged 4, recovered step 4 (exact bytes), integrity_check ok
-check ok: OFF kill 2: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
-   kill at pwrite64 #143 (pwrite64 r.db-wal off=271976 len=4096 = ? (process killed)): acknowledged 6, recovered step 6 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: OFF kill 3: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
-   kill at pwrite64 #214 (pwrite64 r.db-wal off=24752 len=24 = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: OFF kill 4: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at pwrite64 #285 (pwrite64 r.db-wal off=168976 len=4096 = ? (process killed)): acknowledged 8, recovered step 8 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: OFF kill 5: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
-   kill at pwrite64 #357 (pwrite64 r.db-wal off=317296 len=4096 = ? (process killed)): acknowledged 10, recovered step 10 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: OFF kill 6: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
--- synchronous=NORMAL: the uninterrupted writer made 5 sync call(s) and 357 pwrite64 call(s); kill on entry to each sync and to 6 of the writes
-   kill at fsync #1 (fsync r.db-wal = ? (process killed)): acknowledged 3, recovered step 3 (exact bytes), integrity_check ok
-check ok: NORMAL kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
-   kill at fsync #2 (fsync . = ? (process killed)): acknowledged 3, recovered step 3 (exact bytes), integrity_check ok
-check ok: NORMAL kill 2: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
-   kill at fsync #3 (fsync r.db-wal = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: NORMAL kill 3: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at fsync #4 (fsync r.db = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: NORMAL kill 4: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at fsync #5 (fsync r.db-wal = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: NORMAL kill 5: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at pwrite64 #1 (pwrite64 r.db-shm off=4095 len=1 = ? (process killed)): acknowledged 3, recovered step 3 (exact bytes), integrity_check ok
-check ok: NORMAL kill 6: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
-   kill at pwrite64 #72 (pwrite64 r.db-wal off=127752 len=24 = ? (process killed)): acknowledged 4, recovered step 4 (exact bytes), integrity_check ok
-check ok: NORMAL kill 7: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
-   kill at pwrite64 #143 (pwrite64 r.db-wal off=271976 len=4096 = ? (process killed)): acknowledged 6, recovered step 6 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: NORMAL kill 8: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
-   kill at pwrite64 #214 (pwrite64 r.db-wal off=24752 len=24 = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: NORMAL kill 9: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at pwrite64 #285 (pwrite64 r.db-wal off=168976 len=4096 = ? (process killed)): acknowledged 8, recovered step 8 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: NORMAL kill 10: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
-   kill at pwrite64 #357 (pwrite64 r.db-wal off=317296 len=4096 = ? (process killed)): acknowledged 10, recovered step 10 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: NORMAL kill 11: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
--- synchronous=FULL: the uninterrupted writer made 13 sync call(s) and 357 pwrite64 call(s); kill on entry to each sync and to 6 of the writes
-   kill at fsync #1 (fsync r.db-wal = ? (process killed)): acknowledged 3, recovered step 3 (exact bytes), integrity_check ok
-check ok: FULL kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
-   kill at fsync #2 (fsync . = ? (process killed)): acknowledged 3, recovered step 3 (exact bytes), integrity_check ok
-check ok: FULL kill 2: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
-   kill at fsync #3 (fsync r.db-wal = ? (process killed)): acknowledged 3, recovered step 4 (exact bytes), integrity_check ok
-check ok: FULL kill 3: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
-   kill at fsync #4 (fsync r.db-wal = ? (process killed)): acknowledged 4, recovered step 5 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 4: integrity ok, recovered step 5 is the last acknowledged step or the one being committed
-   kill at fsync #5 (fsync r.db-wal = ? (process killed)): acknowledged 5, recovered step 6 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 5: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
-   kill at fsync #6 (fsync r.db-wal = ? (process killed)): acknowledged 6, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 6: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at fsync #7 (fsync r.db-wal = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 7: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at fsync #8 (fsync r.db = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 8: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at fsync #9 (fsync r.db-wal = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 9: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at fsync #10 (fsync r.db-wal = ? (process killed)): acknowledged 7, recovered step 8 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 10: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
-   kill at fsync #11 (fsync r.db-wal = ? (process killed)): acknowledged 8, recovered step 9 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 11: integrity ok, recovered step 9 is the last acknowledged step or the one being committed
-   kill at fsync #12 (fsync r.db-wal = ? (process killed)): acknowledged 9, recovered step 10 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 12: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
-   kill at fsync #13 (fsync r.db-wal = ? (process killed)): acknowledged 10, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 13: integrity ok, recovered step 11 is the last acknowledged step or the one being committed
-   kill at pwrite64 #1 (pwrite64 r.db-shm off=4095 len=1 = ? (process killed)): acknowledged 3, recovered step 3 (exact bytes), integrity_check ok
-check ok: FULL kill 14: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
-   kill at pwrite64 #72 (pwrite64 r.db-wal off=127752 len=24 = ? (process killed)): acknowledged 4, recovered step 4 (exact bytes), integrity_check ok
-check ok: FULL kill 15: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
-   kill at pwrite64 #143 (pwrite64 r.db-wal off=271976 len=4096 = ? (process killed)): acknowledged 6, recovered step 6 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 16: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
-   kill at pwrite64 #214 (pwrite64 r.db-wal off=24752 len=24 = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 17: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at pwrite64 #285 (pwrite64 r.db-wal off=168976 len=4096 = ? (process killed)): acknowledged 8, recovered step 8 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 18: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
-   kill at pwrite64 #357 (pwrite64 r.db-wal off=317296 len=4096 = ? (process killed)): acknowledged 10, recovered step 10 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 19: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
+The recipe database is built to step 3. A writer child process commits
+steps 4-11 on one connection in WAL mode (wal_autocheckpoint=0), runs one
+PASSIVE checkpoint after step 7, and exits without closing SQLite, so its
+files stay exactly as a crashed process leaves them. It prints an
+acknowledgement after each commit returns.
 
-CRASH VERSUS POWER LOSS OK
+A process crash keeps what the kernel already holds. A power cut keeps
+only what was synced. Part B compares the two for synchronous=OFF, NORMAL
+and FULL, and for NORMAL with a second connection holding a read
+transaction from step 5. Part A (Linux only) kills the writer at chosen
+system calls.
+
+Parts skipped on this platform (LINUX-ONLY notices):
+┌──────┬─────────┬─────────────────────────────────┐
+│ part │ variant │              what               │
+├──────┼─────────┼─────────────────────────────────┤
+│ none │         │ strace ran: nothing was skipped │
+└──────┴─────────┴─────────────────────────────────┘
+
+── B. What a process crash keeps, and what the simplest power cut keeps
+
+B1. The four runs. Each writer acknowledged steps 4-11. The checkpoint
+    copied every frame, so the next commit restarted the WAL, except with
+    the reader: it stopped the checkpoint short of the end, and the
+    commits after it stayed in the same WAL generation.
+┌─────────────────┬─────────────┬─────────────┬──────────────┬──────────────────────────────────┬───────────────────┐
+│     variant     │ synchronous │ reader_from │ acknowledged │            checkpoint            │ wal_not_restarted │
+├─────────────────┼─────────────┼─────────────┼──────────────┼──────────────────────────────────┼───────────────────┤
+│ off             │ OFF         │             │ 4-11         │ after 7: busy=0, copied 74 of 74 │ false             │
+│ normal          │ NORMAL      │             │ 4-11         │ after 7: busy=0, copied 74 of 74 │ false             │
+│ full            │ FULL        │             │ 4-11         │ after 7: busy=0, copied 74 of 74 │ false             │
+│ normal-reader-5 │ NORMAL      │ 5           │ 4-11         │ after 7: busy=0, copied 36 of 74 │ true              │
+└─────────────────┴─────────────┴─────────────┴──────────────┴──────────────────────────────────┴───────────────────┘
+
+B2. A process crash: the database file and -wal copied as the kernel holds
+    them, then reopened. Every variant recovers every acknowledged step,
+    even synchronous=OFF. "exact_bytes = false" means equal to the recipe
+    step except the change counter (header bytes 24-27 and 92-95).
+┌─────────────────┬───────────────────┬─────────────────┬────────────────┬─────────────┐
+│     variant     │ last_acknowledged │ integrity_check │ recovered_step │ exact_bytes │
+├─────────────────┼───────────────────┼─────────────────┼────────────────┼─────────────┤
+│ off             │ 11                │ ok              │ 11             │ false       │
+│ normal          │ 11                │ ok              │ 11             │ false       │
+│ full            │ 11                │ ok              │ 11             │ false       │
+│ normal-reader-5 │ 11                │ ok              │ 11             │ false       │
+└─────────────────┴───────────────────┴─────────────────┴────────────────┴─────────────┘
+
+B3. Which -wal bytes were synced. The rule column is read from the SQLite
+    sync rules (src/pager.c:3658-3704, src/wal.h:25-26, src/wal.c); the
+    strace columns are what the writer actually did. OFF never syncs;
+    NORMAL syncs only around the checkpoint (up to byte 32, the header of
+    the restarted WAL, or up to the checkpointed end when the reader kept
+    the WAL from restarting); FULL syncs every commit.
+┌─────────────────┬───────────────────┬───────┬────────────────────────┬────────────────────────┬───────┐
+│     variant     │ rule_synced_up_to │ syncs │ writes_after_last_sync │ lowest_unsynced_offset │ agree │
+├─────────────────┼───────────────────┼───────┼────────────────────────┼────────────────────────┼───────┤
+│ off             │ 0                 │ 0     │ 306                    │ 0                      │ true  │
+│ normal          │ 32                │ 3     │ 156                    │ 32                     │ true  │
+│ full            │ all of it         │ 11    │ 0                      │                        │ true  │
+│ normal-reader-5 │ 304912            │ 2     │ 156                    │ 304912                 │ true  │
+└─────────────────┴───────────────────┴───────┴────────────────────────┴────────────────────────┴───────┘
+
+B4. The database file. A checkpoint that copies every frame syncs it; one
+    that stops short (the reader) does not, and at OFF nothing is synced.
+┌─────────────────┬──────────────────────┬───────┬────────────────────────┬────────────────────────┬───────┐
+│     variant     │ rule_unsynced_writes │ syncs │ writes_after_last_sync │ lowest_unsynced_offset │ agree │
+├─────────────────┼──────────────────────┼───────┼────────────────────────┼────────────────────────┼───────┤
+│ off             │ true                 │ 0     │ 44                     │ 0                      │ true  │
+│ normal          │ false                │ 1     │ 0                      │                        │ true  │
+│ full            │ false                │ 1     │ 0                      │                        │ true  │
+│ normal-reader-5 │ true                 │ 0     │ 15                     │ 73728                  │ true  │
+└─────────────────┴──────────────────────┴───────┴────────────────────────┴────────────────────────┴───────┘
+
+B5. Where each acknowledged commit ends in the -wal (byte offset, then
+    #WAL generation). A commit ending past the last sync in the newest
+    generation is marked "lost": the power-cut model removes it.
+┌──────┬───────────┬────────────────┬───────────┬─────────────────┐
+│ step │    off    │     normal     │   full    │ normal-reader-5 │
+├──────┼───────────┼────────────────┼───────────┼─────────────────┤
+│ 4    │ 103032 #1 │ 103032 #1      │ 103032 #1 │ 103032 #1       │
+│ 5    │ 148352 #1 │ 148352 #1      │ 148352 #1 │ 148352 #1       │
+│ 6    │ 238992 #1 │ 238992 #1      │ 238992 #1 │ 238992 #1       │
+│ 7    │ 304912 #1 │ 304912 #1      │ 304912 #1 │ 304912 #1       │
+│ 8    │ 94792 #2  │ 94792 #2 lost  │ 94792 #2  │ 399672 #1 lost  │
+│ 9    │ 189552 #2 │ 189552 #2 lost │ 189552 #2 │ 494432 #1 lost  │
+│ 10   │ 259592 #2 │ 259592 #2 lost │ 259592 #2 │ 564472 #1 lost  │
+│ 11   │ 321392 #2 │ 321392 #2 lost │ 321392 #2 │ 626272 #1 lost  │
+└──────┴───────────┴────────────────┴───────────┴─────────────────┘
+
+B6. The power-cut model: the database file as written, the -wal cut back
+    to the last sync, no -shm; then reopened. NORMAL loses the four commits
+    after the checkpoint but stays consistent; FULL loses nothing. With the
+    reader the checkpoint did not sync the database file, so the model also
+    runs with the file as it was before the checkpoint: the same step, since
+    the WAL frames those writes came from were synced first.
+┌─────────────────┬──────────────────────────┬──────────────────┬──────┬───────────┬───────────┬───────┐
+│     variant     │      database_file       │  wal_bytes_kept  │ lost │ integrity │ recovered │ exact │
+├─────────────────┼──────────────────────────┼──────────────────┼──────┼───────────┼───────────┼───────┤
+│ normal          │ as written               │ 32 of 321392     │ 4    │ ok        │ 7         │ false │
+│ full            │ as written               │ 321392 of 321392 │ 0    │ ok        │ 11        │ false │
+│ normal-reader-5 │ as written               │ 304912 of 626272 │ 4    │ ok        │ 7         │ false │
+│ normal-reader-5 │ as before the checkpoint │ 304912 of 626272 │ 4    │ ok        │ 7         │ false │
+└─────────────────┴──────────────────────────┴──────────────────┴──────┴───────────┴───────────┴───────┘
+
+    At OFF there is no model: the checkpoint wrote the database file and
+    nothing was ever synced, so a power cut can leave any mix of old and
+    new database pages.
+┌─────────┬────────────────────────────────────────────────────────────────────┐
+│ variant │                              why_not                               │
+├─────────┼────────────────────────────────────────────────────────────────────┤
+│ off     │ the checkpoint wrote the database file and nothing was ever synced │
+└─────────┴────────────────────────────────────────────────────────────────────┘
+
+── A. Kill the writer at chosen syscalls, reopen, identify the state ──
+
+A1. For each synchronous level, a fresh writer runs under strace and is
+    killed with SIGKILL on entry to one call: every fsync/fdatasync the
+    uninterrupted writer made, and 6 of its pwrite64 calls spread evenly.
+┌─────────────┬────────────┬────────────────┬────────────────┬───────┐
+│ synchronous │ sync_calls │ pwrite64_calls │ pwrite64_kills │ kills │
+├─────────────┼────────────┼────────────────┼────────────────┼───────┤
+│ OFF         │ 0          │ 357            │ 6              │ 6     │
+│ NORMAL      │ 5          │ 357            │ 6              │ 11    │
+│ FULL        │ 13         │ 357            │ 6              │ 19    │
+└─────────────┴────────────┴────────────────┴────────────────┴───────┘
+
+A2. Every kill. "recovered" is the recipe step the reopened database
+    equals: the last acknowledged step, or (at FULL, killed in the fsync of
+    a commit) the step being committed, whose frames were already written.
+┌─────────────┬─────────┬───────────────┬───────────────────────────────────────┬──────────────┬───────────┬───────┐
+│ synchronous │ kill_no │    kill_at    │               killed_in               │ acknowledged │ recovered │ exact │
+├─────────────┼─────────┼───────────────┼───────────────────────────────────────┼──────────────┼───────────┼───────┤
+│ OFF         │ 1       │ pwrite64 #1   │ pwrite64 r.db-shm off=4095 len=1      │ 3            │ 3         │ true  │
+│ OFF         │ 2       │ pwrite64 #72  │ pwrite64 r.db-wal off=127752 len=24   │ 4            │ 4         │ true  │
+│ OFF         │ 3       │ pwrite64 #143 │ pwrite64 r.db-wal off=271976 len=4096 │ 6            │ 6         │ false │
+│ OFF         │ 4       │ pwrite64 #214 │ pwrite64 r.db-wal off=24752 len=24    │ 7            │ 7         │ false │
+│ OFF         │ 5       │ pwrite64 #285 │ pwrite64 r.db-wal off=168976 len=4096 │ 8            │ 8         │ false │
+│ OFF         │ 6       │ pwrite64 #357 │ pwrite64 r.db-wal off=317296 len=4096 │ 10           │ 10        │ false │
+│ NORMAL      │ 1       │ fsync #1      │ fsync r.db-wal                        │ 3            │ 3         │ true  │
+│ NORMAL      │ 2       │ fsync #2      │ fsync .                               │ 3            │ 3         │ true  │
+│ NORMAL      │ 3       │ fsync #3      │ fsync r.db-wal                        │ 7            │ 7         │ false │
+│ NORMAL      │ 4       │ fsync #4      │ fsync r.db                            │ 7            │ 7         │ false │
+│ NORMAL      │ 5       │ fsync #5      │ fsync r.db-wal                        │ 7            │ 7         │ false │
+│ NORMAL      │ 6       │ pwrite64 #1   │ pwrite64 r.db-shm off=4095 len=1      │ 3            │ 3         │ true  │
+│ NORMAL      │ 7       │ pwrite64 #72  │ pwrite64 r.db-wal off=127752 len=24   │ 4            │ 4         │ true  │
+│ NORMAL      │ 8       │ pwrite64 #143 │ pwrite64 r.db-wal off=271976 len=4096 │ 6            │ 6         │ false │
+│ NORMAL      │ 9       │ pwrite64 #214 │ pwrite64 r.db-wal off=24752 len=24    │ 7            │ 7         │ false │
+│ NORMAL      │ 10      │ pwrite64 #285 │ pwrite64 r.db-wal off=168976 len=4096 │ 8            │ 8         │ false │
+│ NORMAL      │ 11      │ pwrite64 #357 │ pwrite64 r.db-wal off=317296 len=4096 │ 10           │ 10        │ false │
+│ FULL        │ 1       │ fsync #1      │ fsync r.db-wal                        │ 3            │ 3         │ true  │
+│ FULL        │ 2       │ fsync #2      │ fsync .                               │ 3            │ 3         │ true  │
+│ FULL        │ 3       │ fsync #3      │ fsync r.db-wal                        │ 3            │ 4         │ true  │
+│ FULL        │ 4       │ fsync #4      │ fsync r.db-wal                        │ 4            │ 5         │ false │
+│ FULL        │ 5       │ fsync #5      │ fsync r.db-wal                        │ 5            │ 6         │ false │
+│ FULL        │ 6       │ fsync #6      │ fsync r.db-wal                        │ 6            │ 7         │ false │
+│ FULL        │ 7       │ fsync #7      │ fsync r.db-wal                        │ 7            │ 7         │ false │
+│ FULL        │ 8       │ fsync #8      │ fsync r.db                            │ 7            │ 7         │ false │
+│ FULL        │ 9       │ fsync #9      │ fsync r.db-wal                        │ 7            │ 7         │ false │
+│ FULL        │ 10      │ fsync #10     │ fsync r.db-wal                        │ 7            │ 8         │ false │
+│ FULL        │ 11      │ fsync #11     │ fsync r.db-wal                        │ 8            │ 9         │ false │
+│ FULL        │ 12      │ fsync #12     │ fsync r.db-wal                        │ 9            │ 10        │ false │
+│ FULL        │ 13      │ fsync #13     │ fsync r.db-wal                        │ 10           │ 11        │ false │
+│ FULL        │ 14      │ pwrite64 #1   │ pwrite64 r.db-shm off=4095 len=1      │ 3            │ 3         │ true  │
+│ FULL        │ 15      │ pwrite64 #72  │ pwrite64 r.db-wal off=127752 len=24   │ 4            │ 4         │ true  │
+│ FULL        │ 16      │ pwrite64 #143 │ pwrite64 r.db-wal off=271976 len=4096 │ 6            │ 6         │ false │
+│ FULL        │ 17      │ pwrite64 #214 │ pwrite64 r.db-wal off=24752 len=24    │ 7            │ 7         │ false │
+│ FULL        │ 18      │ pwrite64 #285 │ pwrite64 r.db-wal off=168976 len=4096 │ 8            │ 8         │ false │
+│ FULL        │ 19      │ pwrite64 #357 │ pwrite64 r.db-wal off=317296 len=4096 │ 10           │ 10        │ false │
+└─────────────┴─────────┴───────────────┴───────────────────────────────────────┴──────────────┴───────────┴───────┘
+
+A3. Summary. Every kill was a SIGKILL, every reopened database passed
+    integrity_check, and none lost an acknowledged step.
+┌─────────────┬───────┬─────────┬──────────────┬────────────────────────┬────────────────────┐
+│ synchronous │ kills │ sigkill │ integrity_ok │ recovered_acknowledged │ recovered_one_more │
+├─────────────┼───────┼─────────┼──────────────┼────────────────────────┼────────────────────┤
+│ OFF         │ 6     │ 6       │ 6            │ 6                      │ 0                  │
+│ NORMAL      │ 11    │ 11      │ 11           │ 11                     │ 0                  │
+│ FULL        │ 19    │ 19      │ 19           │ 11                     │ 8                  │
+└─────────────┴───────┴─────────┴──────────────┴────────────────────────┴────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+B  ✓  synchronous=OFF: a process crash keeps every acknowledged step (11)
+B  ✓  synchronous=OFF: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+B  ✓  only synchronous=OFF leaves database-file writes that were never synced
+B  ✓  synchronous=NORMAL: a process crash keeps every acknowledged step (11)
+B  ✓  synchronous=NORMAL: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+B  ✓  synchronous=NORMAL: the model recovers step 7, the last acknowledged step minus the 4 commit(s) written after the last sync
+B  ✓  synchronous=NORMAL: the acknowledged commits after the checkpoint at step 7 are lost in the model, yet the database is consistent
+B  ✓  synchronous=FULL: a process crash keeps every acknowledged step (11)
+B  ✓  synchronous=FULL: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+B  ✓  synchronous=FULL: the model recovers step 11, the last acknowledged step minus the 0 commit(s) written after the last sync
+B  ✓  FULL: no acknowledged commit is lost in the model
+B  ✓  synchronous=NORMAL with a second connection holding a read transaction from step 5: the reader stopped the checkpoint short of the end and the WAL did not restart
+B  ✓  synchronous=NORMAL with a second connection holding a read transaction from step 5: a process crash keeps every acknowledged step (11)
+B  ✓  synchronous=NORMAL with a second connection holding a read transaction from step 5: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+B  ✓  synchronous=NORMAL with a second connection holding a read transaction from step 5: the model recovers step 7, the last acknowledged step minus the 4 commit(s) written after the last sync
+B  ✓  synchronous=NORMAL with a second connection holding a read transaction from step 5: with or without the checkpoint's unsynced database writes the model recovers step 7, because the WAL frames they came from were synced before the checkpoint wrote them
+B  ✓  synchronous=NORMAL with a second connection holding a read transaction from step 5: the acknowledged commits after the checkpoint at step 7 are lost in the model, yet the database is consistent
+A  ✓  OFF kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
+A  ✓  OFF kill 2: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
+A  ✓  OFF kill 3: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
+A  ✓  OFF kill 4: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  OFF kill 5: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
+A  ✓  OFF kill 6: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 2: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 3: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 4: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 5: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 6: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 7: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 8: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 9: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 10: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 11: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 2: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 3: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 4: integrity ok, recovered step 5 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 5: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 6: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 7: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 8: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 9: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 10: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 11: integrity ok, recovered step 9 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 12: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 13: integrity ok, recovered step 11 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 14: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 15: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 16: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 17: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 18: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 19: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
+
+53 of 53 claims hold
+
+Experiment verdict: CRASH VERSUS POWER LOSS OK

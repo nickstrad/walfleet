@@ -21,9 +21,9 @@ import (
 	"strings"
 
 	"github.com/nickstrad/walfleet/internal/capture"
-	"github.com/nickstrad/walfleet/internal/dbfile"
 	"github.com/nickstrad/walfleet/internal/equal"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 
@@ -37,15 +37,24 @@ const (
 	childExitWithoutClose = 3
 )
 
-var failures []string
+var (
+	set         *results.Set
+	comparisons *results.Table
+	notAtRest   *results.Table
+)
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
+func openTables(dir string) {
+	set = results.MustOpen(dir)
+	comparisons = set.Table("comparisons", "part", "name", "result", "equal", "first_differing_page", "differing_pages")
+	notAtRest = set.Table("not_at_rest", "scenario", "seq", "observation", "value")
+}
+
+var observations = map[string]int{}
+
+// observe records one numbered observation of a not-at-rest scenario.
+func observe(scenario, observation string, value any) {
+	observations[scenario]++
+	notAtRest.Row(scenario, observations[scenario], observation, value)
 }
 
 func fatal(what string, err error) {
@@ -60,6 +69,14 @@ func must[T any](value T, err error) func(string) T {
 		}
 		return value
 	}
+}
+
+// nilIfZero turns a missing page number into an empty field.
+func nilIfZero(n int) any {
+	if n == 0 {
+		return nil
+	}
+	return n
 }
 
 func relative(dir, text string) string {
@@ -78,24 +95,10 @@ func integrityCheck(ctx context.Context, path string) string {
 	return result
 }
 
-func roleSummary(m equal.Manifest) string {
-	counts := map[string]int{}
-	for _, e := range m.Entries {
-		counts[e.Role]++
-	}
-	var parts []string
-	for _, r := range dbfile.AllRoles {
-		if counts[r.String()] > 0 {
-			parts = append(parts, fmt.Sprintf("%s=%d", r, counts[r.String()]))
-		}
-	}
-	return strings.Join(parts, " ")
-}
-
 func partA(ctx context.Context, dir string) (string, string) {
-	fmt.Println()
-	fmt.Println("== A. capture: every page of the closed R0 database, read by internal/dbfile, plus a manifest (page, role, sha256)")
 	r := recipe.Default()
+	captureRows := set.Table("captures", "run", "database", "capture_dir", "steps", "pages", "page_size", "pages_bin_bytes", "manifest_format", "manifest_sha256")
+	manifestRows := set.Table("manifest", "run", "page", "role", "sha256")
 	var manifests []equal.Manifest
 	var paths, captures []string
 	for run := 1; run <= 2; run++ {
@@ -108,45 +111,39 @@ func partA(ctx context.Context, dir string) (string, string) {
 		}
 		captureDir := filepath.Join(dir, fmt.Sprintf("run-%d", run), "capture")
 		m := must(capture.Pages(path, captureDir))("capture")
-		fmt.Printf("run %d: %s built to step %d -> %s: %d pages, manifest sha256 %s\n", run, relative(dir, path), r.Steps, relative(dir, captureDir), m.PageCount(), m.SHA256())
+		captureRows.Row(run, relative(dir, path), relative(dir, captureDir), r.Steps, m.PageCount(), m.PageSize,
+			must(os.Stat(filepath.Join(captureDir, capture.PagesFile)))("stat").Size(), equal.ManifestFormat, m.SHA256())
+		for _, e := range m.Entries {
+			manifestRows.Row(run, e.Page, e.Role, e.SHA256)
+		}
 		manifests = append(manifests, m)
 		paths = append(paths, path)
 		captures = append(captures, captureDir)
 	}
-	fmt.Printf("roles in the manifest: %s\n", roleSummary(manifests[0]))
-	fmt.Printf("capture files: %s (%d bytes = %d pages x %d) and %s\n", capture.PagesFile, must(os.Stat(filepath.Join(captures[0], capture.PagesFile)))("stat").Size(), manifests[0].PageCount(), manifests[0].PageSize, capture.ManifestFile)
-	fmt.Println("manifest of run 1:")
-	for _, line := range strings.Split(strings.TrimSuffix(manifests[0].Text(), "\n"), "\n") {
-		fmt.Printf("  %s\n", line)
-	}
 	diff := equal.CompareManifests(manifests[0], manifests[1])
-	fmt.Printf("run 1 vs run 2: %s\n", diff)
-	check(diff.Equal && manifests[0].Text() == manifests[1].Text(), "two runs of the recipe give manifests identical line for line")
+	comparisons.Row("A", "run 1 vs run 2", diff, diff.Equal, nilIfZero(diff.FirstDifferingPage), diff.DifferingPages)
+	set.Check("A", diff.Equal && manifests[0].Text() == manifests[1].Text(), "two runs of the recipe give manifests identical line for line")
 	return paths[0], captures[0]
 }
 
 func partB(ctx context.Context, dir, original, captureDir string) {
-	fmt.Println()
-	fmt.Println("== B. rebuild from the capture alone and prove it equal (E1)")
 	rebuilt := filepath.Join(dir, "rebuilt", "from-capture.db")
 	if err := os.MkdirAll(filepath.Dir(rebuilt), 0o755); err != nil {
 		fatal("mkdir", err)
 	}
 	m := must(capture.Rebuild(captureDir, rebuilt))("rebuild")
-	fmt.Printf("rebuilt %s from %s: %d pages written in order\n", relative(dir, rebuilt), relative(dir, captureDir), m.PageCount())
 	result := must(equal.CompareFiles(original, rebuilt, m.PageSize))("compare")
-	fmt.Printf("original vs rebuilt: %s\n", result)
-	check(result.Equal, "sha256 of the rebuild equals sha256 of the original")
+	comparisons.Row("B", "original vs rebuilt", result, result.Equal, nilIfZero(result.FirstDifferingPage), result.DifferingPages)
+	set.Check("B", result.Equal, "sha256 of the rebuild equals sha256 of the original")
 	match := must(recipe.Default().MatchStep(ctx, rebuilt))("match step")
-	fmt.Printf("recipe lookup of the rebuild: %s\n", match)
-	check(match.Found() && match.Exact && match.Step == 30, "the rebuild is the recipe's state after step 30, byte for byte")
 	integrity := integrityCheck(ctx, rebuilt)
-	fmt.Printf("integrity_check of the rebuild: %s\n", integrity)
-	check(integrity == "ok", "SQLite opens the rebuild and integrity_check returns ok")
+	set.Table("rebuild", "rebuilt", "from_capture", "pages_written", "sha256", "recipe_lookup", "integrity_check").
+		Row(relative(dir, rebuilt), relative(dir, captureDir), m.PageCount(), result.SHA256B, match, integrity)
+	set.Check("B", match.Found() && match.Exact && match.Step == 30, "the rebuild is the recipe's state after step 30, byte for byte")
+	set.Check("B", integrity == "ok", "SQLite opens the rebuild and integrity_check returns ok")
 	again := must(equal.FileSHA256(rebuilt))("hash")
-	check(again == result.SHA256A && recipe.CheckAtRest(rebuilt) == nil, "opening the rebuild with SQLite and closing it changed nothing and left no side files")
+	set.Check("B", again == result.SHA256A && recipe.CheckAtRest(rebuilt) == nil, "opening the rebuild with SQLite and closing it changed nothing and left no side files")
 
-	fmt.Println("one more recipe state for comparison: the manifest of the database after step 29")
 	step29 := filepath.Join(dir, "step-29", "r.db")
 	if err := os.MkdirAll(filepath.Dir(step29), 0o755); err != nil {
 		fatal("mkdir", err)
@@ -156,8 +153,8 @@ func partB(ctx context.Context, dir, original, captureDir string) {
 	}
 	m29 := must(capture.Pages(step29, filepath.Join(dir, "step-29", "capture")))("capture step 29")
 	diff := equal.CompareManifests(m29, m)
-	fmt.Printf("step 29 vs step 30: %s\n", diff)
-	check(!diff.Equal && diff.FirstDifferingPage == 1, "the manifest comparison names the first differing page (page 1: the header changes on every recipe step)")
+	comparisons.Row("B", "step 29 vs step 30", diff, diff.Equal, nilIfZero(diff.FirstDifferingPage), diff.DifferingPages)
+	set.Check("B", !diff.Equal && diff.FirstDifferingPage == 1, "the manifest comparison names the first differing page (page 1: the header changes on every recipe step)")
 }
 
 // tamper defines one capture-corruption test case and the page-naming substring
@@ -170,8 +167,7 @@ type tamper struct {
 }
 
 func partC(dir, captureDir string) {
-	fmt.Println()
-	fmt.Println("== C. a damaged capture is refused, and the refusal names the page")
+	tampered := set.Table("tampered", "case_no", "damage", "wanted", "refusal", "output_written")
 	original := must(os.ReadFile(filepath.Join(captureDir, capture.ManifestFile)))("read manifest")
 	pages := must(os.ReadFile(filepath.Join(captureDir, capture.PagesFile)))("read pages")
 	cases := []tamper{
@@ -214,8 +210,8 @@ func partC(dir, captureDir string) {
 		out := filepath.Join(target, "rebuilt.db")
 		_, err := capture.Rebuild(target, out)
 		_, statErr := os.Stat(out)
-		fmt.Printf("  C%d %s\n    -> %v\n", i+1, c.name, err)
-		check(err != nil && strings.Contains(err.Error(), c.want) && errors.Is(statErr, os.ErrNotExist), fmt.Sprintf("C%d: the rebuild is refused naming %q, and no output file is written", i+1, c.want))
+		tampered.Row(fmt.Sprintf("C%d", i+1), c.name, c.want, err, !errors.Is(statErr, os.ErrNotExist))
+		set.Check("C", err != nil && strings.Contains(err.Error(), c.want) && errors.Is(statErr, os.ErrNotExist), fmt.Sprintf("C%d: the rebuild is refused naming %q, and no output file is written", i+1, c.want))
 	}
 }
 
@@ -310,11 +306,8 @@ func sideFiles(path string) string {
 }
 
 func partD(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== D. a database that is not at rest is refused, because its file alone is stale or torn")
 	r := recipe.Default()
 
-	fmt.Println("D1. WAL mode: a child process commits one UPDATE and exits without closing its connection")
 	walDir := filepath.Join(dir, "not-at-rest", "wal")
 	if err := os.MkdirAll(walDir, 0o755); err != nil {
 		fatal("mkdir", err)
@@ -325,23 +318,26 @@ func partD(ctx context.Context, dir string) {
 	}
 	before := must(equal.FileSHA256(path))("hash")
 	exit := runChild(childLeaveWAL, path)
-	fmt.Printf("  child exit status %d; %s\n", exit, sideFiles(path))
+	observe("D1", "child exit status", exit)
+	observe("D1", "side files after the child", sideFiles(path))
 	_, err := capture.Pages(path, filepath.Join(walDir, "capture"))
-	fmt.Printf("  capture -> %s\n", relative(walDir, fmt.Sprint(err)))
-	check(errors.Is(err, capture.ErrNotAtRest), "D1: the capture is refused: the -wal holds committed frames")
+	observe("D1", "capture", relative(walDir, fmt.Sprint(err)))
+	set.Check("D", errors.Is(err, capture.ErrNotAtRest), "D1: the capture is refused: the -wal holds committed frames")
 	stale := filepath.Join(walDir, "stale-copy.db")
 	copyMainFileOnly(path, stale)
 	balanceQuery := "SELECT balance FROM accounts WHERE id = 1"
 	staleBalance := queryString(ctx, stale, true, balanceQuery)
-	fmt.Printf("  the database file alone: sha256 unchanged by the commit: %v; account 1 balance %s\n", must(equal.FileSHA256(path))("hash") == before, staleBalance)
+	observe("D1", "database file alone: sha256 unchanged by the commit", must(equal.FileSHA256(path))("hash") == before)
+	observe("D1", "database file alone: account 1 balance", staleBalance)
 	liveBalance := queryString(ctx, path, false, balanceQuery)
-	fmt.Printf("  SQLite opening the database with its -wal: account 1 balance %s; after the last close: %s\n", liveBalance, sideFiles(path))
-	check(staleBalance != liveBalance, "D1: a page capture taken from the file alone would have lost the committed UPDATE")
+	observe("D1", "SQLite with the -wal: account 1 balance", liveBalance)
+	observe("D1", "side files after the last close", sideFiles(path))
+	set.Check("D", staleBalance != liveBalance, "D1: a page capture taken from the file alone would have lost the committed UPDATE")
 	m := must(capture.Pages(path, filepath.Join(walDir, "capture")))("capture after checkpoint")
-	fmt.Printf("  capture after SQLite checkpointed and closed: %d pages, manifest sha256 %s\n", m.PageCount(), m.SHA256())
-	check(must(equal.FileSHA256(path))("hash") != before, "D1: once at rest, the capture includes the UPDATE (the file changed at the checkpoint)")
+	observe("D1", "capture after the checkpoint: pages", m.PageCount())
+	observe("D1", "capture after the checkpoint: manifest sha256", m.SHA256())
+	set.Check("D", must(equal.FileSHA256(path))("hash") != before, "D1: once at rest, the capture includes the UPDATE (the file changed at the checkpoint)")
 
-	fmt.Printf("D2. rollback mode: a child process with cache_size=%d updates every document body in one transaction, spills dirty pages to the file, and exits before COMMIT\n", childSpillCacheSize)
 	journalDir := filepath.Join(dir, "not-at-rest", "journal")
 	if err := os.MkdirAll(journalDir, 0o755); err != nil {
 		fatal("mkdir", err)
@@ -354,21 +350,24 @@ func partD(ctx context.Context, dir string) {
 	before = must(equal.FileSHA256(path))("hash")
 	bodyHashQuery := "SELECT count(*) || ' rows, ' || sum(body = zeroblob(length(body))) || ' bodies all zero' FROM documents"
 	exit = runChild(childLeaveHotJournal, path)
-	fmt.Printf("  child exit status %d; %s\n", exit, sideFiles(path))
+	observe("D2", "child exit status", exit)
+	observe("D2", "side files after the child", sideFiles(path))
 	_, err = capture.Pages(path, filepath.Join(journalDir, "capture"))
-	fmt.Printf("  capture -> %s\n", relative(journalDir, fmt.Sprint(err)))
-	check(errors.Is(err, capture.ErrNotAtRest), "D2: the capture is refused: a hot -journal exists")
+	observe("D2", "capture", relative(journalDir, fmt.Sprint(err)))
+	set.Check("D", errors.Is(err, capture.ErrNotAtRest), "D2: the capture is refused: a hot -journal exists")
 	torn := filepath.Join(journalDir, "torn-copy.db")
 	copyMainFileOnly(path, torn)
 	changed := must(equal.FileSHA256(path))("hash") != before
 	tornView := queryString(ctx, torn, true, bodyHashQuery)
-	fmt.Printf("  the database file alone: changed by the spill: %v; documents: %s\n", changed, tornView)
+	observe("D2", "database file alone: changed by the spill", changed)
+	observe("D2", "database file alone: documents", tornView)
 	recovered := queryString(ctx, path, false, bodyHashQuery)
-	fmt.Printf("  SQLite opening the database with its hot journal (rolls it back): documents: %s; after the last close: %s\n", recovered, sideFiles(path))
-	check(changed && tornView != recovered, "D2: the file alone holds part of an uncommitted transaction; a capture of it would be torn")
-	check(must(equal.FileSHA256(path))("hash") == before, "D2: after SQLite rolled the hot journal back, the file is byte-identical to its state before the transaction")
+	observe("D2", "SQLite with the hot journal (rolls it back): documents", recovered)
+	observe("D2", "side files after the last close", sideFiles(path))
+	set.Check("D", changed && tornView != recovered, "D2: the file alone holds part of an uncommitted transaction; a capture of it would be torn")
+	set.Check("D", must(equal.FileSHA256(path))("hash") == before, "D2: after SQLite rolled the hot journal back, the file is byte-identical to its state before the transaction")
 	m = must(capture.Pages(path, filepath.Join(journalDir, "capture")))("capture after rollback")
-	fmt.Printf("  capture after the rollback: %d pages\n", m.PageCount())
+	observe("D2", "capture after the rollback: pages", m.PageCount())
 }
 
 func main() {
@@ -380,19 +379,12 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("2.3")
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
+	openTables(dir)
 	original, captureDir := partA(ctx, dir)
 	partB(ctx, dir, original, captureDir)
 	partC(dir, captureDir)
 	partD(ctx, dir)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("MANIFEST FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("MANIFEST OK")
+	set.Finish("MANIFEST")
 }
 
 func displayPath(path string) string {

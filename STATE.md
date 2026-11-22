@@ -117,6 +117,28 @@ Closing prose record (commit of each chapter's closing Neon pass): chapter 5 —
 Closing prose for the last two chunks: 10b — 37aa704 (single late prose pass: the whole of
 chapter 10 and the comments); publishing chunk — 04a697d (README as the book's home page, comments).
 
+Follow-up (2026-11-22, Nick): experiment results as tables, read in the terminal with DuckDB.
+- Every experiment (all 34) writes its measurements as CSV tables (`internal/results`) and prints
+  only a verdict. A DuckDB script `report.sql` next to each `main.go` presents the tables as a
+  walkthrough. Convention and rules: `docs/knowledge/experiment-reports.md`; exemplar: 3.1.
+- Command: `go run ./cmd/course run [-i] [-update] N.M`. It runs in the `lab` container (DuckDB
+  CLI 2.0.0 pinned by sha256 in `Dockerfile.lab`); started on the host it re-runs itself with
+  `docker compose run --rm lab`. Docker is now the route for running experiments.
+- Evidence: `chNN/evidence/N.M-slug/*.csv` (checked byte for byte by `check evidence`) and
+  `chNN/evidence/N.M-slug.txt` (the rendered walkthrough, checked when DuckDB 2.0.0 is
+  installed). Run-dependent values (timings, memory, pids) are in `info_*` tables, shown by an
+  optional `info.sql` and left out of the evidence. All evidence was recaptured in the lab
+  container on linux/arm64; the checked values equal the earlier linux/amd64 capture.
+- Seats for this follow-up differ from Phase 2: Fable did the shared code and 3.1, Sonnet agents
+  converted chapters 1, 2, 3, 5, Opus agents converted 4, 6, 7, 8, 9, 10, and one Opus agent
+  aligned the chapter prose. The Phase 2 gate `check prose` (every prose line by the Neon
+  author) therefore does not hold for the lines this follow-up changed. The adversarial scripts
+  under `agent_work/<chunk>/adversarial/` were not re-run or updated; those that read an
+  experiment's stdout need updating before they are used again.
+- Two variant evidence files are rendered walkthroughs that no tool checks:
+  `ch07…/evidence/7.4-read-only-snapshot-vfs-s3.txt` and
+  `ch10…/evidence/10.4-rebuild-the-fleet-2000.txt` (`course run` cannot pass experiment flags).
+
 Next steps: none required. Possible later work: a version-upgrade experiment against a second
 SQLite release (dropped from this build by ruling); syntax highlighting on the site; tightening
 the link checker's end-tag search inside `script`/`style` bodies (review nit, no effect on the
@@ -127,7 +149,7 @@ Open decisions / blockers: none.
 Resume or extend: read this file, then OUTLINE.md (section 8 first) and `git log`. Each chunk's
 working record (build notes, reviews, repair reports, adversarial suites and their results) is
 under `agent_work/<chunk>/`, indexed in `agent_work/INDEX.md`. The checks that gate a change:
-`go run ./cmd/course check all`, `bash agent_work/verify/crossbuild.sh`,
+`docker compose run --rm lab go run ./cmd/course check all`, `bash agent_work/verify/crossbuild.sh`,
 `go run ./cmd/course site -check -base /walfleet/`, and the chunk's
 `agent_work/<chunk>/adversarial/run-all.sh`. The orchestration scripts in `agent_work/orch/`
 record how the build machine ran the chunks; they hold paths of that machine and are not needed

@@ -1,0 +1,6 @@
+case_no,damage,wanted,refusal,output_written
+C1,drop the manifest entry for page 100,page 100: missing,manifest entry 100: page 100: missing (entry 100 lists page 101),false
+C2,list page 50 twice (in place of page 51),page 50: listed twice,manifest entry 51: page 50: listed twice (entries 50 and 51),false
+C3,swap the entries for pages 120 and 121,page 121: out of order,manifest entry 120: page 121: out of order (entry 120 should be page 120),false
+C4,flip one byte in the image of page 200,capture page 200:,capture page 200: image sha256 does not match the manifest,false
+C5,swap the images of pages 7 and 8,capture page 7:,capture page 7: image sha256 does not match the manifest,false

@@ -27,20 +27,28 @@ import (
 
 	"github.com/nickstrad/walfleet/internal/dbfile"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 
 	_ "modernc.org/sqlite"
 )
 
-var failures []string
+var (
+	set       *results.Set
+	files     *results.Table
+	roles     *results.Table
+	freelists *results.Table
+	constants *results.Table
+	special   *results.Table
+)
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
+func openTables(dir string) {
+	set = results.MustOpen(dir)
+	files = set.Table("files", "part", "scenario", "page_size", "usable_size", "page_count", "page_count_source", "pragma_page_count", "freelist_count", "pragma_freelist_count", "btree_pages_compared", "not_in_dbstat")
+	roles = set.Table("roles", "scenario", "seq", "role", "pages")
+	freelists = set.Table("freelist_pages", "scenario", "seq", "page", "kind", "leaves_listed")
+	constants = set.Table("constants", "part", "name", "value", "note")
+	special = set.Table("special_pages", "scenario", "role", "page")
 }
 
 func fatal(what string, err error) {
@@ -133,37 +141,32 @@ type comparison struct {
 	notInStat  int
 }
 
-func compareWithDBStat(c *dbfile.Census, stat map[int]statRow, printPages bool) comparison {
+func compareWithDBStat(c *dbfile.Census, stat map[int]statRow, pages *results.Table) comparison {
 	var result comparison
-	if printPages {
-		fmt.Printf("  %5s  %-15s %-18s %5s %7s %7s %7s  %s\n", "page", "role", "tree", "ncell", "payload", "unused", "mx_pay", "dbstat")
-	}
 	for _, p := range c.Pages {
 		kind := dbstatType(p.Role)
-		verdict := "not a b-tree page (not in dbstat)"
+		theirs, listed := stat[p.Number]
+		if pages != nil {
+			if listed {
+				pages.Row(p.Number, p.Role, p.Tree, kind, p.CellCount, p.Payload, p.Unused, p.MaxPayload, theirs.Tree, theirs.Type, theirs.Cells, theirs.Payload, theirs.Unused, theirs.MaxPay)
+			} else {
+				pages.Row(p.Number, p.Role, p.Tree, kind, p.CellCount, p.Payload, p.Unused, p.MaxPayload, nil, nil, nil, nil, nil, nil)
+			}
+		}
 		if kind == "" {
-			if _, listed := stat[p.Number]; listed {
-				verdict = "LISTED BY DBSTAT"
+			if listed {
 				result.mismatches = append(result.mismatches, fmt.Sprintf("page %d (%s) is in dbstat", p.Number, p.Role))
 			}
 			result.notInStat++
-		} else {
-			ours := statRow{p.Tree, kind, p.CellCount, p.Payload, p.Unused, int(p.MaxPayload)}
-			theirs, listed := stat[p.Number]
-			result.compared++
-			switch {
-			case !listed:
-				verdict = "MISSING FROM DBSTAT"
-				result.mismatches = append(result.mismatches, fmt.Sprintf("page %d missing from dbstat", p.Number))
-			case ours != theirs:
-				verdict = fmt.Sprintf("DIFFERS: %+v", theirs)
-				result.mismatches = append(result.mismatches, fmt.Sprintf("page %d: ours %+v dbstat %+v", p.Number, ours, theirs))
-			default:
-				verdict = "match"
-			}
+			continue
 		}
-		if printPages {
-			fmt.Printf("  %5d  %-15s %-18s %5d %7d %7d %7d  %s\n", p.Number, p.Role, p.Tree, p.CellCount, p.Payload, p.Unused, p.MaxPayload, verdict)
+		ours := statRow{p.Tree, kind, p.CellCount, p.Payload, p.Unused, int(p.MaxPayload)}
+		result.compared++
+		switch {
+		case !listed:
+			result.mismatches = append(result.mismatches, fmt.Sprintf("page %d missing from dbstat", p.Number))
+		case ours != theirs:
+			result.mismatches = append(result.mismatches, fmt.Sprintf("page %d: ours %+v dbstat %+v", p.Number, ours, theirs))
 		}
 	}
 	if result.compared != len(stat) {
@@ -172,16 +175,28 @@ func compareWithDBStat(c *dbfile.Census, stat map[int]statRow, printPages bool) 
 	return result
 }
 
-func printRoleCounts(c *dbfile.Census) int {
+// recordRoles writes how many pages of each role the census found and returns the total.
+func recordRoles(scenario string, c *dbfile.Census) int {
 	counts := c.RoleCounts()
 	total := 0
-	var parts []string
-	for _, r := range dbfile.AllRoles {
+	for i, r := range dbfile.AllRoles {
 		total += counts[r]
-		parts = append(parts, fmt.Sprintf("%s=%d", r, counts[r]))
+		roles.Row(scenario, i+1, r, counts[r])
 	}
-	fmt.Printf("  roles: %s; sum %d\n", strings.Join(parts, " "), total)
 	return total
+}
+
+// recordFreelist writes the freelist pages in the order the file lists them.
+func recordFreelist(scenario string, c *dbfile.Census) {
+	seq := 0
+	for _, trunk := range c.FreelistTrunks {
+		seq++
+		freelists.Row(scenario, seq, trunk, "trunk", c.Page(trunk).CellCount)
+	}
+	for _, leaf := range c.FreelistLeaves {
+		seq++
+		freelists.Row(scenario, seq, leaf, "leaf", nil)
+	}
 }
 
 // census loads the closed database file into memory and runs dbfile.Census so
@@ -310,64 +325,52 @@ var recipeColumns = map[string][]string{
 }
 
 func partA(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== A. census of the R0 database (recipe default, WAL, 30 steps, closed)")
 	r := recipe.Default()
 	path := filepath.Join(dir, "r0.db")
 	if err := r.Build(ctx, path, r.Steps); err != nil {
 		fatal("build", err)
 	}
 	f, c := census(path)
-	fmt.Printf("  page size %d, usable %d, page count %d (from the %s)\n", c.PageSize, c.UsableSize, c.PageCount, f.PageCountSource())
-	fmt.Println("  schema table (page 1), decoded by our record reader:")
+	schema := set.Table("schema_entries", "entry", "type", "name", "tbl_name", "rootpage", "sql")
 	for _, e := range c.Schema {
-		fmt.Printf("    rowid %d: type=%s name=%s tbl_name=%s rootpage=%d sql=%q\n", e.Rowid, e.Type, e.Name, e.TableName, e.RootPage, e.SQL)
+		schema.Row(e.Rowid, e.Type, e.Name, e.TableName, e.RootPage, e.SQL)
 	}
-	fmt.Println("  b-trees walked from those roots:")
+	trees := set.Table("trees", "name", "type", "root_page", "btree_pages", "overflow_pages", "cells")
 	for _, t := range c.SortedTrees() {
-		fmt.Printf("    %-18s %-5s root %3d: %3d b-tree page(s), %3d overflow page(s), %4d cell(s)\n", t.Name, t.Type, t.RootPage, t.Pages, t.Overflow, t.Cells)
+		trees.Row(t.Name, t.Type, t.RootPage, t.Pages, t.Overflow, t.Cells)
 	}
-	fmt.Printf("  freelist from header offset 32: trunk(s) %v, leaves %v\n", c.FreelistTrunks, c.FreelistLeaves)
-	total := printRoleCounts(c)
-	check(total == c.PageCount, fmt.Sprintf("the census sums to page_count %d", c.PageCount))
-	check(c.Complete() == nil, "every page has exactly one role: none counted twice (the census fails on a second claim), none missed")
+	recordFreelist("r0", c)
+	total := recordRoles("r0", c)
+	set.Check("A", total == c.PageCount, fmt.Sprintf("the census sums to page_count %d", c.PageCount))
+	set.Check("A", c.Complete() == nil, "every page has exactly one role: none counted twice (the census fails on a second claim), none missed")
 
 	db := openSQLite(path, false)
 	pageCount := queryInt(ctx, db, "PRAGMA page_count")
 	freelist := queryInt(ctx, db, "PRAGMA freelist_count")
 	stat := readDBStat(ctx, db)
-	fmt.Println("  per-page census against dbstat:")
-	cmp := compareWithDBStat(c, stat, true)
-	check(pageCount == c.PageCount, fmt.Sprintf("PRAGMA page_count = %d", pageCount))
-	check(freelist == c.FreelistLength(), fmt.Sprintf("freelist length %d = PRAGMA freelist_count %d", c.FreelistLength(), freelist))
-	check(len(cmp.mismatches) == 0, fmt.Sprintf("all %d b-tree and overflow pages match dbstat in tree, type, ncell, payload, unused and mx_payload; the %d other pages are not in dbstat", cmp.compared, cmp.notInStat))
-	for _, m := range cmp.mismatches {
-		fmt.Println("    MISMATCH", m)
-	}
+	pages := set.Table("pages", "page", "role", "tree", "kind", "ncell", "payload", "unused", "mx_payload", "db_tree", "db_type", "db_ncell", "db_payload", "db_unused", "db_mx_payload")
+	cmp := compareWithDBStat(c, stat, pages)
+	files.Row("A", "r0", c.PageSize, c.UsableSize, c.PageCount, f.PageCountSource(), pageCount, c.FreelistLength(), freelist, cmp.compared, cmp.notInStat)
+	set.Check("A", pageCount == c.PageCount, fmt.Sprintf("PRAGMA page_count = %d", pageCount))
+	set.Check("A", freelist == c.FreelistLength(), fmt.Sprintf("freelist length %d = PRAGMA freelist_count %d", c.FreelistLength(), freelist))
+	set.Check("A", len(cmp.mismatches) == 0, fmt.Sprintf("all %d b-tree and overflow pages match dbstat in tree, type, ncell, payload, unused and mx_payload; the %d other pages are not in dbstat", cmp.compared, cmp.notInStat))
 
-	fmt.Println("  overflow chains of the documents table:")
-	var chains, overflowPages, longest int
-	var shown int
+	chainRows := set.Table("overflow_chains", "row_id", "body_bytes", "leaf_page", "overflow_pages", "chain_length")
+	var overflowPages int
 	err := f.WalkTable(treeNamed(c, "documents").RootPage, func(row dbfile.Row) error {
 		if len(row.OverflowPages) == 0 {
 			return nil
 		}
-		chains++
 		overflowPages += len(row.OverflowPages)
-		longest = max(longest, len(row.OverflowPages))
-		if shown < 5 {
-			shown++
-			fmt.Printf("    row %d: body %d bytes, leaf page %d, overflow chain %v\n", row.Rowid, len(row.Values[3].Bytes), row.Page, row.OverflowPages)
-		}
+		chainRows.Row(row.Rowid, len(row.Values[3].Bytes), row.Page, strings.Trim(fmt.Sprint(row.OverflowPages), "[]"), len(row.OverflowPages))
 		return nil
 	})
 	if err != nil {
 		fatal("documents", err)
 	}
-	fmt.Printf("    %d rows overflow, %d overflow pages in all, longest chain %d pages\n", chains, overflowPages, longest)
-	check(overflowPages == c.RoleCounts()[dbfile.RoleOverflow], "the chains followed from the documents rows hold every overflow page in the file")
+	set.Check("A", overflowPages == c.RoleCounts()[dbfile.RoleOverflow], "the chains followed from the documents rows hold every overflow page in the file")
 
-	fmt.Println("  row hashes, our parser vs SQLite (SELECT ... ORDER BY rowid, every value tagged with typeof()):")
+	hashes := set.Table("row_hashes", "table_name", "our_rows", "sqlite_rows", "our_sha256", "sqlite_sha256")
 	for _, e := range c.Schema {
 		columns, isRecipe := recipeColumns[e.Name]
 		if !isRecipe {
@@ -375,8 +378,8 @@ func partA(ctx context.Context, dir string) {
 		}
 		ours := ourTableHash(f, e.RootPage)
 		theirs := sqliteTableHash(ctx, db, e.Name, columns)
-		fmt.Printf("    %-9s rows %4d / %4d  sha256 %s / %s\n", e.Name, ours.rows, theirs.rows, ours.sum[:16], theirs.sum[:16])
-		check(ours == theirs, fmt.Sprintf("table %s: same rows and values, read from the bytes and through SQLite", e.Name))
+		hashes.Row(e.Name, ours.rows, theirs.rows, ours.sum, theirs.sum)
+		set.Check("A", ours == theirs, fmt.Sprintf("table %s: same rows and values, read from the bytes and through SQLite", e.Name))
 	}
 	closeAtRest(db, path)
 }
@@ -402,24 +405,22 @@ func newDB(ctx context.Context, path string, edit func(*sqlitex.Options), statem
 	}
 }
 
-func checkAgainstSQLite(ctx context.Context, path string, c *dbfile.Census, label string) {
+func checkAgainstSQLite(ctx context.Context, path, part string, f *dbfile.File, c *dbfile.Census, label string) {
 	db := openSQLite(path, false)
 	pageCount := queryInt(ctx, db, "PRAGMA page_count")
 	freelist := queryInt(ctx, db, "PRAGMA freelist_count")
-	cmp := compareWithDBStat(c, readDBStat(ctx, db), false)
+	cmp := compareWithDBStat(c, readDBStat(ctx, db), nil)
 	closeAtRest(db, path)
-	check(pageCount == c.PageCount && freelist == c.FreelistLength() && c.Complete() == nil && len(cmp.mismatches) == 0,
+	files.Row(part, strings.TrimSuffix(filepath.Base(path), ".db"), c.PageSize, c.UsableSize, c.PageCount, f.PageCountSource(), pageCount, c.FreelistLength(), freelist, cmp.compared, cmp.notInStat)
+	set.Check(part, pageCount == c.PageCount && freelist == c.FreelistLength() && c.Complete() == nil && len(cmp.mismatches) == 0,
 		fmt.Sprintf("%s: census complete, page_count %d and freelist_count %d agree, %d pages match dbstat", label, pageCount, freelist, cmp.compared))
-	for _, m := range cmp.mismatches {
-		fmt.Println("    MISMATCH", m)
-	}
 }
 
 func partB(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== B. a payload exactly at the local limit, and one byte over (table leaf, usable size 4096)")
 	maxLocal, minLocal := dbfile.MaxLocalPayload(4096, dbfile.TableLeaf), dbfile.MinLocalPayload(4096)
-	fmt.Printf("  table leaf: maxLocal = usable-35 = %d, minLocal = (usable-12)*32/255-23 = %d; index: maxLocal = (usable-12)*64/255-23 = %d\n", maxLocal, minLocal, dbfile.MaxLocalPayload(4096, dbfile.IndexLeaf))
+	constants.Row("B", "table leaf maxLocal", maxLocal, "usable-35, usable size 4096")
+	constants.Row("B", "table leaf minLocal", minLocal, "(usable-12)*32/255-23")
+	constants.Row("B", "index maxLocal", dbfile.MaxLocalPayload(4096, dbfile.IndexLeaf), "(usable-12)*64/255-23")
 	path := filepath.Join(dir, "limit.db")
 	newDB(ctx, path, nil,
 		"CREATE TABLE b(id INTEGER PRIMARY KEY, v BLOB)",
@@ -436,6 +437,7 @@ func partB(ctx context.Context, dir string) {
 		lastFilled int
 	}
 	splits := map[int64]split{}
+	splitRows := set.Table("payload_splits", "row_id", "blob_bytes", "payload_bytes", "local_bytes", "overflow_pages", "last_overflow_bytes")
 	err := f.WalkTable(2, func(row dbfile.Row) error {
 		page := must(f.BTreePage(row.Page))("page")
 		for i := range page.CellCount {
@@ -443,48 +445,41 @@ func partB(ctx context.Context, dir string) {
 			if cell.Rowid != row.Rowid {
 				continue
 			}
-			fmt.Printf("  row %d: blob %d bytes, payload %d bytes (record header 4 + blob), local %d, overflow pages %d\n", row.Rowid, len(row.Values[1].Bytes), cell.PayloadSize, cell.LocalSize, len(row.OverflowPages))
 			chain := must(f.OverflowChain(row.Page, cell))("chain")
 			s := split{payload: cell.PayloadSize, local: cell.LocalSize, overflow: len(chain)}
 			if len(chain) > 0 {
 				s.lastFilled = chain[len(chain)-1].Payload
 			}
 			splits[row.Rowid] = s
+			splitRows.Row(row.Rowid, len(row.Values[1].Bytes), cell.PayloadSize, cell.LocalSize, len(chain), s.lastFilled)
 		}
 		return nil
 	})
 	if err != nil {
 		fatal("walk", err)
 	}
-	check(len(splits) == 3, "limit.db holds the three rows 1, 2 and 3")
-	check(splits[1] == split{4061, 4061, 0, 0}, "row 1: payload 4061 (= maxLocal) stays entirely on the leaf")
-	check(splits[2] == split{4062, minLocal, 1, 4062 - minLocal}, fmt.Sprintf("row 2: payload 4062 keeps only minLocal %d bytes on the leaf and spills %d to one overflow page", minLocal, 4062-minLocal))
-	check(splits[3] == split{8153, 4061, 1, 4092}, "row 3: payload 8153 keeps 4061 on the leaf so its overflow exactly fills one page (4092 bytes)")
-	checkAgainstSQLite(ctx, path, c, "local limit")
+	set.Check("B", len(splits) == 3, "limit.db holds the three rows 1, 2 and 3")
+	set.Check("B", splits[1] == split{4061, 4061, 0, 0}, "row 1: payload 4061 (= maxLocal) stays entirely on the leaf")
+	set.Check("B", splits[2] == split{4062, minLocal, 1, 4062 - minLocal}, fmt.Sprintf("row 2: payload 4062 keeps only minLocal %d bytes on the leaf and spills %d to one overflow page", minLocal, 4062-minLocal))
+	set.Check("B", splits[3] == split{8153, 4061, 1, 4092}, "row 3: payload 8153 keeps 4061 on the leaf so its overflow exactly fills one page (4092 bytes)")
+	checkAgainstSQLite(ctx, path, "B", f, c, "local limit")
 }
 
 func partC(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== C. a freelist longer than one trunk page")
 	path := filepath.Join(dir, "freelist.db")
 	newDB(ctx, path, func(o *sqlitex.Options) { o.File.PageSize = 1024 },
 		"CREATE TABLE big(id INTEGER PRIMARY KEY, v BLOB)",
 		"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 600) INSERT INTO big SELECT i, zeroblob(1000) FROM n ORDER BY i",
 		"DELETE FROM big")
-	_, c := census(path)
-	fmt.Printf("  page size 1024: a trunk holds at most usable/4-2 = %d leaf numbers\n", c.UsableSize/4-2)
-	for _, trunk := range c.FreelistTrunks {
-		fmt.Printf("  trunk page %d lists %d leaves, next trunk is the next in this list\n", trunk, c.Page(trunk).CellCount)
-	}
-	fmt.Printf("  %d trunk(s) + %d leaves = %d free pages of %d\n", len(c.FreelistTrunks), len(c.FreelistLeaves), c.FreelistLength(), c.PageCount)
-	printRoleCounts(c)
-	check(len(c.FreelistTrunks) >= 2, "the freelist spans more than one trunk page")
-	checkAgainstSQLite(ctx, path, c, "long freelist")
+	f, c := census(path)
+	constants.Row("C", "leaf numbers per trunk", c.UsableSize/4-2, "usable/4-2 at page size 1024")
+	recordFreelist("freelist", c)
+	recordRoles("freelist", c)
+	set.Check("C", len(c.FreelistTrunks) >= 2, "the freelist spans more than one trunk page")
+	checkAgainstSQLite(ctx, path, "C", f, c, "long freelist")
 }
 
 func partD(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== D. auto_vacuum=FULL adds pointer-map pages (the course runs auto_vacuum=NONE; the parser still accounts for them)")
 	path := filepath.Join(dir, "autovacuum.db")
 	newDB(ctx, path, func(o *sqlitex.Options) { o.File.PageSize = 1024; o.File.AutoVacuum = sqlitex.AutoVacuumFull },
 		"CREATE TABLE big(id INTEGER PRIMARY KEY, v BLOB)",
@@ -496,16 +491,17 @@ func partD(ctx context.Context, dir string) {
 			maps = append(maps, p.Number)
 		}
 	}
-	fmt.Printf("  header byte 52 (largest root page) = %d, so auto-vacuum is on (%s)\n", f.Header.LargestRootPage, f.Header.AutoVacuumName())
-	fmt.Printf("  pointer-map pages: one every usable/5+1 = %d pages from page 2: %v\n", c.UsableSize/5+1, maps)
-	printRoleCounts(c)
-	check(slices.Equal(maps, []int{2, 2 + c.UsableSize/5 + 1}), "pointer-map pages are pages 2 and 2 + usable/5 + 1 in this 408-page file")
-	checkAgainstSQLite(ctx, path, c, "auto_vacuum=FULL")
+	constants.Row("D", "header byte 52 (largest root page)", f.Header.LargestRootPage, "not 0, so auto-vacuum is on: "+f.Header.AutoVacuumName())
+	constants.Row("D", "pointer-map spacing", c.UsableSize/5+1, "usable/5+1 pages, from page 2")
+	for _, n := range maps {
+		special.Row("autovacuum", dbfile.RolePointerMap, n)
+	}
+	recordRoles("autovacuum", c)
+	set.Check("D", slices.Equal(maps, []int{2, 2 + c.UsableSize/5 + 1}), "pointer-map pages are pages 2 and 2 + usable/5 + 1 in this 408-page file")
+	checkAgainstSQLite(ctx, path, "D", f, c, "auto_vacuum=FULL")
 }
 
 func partE(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== E. a file larger than 1 GiB: the page holding byte offset 1073741824 (the lock-byte page) is never used")
 	// Construct a > 1 GiB sparse file at page size 65536 so the 1 GiB
 	// lock-byte page (1073741824/65536 + 1 = 16385) lies inside the database
 	// without allocating 1 GiB of disk blocks; page 3 lists all remaining pages
@@ -545,21 +541,24 @@ func partE(ctx context.Context, dir string) {
 	if err != nil {
 		fatal("write sparse file", err)
 	}
-	fmt.Printf("  built by editing a 2-page database (page size 65536): in-header size %d pages, page 3 a freelist trunk listing pages 4..%d except %d; the rest of the file is a hole (sparse)\n", pages, pages, lock)
-	fmt.Printf("  file size %d bytes (1 GiB = 1073741824); lock-byte page = 1073741824/65536 + 1 = %d\n", int64(pages)*pageSize, lock)
+	constants.Row("E", "in-header size (pages)", pages, "page 3 is a freelist trunk listing pages 4.."+fmt.Sprint(pages)+" except the lock-byte page")
+	constants.Row("E", "file size (bytes)", int64(pages)*pageSize, "1 GiB is 1073741824; everything after page 3 is a hole")
+	constants.Row("E", "lock-byte page", lock, "1073741824/65536 + 1")
 	fmt.Printf("INFO: blocks on disk: %s\n", diskUsage(path))
 	// A > 1 GiB sparse file is too large to load with os.ReadFile, so open it
 	// directly with dbfile.Open and close the descriptor before SQLite opens it.
 	f := must(dbfile.Open(path))("parse " + filepath.Base(path))
 	c, err := f.Census()
+	source := f.PageCountSource()
 	if closeErr := f.Close(); closeErr != nil {
 		fatal("close parsed file", closeErr)
 	}
 	if err != nil {
 		fatal("census "+filepath.Base(path), err)
 	}
-	printRoleCounts(c)
-	check(c.Page(lock).Role == dbfile.RoleLockByte && c.Complete() == nil, fmt.Sprintf("page %d is counted as the lock-byte page, not as lost", lock))
+	recordRoles("large", c)
+	special.Row("large", dbfile.RoleLockByte, lock)
+	set.Check("E", c.Page(lock).Role == dbfile.RoleLockByte && c.Complete() == nil, fmt.Sprintf("page %d is counted as the lock-byte page, not as lost", lock))
 	db := openSQLite(path, true)
 	var integrity string
 	if err := db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
@@ -568,8 +567,9 @@ func partE(ctx context.Context, dir string) {
 	freelist := queryInt(ctx, db, "PRAGMA freelist_count")
 	pageCount := queryInt(ctx, db, "PRAGMA page_count")
 	closeAtRest(db, path)
-	fmt.Printf("  SQLite: integrity_check=%s page_count=%d freelist_count=%d\n", integrity, pageCount, freelist)
-	check(integrity == "ok" && pageCount == c.PageCount && freelist == c.FreelistLength(), "SQLite accepts the file: integrity_check ok, and page_count and freelist_count equal the census")
+	files.Row("E", "large", c.PageSize, c.UsableSize, c.PageCount, source, pageCount, c.FreelistLength(), freelist, nil, nil)
+	constants.Row("E", "SQLite integrity_check", integrity, "on the edited file, read-only")
+	set.Check("E", integrity == "ok" && pageCount == c.PageCount && freelist == c.FreelistLength(), "SQLite accepts the file: integrity_check ok, and page_count and freelist_count equal the census")
 	if err := os.Remove(path); err != nil {
 		fatal("remove large file", err)
 	}
@@ -581,8 +581,6 @@ type corruption struct {
 }
 
 func partF(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== F. what the inspector must reject: one damaged structure per file, our error vs SQLite's integrity_check")
 	// Each case damages one structure in a 6-page rollback-mode copy; rollback
 	// mode and mode=ro keep SQLite from altering the damaged file on open.
 	base := filepath.Join(dir, "reject-base.db")
@@ -594,12 +592,10 @@ func partF(ctx context.Context, dir string) {
 		"DELETE FROM t WHERE id = 3")
 	good := must(os.ReadFile(base))("read")
 	_, c := census(base)
-	fmt.Printf("  base: %d pages; table t root 2; roles: ", c.PageCount)
-	var roles []string
+	basePages := set.Table("reject_base_pages", "page", "role")
 	for _, p := range c.Pages {
-		roles = append(roles, fmt.Sprintf("%d=%s", p.Number, p.Role))
+		basePages.Row(p.Number, p.Role)
 	}
-	fmt.Println(strings.Join(roles, " "))
 	page2 := 4096
 	cellPointer := page2 + 8
 	firstCell := int(binary.BigEndian.Uint16(good[cellPointer:]))
@@ -622,6 +618,7 @@ func partF(ctx context.Context, dir string) {
 		{"freelist trunk (header 32) -> page 2, a table page", func(b []byte) { binary.BigEndian.PutUint32(b[32:], 2) }},
 		{"freelist count (header 36) + 1", func(b []byte) { b[39]++ }},
 	}
+	rejections := set.Table("rejections", "case_no", "damage", "ours", "sqlite")
 	for i, k := range cases {
 		image := append([]byte(nil), good...)
 		if k.edit == nil {
@@ -635,10 +632,10 @@ func partF(ctx context.Context, dir string) {
 		}
 		ours := parseAll(image)
 		theirs := sqliteVerdict(ctx, path)
-		fmt.Printf("  F%d %s\n    ours:   %s\n    SQLite: %s\n", i+1, k.name, ours, theirs)
-		check(ours != "accepted" && !strings.HasPrefix(ours, "PANIC"), fmt.Sprintf("F%d: our parser returns an error, without panicking", i+1))
+		rejections.Row(fmt.Sprintf("F%d", i+1), k.name, ours, theirs)
+		set.Check("F", ours != "accepted" && !strings.HasPrefix(ours, "PANIC"), fmt.Sprintf("F%d: our parser returns an error, without panicking", i+1))
 		if k.edit == nil {
-			check(strings.HasSuffix(theirs, ": ok"), "F2: SQLite rounds a partial last page up and reads the missing bytes as zeros, so it reports ok; our parser is stricter and refuses the file")
+			set.Check("F", strings.HasSuffix(theirs, ": ok"), "F2: SQLite rounds a partial last page up and reads the missing bytes as zeros, so it reports ok; our parser is stricter and refuses the file")
 		}
 	}
 }
@@ -701,6 +698,7 @@ func main() {
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("2.2")
+	openTables(dir)
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
 	partA(ctx, dir)
 	partB(ctx, dir)
@@ -708,15 +706,7 @@ func main() {
 	partD(ctx, dir)
 	partE(ctx, dir)
 	partF(ctx, dir)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("CENSUS FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("CENSUS OK")
+	set.Finish("CENSUS")
 }
 
 var errNoUsage = errors.New("disk usage unknown on this system")

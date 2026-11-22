@@ -1,0 +1,4 @@
+seq,part,capture,frames_in_file,valid_frames,transactions,last_commit_frame,database_pages,applied_frames,distinct_pages,skipped_beyond_size,base_bytes,output_bytes,ignored_frames,ignored,partial_bytes,wal_ignored_reason
+3,A,quiet moment,155,155,8,155,79,155,79,0,16384,323584,0,,0,
+10,B,open transaction,60,60,2,41,100,41,34,0,323584,409600,19,frames 42-60 (19): valid but uncommitted: no commit frame follows,0,
+17,C,after rollback,60,60,2,41,100,41,34,0,323584,409600,19,frames 42-60 (19): valid but uncommitted: no commit frame follows,0,

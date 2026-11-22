@@ -1,0 +1,12 @@
+seq,part,status,claim
+1,A,ok,the WAL is a 32-byte header plus whole frames of a 24-byte header and one 4096-byte page
+2,A,ok,every frame carries the header's salts and continues the running checksum chain
+3,A,ok,five recipe steps left exactly five commit frames
+4,A,ok,each commit frame's size field equals the database's page count after that transaction
+5,A,ok,the frame count equals the log column of wal_checkpoint(NOOP); nothing was checkpointed
+6,A,ok,"the -shm header names the last commit frame (mxFrame), the database size and the WAL's salts, and its page array maps every frame to its page"
+7,A,ok,"showwal and walfile agree on every frame's page, commit size, salts and stored checksums, and on which checksums verify"
+8,B,ok,"the two WALs differ, and only inside the salt and checksum fields"
+9,B,ok,"the two runs wrote the same pages, with the same images, in the same order, with the same commit sizes"
+10,C,ok,"synchronous=NORMAL changes when SQLite syncs, not which frames it writes"
+11,C,ok,"synchronous=OFF changes when SQLite syncs, not which frames it writes"

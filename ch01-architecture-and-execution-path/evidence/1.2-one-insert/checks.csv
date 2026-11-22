@@ -1,0 +1,18 @@
+seq,part,status,claim
+1,B,ok,the INSERT changes page 1 (the change counter in the header) and page 2 (table t's leaf): [1 2]
+2,B,ok,"rollback mode: each pwrite64 on t.db is one whole page at offset (page-1)*4096, and the pages written are exactly the changed pages [1 2]"
+3,B,ok,"twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order"
+4,B,ok,"apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)"
+5,B,ok,the database file after the INSERT is byte-identical from both builds (sha256 47bae5ed0c8207f2)
+6,B,ok,the three phases together make exactly the file syscalls of the autocommit INSERT (so the per-opcode split above is the INSERT's own I/O)
+7,B,ok,BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT
+8,C,ok,"the INSERT changes only page 2 (table t's leaf); page 1 is not written, so its change counter stays: [2]"
+9,C,ok,WAL mode: the commit writes nothing to t.db itself (database-file pwrite64 calls during the INSERT: 0)
+10,C,ok,"WAL mode: the commit writes the 32-byte WAL header at offset 0 of the new t.db-wal, then one frame per changed page [2] (frame header 24 bytes, then the page at offset 32 + (frame-1)*4120 + 24), and nothing else; the last frame carries the commit size"
+11,C,ok,"twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order"
+12,C,ok,"apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)"
+13,C,ok,the database file after the INSERT is byte-identical from both builds (sha256 1afce8154bf3124c)
+14,C,ok,the three phases together make exactly the file syscalls of the autocommit INSERT (so the per-opcode split above is the INSERT's own I/O)
+15,C,ok,BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT
+16,D,ok,both copies start byte-identical
+17,D,ok,"twin check limit: the driver is compiled with ENABLE_STAT4 and this CLI is not, so the same ANALYZE writes a sqlite_stat4 table only in the driver and the two files differ"

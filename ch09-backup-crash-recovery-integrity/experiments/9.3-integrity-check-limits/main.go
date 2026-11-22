@@ -5,6 +5,9 @@
 // integer column, and a freelist leaf page) and compares integrity_check
 // (src/btree.c:11144-11295, src/pragma.c:1850-1857, 2084-2090), quick_check,
 // the E3 logical hash, and a Chapter 2 per-page SHA-256 manifest.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 9.3
 package main
 
 import (
@@ -13,12 +16,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/nickstrad/walfleet/internal/capture"
 	"github.com/nickstrad/walfleet/internal/dbfile"
 	"github.com/nickstrad/walfleet/internal/equal"
 	"github.com/nickstrad/walfleet/internal/procs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -37,8 +42,10 @@ type site struct {
 }
 
 type verdicts struct {
-	integrity, quick, logical, manifest string
-	caught                              [4]bool
+	integrity, quick []string
+	logical          int
+	differing        []int
+	caught           [4]bool
 }
 
 // findSites uses internal/dbfile to locate four deterministic single-byte
@@ -136,19 +143,18 @@ func check(ctx context.Context, path string, original equal.Manifest, originalLo
 	}
 	logicalDiff := equal.CompareLogical(originalLogical, logical)
 	v := verdicts{
-		integrity: procs.IntegritySummary(inspection.Integrity),
-		quick:     inspection.Values[0],
-		logical:   "equal",
-		manifest:  "equal",
-	}
-	if !logicalDiff.Equal {
-		v.logical = fmt.Sprintf("differs (%d difference(s))", len(logicalDiff.Differences))
-	}
-	if len(differing) > 0 {
-		v.manifest = fmt.Sprintf("page(s) %v differ", differing)
+		integrity: procs.IntegrityProblems(inspection.Integrity),
+		quick:     procs.IntegrityProblems(inspection.Values[0]),
+		logical:   len(logicalDiff.Differences),
+		differing: differing,
 	}
 	v.caught = [4]bool{inspection.Integrity != "ok", inspection.Values[0] != "ok", !logicalDiff.Equal, len(differing) > 0}
 	return v, nil
+}
+
+func fatal(what string, err error) {
+	fmt.Printf("FATAL %s: %v\n", what, err)
+	os.Exit(1)
 }
 
 func main() {
@@ -156,66 +162,83 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("9.3")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	lab := procs.NewLab(os.Stdout)
+	set := results.MustOpen(dir)
+	originalTable := set.Table("original", "recipe_step", "pages", "manifest_sha256")
+	sitesTable := set.Table("sites", "seq", "site", "location", "file_offset", "xor_mask")
+	verdictsTable := set.Table("verdicts", "seq", "file", "site",
+		"caught_integrity", "caught_quick", "caught_e3", "caught_manifest",
+		"expected_integrity", "expected_quick", "expected_e3", "expected_manifest",
+		"e3_differences", "differing_pages")
+	problemsTable := set.Table("problems", "seq", "file", "pragma", "problem_no", "problem")
+	record := func(seq int, file, site string, v verdicts, want [4]bool) {
+		verdictsTable.Row(seq, file, site, v.caught[0], v.caught[1], v.caught[2], v.caught[3], want[0], want[1], want[2], want[3], v.logical, joinInts(v.differing))
+		for i, problem := range v.integrity {
+			problemsTable.Row(seq, file, "integrity_check", i+1, problem)
+		}
+		for i, problem := range v.quick {
+			problemsTable.Row(seq, file, "quick_check", i+1, problem)
+		}
+	}
+
 	r := recipe.Default()
 	db := filepath.Join(dir, "original.db")
 	if err := r.Build(ctx, db, step); err != nil {
-		lab.Fatal("build", err)
+		fatal("build", err)
 	}
 	original, err := os.ReadFile(db)
 	if err != nil {
-		lab.Fatal("read", err)
+		fatal("read", err)
 	}
 	f, err := dbfile.Open(db)
 	if err != nil {
-		lab.Fatal("open", err)
+		fatal("open", err)
 	}
 	manifest, err := capture.BuildManifest(f)
 	if err != nil {
-		lab.Fatal("manifest", err)
+		fatal("manifest", err)
 	}
 	sites, err := findSites(f)
 	if closeErr := f.Close(); err != nil || closeErr != nil {
-		lab.Fatal("sites", errors.Join(err, closeErr))
+		fatal("sites", errors.Join(err, closeErr))
 	}
 	logical, err := equal.LogicalHashFile(ctx, db)
 	if err != nil {
-		lab.Fatal("logical hash", err)
+		fatal("logical hash", err)
 	}
 	baseline, err := check(ctx, db, manifest, logical)
 	if err != nil {
-		lab.Fatal("baseline", err)
+		fatal("baseline", err)
 	}
-	fmt.Printf("original: recipe step %d, %d pages, manifest sha256 %s; integrity_check %s, quick_check %s\n", step, manifest.PageCount(), manifest.SHA256()[:16], baseline.integrity, baseline.quick)
-	lab.Check(baseline.caught == [4]bool{}, "every check passes on the undamaged file")
+	originalTable.Row(step, manifest.PageCount(), manifest.SHA256()[:16])
+	record(0, "original.db", "none (the undamaged file)", baseline, [4]bool{})
+	set.Check("A", baseline.caught == [4]bool{}, "every check passes on the undamaged file")
 	want := map[string][4]bool{
 		sites[0].name: {true, true, true, true},
 		sites[1].name: {false, false, true, true},
 		sites[2].name: {true, false, true, true},
 		sites[3].name: {false, false, false, true},
 	}
-	fmt.Println()
-	fmt.Printf("%-36s | %-24s | %-24s | %-26s | %s\n", "one byte flipped in", "integrity_check", "quick_check", "E3 logical hash", "page manifest")
 	for i, s := range sites {
-		path := filepath.Join(dir, fmt.Sprintf("site-%d.db", i+1))
+		name := fmt.Sprintf("site-%d.db", i+1)
+		path := filepath.Join(dir, name)
 		if err := corruptCopy(original, s, path); err != nil {
-			lab.Fatal("corrupt", err)
+			fatal("corrupt", err)
 		}
 		v, err := check(ctx, path, manifest, logical)
 		if err != nil {
-			lab.Fatal(s.name, err)
+			fatal(s.name, err)
 		}
-		fmt.Printf("%-36s | %-24s | %-24s | %-26s | %s\n", s.name, clip(v.integrity), clip(v.quick), v.logical, v.manifest)
-		fmt.Printf("    where: %s\n", s.detail)
-		fmt.Printf("    integrity_check said: %s\n", v.integrity)
-		lab.Check(v.caught == want[s.name], fmt.Sprintf("%s: caught by integrity_check %t, quick_check %t, E3 %t, manifest %t", s.name, want[s.name][0], want[s.name][1], want[s.name][2], want[s.name][3]))
+		sitesTable.Row(i+1, s.name, s.detail, s.offset, s.mask)
+		record(i+1, name, s.name, v, want[s.name])
+		set.Check("B", v.caught == want[s.name], fmt.Sprintf("%s: caught by integrity_check %t, quick_check %t, E3 %t, manifest %t", s.name, want[s.name][0], want[s.name][1], want[s.name][2], want[s.name][3]))
 	}
-	lab.Report("INTEGRITY CHECK LIMITS")
+	set.Finish("INTEGRITY CHECK LIMITS")
 }
 
-func clip(s string) string {
-	if len(s) > 24 {
-		return s[:21] + "..."
+func joinInts(values []int) string {
+	text := make([]string, len(values))
+	for i, v := range values {
+		text[i] = fmt.Sprint(v)
 	}
-	return s
+	return strings.Join(text, " ")
 }

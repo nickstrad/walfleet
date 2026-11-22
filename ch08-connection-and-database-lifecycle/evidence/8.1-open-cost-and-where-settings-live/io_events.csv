@@ -1,0 +1,61 @@
+tables,phase,seq,op,file,byte_offset,nbytes,returned
+1,open,1,open,schema-1.db,,,
+1,open,2,read,schema-1.db,0,100,100
+1,first statement,1,read,schema-1.db,0,4096,4096
+1,first statement,2,open,schema-1.db-wal,,,
+1,first statement,3,open,schema-1.db-shm,,,
+1,first statement,4,read,schema-1.db,0,4096,4096
+1,first statement,5,read,schema-1.db,4096,4096,4096
+100,open,1,open,schema-100.db,,,
+100,open,2,read,schema-100.db,0,100,100
+100,first statement,1,read,schema-100.db,0,4096,4096
+100,first statement,2,open,schema-100.db-wal,,,
+100,first statement,3,open,schema-100.db-shm,,,
+100,first statement,4,read,schema-100.db,0,4096,4096
+100,first statement,5,read,schema-100.db,135168,4096,4096
+100,first statement,6,read,schema-100.db,143360,4096,4096
+100,first statement,7,read,schema-100.db,278528,4096,4096
+100,first statement,8,read,schema-100.db,413696,4096,4096
+100,first statement,9,read,schema-100.db,4096,4096,4096
+1000,open,1,open,schema-1000.db,,,
+1000,open,2,read,schema-1000.db,0,100,100
+1000,first statement,1,read,schema-1000.db,0,4096,4096
+1000,first statement,2,open,schema-1000.db-wal,,,
+1000,first statement,3,open,schema-1000.db-shm,,,
+1000,first statement,4,read,schema-1000.db,0,4096,4096
+1000,first statement,5,read,schema-1000.db,135168,4096,4096
+1000,first statement,6,read,schema-1000.db,143360,4096,4096
+1000,first statement,7,read,schema-1000.db,278528,4096,4096
+1000,first statement,8,read,schema-1000.db,413696,4096,4096
+1000,first statement,9,read,schema-1000.db,536576,4096,4096
+1000,first statement,10,read,schema-1000.db,659456,4096,4096
+1000,first statement,11,read,schema-1000.db,782336,4096,4096
+1000,first statement,12,read,schema-1000.db,905216,4096,4096
+1000,first statement,13,read,schema-1000.db,1028096,4096,4096
+1000,first statement,14,read,schema-1000.db,1150976,4096,4096
+1000,first statement,15,read,schema-1000.db,1273856,4096,4096
+1000,first statement,16,read,schema-1000.db,1396736,4096,4096
+1000,first statement,17,read,schema-1000.db,1519616,4096,4096
+1000,first statement,18,read,schema-1000.db,1642496,4096,4096
+1000,first statement,19,read,schema-1000.db,1765376,4096,4096
+1000,first statement,20,read,schema-1000.db,1888256,4096,4096
+1000,first statement,21,read,schema-1000.db,2011136,4096,4096
+1000,first statement,22,read,schema-1000.db,2134016,4096,4096
+1000,first statement,23,read,schema-1000.db,2256896,4096,4096
+1000,first statement,24,read,schema-1000.db,2379776,4096,4096
+1000,first statement,25,read,schema-1000.db,2502656,4096,4096
+1000,first statement,26,read,schema-1000.db,2625536,4096,4096
+1000,first statement,27,read,schema-1000.db,2748416,4096,4096
+1000,first statement,28,read,schema-1000.db,2871296,4096,4096
+1000,first statement,29,read,schema-1000.db,2994176,4096,4096
+1000,first statement,30,read,schema-1000.db,3117056,4096,4096
+1000,first statement,31,read,schema-1000.db,3239936,4096,4096
+1000,first statement,32,read,schema-1000.db,3362816,4096,4096
+1000,first statement,33,read,schema-1000.db,3485696,4096,4096
+1000,first statement,34,read,schema-1000.db,3608576,4096,4096
+1000,first statement,35,read,schema-1000.db,3731456,4096,4096
+1000,first statement,36,read,schema-1000.db,3854336,4096,4096
+1000,first statement,37,read,schema-1000.db,3977216,4096,4096
+1000,first statement,38,read,schema-1000.db,4100096,4096,4096
+1000,first statement,39,read,schema-1000.db,4222976,4096,4096
+1000,first statement,40,read,schema-1000.db,4096,4096,4096

@@ -1,0 +1,17 @@
+seq,part,status,claim
+1,A,ok,cache_size=-2000: CACHE_USED stays within the budget plus 5% (482 pages x 4352 bytes against 2048000 bytes)
+2,A,ok,a file larger than the cache misses again on the second scan (the LRU evicted the pages the scan needs next)
+3,A,ok,cache_size=-8032: CACHE_USED stays within the budget plus 5% (1004 pages x 4352 bytes against 8224768 bytes)
+4,A,ok,a cache larger than the file serves the second scan from memory: no new misses
+5,B,ok,"the cached pages of all open connections add up to exactly (open connections) x 482, the pages one connection holds when it fills its budget"
+6,B,ok,in this driver build cache_size is not a per-connection cap: the connection that scanned last holds 1004 pages (its own budget is 482) while the idle connections were left with 0
+7,B,ok,process memory grows by at least the summed CACHE_USED of the open connections
+8,B,ok,process memory grows linearly with open connections: growth per open connection at 64 is within -20%/+25% of that at 32
+9,C,ok,connections to one file do not share a cache: the totals equal the N-files run at every checkpoint
+10,C,ok,process memory grows by the summed CACHE_USED here too
+11,D,ok,"with the pool, 8 connections are open at the end and their cached pages stay within 8 x (482 + 1), the sum of their cache sizes in pages"
+12,D,ok,"with the pool, process memory stays flat after 8 connections: growth from after 8 to after 64 is at most a quarter of the growth up to after 8"
+13,D,ok,the pooled run ends with about 8/64 of the unbounded run's memory growth (at most 1.5 x that fraction)
+14,E,ok,"with mmap covering the file, the scan leaves CACHE_USED near zero (under 5% of the unmapped connection's)"
+15,E,ok,the mapped scan still adds about the file's size to process RSS: the memory moved from SQLite's heap to mapped file pages
+16,E,ok,"the added memory is file-backed (RssFile), not anonymous heap"

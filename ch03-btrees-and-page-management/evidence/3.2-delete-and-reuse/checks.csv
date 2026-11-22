@@ -1,0 +1,31 @@
+seq,part,status,claim
+1,A,ok,the file does not shrink on delete
+2,A,ok,pages emptied by the delete moved to the freelist
+3,A,ok,the new rows fit in the file: its size is unchanged
+4,A,ok,every leaf page of the new rows is a former freelist page
+5,A,ok,page_count grows only once the freelist is used up: every transaction that added pages ended with an empty freelist
+6,A,ok,"once the freelist is used up, the file grows"
+7,A,ok,the file still does not shrink
+8,A,ok,"VACUUM is what returns space: 107 pages -> 51, at least the 55 freelist pages are gone"
+9,A,ok,after VACUUM no marker of a row deleted in step 2 or step 5 is left in the file
+10,B,ok,the file does not shrink on delete
+11,B,ok,pages emptied by the delete moved to the freelist
+12,B,ok,the new rows fit in the file: its size is unchanged
+13,B,ok,every leaf page of the new rows is a former freelist page
+14,B,ok,page_count grows only once the freelist is used up: every transaction that added pages ended with an empty freelist
+15,B,ok,"once the freelist is used up, the file grows"
+16,B,ok,the file still does not shrink
+17,B,ok,"VACUUM is what returns space: 107 pages -> 51, at least the 55 freelist pages are gone"
+18,B,ok,after VACUUM no marker of a row deleted in step 2 or step 5 is left in the file
+19,C,ok,"secure_delete costs WAL frames: the zeroed pages are written, while without it freed leaf pages are not written at all"
+20,C,ok,without secure_delete the deleted payload bytes are still in the file
+21,C,ok,without secure_delete freelist leaf pages keep their old content
+22,C,ok,the second delete leaves its rows readable too without secure_delete
+23,C,ok,with secure_delete the deleted payload bytes are nowhere in the database file at rest
+24,C,ok,"secure_delete changes the bytes, not the layout: file sizes are the same at every step"
+25,D,ok,"a transaction that needs more pages than the freelist holds takes the freelist pages first, then grows the file in the same transaction: so the rule is per page allocation, not per transaction"
+26,E,ok,auto_vacuum=NONE (SQLite's default and the recipe's): the file never shrinks on its own; PRAGMA incremental_vacuum does nothing
+27,E,ok,"auto_vacuum=FULL: the DELETE's own commit moves pages and truncates the file, leaving no freelist"
+28,E,ok,auto_vacuum=INCREMENTAL: freed pages wait on the freelist until PRAGMA incremental_vacuum truncates the file
+29,F,ok,"secure_delete zeroes the database pages, but the -wal still holds the frames the INSERT wrote: every deleted row stays readable there, even after a PASSIVE checkpoint copied the zeroed pages back"
+30,F,ok,only when the WAL is reset (here by wal_checkpoint(TRUNCATE)) are the deleted rows gone from the files on disk

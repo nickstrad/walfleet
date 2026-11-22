@@ -1,0 +1,12 @@
+seq,part,status,claim
+1,A,ok,every restore point the checker found while the writers ran rebuilt to a recipe state
+2,B,ok,every database was at rest when quiesced: the writers' close left no WAL frame for the TRUNCATE checkpoint
+3,C,ok,the new node starts with empty disks
+4,C,ok,500 of 500 rebuilt databases are byte-identical to the quiesced originals
+5,C,ok,every rebuilt database is a recipe state whose schema version (user_version) is the one the catalog recorded and the last one acknowledged
+6,C,ok,"the rollout stopped halfway: databases are on the old schema (step 4) or the new one (step 5 with INDEX events_by_account ON events(account_id, id)), nothing else"
+7,C,ok,the rebuilding process stayed within the standing bounds
+8,D,ok,after the rebuild every published restore point of every database rebuilds to a recipe state
+9,D,ok,"the rebuild read each of the 2748 slots it found exactly twice (once to check the lineage, once to restore)"
+10,E,ok,no node reported a problem and every command was acknowledged
+11,E,ok,after every command of every writer and checker command the descriptors and memory stayed within the standing bounds

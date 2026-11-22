@@ -1,0 +1,2 @@
+seed,steps,journal_mode,bytes,pages,sha256_prefix,file_state,header_byte_18,header_byte_19,wal_present
+1,30,wal,1105920,270,24aa158fdf713808,step 30 (exact bytes),2,2,false

@@ -1,0 +1,32 @@
+part,copy,n,problem
+A2,torn.db,1,wrong # of entries in index events_by_account
+A2,torn.db,2,row 335 missing from index events_by_account
+A2,torn.db,3,row 336 missing from index events_by_account
+A2,torn.db,4,row 337 missing from index events_by_account
+A2,torn.db,5,row 338 missing from index events_by_account
+A2,torn.db,6,row 339 missing from index events_by_account
+A2,torn.db,7,row 340 missing from index events_by_account
+A2,torn.db,8,row 341 missing from index events_by_account
+A2,torn.db,9,row 342 missing from index events_by_account
+A2,torn.db,10,row 343 missing from index events_by_account
+A2,torn.db,11,row 344 missing from index events_by_account
+A2,torn.db,12,row 345 missing from index events_by_account
+A2,torn.db,13,row 346 missing from index events_by_account
+A2,torn.db,14,row 347 missing from index events_by_account
+A2,torn.db,15,row 348 missing from index events_by_account
+A2,torn.db,16,row 349 missing from index events_by_account
+A2,torn.db,17,row 350 missing from index events_by_account
+A2,torn.db,18,row 351 missing from index events_by_account
+A2,torn.db,19,row 352 missing from index events_by_account
+A2,torn.db,20,row 353 missing from index events_by_account
+A2,torn.db,21,row 354 missing from index events_by_account
+A2,torn.db,22,row 355 missing from index events_by_account
+A2,torn.db,23,row 356 missing from index events_by_account
+A2,torn.db,24,row 357 missing from index events_by_account
+A2,torn.db,25,row 358 missing from index events_by_account
+B,torn.db,1,Freelist: freelist leaf count too big on page 35
+B,torn.db,2,Freelist: invalid page number 52
+B,torn.db,3,Tree 3 page 24 cell 0: overflow list length is 1 but should be 3
+B,torn.db,4,Page 29: never used
+B,torn.db,5,Page 37: never used
+B,torn.db,6,wrong # of entries in index events_by_account

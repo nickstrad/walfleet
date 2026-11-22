@@ -1,117 +1,257 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/7.4
-route http: an in-process HTTP server (net/http FileServer, which answers Range requests); HEAD for stat, GET with a Range header for each read
-snapshot: recipe seed 1, 30 steps, journal_mode=wal, closed by its last connection: 1105920 bytes, 270 pages, sha256 24aa158fdf713808, equals step 30 (exact bytes)
-snapshot header bytes 18-19 (write/read format version): 2 2 (2 = WAL); -wal file present: false
-check ok: the snapshot is a WAL-format database with every commit checkpointed into the main file and no -wal left
 
-== queries: local file vs the published snapshot read through modernc.org/sqlite/vfs + rangefs (immutable=1) ==
+════════════════════════════════════════════════════════════════════════
+  7.4  A read-only snapshot VFS over byte-range reads
+════════════════════════════════════════════════════════════════════════
 
--- point lookup: SELECT id, account_id, kind, amount, note FROM events WHERE id = 372
-plan: SEARCH events USING INTEGER PRIMARY KEY (rowid=?)
-local file: 1 row(s), digest 564912d877435e1b, first row 372|7|fee|2642|gkusfxyuudbxvuvijtfcnc
-remote snapshot: 1 row(s), digest 564912d877435e1b, first row 372|7|fee|2642|gkusfxyuudbxvuvijtfcnc
-  open + schema load: 3 requests (1 stat, 2 range), 4196 bytes
-    stat snapshot.db (size 1105920)
-    range snapshot.db bytes 0-99 (100 bytes)
-    range snapshot.db bytes 0-4095 (4096 bytes)
-  query (cold cache): 2 requests (0 stat, 2 range), 8192 bytes; pages read in order: 4 66
-  same query again on the same connection: 0 requests (0 stat, 0 range), 0 bytes
-  first query on a new connection, total: 5 requests, 12388 bytes
-check ok: point lookup: the remote result equals the local file's (1 row(s), digest 564912d877435e1b)
-check ok: point lookup: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead
-check ok: point lookup: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 4 reads so far fit in the 500-page cache)
+A checkpointed recipe database is published as one object and queried
+through modernc.org/sqlite/vfs backed by internal/rangefs, which turns
+each open into one stat request and each read into one byte-range
+request, and records every request.
+┌───────┬───────────────────────────────────────────────────────────────────────────────┐
+│ route │                                    server                                     │
+├───────┼───────────────────────────────────────────────────────────────────────────────┤
+│ http  │ an in-process HTTP server (net/http FileServer, which answers Range requests) │
+└───────┴───────────────────────────────────────────────────────────────────────────────┘
+┌──────────────┬─────────────────────────┐
+│ stat_request │      read_request       │
+├──────────────┼─────────────────────────┤
+│ HEAD         │ GET with a Range header │
+└──────────────┴─────────────────────────┘
 
--- index range scan: SELECT id, amount FROM events WHERE account_id = 7 ORDER BY id
-plan: SEARCH events USING INDEX events_by_account (account_id=?)
-local file: 29 row(s), digest d98fa27230232e1c, first row 4|2828
-remote snapshot: 29 row(s), digest d98fa27230232e1c, first row 4|2828
-  open + schema load: 3 requests (1 stat, 2 range), 4196 bytes
-    stat snapshot.db (size 1105920)
-    range snapshot.db bytes 0-99 (100 bytes)
-    range snapshot.db bytes 0-4095 (4096 bytes)
-  query (cold cache): 13 requests (0 stat, 13 range), 53248 bytes; pages read in order: 28 88 4 26 27 39 66 87 108 204 210 219 259
-  same query again on the same connection: 0 requests (0 stat, 0 range), 0 bytes
-  first query on a new connection, total: 16 requests, 57444 bytes
-check ok: index range scan: the remote result equals the local file's (29 row(s), digest d98fa27230232e1c)
-check ok: index range scan: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead
-check ok: index range scan: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 15 reads so far fit in the 500-page cache)
+── A. The snapshot ─────────────────────────────────────────────────────
 
--- full scan: SELECT count(*), sum(amount), sum(length(note)) FROM events
-plan: SCAN events
-local file: 1 row(s), digest 6b2a4af3714ab7f4, first row 1177|-124383|41332
-remote snapshot: 1 row(s), digest 6b2a4af3714ab7f4, first row 1177|-124383|41332
-  open + schema load: 3 requests (1 stat, 2 range), 4196 bytes
-    stat snapshot.db (size 1105920)
-    range snapshot.db bytes 0-99 (100 bytes)
-    range snapshot.db bytes 0-4095 (4096 bytes)
-  query (cold cache): 18 requests (0 stat, 18 range), 73728 bytes; pages read in order: 4 26 27 39 59 66 87 108 124 132 157 168 184 204 210 219 243 259
-  same query again on the same connection: 0 requests (0 stat, 0 range), 0 bytes
-  first query on a new connection, total: 21 requests, 77924 bytes
-check ok: full scan: the remote result equals the local file's (1 row(s), digest 6b2a4af3714ab7f4)
-check ok: full scan: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead
-check ok: full scan: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 20 reads so far fit in the 500-page cache)
+A1. The recipe database after all its steps, closed by its last
+connection, which checkpointed every commit into the main file:
+┌──────┬───────┬──────────────┬─────────┬───────┬──────────────────┬───────────────────────┐
+│ seed │ steps │ journal_mode │  bytes  │ pages │  sha256_prefix   │      file_state       │
+├──────┼───────┼──────────────┼─────────┼───────┼──────────────────┼───────────────────────┤
+│ 1    │ 30    │ wal          │ 1105920 │ 270   │ 24aa158fdf713808 │ step 30 (exact bytes) │
+└──────┴───────┴──────────────┴─────────┴───────┴──────────────────┴───────────────────────┘
 
-== immutable=1 keeps cached pages valid, not cached: the full scan again with PRAGMA cache_size=4 ==
-full scan with a 4-page cache, repeated on the same connection: 17 requests (0 stat, 17 range), 69632 bytes
-check ok: full scan: when the query reads more pages than the cache holds, the repeat reads evicted pages again (17 range requests); only pages still in the cache are free
+A2. Header bytes 18-19 (file format write and read version) still say 2,
+WAL, although no -wal file is left:
+┌────────────────┬────────────────┬─────────────┐
+│ header_byte_18 │ header_byte_19 │ wal_present │
+├────────────────┼────────────────┼─────────────┤
+│ 2              │ 2              │ false       │
+└────────────────┴────────────────┴─────────────┘
 
-== why immutable=1: the same WAL-format snapshot opened without it ==
-(no parameters): SQLite error code 14: unable to open database file (14); 5 requests (3 stat, 2 range), 4196 bytes
-    stat snapshot.db (size 1105920)
-    range snapshot.db bytes 0-99 (100 bytes)
-    stat snapshot.db-journal (absent)
-    stat snapshot.db-wal (absent)
-    range snapshot.db bytes 0-4095 (4096 bytes)
-check ok: without immutable=1 ((no parameters)) the WAL-format snapshot fails to open with SQLITE_CANTOPEN (14)
-mode=ro: SQLite error code 14: unable to open database file (14); 5 requests (3 stat, 2 range), 4196 bytes
-    stat snapshot.db (size 1105920)
-    range snapshot.db bytes 0-99 (100 bytes)
-    stat snapshot.db-journal (absent)
-    stat snapshot.db-wal (absent)
-    range snapshot.db bytes 0-4095 (4096 bytes)
-check ok: without immutable=1 (mode=ro) the WAL-format snapshot fails to open with SQLITE_CANTOPEN (14)
-immutable=1: user_version=30 events=1177; 8 requests (1 stat, 7 range), 24676 bytes
-    stat snapshot.db (size 1105920)
-    range snapshot.db bytes 0-99 (100 bytes)
-    range snapshot.db bytes 0-4095 (4096 bytes)
-    range snapshot.db bytes 110592-114687 (4096 bytes)
-    range snapshot.db bytes 356352-360447 (4096 bytes)
-    range snapshot.db bytes 360448-364543 (4096 bytes)
-    range snapshot.db bytes 679936-684031 (4096 bytes)
-    range snapshot.db bytes 987136-991231 (4096 bytes)
-check ok: with immutable=1 the WAL-format snapshot opens and reads the same state as the local file
+── B. Three queries over the remote snapshot (immutable=1) ─────────────
 
-== the same bytes with header bytes 18-19 set to 1 (rollback format) open without immutable=1 ==
-(no parameters): user_version=30 events=1177; 16 requests (7 stat, 9 range), 24708 bytes
-    stat snapshot-rollback.db (size 1105920)
-    range snapshot-rollback.db bytes 0-99 (100 bytes)
-    stat snapshot-rollback.db-journal (absent)
-    stat snapshot-rollback.db-wal (absent)
-    range snapshot-rollback.db bytes 0-4095 (4096 bytes)
-    stat snapshot-rollback.db-journal (absent)
-    range snapshot-rollback.db bytes 24-39 (16 bytes)
-    stat snapshot-rollback.db-wal (absent)
-    range snapshot-rollback.db bytes 110592-114687 (4096 bytes)
-    range snapshot-rollback.db bytes 356352-360447 (4096 bytes)
-    range snapshot-rollback.db bytes 360448-364543 (4096 bytes)
-    range snapshot-rollback.db bytes 679936-684031 (4096 bytes)
-    range snapshot-rollback.db bytes 987136-991231 (4096 bytes)
-    stat snapshot-rollback.db-journal (absent)
-    range snapshot-rollback.db bytes 24-39 (16 bytes)
-    stat snapshot-rollback.db-wal (absent)
-check ok: a checkpointed snapshot with header bytes 18-19 rewritten to 1 opens without immutable=1 and reads the same state (the WAL flag in the header, not the content, is what demands shared memory)
-check ok: without immutable=1 SQLite checks for a hot journal (3 stat request(s) for snapshot-rollback.db-journal), which immutable=1 skips
+B1. Each query runs on a new connection: open and schema load, the query
+with a cold cache, then the same query again.
+┌───────┬──────────────────┬──────────────────────────────────────────────────────────────────────┐
+│ query │       name       │                                 sql                                  │
+├───────┼──────────────────┼──────────────────────────────────────────────────────────────────────┤
+│ 1     │ point lookup     │ SELECT id, account_id, kind, amount, note FROM events WHERE id = 372 │
+│ 2     │ index range scan │ SELECT id, amount FROM events WHERE account_id = 7 ORDER BY id       │
+│ 3     │ full scan        │ SELECT count(*), sum(amount), sum(length(note)) FROM events          │
+└───────┴──────────────────┴──────────────────────────────────────────────────────────────────────┘
+┌───────┬──────────────────┬────────────────────────────────────────────────────────────┐
+│ query │       name       │                            plan                            │
+├───────┼──────────────────┼────────────────────────────────────────────────────────────┤
+│ 1     │ point lookup     │ SEARCH events USING INTEGER PRIMARY KEY (rowid=?)          │
+│ 2     │ index range scan │ SEARCH events USING INDEX events_by_account (account_id=?) │
+│ 3     │ full scan        │ SCAN events                                                │
+└───────┴──────────────────┴────────────────────────────────────────────────────────────┘
 
-== why a fully checkpointed file: a live database whose last commit is still in its -wal ==
-a child process built live.db to step 29, then committed step 30 and keeps its connection open (no checkpoint yet)
-local read through SQLite (sees the -wal): user_version=30 events=1177
-published live.db (1060864 bytes) and live.db-wal (123632 bytes, 30 frames) as they are on disk
-remote, immutable=1: user_version=29 events=1130; 8 requests (1 stat, 7 range), 24676 bytes
-remote, no parameters: SQLite error code 14: unable to open database file (14)
-check ok: immutable=1 ignores the -wal: the remote read returns step 29's state while the writer has committed step 30 (a stale read, no error)
-check ok: with immutable=1 SQLite never asks for the -wal file (0 requests name it)
-check ok: without immutable=1 the live WAL database cannot be opened through the read-only VFS either (SQLITE_CANTOPEN)
-after the writer closed (last connection: checkpoint, -wal deleted: true) and the main file was republished: remote, immutable=1: user_version=30 events=1177
-check ok: once the commit is checkpointed into the main file, the republished snapshot shows step 30
-ALL CHECKS PASSED
+B2. The remote result equals the result from the local file (digest =
+sha256 prefix of all rows):
+┌───────┬──────────────────┬────────────┬─────────────┬──────────────────┬──────────────────┐
+│ query │       name       │ local_rows │ remote_rows │   local_digest   │  remote_digest   │
+├───────┼──────────────────┼────────────┼─────────────┼──────────────────┼──────────────────┤
+│ 1     │ point lookup     │ 1          │ 1           │ 564912d877435e1b │ 564912d877435e1b │
+│ 2     │ index range scan │ 29         │ 29          │ d98fa27230232e1c │ d98fa27230232e1c │
+│ 3     │ full scan        │ 1          │ 1           │ 6b2a4af3714ab7f4 │ 6b2a4af3714ab7f4 │
+└───────┴──────────────────┴────────────┴─────────────┴──────────────────┴──────────────────┘
+┌───────┬────────────────┬───────────────────────────────────────┐
+│ query │ same_first_row │               first_row               │
+├───────┼────────────────┼───────────────────────────────────────┤
+│ 1     │ true           │ 372|7|fee|2642|gkusfxyuudbxvuvijtfcnc │
+│ 2     │ true           │ 4|2828                                │
+│ 3     │ true           │ 1177|-124383|41332                    │
+└───────┴────────────────┴───────────────────────────────────────┘
+
+B3. Opening and loading the schema costs the same three requests every
+time: a stat, the 100-byte header, and page 1.
+┌─────────────────────────────────────────────┬─────────────┐
+│                   request                   │ connections │
+├─────────────────────────────────────────────┼─────────────┤
+│ stat snapshot.db (size 1105920)             │ 3           │
+│ range snapshot.db bytes 0-99 (100 bytes)    │ 3           │
+│ range snapshot.db bytes 0-4095 (4096 bytes) │ 3           │
+└─────────────────────────────────────────────┴─────────────┘
+
+B4. Every read is one range request for one whole 4096-byte page: one
+request per page miss, no read-ahead. The repeat on the same connection
+makes no request: immutable=1 skips the change-counter check, so the
+cached pages stay valid. Pages are listed in the order they were read.
+┌───────┬────────┬──────────┬──────┬───────┬───────┬─────────────────────────────────────────────────────────────────┐
+│ query │ phase  │ requests │ stat │ range │ bytes │                              pages                              │
+├───────┼────────┼──────────┼──────┼───────┼───────┼─────────────────────────────────────────────────────────────────┤
+│ 1     │ open   │ 3        │ 1    │ 2     │ 4196  │ hdr 1                                                           │
+│ 1     │ query  │ 2        │ 0    │ 2     │ 8192  │ 4 66                                                            │
+│ 1     │ repeat │ 0        │ 0    │ 0     │ 0     │                                                                 │
+│ 2     │ open   │ 3        │ 1    │ 2     │ 4196  │ hdr 1                                                           │
+│ 2     │ query  │ 13       │ 0    │ 13    │ 53248 │ 28 88 4 26 27 39 66 87 108 204 210 219 259                      │
+│ 2     │ repeat │ 0        │ 0    │ 0     │ 0     │                                                                 │
+│ 3     │ open   │ 3        │ 1    │ 2     │ 4196  │ hdr 1                                                           │
+│ 3     │ query  │ 18       │ 0    │ 18    │ 73728 │ 4 26 27 39 59 66 87 108 124 132 157 168 184 204 210 219 243 259 │
+│ 3     │ repeat │ 0        │ 0    │ 0     │ 0     │                                                                 │
+└───────┴────────┴──────────┴──────┴───────┴───────┴─────────────────────────────────────────────────────────────────┘
+
+B5. The first query on a new connection, in total, and how many of its
+page reads the page cache can hold:
+┌──────────────────┬──────────┬───────┬────────────┬─────────────┐
+│       name       │ requests │ bytes │ pages_read │ cache_pages │
+├──────────────────┼──────────┼───────┼────────────┼─────────────┤
+│ point lookup     │ 5        │ 12388 │ 4          │ 500         │
+│ index range scan │ 16       │ 57444 │ 15         │ 500         │
+│ full scan        │ 21       │ 77924 │ 20         │ 500         │
+└──────────────────┴──────────┴───────┴────────────┴─────────────┘
+
+── C. immutable=1 keeps cached pages valid, not cached ─────────────────
+
+C1. The full scan again, repeated on one connection with PRAGMA
+cache_size=4. The scan reads more pages than the cache holds, so the
+repeat reads the evicted pages again; only pages still cached are free.
+┌───────────┬─────────────┬─────────────┬──────────┬──────┬───────┬───────┐
+│   query   │ cache_pages │ same_result │ requests │ stat │ range │ bytes │
+├───────────┼─────────────┼─────────────┼──────────┼──────┼───────┼───────┤
+│ full scan │ 4           │ true        │ 17       │ 0    │ 17    │ 69632 │
+└───────────┴─────────────┴─────────────┴──────────┴──────┴───────┴───────┘
+
+── D. Why immutable=1: the WAL-format snapshot opened without it ───────
+
+D1. Each open counts the events and reads user_version. Without
+immutable=1, SQLite sees the WAL flag in the header, needs shared memory,
+which this read-only VFS does not provide, and fails with SQLITE_CANTOPEN.
+┌─────────────────┬─────────────────────────────────────────────────────────┬──────────┬──────┬───────┬───────┐
+│     params      │                         result                          │ requests │ stat │ range │ bytes │
+├─────────────────┼─────────────────────────────────────────────────────────┼──────────┼──────┼───────┼───────┤
+│ (no parameters) │ SQLite error code 14: unable to open database file (14) │ 5        │ 3    │ 2     │ 4196  │
+│ mode=ro         │ SQLite error code 14: unable to open database file (14) │ 5        │ 3    │ 2     │ 4196  │
+│ immutable=1     │ user_version=30 events=1177                             │ 8        │ 1    │ 7     │ 24676 │
+└─────────────────┴─────────────────────────────────────────────────────────┴──────────┴──────┴───────┴───────┘
+
+D2. The requests of each open: without immutable=1 SQLite also looks for
+a -journal and a -wal.
+┌─────────────────┬────────────────────────────────────────────────────┐
+│     params      │                      request                       │
+├─────────────────┼────────────────────────────────────────────────────┤
+│ (no parameters) │ stat snapshot.db (size 1105920)                    │
+│ (no parameters) │ range snapshot.db bytes 0-99 (100 bytes)           │
+│ (no parameters) │ stat snapshot.db-journal (absent)                  │
+│ (no parameters) │ stat snapshot.db-wal (absent)                      │
+│ (no parameters) │ range snapshot.db bytes 0-4095 (4096 bytes)        │
+│ mode=ro         │ stat snapshot.db (size 1105920)                    │
+│ mode=ro         │ range snapshot.db bytes 0-99 (100 bytes)           │
+│ mode=ro         │ stat snapshot.db-journal (absent)                  │
+│ mode=ro         │ stat snapshot.db-wal (absent)                      │
+│ mode=ro         │ range snapshot.db bytes 0-4095 (4096 bytes)        │
+│ immutable=1     │ stat snapshot.db (size 1105920)                    │
+│ immutable=1     │ range snapshot.db bytes 0-99 (100 bytes)           │
+│ immutable=1     │ range snapshot.db bytes 0-4095 (4096 bytes)        │
+│ immutable=1     │ range snapshot.db bytes 110592-114687 (4096 bytes) │
+│ immutable=1     │ range snapshot.db bytes 356352-360447 (4096 bytes) │
+│ immutable=1     │ range snapshot.db bytes 360448-364543 (4096 bytes) │
+│ immutable=1     │ range snapshot.db bytes 679936-684031 (4096 bytes) │
+│ immutable=1     │ range snapshot.db bytes 987136-991231 (4096 bytes) │
+└─────────────────┴────────────────────────────────────────────────────┘
+
+── E. The same bytes in rollback format ────────────────────────────────
+
+E1. A copy of the snapshot with header bytes 18-19 set to 1 (rollback
+format) opens without immutable=1 and reads the same state: the WAL flag
+in the header, not the content, is what demands shared memory.
+┌──────────────────────┬─────────────────┬─────────────────────────────┬──────────┬──────┬───────┬───────┐
+│         file         │     params      │           result            │ requests │ stat │ range │ bytes │
+├──────────────────────┼─────────────────┼─────────────────────────────┼──────────┼──────┼───────┼───────┤
+│ snapshot-rollback.db │ (no parameters) │ user_version=30 events=1177 │ 16       │ 7    │ 9     │ 24708 │
+└──────────────────────┴─────────────────┴─────────────────────────────┴──────────┴──────┴───────┴───────┘
+
+E2. Its requests. Without immutable=1 SQLite checks for a hot journal
+(stat of the -journal) whenever it takes a read lock; immutable=1 skips it.
+┌─────┬─────────────────────────────────────────────────────────────┐
+│ seq │                           request                           │
+├─────┼─────────────────────────────────────────────────────────────┤
+│ 78  │ stat snapshot-rollback.db (size 1105920)                    │
+│ 79  │ range snapshot-rollback.db bytes 0-99 (100 bytes)           │
+│ 80  │ stat snapshot-rollback.db-journal (absent)                  │
+│ 81  │ stat snapshot-rollback.db-wal (absent)                      │
+│ 82  │ range snapshot-rollback.db bytes 0-4095 (4096 bytes)        │
+│ 83  │ stat snapshot-rollback.db-journal (absent)                  │
+│ 84  │ range snapshot-rollback.db bytes 24-39 (16 bytes)           │
+│ 85  │ stat snapshot-rollback.db-wal (absent)                      │
+│ 86  │ range snapshot-rollback.db bytes 110592-114687 (4096 bytes) │
+│ 87  │ range snapshot-rollback.db bytes 356352-360447 (4096 bytes) │
+│ 88  │ range snapshot-rollback.db bytes 360448-364543 (4096 bytes) │
+│ 89  │ range snapshot-rollback.db bytes 679936-684031 (4096 bytes) │
+│ 90  │ range snapshot-rollback.db bytes 987136-991231 (4096 bytes) │
+│ 91  │ stat snapshot-rollback.db-journal (absent)                  │
+│ 92  │ range snapshot-rollback.db bytes 24-39 (16 bytes)           │
+│ 93  │ stat snapshot-rollback.db-wal (absent)                      │
+└─────┴─────────────────────────────────────────────────────────────┘
+┌───────────────────────┐
+│ journal_stat_requests │
+├───────────────────────┤
+│ 3                     │
+└───────────────────────┘
+
+── F. Why a fully checkpointed file ────────────────────────────────────
+
+F1. A child process builds live.db to step 29, commits step 30 and keeps
+its connection open, so step 30 is only in the -wal. A local read through
+SQLite sees it. Both files are published as they are on disk.
+┌───────────────┬────────────────┬─────────────────────────────┬──────────┬───────────┬────────────┐
+│ built_to_step │ committed_step │         local_state         │ db_bytes │ wal_bytes │ wal_frames │
+├───────────────┼────────────────┼─────────────────────────────┼──────────┼───────────┼────────────┤
+│ 29            │ 30             │ user_version=30 events=1177 │ 1060864  │ 123632    │ 30         │
+└───────────────┴────────────────┴─────────────────────────────┴──────────┴───────────┴────────────┘
+
+F2. The remote reads. 1: immutable=1 ignores the -wal and returns the
+state of step 29, a stale read with no error. 2: without immutable=1 the
+open fails. 3: after the writer closes (its last connection checkpoints
+and deletes the -wal) and the main file is republished, immutable=1 reads
+step 30.
+┌───┬─────────────────┬─────────────────────────────────────────────────────────┬──────────┬──────┬───────┬───────┐
+│ n │     params      │                         result                          │ requests │ stat │ range │ bytes │
+├───┼─────────────────┼─────────────────────────────────────────────────────────┼──────────┼──────┼───────┼───────┤
+│ 1 │ immutable=1     │ user_version=29 events=1130                             │ 8        │ 1    │ 7     │ 24676 │
+│ 2 │ (no parameters) │ SQLite error code 14: unable to open database file (14) │ 4        │ 3    │ 1     │ 100   │
+│ 3 │ immutable=1     │ user_version=30 events=1177                             │ 8        │ 1    │ 7     │ 24676 │
+└───┴─────────────────┴─────────────────────────────────────────────────────────┴──────────┴──────┴───────┴───────┘
+┌────────────────────────────────────────┬─────────────────────────┐
+│ requests_naming_the_wal_with_immutable │ wal_deleted_after_close │
+├────────────────────────────────────────┼─────────────────────────┤
+│ 0                                      │ true                    │
+└────────────────────────────────────────┴─────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the snapshot is a WAL-format database with every commit checkpointed into the main file and no -wal left
+B  ✓  point lookup: the remote result equals the local file's (1 row(s), digest 564912d877435e1b)
+B  ✓  point lookup: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead
+B  ✓  point lookup: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 4 reads so far fit in the 500-page cache)
+B  ✓  index range scan: the remote result equals the local file's (29 row(s), digest d98fa27230232e1c)
+B  ✓  index range scan: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead
+B  ✓  index range scan: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 15 reads so far fit in the 500-page cache)
+B  ✓  full scan: the remote result equals the local file's (1 row(s), digest 6b2a4af3714ab7f4)
+B  ✓  full scan: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead
+B  ✓  full scan: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 20 reads so far fit in the 500-page cache)
+C  ✓  full scan: when the query reads more pages than the cache holds, the repeat reads evicted pages again (17 range requests); only pages still in the cache are free
+D  ✓  without immutable=1 ((no parameters)) the WAL-format snapshot fails to open with SQLITE_CANTOPEN (14)
+D  ✓  without immutable=1 (mode=ro) the WAL-format snapshot fails to open with SQLITE_CANTOPEN (14)
+D  ✓  with immutable=1 the WAL-format snapshot opens and reads the same state as the local file
+E  ✓  a checkpointed snapshot with header bytes 18-19 rewritten to 1 opens without immutable=1 and reads the same state (the WAL flag in the header, not the content, is what demands shared memory)
+E  ✓  without immutable=1 SQLite checks for a hot journal (3 stat request(s) for snapshot-rollback.db-journal), which immutable=1 skips
+F  ✓  immutable=1 ignores the -wal: the remote read returns step 29's state while the writer has committed step 30 (a stale read, no error)
+F  ✓  with immutable=1 SQLite never asks for the -wal file (0 requests name it)
+F  ✓  without immutable=1 the live WAL database cannot be opened through the read-only VFS either (SQLITE_CANTOPEN)
+F  ✓  once the commit is checkpointed into the main file, the republished snapshot shows step 30
+
+20 of 20 claims hold
+
+Experiment verdict: READ-ONLY SNAPSHOT VFS OK

@@ -1,0 +1,30 @@
+step,database,seq,action,outcome
+1,db-0001,1,A claim,ok: catalog epoch 1
+1,db-0001,2,A fence,ok: fence at 1
+2,db-0001,1,A write,ok: local commit 2
+2,db-0001,2,A ship,ok: positions 2-2 accepted
+3,db-0001,1,A write,ok: local commit 3
+4,db-0001,1,B claim,ok: catalog epoch 2
+4,db-0001,2,B fence-with-stale-list,"refused: position 2 holds epoch 1, retry"
+4,db-0001,3,B fence,ok: fence at 3
+5,db-0001,1,A write,ok: local commit 4
+5,db-0001,2,A ship,refused: position 3 holds epoch 2
+6,db-0001,1,A write,refused: not enabled
+7,db-0001,1,B write,ok: local commit 4
+7,db-0001,2,B ship,ok: positions 4-4 accepted
+8,db-0002,1,B claim,ok: catalog epoch 1
+8,db-0002,2,B fence,ok: fence at 1
+9,db-0002,1,B write,ok: local commit 2
+9,db-0002,2,B ship,ok: positions 2-2 accepted
+10,db-0002,1,A claim,ok: catalog epoch 2
+10,db-0002,2,A fence,ok: fence at 3
+11,db-0001,1,B crash,ok: volatile state lost
+11,db-0002,1,B crash,ok: volatile state lost
+12,db-0001,1,B restart,ok: resumed own chain at 4
+12,db-0002,1,B restart,"ok: restarted, then refused: a newer epoch is in the store"
+13,db-0002,1,B write,refused: not enabled
+13,db-0002,2,B ship,refused: not enabled
+14,db-0001,1,B write,ok: local commit 5
+14,db-0001,2,B ship,ok: positions 5-5 accepted
+15,db-0002,1,A write,ok: local commit 4
+15,db-0002,2,A ship,ok: positions 4-4 accepted

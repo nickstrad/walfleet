@@ -1,0 +1,2 @@
+bytes,byte_order,headers_agree,checksum_ok,mx_frame,n_page,page_size,n_backfill,salts_equal_wal,page_array_matches,frames
+32768,little-endian,true,true,94,51,4096,0,true,true,94

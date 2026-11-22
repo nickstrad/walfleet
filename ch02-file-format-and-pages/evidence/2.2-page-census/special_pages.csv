@@ -1,0 +1,4 @@
+scenario,role,page
+autovacuum,pointer-map,2
+autovacuum,pointer-map,207
+large,lock-byte,16385

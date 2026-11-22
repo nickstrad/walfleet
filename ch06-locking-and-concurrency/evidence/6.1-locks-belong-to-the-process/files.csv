@@ -1,0 +1,4 @@
+seq,part,moment,file,state
+1,D,after the contender exited,lab.db-wal,gone
+2,D,after the contender exited,lab.db-shm,gone
+3,D,after the holder's commit,lab.db-wal,gone

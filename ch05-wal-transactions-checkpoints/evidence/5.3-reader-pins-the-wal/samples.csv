@@ -1,0 +1,57 @@
+seq,part,moment,step,wal_bytes,mx_frame,n_backfill,read_marks,reader_rows,writer_rows,checkpoint_seq,salt1_advance,valid_frames,frames_in_file
+1,A,after step 6,6,90672,22,0,"0,0,unused,unused,unused",,,0,0,22,22
+2,A,reader began,,90672,22,0,"0,22,unused,unused,unused",251,251,0,0,22,22
+3,A,step 7 committed,7,156592,38,0,"0,22,38,unused,unused",251,287,0,0,38,38
+4,A,step 8 committed,8,251352,61,0,"0,22,61,unused,unused",251,336,0,0,61,61
+5,A,step 9 committed,9,346112,84,0,"0,22,84,unused,unused",251,372,0,0,84,84
+6,A,step 10 committed,10,416152,101,0,"0,22,101,unused,unused",251,418,0,0,101,101
+7,A,step 11 committed,11,477952,116,0,"0,22,116,unused,unused",251,458,0,0,116,116
+8,A,step 12 committed,12,597432,145,0,"0,22,145,unused,unused",251,482,0,0,145,145
+9,A,step 13 committed,13,688072,167,0,"0,22,167,unused,unused",251,524,0,0,167,167
+10,A,step 14 committed,14,762232,185,0,"0,22,185,unused,unused",251,570,0,0,185,185
+11,A,step 15 committed,15,861112,209,22,"0,22,209,unused,unused",251,600,0,0,209,209
+12,A,step 16 committed,16,992952,241,22,"0,22,241,unused,unused",251,635,0,0,241,241
+13,A,step 17 committed,17,1046512,254,22,"0,22,254,unused,unused",251,695,0,0,254,254
+14,A,step 18 committed,18,1149512,279,22,"0,22,279,unused,unused",251,725,0,0,279,279
+15,A,step 19 committed,19,1190712,289,22,"0,22,289,unused,unused",251,770,0,0,289,289
+16,A,step 20 committed,20,1297832,315,22,"0,22,315,unused,unused",251,802,0,0,315,315
+17,A,step 21 committed,21,1417312,344,22,"0,22,344,unused,unused",251,831,0,0,344,344
+18,A,step 22 committed,22,1503832,365,22,"0,22,365,unused,unused",251,871,0,0,365,365
+19,A,step 23 committed,23,1586232,385,22,"0,22,385,unused,unused",251,915,0,0,385,385
+20,A,step 24 committed,24,1705712,414,22,"0,22,414,unused,unused",251,942,0,0,414,414
+21,A,step 25 committed,25,1788112,434,22,"0,22,434,unused,unused",251,980,0,0,434,434
+22,A,step 26 committed,26,1899352,461,22,"0,22,461,unused,unused",251,1024,0,0,461,461
+23,A,step 27 committed,27,2006472,487,22,"0,22,487,unused,unused",251,1047,0,0,487,487
+24,A,step 28 committed,28,2088872,507,22,"0,22,507,unused,unused",251,1095,0,0,507,507
+25,A,step 29 committed,29,2163032,525,22,"0,22,525,unused,unused",251,1130,0,0,525,525
+26,A,step 30 committed,30,2286632,555,22,"0,22,555,unused,unused",251,1177,0,0,555,555
+27,A,reader ended,,2286632,555,22,"0,22,555,unused,unused",,1177,0,0,555,555
+28,A,PASSIVE checkpoint,,2286632,555,555,"0,555,555,unused,unused",,1177,0,0,555,555
+30,A,step 31 committed,31,2286632,18,0,"0,18,unused,unused,unused",,1214,1,1,18,555
+31,B,checkpointed,6,90672,22,22,"0,22,unused,unused,unused",,,0,0,22,22
+33,B,reader began,,90672,22,22,"0,22,unused,unused,unused",251,251,0,0,22,22
+34,B,step 7 committed,7,90672,16,0,"0,16,unused,unused,unused",251,287,1,1,16,22
+35,B,step 8 committed,8,160712,39,0,"0,39,unused,unused,unused",251,336,1,1,39,39
+36,B,step 9 committed,9,255472,62,0,"0,62,unused,unused,unused",251,372,1,1,62,62
+37,B,step 10 committed,10,325512,79,0,"0,79,unused,unused,unused",251,418,1,1,79,79
+38,B,step 11 committed,11,387312,94,0,"0,94,unused,unused,unused",251,458,1,1,94,94
+39,B,step 12 committed,12,506792,123,0,"0,123,unused,unused,unused",251,482,1,1,123,123
+40,B,step 13 committed,13,597432,145,0,"0,145,unused,unused,unused",251,524,1,1,145,145
+41,B,step 14 committed,14,671592,163,0,"0,163,unused,unused,unused",251,570,1,1,163,163
+42,B,step 15 committed,15,770472,187,0,"0,187,unused,unused,unused",251,600,1,1,187,187
+43,B,step 16 committed,16,902312,219,0,"0,219,unused,unused,unused",251,635,1,1,219,219
+44,B,step 17 committed,17,955872,232,0,"0,232,unused,unused,unused",251,695,1,1,232,232
+45,B,step 18 committed,18,1058872,257,0,"0,257,unused,unused,unused",251,725,1,1,257,257
+46,B,step 19 committed,19,1100072,267,0,"0,267,unused,unused,unused",251,770,1,1,267,267
+47,B,step 20 committed,20,1207192,293,0,"0,293,unused,unused,unused",251,802,1,1,293,293
+48,B,step 21 committed,21,1326672,322,0,"0,322,unused,unused,unused",251,831,1,1,322,322
+49,B,step 22 committed,22,1413192,343,0,"0,343,unused,unused,unused",251,871,1,1,343,343
+50,B,step 23 committed,23,1495592,363,0,"0,363,unused,unused,unused",251,915,1,1,363,363
+51,B,step 24 committed,24,1615072,392,0,"0,392,unused,unused,unused",251,942,1,1,392,392
+52,B,step 25 committed,25,1697472,412,0,"0,412,unused,unused,unused",251,980,1,1,412,412
+53,B,step 26 committed,26,1808712,439,0,"0,439,unused,unused,unused",251,1024,1,1,439,439
+54,B,step 27 committed,27,1915832,465,0,"0,465,unused,unused,unused",251,1047,1,1,465,465
+55,B,step 28 committed,28,1998232,485,0,"0,485,unused,unused,unused",251,1095,1,1,485,485
+56,B,step 29 committed,29,2072392,503,0,"0,503,unused,unused,unused",251,1130,1,1,503,503
+57,B,step 30 committed,30,2195992,533,0,"0,533,unused,unused,unused",251,1177,1,1,533,533
+58,B,reader ended + PASSIVE,,2195992,533,533,"0,533,unused,unused,unused",,1177,1,1,533,533

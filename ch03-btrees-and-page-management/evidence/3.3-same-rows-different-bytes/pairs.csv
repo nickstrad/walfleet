@@ -1,0 +1,7 @@
+seq,pair,ours_equal,dbhash_equal,first_difference
+1,"implicit rowids (1,2 vs 5,9)",false,true,table t differs (2 vs 2 rows)
+2,sqlite_sequence (1 vs 2),false,true,table sqlite_sequence differs (1 vs 1 rows)
+3,user_version (1 vs 2),false,true,pragma user_version 1 vs 2
+4,integer 1 vs real 1.0,false,false,table t differs (1 vs 1 rows)
+5,"value boundary ('a3','b' vs 'a','3b')",false,true,table t differs (1 vs 1 rows)
+6,row moved between tables,false,true,table a differs (2 vs 1 rows)

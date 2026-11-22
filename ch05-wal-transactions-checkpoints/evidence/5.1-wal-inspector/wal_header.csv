@@ -1,0 +1,2 @@
+magic,checksum_order,version,page_size,checkpoint_seq,wal_bytes,header_bytes,frame_header_bytes,frames,valid_frames,partial_bytes,stop_reason
+931071618,little-endian,3007000,4096,0,387312,32,24,94,94,0,valid

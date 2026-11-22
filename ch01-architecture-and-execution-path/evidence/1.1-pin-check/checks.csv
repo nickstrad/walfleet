@@ -1,0 +1,13 @@
+seq,part,status,claim
+1,A,ok,the linked driver is modernc.org/sqlite v1.60.1
+2,A,ok,the linked libc is modernc.org/libc v1.77.1
+3,A,ok,the driver reports release 3.53.4
+4,A,ok,the driver is compiled with ENABLE_DBPAGE_VTAB
+5,A,ok,the driver is compiled with ENABLE_DBSTAT_VTAB
+6,A,ok,the driver is compiled with DEFAULT_WAL_SYNCHRONOUS=2
+7,A,ok,sqlite_dbpage and dbstat answer queries in the driver (2 pages: schema and table t)
+8,B,ok,the CLI reports release 3.53.4
+9,B,ok,the CLI is compiled with ENABLE_DBPAGE_VTAB
+10,B,ok,the CLI is compiled with ENABLE_DBSTAT_VTAB
+11,B,ok,the CLI is compiled with DEFAULT_WAL_SYNCHRONOUS=2
+12,B,ok,the driver and the CLI agree on every file-format and I/O compile option listed

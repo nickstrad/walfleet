@@ -1,0 +1,20 @@
+step,part,next_cycle,child,action,outcome
+1,A,1,writer,recipe-session 3,SQLITE_OK
+2,A,2,writer,recipe-session 4,SQLITE_OK
+3,A,2,writer,recipe-session 5,SQLITE_OK
+4,A,3,writer,recipe-session 6,SQLITE_OK
+5,A,4,writer,recipe-session 7,SQLITE_OK
+6,A,4,writer,recipe-session 8,SQLITE_OK
+7,A,4,writer,recipe-session 9,SQLITE_OK
+8,A,5,writer,recipe-session 10,SQLITE_OK
+9,A,6,writer,recipe-session 11,SQLITE_OK
+10,A,6,writer,recipe-session 12,SQLITE_OK
+11,A,7,writer,recipe-session 13,SQLITE_OK
+12,A,8,writer,recipe-session 14,SQLITE_OK
+13,B,9,writer,recipe-session 15,SQLITE_OK
+14,B,9,writer,recipe-session 16,SQLITE_OK
+15,B,9,outsider,checkpoint TRUNCATE,SQLITE_OK busy=0 log=0 checkpointed=0
+16,B,9,writer,recipe-session 17,SQLITE_OK
+17,B,10,writer,recipe-session 18,SQLITE_OK
+18,B,11,writer,recipe-session 19,SQLITE_OK
+19,B,11,writer,recipe-session 20,SQLITE_OK

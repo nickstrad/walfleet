@@ -12,31 +12,22 @@
 
 > **How to run the experiments**
 >
-> - **Prerequisites:** Go 1.26 (`go.mod` specifies `go 1.26.0`).
-> - **Fetch the pinned SQLite source tree** into `_src/sqlite-3.53.4` (or point `SQLITE_SRC` at an existing checkout of tag `version-3.53.4`):
+> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to start the runner from the host. Build the `lab` image once, from the repository root:
 >   ```text
->   go run ./cmd/course fetch-source
+>   docker compose build lab
 >   ```
-> - **Build the pinned C tools** (`sqlite3`, `showwal`, `dbhash`) into `_tools/bin/` for Experiment 4.1's twin check with the C `sqlite3` CLI:
+>   The image already contains the pinned SQLite `3.53.4` source tree, the C tools (`sqlite3`, `showwal`, `dbhash`; Experiment 4.1's twin check uses the C `sqlite3` CLI), `strace`, and the DuckDB CLI that presents the results.
+> - **Run the experiments** from the repository root. Each command starts the `lab` container, runs the experiment in it, and prints its walkthrough; add `-i` (`go run ./cmd/course run -i 4.1`) to stay in DuckDB afterwards with the tables loaded:
 >   ```text
->   go run ./cmd/course build-tools
+>   go run ./cmd/course run 4.1
+>   go run ./cmd/course run 4.2
 >   ```
-> - **Run the experiments** from the repository root:
->   ```text
->   go run ./ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-journal
->   go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget
->   ```
->   Scratch databases are written under `_work/4.1/` and `_work/4.2/`, which are git-ignored and safe to delete.
+>   In the container, scratch databases and tables are written under `/work/4.1/` and `/work/4.2/` (the `lab-work` volume); run directly, under `_work/4.1/` and `_work/4.2/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget`). Run this way it prints only its verdict and leaves its tables under `_work/4.2/results/`; Experiment 4.1's twin check then needs the C CLI on the host (`go run ./cmd/course fetch-source`, then `go run ./cmd/course build-tools`). `course run` cannot pass experiment flags, so flag variants such as Experiment 4.1's `-step` are run directly in the container: `docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-journal -step 3`.
 > - **Linux only notes and the Mac route:**
->   - **Experiment 4.1** uses Linux `strace` (including `--inject=...:signal=SIGKILL`) for Part A's traced children and Parts D, D2, E, and F (**Linux only**). On macOS, running the command directly executes Part A's portable header checks, Part B, Part C (decoding the live rollback journal with `internal/journalfile`), prints a `LINUX-ONLY:` notice, and commits the step in-process at `FULL`, `NORMAL`, and `OFF`. To run the full traced and crash-tested experiment on macOS, use the Linux `lab` container:
->     ```text
->     docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-journal
->     ```
->   - **Experiment 4.2** is portable. On Linux it reads `/proc/self/status` for total resident memory (`VmRSS`) and its breakdown into anonymous (`RssAnon`), file-backed (`RssFile`), and shared (`RssShmem`) memory. On macOS it falls back to `ps -o rss= -p <pid>`, reporting total RSS only; the anonymous-versus-file-backed check in Part E is **Linux only** and prints the Docker command:
->     ```text
->     docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget
->     ```
->   - **Measured platform:** All captured evidence in this chapter was measured on Linux (`linux/amd64`, Go 1.26.8, strace 6.8, ext4) and verified inside the Debian `lab` container (whose `./configure`-built `sqlite3` CLI uses `fdatasync`, producing identical non-`INFO:` output). macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and vetted only, not run.
+>   - **Experiment 4.1** uses Linux `strace` (including `--inject=...:signal=SIGKILL`) for Part A's traced children and Parts D, D2, E, and F (**Linux only**). `course run` runs it in full in the Linux `lab` container. On macOS, running the experiment package directly executes Part A's portable header checks, Part B, Part C (decoding the live rollback journal with `internal/journalfile`), prints a `LINUX-ONLY:` notice, and commits the step in-process at `FULL`, `NORMAL`, and `OFF`.
+>   - **Experiment 4.2** is portable. On Linux it reads `/proc/self/status` for total resident memory (`VmRSS`) and its breakdown into anonymous (`RssAnon`), file-backed (`RssFile`), and shared (`RssShmem`) memory. Run directly on macOS it falls back to `ps -o rss= -p <pid>`, reporting total RSS only; the anonymous-versus-file-backed check in Part E is **Linux only** and is skipped there.
+>   - **Measured platform:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26), whose `./configure`-built `sqlite3` CLI uses `fdatasync`. The checked values are identical to the earlier `linux/amd64` capture. The sync syscall name, process memory (RSS) and raw `CACHE_USED` bytes are run-dependent: `course run` prints them, and they are not part of the stored evidence.
 
 ---
 
@@ -245,16 +236,13 @@ Behavior differences across SQLite releases relevant to the pager and page cache
   3. Killing the writer on entry to every write, sync, and unlink across `FULL`, `NORMAL`, and `OFF` always leaves a database that SQLite restores to the pre-step or post-step state—never a third state—with the flip occurring on the journal finalization syscall (`unlink` in `DELETE`, `ftruncate` in `TRUNCATE`, 28-byte header zero in `PERSIST`). At the byte level, hot-journal rollback restores exact pre-step bytes whenever the pre-step file has no freelist (Part D2, step 1), but leaves new bytes inside reused freelist leaves when the transaction pops pages off the freelist via `PAGER_GET_NOCONTENT` (Part D, step 3, page 22); in every such case, `integrity_check` is `ok` and the `VACUUM INTO` canonical hash equals pre-step's. (For a shrinking transaction, `ftruncate` on the database file runs *after* journal finalization in `pager_end_transaction`, leaving logical post-step content with trailing slack pages if killed there.)
   4. Deleting a hot journal or copying a crashed database without its hot journal either yields an unreadable malformed database or silently commits a transaction whose `COMMIT` never returned (Part E).
 - **Why kept:** A WAL-mode platform still meets rollback mode. Every new database starts in it, the switch to WAL itself commits through a `-journal`, and a file moved without its `-journal` is a corrupt file. One full-depth experiment covers all of that; a Go journal replayer is not built because the platform never replays rollback journals itself.
-- **Evidence form:** `EXACT` (every non-`INFO:` line matches byte for byte on repeated runs and inside the Debian `lab` container; `INFO:` lines carry work directory, sync syscall name, random per-run journal nonces, and runtimes).
-- **Linux only (parts A traced children, D, D2, E, F):** On macOS run through Docker:
+- **Evidence form:** `EXACT` (every stored table matches byte for byte on repeated runs; the run-dependent `info` tables carry the sync syscall name, random per-run journal nonces, and runtimes, and are not stored).
+- **Linux only (parts A traced children, D, D2, E, F):** `course run` runs them in the Linux `lab` container.
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-journal
+  go run ./cmd/course run 4.1
   ```
-- **Run command (Linux):**
-  ```text
-  go run ./ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-journal
-  ```
-  Optional flags: `-step 3` (traced and killed recipe step), `-exact-step 1` (freelist-free step; `0` skips Part D2), `-workers 4` (parallel kill workers).
+  Optional flags: `-step 3` (traced and killed recipe step), `-exact-step 1` (freelist-free step; `0` skips Part D2), `-workers 4` (parallel kill workers). `course run` cannot pass them; run a flag variant directly in the container, for example `docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-journal -exact-step 0`.
 
 <!-- include: experiments/4.1-atomic-commit-and-hot-journal/main.go -->
 ```go
@@ -265,10 +253,9 @@ Behavior differences across SQLite releases relevant to the pager and page cache
 // happens when a hot journal is lost, and locates the exact commit point in
 // DELETE, TRUNCATE, and PERSIST modes.
 //
-// Run from the repo root (Linux for strace parts; macOS runs parts A–C and an
-// in-process fallback, or use docker compose run --rm lab):
-//
-//	go run ./ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-journal
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 4.1 (the strace parts need
+// Linux; the lab container has it).
 package main
 
 import (
@@ -293,6 +280,7 @@ import (
 	"github.com/nickstrad/walfleet/internal/dbfile"
 	"github.com/nickstrad/walfleet/internal/journalfile"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 )
@@ -307,25 +295,56 @@ const (
 )
 
 var (
-	failures  []string
 	stepFlag  = flag.Int("step", 3, "recipe step whose commit is traced and killed (the pre-step state is the step before it)")
 	exactFlag = flag.Int("exact-step", 1, "second recipe step, killed at every point too, whose pre-step state has no freelist pages (0 skips it)")
 	workers   = flag.Int("workers", 4, "kill runs executed in parallel")
 )
 
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 4.1" runs both.
+var (
+	set    *results.Set
+	tables struct {
+		parts, headerModes, creations, creationCalls, steps, states, journals, journalRecords, liveRollback *results.Table
+		commits, commitCalls, twins, twinDiffs, kills, crashes, reopens, commitPoints, info, infoKills      *results.Table
+	}
+	creationSeq, journalSeq, commitSeq, crashSeq, reopenSeq, infoSeq int
+)
+
+var journalColumns = []string{"journal_bytes", "first_byte", "hot", "header", "record_count", "initial_pages", "sector_size", "page_size", "records", "record_pages", "checksum_failures", "trailing_bytes"}
+
+func openTables() {
+	tables.parts = set.Table("parts", "part", "what", "status")
+	tables.headerModes = set.Table("header_modes", "seq", "stage", "journal_mode", "byte_18", "byte_19")
+	tables.creations = set.Table("creations", "seq", "opener", "statement", "journal_calls", "wal_writes")
+	tables.creationCalls = set.Table("creation_calls", "creation_seq", "n", "call")
+	tables.steps = set.Table("steps", "step", "pre_step", "recipe", "schema", "inserts", "updates", "deletes", "indexes")
+	tables.states = set.Table("states", "step", "state", "recipe_step", "pages", "sha256_prefix", "freelist_leaves")
+	tables.journals = set.Table("journals", append([]string{"seq", "part", "label"}, journalColumns...)...)
+	tables.journalRecords = set.Table("journal_records", "seq", "file_offset", "page", "role", "checksum", "same_as_pre_step")
+	tables.liveRollback = set.Table("live_rollback", "file_after", "journal_left")
+	tables.commits = set.Table("commits", "seq", "part", "step", "journal_mode", "synchronous", "sequence", "journaled_pages", "record_writes", "db_page_writes", "syncs", "sync_targets")
+	tables.commitCalls = set.Table("commit_calls", "commit_seq", "n", "kind", "call")
+	tables.twins = set.Table("twins", "synchronous", "go_calls", "cli_calls", "identical", "cli_leaves_post_step")
+	tables.twinDiffs = set.Table("twin_diffs", "synchronous", "n", "go_call", "cli_call")
+	tables.kills = set.Table("kills", append(append([]string{"part", "step", "journal_mode", "synchronous", "kill_no", "syscall", "kind", "landed_ok", "landed", "db_file", "db_pages", "differ_pre", "differ_post"}, journalColumns...),
+		"playback", "playback_pages", "truncate_to", "outcome", "outcome_name", "outcome_pages", "recipe_match", "integrity", "journal_after", "covered")...)
+	tables.crashes = set.Table("crashes", "seq", "crash", "killed_on", "db_write_no", "db_writes", "db_file", "db_pages", "differ_pre", "differ_post")
+	tables.reopens = set.Table("reopens", "seq", "scenario", "open_error", "integrity", "user_version", "accounts", "documents", "events", "outcome_name", "outcome_pages")
+	tables.commitPoints = set.Table("commit_points", "seq", "journal_mode", "commit_point", "killed_on_entry", "next_kind", "killed_on_next")
+	tables.info = set.Table("info", "seq", "name", "value")
+	tables.infoKills = set.Table("info_kills", "part", "step", "journal_mode", "synchronous", "kill_no", "journal_nonce", "run_ms")
+}
+
+func info(name string, value any) {
+	infoSeq++
+	tables.info.Row(infoSeq, name, value)
+}
+
 // init pins the main goroutine to one OS thread so strace's per-thread syscall
 // counter observes the child writer's SQLite syscalls in a deterministic order.
 func init() {
 	runtime.LockOSThread()
-}
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
 }
 
 func fatal(what string, err error) {
@@ -459,14 +478,17 @@ func newStates(ctx context.Context, dir string, r recipe.Recipe, k int, hashes [
 	return s
 }
 
-func (s *states) classifyImage(image []byte) string {
+// imageColumns are the db_file, db_pages, differ_pre and differ_post columns
+// for a database file found on disk after a kill.
+func (s *states) imageColumns(image []byte) []any {
+	state := "torn"
 	switch {
 	case bytes.Equal(image, s.pre):
-		return "pre-step bytes"
+		state = "pre-step"
 	case bytes.Equal(image, s.post):
-		return "post-step bytes"
+		state = "post-step"
 	}
-	return fmt.Sprintf("torn: %d pages, %d differ from pre-step, %d differ from post-step", len(image)/pageSize, len(differingPages(image, s.pre)), len(differingPages(image, s.post)))
+	return []any{state, len(image) / pageSize, len(differingPages(image, s.pre)), len(differingPages(image, s.post))}
 }
 
 func (s *states) matchFile(path string) recipe.Match {
@@ -524,33 +546,50 @@ func (o outcome) before() bool {
 	return o.kind == outcomePre || o.kind == outcomePreFreelist
 }
 
-func (o outcome) letter() byte {
+func (o outcome) letter() string {
 	switch o.kind {
 	case outcomePre:
-		return 'B'
+		return "B"
 	case outcomePreFreelist:
-		return 'b'
+		return "b"
 	case outcomePost:
-		return 'A'
+		return "A"
 	}
-	return '?'
+	return "?"
 }
 
-func (o outcome) describe(s *states) string {
+func (o outcome) name() string {
 	switch o.kind {
 	case outcomePre:
-		return fmt.Sprintf("pre-step, exact bytes (recipe step %d)", s.preStep)
+		return "pre-step exact"
 	case outcomePreFreelist:
-		return fmt.Sprintf("pre-step except page(s) %s, which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's", pageList(o.pages))
+		return "pre-step except freelist leaves"
 	case outcomePost:
-		return fmt.Sprintf("post-step, exact bytes (recipe step %d)", s.step)
+		return "post-step exact"
 	case outcomeUnreadable:
 		return "unreadable"
 	}
-	if o.match.Found() {
-		return "a third state: recipe " + o.match.String()
+	return "third state"
+}
+
+// recipeMatch names the recipe state a third-state file equals, if any.
+func (o outcome) recipeMatch() any {
+	if o.kind != outcomeThird {
+		return nil
 	}
-	return fmt.Sprintf("a third state: differs from pre-step in page(s) %s, matches no recipe state", pageList(o.pages))
+	return o.match.String()
+}
+
+func (o outcome) shortName() string {
+	switch o.kind {
+	case outcomePre:
+		return "before (pre-step)"
+	case outcomePreFreelist:
+		return "before (pre-step, logical)"
+	case outcomePost:
+		return "after (post-step)"
+	}
+	return "neither"
 }
 
 func subset(pages, set []uint32) bool {
@@ -567,7 +606,7 @@ func pageList(pages []uint32) string {
 	for i, p := range pages {
 		parts[i] = strconv.Itoa(int(p))
 	}
-	return "[" + strings.Join(parts, " ") + "]"
+	return strings.Join(parts, " ")
 }
 
 func pageAt(image []byte, offset int) []byte {
@@ -857,73 +896,71 @@ func journalInfo(path string) (*journalfile.Journal, bool) {
 	return j, true
 }
 
-func journalSummary(j *journalfile.Journal, present bool) string {
+// journalRow returns the values of journalColumns for a -journal file, or
+// NULLs when there is none.
+func journalRow(j *journalfile.Journal, present bool) []any {
+	row := make([]any, len(journalColumns))
 	if !present {
-		return "no -journal"
+		return row
 	}
+	row[0] = j.Size
 	if j.Size == 0 {
-		return "-journal 0 bytes (not hot)"
+		row[2] = false
+		return row
 	}
-	var b strings.Builder
-	hot := "not hot"
-	if j.LooksHot() {
-		hot = "hot"
-	}
-	fmt.Fprintf(&b, "-journal %d bytes, first byte 0x%02x (%s)", j.Size, j.FirstByte, hot)
+	row[1] = j.FirstByte
+	row[2] = j.LooksHot()
 	if len(j.Segments) == 0 {
-		return b.String()
+		return row
 	}
 	h := j.Segments[0].Header
-	fmt.Fprintf(&b, ", header %s", h.State)
-	switch h.State {
-	case journalfile.HeaderSynced:
-		fmt.Fprintf(&b, " (record count %d)", h.RecordCount)
-	case journalfile.HeaderNoSync:
-		b.WriteString(" (record count 0xffffffff: read to end of file)")
-	case journalfile.HeaderNotYetSynced:
-		b.WriteString(" (magic and record count still zero)")
-	case journalfile.HeaderZeroed:
-		return b.String()
+	row[3] = h.State.String()
+	if h.State == journalfile.HeaderZeroed {
+		return row
 	}
+	row[4] = h.RecordCount
 	if h.State == journalfile.HeaderSynced || h.State == journalfile.HeaderNoSync || h.State == journalfile.HeaderNotYetSynced {
-		fmt.Fprintf(&b, ", initial size %d pages, sector %d, page %d", h.InitialPages, h.SectorSize, h.PageSize)
+		row[5], row[6], row[7] = h.InitialPages, h.SectorSize, h.PageSize
 	}
-	fmt.Fprintf(&b, ", %d complete record(s) %s, %d checksum failure(s)", j.RecordsPresent(), recordPages(j), j.ChecksumFailures())
-	if j.TrailingByte > 0 {
-		fmt.Fprintf(&b, ", %d byte(s) of an incomplete record", j.TrailingByte)
-	}
-	return b.String()
+	row[8], row[9], row[10], row[11] = j.RecordsPresent(), pageList(recordPages(j)), j.ChecksumFailures(), j.TrailingByte
+	return row
 }
 
-func recordPages(j *journalfile.Journal) string {
+func writeJournal(part, label string, j *journalfile.Journal, present bool) {
+	journalSeq++
+	tables.journals.Row(append([]any{journalSeq, part, label}, journalRow(j, present)...)...)
+}
+
+func recordPages(j *journalfile.Journal) []uint32 {
 	var pages []uint32
 	for _, s := range j.Segments {
 		for _, r := range s.Records {
 			pages = append(pages, r.Page)
 		}
 	}
-	return pageList(pages)
+	return pages
 }
 
-func playbackSummary(j *journalfile.Journal, present bool) string {
+// playbackRow returns the playback, playback_pages and truncate_to columns:
+// what SQLite does with the -journal when it reopens the database.
+func playbackRow(j *journalfile.Journal, present bool) []any {
 	if !present {
-		return "nothing to roll back"
+		return []any{"no journal", nil, nil}
 	}
 	p := j.Playback()
 	if !p.Hot {
-		return "ignores it (not hot)"
+		return []any{"ignored (not hot)", nil, nil}
 	}
 	if len(p.Pages) == 0 {
-		return fmt.Sprintf("hot, but restores no page (%s)", p.StopReason)
+		return []any{"hot, restores no page: " + p.StopReason, nil, nil}
 	}
-	return fmt.Sprintf("rolls back: writes pages %s from the journal, truncates to %d pages", pageList(p.Pages), p.TruncateTo)
+	return []any{"rolled back", pageList(p.Pages), p.TruncateTo}
 }
 
 type killResult struct {
 	target        op
 	landed        string
 	landedOK      bool
-	dbBefore      string
 	dbBeforeImage []byte
 	journal       *journalfile.Journal
 	journalThere  bool
@@ -964,7 +1001,6 @@ func runKill(ctx context.Context, dir string, s *states, journalMode, synchronou
 		fatal("read killed db", err)
 	}
 	result.dbBeforeImage = image
-	result.dbBefore = s.classifyImage(image)
 	result.journal, result.journalThere = journalInfo(path + "-journal")
 	if result.journalThere && len(result.journal.Segments) > 0 {
 		result.nonce = result.journal.Segments[0].Header.Nonce
@@ -982,6 +1018,26 @@ func runKill(ctx context.Context, dir string, s *states, journalMode, synchronou
 		result.journalAfter = fmt.Sprintf("cold -journal left (%d bytes, first byte 0x%02x)", after.Size, after.FirstByte)
 	}
 	return result
+}
+
+// writeKill writes one row of the kills table and its info_kills row.
+// covered is nil for kills after the commit point, where it is not checked.
+func writeKill(part string, s *states, journalMode, synchronous string, killNo int, r killResult, covered any) {
+	var landed any
+	if !r.landedOK {
+		landed = r.landed
+	}
+	row := []any{part, s.step, journalMode, synchronous, killNo, r.target.text, r.target.kind, r.landedOK, landed}
+	row = append(row, s.imageColumns(r.dbBeforeImage)...)
+	row = append(row, journalRow(r.journal, r.journalThere)...)
+	row = append(row, playbackRow(r.journal, r.journalThere)...)
+	row = append(row, r.after.letter(), r.after.name(), pageList(r.after.pages), r.after.recipeMatch(), r.integrity, r.journalAfter, covered)
+	tables.kills.Row(row...)
+	var nonce any
+	if r.journalThere && len(r.journal.Segments) > 0 {
+		nonce = r.nonce
+	}
+	tables.infoKills.Row(part, s.step, journalMode, synchronous, killNo, nonce, r.duration.Milliseconds())
 }
 
 func reopen(ctx context.Context, path string) (string, string) {
@@ -1129,28 +1185,23 @@ func twinCheck(ctx context.Context, cli sqlitex.CLI, dir string, s *states, sync
 	}
 	goOps, cliOps := writesAndSyncs(goWindow.ops), writesAndSyncs(cliWindow.ops)
 	same := slices.Equal(goOps, cliOps)
-	if !same {
-		for i := range max(len(goOps), len(cliOps)) {
-			var g, c string
-			if i < len(goOps) {
-				g = goOps[i]
-			}
-			if i < len(cliOps) {
-				c = cliOps[i]
-			}
-			if g != c {
-				fmt.Printf("  twin #%d Go: %-45s CLI: %s\n", i+1, g, c)
-			}
+	for i := range max(len(goOps), len(cliOps)) {
+		var g, c any
+		if i < len(goOps) {
+			g = goOps[i]
+		}
+		if i < len(cliOps) {
+			c = cliOps[i]
+		}
+		if g != c {
+			tables.twinDiffs.Row(synchronous, i+1, g, c)
 		}
 	}
-	verdict := "identical to the Go driver's"
-	if !same {
-		verdict = "DIFFERENT from the Go driver's"
-	}
-	fmt.Printf("twin check: the C CLI running the same step as literal SQL makes %d writes, syncs and unlinks, %s\n", len(cliOps), verdict)
-	fmt.Printf("INFO: CLI sync syscall: %s\n", syncSyscallNames(cliWindow.ops))
+	info(fmt.Sprintf("sync syscall, C CLI, step %d delete %s", s.step, synchronous), syncSyscallNames(cliWindow.ops))
 	match := s.matchFile(path)
-	check(same && match.Step == s.step && match.Exact, fmt.Sprintf("synchronous=%s: the C CLI makes the same writes, syncs and unlink in the same order and leaves the post-step bytes", synchronous))
+	postStep := match.Step == s.step && match.Exact
+	tables.twins.Row(synchronous, len(goOps), len(cliOps), same, postStep)
+	set.Check("D", same && postStep, fmt.Sprintf("synchronous=%s: the C CLI makes the same writes, syncs and unlink in the same order and leaves the post-step bytes", synchronous))
 }
 
 func writesAndSyncs(ops []op) []string {
@@ -1176,51 +1227,41 @@ func syncSyscallNames(ops []op) string {
 	return strings.Join(names, ",")
 }
 
-type levelResult struct {
-	level   string
-	results []killResult
-}
-
-func checkBaseline(w window, image []byte, s *states, journalMode, synchronous string) {
+// checkBaseline writes the traced commit to the commits and commit_calls
+// tables and checks its shape.
+func checkBaseline(part string, w window, image []byte, s *states, journalMode, synchronous string) {
 	sequence := collapse(w.ops)
 	records, dbPages := countKind(w.ops, "journal-record"), countKind(w.ops, "db-page")
 	syncs := syncTargets(w.ops)
-	fmt.Printf("sequence: %s\n", sequence)
-	fmt.Printf("journaled pages %d (%d record writes), database page writes %d, syncs %d %v\n", records/3, records, dbPages, len(syncs), syncs)
-	fmt.Printf("INFO: sync syscall used by the Go driver: %s\n", syncSyscallNames(w.ops))
+	commitSeq++
+	tables.commits.Row(commitSeq, part, s.step, journalMode, synchronous, sequence, records/3, records, dbPages, len(syncs), strings.Join(syncs, " "))
+	for i, o := range w.ops {
+		tables.commitCalls.Row(commitSeq, i+1, o.kind, o.text)
+	}
+	info(fmt.Sprintf("sync syscall, Go driver, step %d %s %s", s.step, journalMode, synchronous), syncSyscallNames(w.ops))
 	label := fmt.Sprintf("step %d, journal_mode=%s, synchronous=%s", s.step, journalMode, synchronous)
-	check(sequence == expectedSequence(journalMode, synchronous, records, dbPages), label+": order is "+expectedSequence(journalMode, synchronous, records, dbPages))
+	set.Check(part, sequence == expectedSequence(journalMode, synchronous, records, dbPages), label+": order is "+expectedSequence(journalMode, synchronous, records, dbPages))
 	if journalMode == sqlitex.JournalDelete {
 		wantSyncs := map[string]int{sqlitex.SyncFull: 4, sqlitex.SyncNormal: 3, sqlitex.SyncOff: 0}[synchronous]
-		check(len(syncs) == wantSyncs, fmt.Sprintf("%s: %d syncs per commit (journal, directory and database syncs counted)", label, wantSyncs))
+		set.Check(part, len(syncs) == wantSyncs, fmt.Sprintf("%s: %d syncs per commit (journal, directory and database syncs counted)", label, wantSyncs))
 	}
-	check(records > 0 && recordTriplesWellFormed(w.ops), label+": each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)")
-	check(bytes.Equal(image, s.post), label+": the traced commit leaves exactly the post-step bytes")
+	set.Check(part, records > 0 && recordTriplesWellFormed(w.ops), label+": each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)")
+	set.Check(part, bytes.Equal(image, s.post), label+": the traced commit leaves exactly the post-step bytes")
 }
 
-func runLevel(ctx context.Context, base string, s *states, synchronous string, cli sqlitex.CLI, haveCLI, verbose bool) levelResult {
+// runLevel traces one commit of s at one synchronous level, then kills it at
+// every write, sync and unlink. The twin check against the C CLI runs in part D.
+func runLevel(ctx context.Context, part, base string, s *states, synchronous string, cli sqlitex.CLI, haveCLI bool) []op {
 	levelDir := filepath.Join(base, strings.ToLower(synchronous))
-	if verbose {
-		fmt.Printf("\n== D. step %d, synchronous=%s: one commit traced, then killed at every write and sync ==\n", s.step, synchronous)
-	} else {
-		fmt.Printf("\n-- step %d, synchronous=%s --\n", s.step, synchronous)
-	}
 	w, image := baseline(ctx, filepath.Join(levelDir, "baseline"), s, sqlitex.JournalDelete, synchronous)
-	if verbose {
-		fmt.Printf("the commit's syscalls on the database directory (writer thread, between the step's start and its return):\n")
-		for i, o := range w.ops {
-			fmt.Printf("  %3d %-16s %s\n", i+1, o.kind, o.text)
-		}
-	}
-	checkBaseline(w, image, s, sqlitex.JournalDelete, synchronous)
-	if haveCLI && verbose {
+	checkBaseline(part, w, image, s, sqlitex.JournalDelete, synchronous)
+	if haveCLI && part == "D" {
 		twinCheck(ctx, cli, filepath.Join(levelDir, "twin"), s, synchronous, w)
 	}
 
-	fmt.Printf("kill points: %d (every pwrite64, sync and unlink of the commit, then the first syscall after the step returned)\n", len(w.targets))
 	started := time.Now()
 	results := runKills(ctx, levelDir, s, sqlitex.JournalDelete, synchronous, w.targets)
-	fmt.Printf("INFO: %d kill runs took %s with %d workers\n", len(results), time.Since(started).Round(time.Millisecond), max(1, *workers))
+	info(fmt.Sprintf("step %d %s: %d kill runs with %d workers, seconds", s.step, synchronous, len(results), max(1, *workers)), time.Since(started).Round(time.Millisecond).Seconds())
 	unlinkIndex := -1
 	for i, r := range results {
 		if r.target.kind == "journal-unlink" {
@@ -1230,55 +1271,41 @@ func runLevel(ctx context.Context, base string, s *states, synchronous string, c
 	allLanded, neverThird, integrityOK, coveredOK := true, true, true, true
 	flipOK := unlinkIndex >= 0
 	exactOnly := true
-	beforeExact, beforeFreelist, after := 0, 0, 0
 	for i, r := range results {
-		if verbose {
-			fmt.Printf("kill %02d on entry to %-38s [%s]\n", i+1, r.target.text, r.target.kind)
-			fmt.Printf("    on disk:  database %s\n", r.dbBefore)
-			fmt.Printf("              %s\n", journalSummary(r.journal, r.journalThere))
-			fmt.Printf("              SQLite on reopen %s\n", playbackSummary(r.journal, r.journalThere))
-			fmt.Printf("    reopened: %s; integrity_check %s; %s\n", r.after.describe(s), r.integrity, r.journalAfter)
-		}
-		if r.journalThere && len(r.journal.Segments) > 0 {
-			fmt.Printf("INFO: step %d %s kill %02d journal nonce 0x%08x, run %s\n", s.step, synchronous, i+1, r.nonce, r.duration.Round(time.Millisecond))
-		}
 		if !r.landedOK {
 			allLanded = false
-			fmt.Printf("    kill %02d landed on %q, wanted %q\n", i+1, r.landed, r.target.text)
 		}
 		if r.integrity != "ok" {
 			integrityOK = false
 		}
 		switch r.after.kind {
-		case outcomePre:
-			beforeExact++
+		case outcomePre, outcomePost:
 		case outcomePreFreelist:
-			beforeFreelist++
 			exactOnly = false
-		case outcomePost:
-			after++
 		default:
 			neverThird, exactOnly = false, false
 		}
 		if (i <= unlinkIndex && !r.after.before()) || (i > unlinkIndex && r.after.kind != outcomePost) {
 			flipOK = false
 		}
-		if i <= unlinkIndex && !covered(r, s) {
-			coveredOK = false
-			fmt.Printf("    kill %02d: the journal does not cover every changed page of the database file\n", i+1)
+		var isCovered any
+		if i <= unlinkIndex {
+			ok := covered(r, s)
+			coveredOK = coveredOK && ok
+			isCovered = ok
 		}
+		writeKill(part, s, sqlitex.JournalDelete, synchronous, i+1, r, isCovered)
 	}
 	label := fmt.Sprintf("step %d, synchronous=%s", s.step, synchronous)
-	fmt.Printf("outcomes: %d pre-step exact, %d pre-step except reused freelist leaves, %d post-step exact, %d other\n", beforeExact, beforeFreelist, after, len(results)-beforeExact-beforeFreelist-after)
-	check(allLanded, label+": every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)")
-	check(neverThird, label+": every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)")
+	set.Check(part, allLanded, label+": every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)")
+	set.Check(part, neverThird, label+": every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)")
 	if len(s.preFreeLeaves) == 0 {
-		check(exactOnly, label+": the pre-step file has no freelist, and every reopened database equals the pre-step or post-step bytes exactly")
+		set.Check(part, exactOnly, label+": the pre-step file has no freelist, and every reopened database equals the pre-step or post-step bytes exactly")
 	}
-	check(flipOK, label+": every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)")
-	check(integrityOK, label+": integrity_check is ok after every reopen")
-	check(coveredOK, label+": for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves")
-	return levelResult{level: synchronous, results: results}
+	set.Check(part, flipOK, label+": every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)")
+	set.Check(part, integrityOK, label+": integrity_check is ok after every reopen")
+	set.Check(part, coveredOK, label+": for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves")
+	return w.targets
 }
 
 // covered verifies that whenever a pre-commit crash leaves modified bytes in
@@ -1310,18 +1337,6 @@ func covered(r killResult, s *states) bool {
 		}
 	}
 	return true
-}
-
-func printSummary(s *states, levels []levelResult) {
-	fmt.Printf("\n== summary for step %d: reopened state per kill point, in commit order ==\n", s.step)
-	for _, level := range levels {
-		var line strings.Builder
-		for _, r := range level.results {
-			line.WriteByte(r.after.letter())
-		}
-		fmt.Printf("synchronous=%-6s %s\n", level.level, line.String())
-	}
-	fmt.Printf("(B = pre-step exact bytes, b = pre-step except reused freelist leaves, A = post-step exact bytes, ? = anything else; the last B or b is the kill on entry to the journal unlink)\n")
 }
 
 func journalOpsIn(calls []trace.Syscall) []string {
@@ -1370,7 +1385,6 @@ func segmentsByMarkers(log *trace.StraceLog, dir, prefix string, count int) [][]
 // switching a new file to WAL—including inside sqlitex.Open—writes page 1
 // through a rollback -journal before WAL mode takes effect.
 func partA(ctx context.Context, base string) {
-	fmt.Printf("\n== A. where a WAL-default platform meets rollback mode ==\n")
 	dir := filepath.Join(base, "a")
 	mkdir(dir)
 	path := filepath.Join(dir, "plain.db")
@@ -1383,8 +1397,8 @@ func partA(ctx context.Context, base string) {
 	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil {
 		fatal("journal_mode", err)
 	}
-	fmt.Printf("a new file opened by the driver with no settings reports journal_mode=%s\n", mode)
-	check(mode == sqlitex.JournalDelete, "a new database starts in rollback-journal mode (journal_mode=delete) until something switches it")
+	tables.headerModes.Row(1, "new file, driver defaults, before any write", mode, nil, nil)
+	set.Check("A", mode == sqlitex.JournalDelete, "a new database starts in rollback-journal mode (journal_mode=delete) until something switches it")
 	if _, err := db.ExecContext(ctx, "CREATE TABLE t(x)"); err != nil {
 		fatal("create", err)
 	}
@@ -1392,8 +1406,8 @@ func partA(ctx context.Context, base string) {
 		fatal("close", err)
 	}
 	header := readHeaderBytes(path)
-	fmt.Printf("after its first CREATE TABLE: header bytes 18,19 = %d,%d (1 = rollback journal)\n", header[18], header[19])
-	check(header[18] == 1 && header[19] == 1, "the file records rollback mode in header bytes 18 and 19 (value 1)")
+	tables.headerModes.Row(2, "after its first CREATE TABLE", nil, header[18], header[19])
+	set.Check("A", header[18] == 1 && header[19] == 1, "the file records rollback mode in header bytes 18 and 19 (value 1)")
 	db, err = sql.Open("sqlite", path)
 	if err != nil {
 		fatal("reopen plain", err)
@@ -1417,8 +1431,8 @@ func partA(ctx context.Context, base string) {
 	if err := db.Close(); err != nil {
 		fatal("close", err)
 	}
-	fmt.Printf("after PRAGMA journal_mode=wal: header bytes 18,19 = %d,%d; a fresh connection reports journal_mode=%s\n", header[18], header[19], again)
-	check(header[18] == 2 && header[19] == 2 && again == sqlitex.JournalWAL, "switching to WAL rewrites bytes 18 and 19 to 2, and the mode persists in the file")
+	tables.headerModes.Row(3, "after PRAGMA journal_mode=wal, read by a fresh connection", again, header[18], header[19])
+	set.Check("A", header[18] == 2 && header[19] == 2 && again == sqlitex.JournalWAL, "switching to WAL rewrites bytes 18 and 19 to 2, and the mode persists in the file")
 
 	if !trace.Supported {
 		return
@@ -1460,7 +1474,11 @@ func partA(ctx context.Context, base string) {
 			wal := walWritesIn(segments[i])
 			journalBySegment[c.role] = append(journalBySegment[c.role], ops)
 			walBySegment[c.role] = append(walBySegment[c.role], wal)
-			fmt.Printf("%s: -journal %v; -wal writes %d\n", label, ops, wal)
+			creationSeq++
+			tables.creations.Row(creationSeq, c.role, label, len(ops), wal)
+			for n, o := range ops {
+				tables.creationCalls.Row(creationSeq, n+1, o)
+			}
 		}
 	}
 	usesJournal := func(ops []string) bool {
@@ -1469,10 +1487,10 @@ func partA(ctx context.Context, base string) {
 		}
 		return len(ops) >= 2 && strings.HasPrefix(ops[0], "open ") && strings.HasPrefix(ops[len(ops)-1], "unlink ") && hasPrefix("pwrite64 ") && hasPrefix("sync ")
 	}
-	check(usesJournal(journalBySegment["plain"][0]), "a file created with driver defaults commits its first transaction through a -journal (opened, written, synced, unlinked)")
-	check(usesJournal(journalBySegment["switch"][0]) && walBySegment["switch"][0] == 0, "the switch to WAL is itself a rollback-mode commit: it writes page 1 through a -journal")
-	check(len(journalBySegment["switch"][1]) == 0 && walBySegment["switch"][1] > 0, "after the switch, commits go to the -wal and no -journal is opened")
-	check(usesJournal(journalBySegment["platform"][0]) && len(journalBySegment["platform"][1]) == 0, "a WAL database created by the platform opener (sqlitex.Open) is also born through one -journal commit, then never uses one")
+	set.Check("A", usesJournal(journalBySegment["plain"][0]), "a file created with driver defaults commits its first transaction through a -journal (opened, written, synced, unlinked)")
+	set.Check("A", usesJournal(journalBySegment["switch"][0]) && walBySegment["switch"][0] == 0, "the switch to WAL is itself a rollback-mode commit: it writes page 1 through a -journal")
+	set.Check("A", len(journalBySegment["switch"][1]) == 0 && walBySegment["switch"][1] > 0, "after the switch, commits go to the -wal and no -journal is opened")
+	set.Check("A", usesJournal(journalBySegment["platform"][0]) && len(journalBySegment["platform"][1]) == 0, "a WAL database created by the platform opener (sqlitex.Open) is also born through one -journal commit, then never uses one")
 }
 
 func readHeaderBytes(path string) []byte {
@@ -1536,7 +1554,6 @@ func childCreate(role, path string) {
 // synchronous=FULL using internal/journalfile. Reading -journal while the
 // connection is open is safe because SQLite locks only the main database file.
 func partC(ctx context.Context, base string, s *states) {
-	fmt.Printf("\n== C. the journal of an open transaction, read before COMMIT ==\n")
 	dir := filepath.Join(base, "c")
 	prepareDir(dir, s.prePath)
 	db, err := sqlitex.Open(ctx, filepath.Join(dir, dbName), stepOptions(sqlitex.JournalDelete, sqlitex.SyncFull))
@@ -1554,8 +1571,9 @@ func partC(ctx context.Context, base string, s *states) {
 	if !present {
 		fatal("journal", errors.New("no -journal during the transaction"))
 	}
-	fmt.Printf("every statement of step %d executed, COMMIT not yet issued: %s\n", s.step, journalSummary(j, present))
+	writeJournal("C", fmt.Sprintf("step %d executed, COMMIT not yet issued", s.step), j, present)
 	allOriginal := j.RecordsPresent() > 0
+	seq := 0
 	for _, segment := range j.Segments {
 		for _, r := range segment.Records {
 			same := bytes.Equal(pageAt(s.pre, int(r.Page-1)*pageSize), r.Image)
@@ -1564,17 +1582,17 @@ func partC(ctx context.Context, base string, s *states) {
 			if r.Page == 1 {
 				role = "header and schema root"
 			}
-			image := "equals the pre-step page"
-			if !same {
-				image = "DIFFERS from the pre-step page"
+			checksum := "ok"
+			if !r.ChecksumOK() {
+				checksum = "BAD"
 			}
-			fmt.Printf("  record at offset %6d: page %3d (%s), checksum %s, image %s\n", r.Offset, r.Page, role, okWord(r.ChecksumOK()), image)
+			seq++
+			tables.journalRecords.Row(seq, r.Offset, r.Page, role, checksum, same)
 		}
 	}
-	check(allOriginal, "every journal record holds the page's original (pre-step) image with a valid checksum")
-	check(j.Segments[0].Header.State == journalfile.HeaderNotYetSynced && !j.LooksHot(), "before COMMIT (synchronous=FULL) the header's magic and record count are still zero, so the journal is not hot yet")
-	check(j.Segments[0].Header.InitialPages == uint32(s.prePages), fmt.Sprintf("the header records the database size before the transaction (%d pages)", s.prePages))
-	fmt.Printf("pre-step freelist leaf pages (never journaled when reused): %s\n", pageList(s.preFreeLeaves))
+	set.Check("C", allOriginal, "every journal record holds the page's original (pre-step) image with a valid checksum")
+	set.Check("C", j.Segments[0].Header.State == journalfile.HeaderNotYetSynced && !j.LooksHot(), "before COMMIT (synchronous=FULL) the header's magic and record count are still zero, so the journal is not hot yet")
+	set.Check("C", j.Segments[0].Header.InitialPages == uint32(s.prePages), fmt.Sprintf("the header records the database size before the transaction (%d pages)", s.prePages))
 	if err := tx.Rollback(); err != nil {
 		fatal("rollback", err)
 	}
@@ -1582,61 +1600,67 @@ func partC(ctx context.Context, base string, s *states) {
 		fatal("close", err)
 	}
 	match := s.matchFile(filepath.Join(dir, dbName))
-	fmt.Printf("after ROLLBACK and close: %s\n", map[bool]string{true: "pre-step exact bytes", false: "NOT the pre-step bytes"}[match.Step == s.preStep && match.Exact])
-	check(match.Step == s.preStep && match.Exact, "a ROLLBACK by the live connection restores the pre-step bytes exactly (the reused freelist pages were never written to the file)")
-	check(recipe.CheckAtRest(filepath.Join(dir, dbName)) == nil, "no -journal remains after ROLLBACK and close")
+	atRest := recipe.CheckAtRest(filepath.Join(dir, dbName)) == nil
+	tables.liveRollback.Row(map[bool]string{true: "pre-step exact bytes", false: "NOT the pre-step bytes"}[match.Step == s.preStep && match.Exact], !atRest)
+	set.Check("C", match.Step == s.preStep && match.Exact, "a ROLLBACK by the live connection restores the pre-step bytes exactly (the reused freelist pages were never written to the file)")
+	set.Check("C", atRest, "no -journal remains after ROLLBACK and close")
 }
 
-func okWord(ok bool) string {
-	if ok {
-		return "ok"
-	}
-	return "BAD"
-}
-
-func damageReport(ctx context.Context, path string, s *states) (string, outcome) {
+// reopenRow opens path, runs integrity_check and counts the rows, and writes
+// one row of the reopens table. It returns the row's report columns, so two
+// reopens can be compared, and the outcome.
+func reopenRow(ctx context.Context, scenario, path string, s *states, classify bool) (string, outcome) {
+	var report []any
+	var o outcome
 	db, err := sqlitex.Open(ctx, path, stepOptions(sqlitex.JournalDelete, sqlitex.SyncFull))
 	if err != nil {
-		return "open failed: " + strings.ReplaceAll(err.Error(), path, filepath.Base(path)), s.outcomeOf(path, "")
+		report = []any{"open failed: " + strings.ReplaceAll(err.Error(), path, filepath.Base(path)), nil, nil, nil, nil, nil}
+		if classify {
+			o = s.outcomeOf(path, "")
+		}
+	} else {
+		report = append([]any{nil, integrityCheck(ctx, db.DB)}, tableCounts(ctx, db.DB)...)
+		canon := ""
+		if classify {
+			if canon, err = canonicalHash(ctx, db.DB, path); err != nil {
+				canon = ""
+			}
+		}
+		if err := db.Close(); err != nil {
+			fatal("close", err)
+		}
+		if classify {
+			o = s.outcomeOf(path, canon)
+		}
 	}
-	integrity := integrityCheck(ctx, db.DB)
-	counts := tableCounts(ctx, db.DB)
-	canon, err := canonicalHash(ctx, db.DB, path)
-	if err != nil {
-		canon = ""
+	var name, pages any
+	if classify {
+		name, pages = o.name(), pageList(o.pages)
 	}
-	if err := db.Close(); err != nil {
-		fatal("close", err)
-	}
-	return fmt.Sprintf("integrity_check: %s; %s", integrity, counts), s.outcomeOf(path, canon)
+	reopenSeq++
+	tables.reopens.Row(append(append([]any{reopenSeq, scenario}, report...), name, pages)...)
+	return fmt.Sprint(report...), o
 }
 
-func tableCounts(ctx context.Context, db *sql.DB) string {
-	var parts []string
+// tableCounts returns user_version and the row counts of the recipe tables;
+// a value that cannot be read is replaced by its error.
+func tableCounts(ctx context.Context, db *sql.DB) []any {
+	var values []any
 	var userVersion int
 	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&userVersion); err != nil {
-		parts = append(parts, "user_version error: "+err.Error())
+		values = append(values, "error: "+err.Error())
 	} else {
-		parts = append(parts, fmt.Sprintf("user_version=%d", userVersion))
+		values = append(values, userVersion)
 	}
 	for _, table := range []string{"accounts", "documents", "events"} {
 		var n int
 		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&n); err != nil {
-			parts = append(parts, fmt.Sprintf("count(%s) error: %v", table, err))
+			values = append(values, "error: "+err.Error())
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s=%d", table, n))
+		values = append(values, n)
 	}
-	return strings.Join(parts, " ")
-}
-
-func countsOf(ctx context.Context, path string) string {
-	db, err := sqlitex.Open(ctx, path, stepOptions(sqlitex.JournalDelete, sqlitex.SyncFull))
-	if err != nil {
-		fatal("open", err)
-	}
-	defer db.Close()
-	return tableCounts(ctx, db.DB)
+	return values
 }
 
 func recreateKilled(ctx context.Context, dir string, s *states, target op) {
@@ -1644,6 +1668,15 @@ func recreateKilled(ctx context.Context, dir string, s *states, target op) {
 	if landed, ok := landedOn(run, dir, target); !ok {
 		fatal("kill", fmt.Errorf("child was not killed on %q (ordinal %d): killed=%q exit %d landed %q", target.text, target.ordinal, run.Killed, run.ExitCode, landed))
 	}
+}
+
+func writeCrash(crash string, target op, writeNo any, writes int, s *states, dir string) {
+	image, err := os.ReadFile(filepath.Join(dir, dbName))
+	if err != nil {
+		fatal("read", err)
+	}
+	crashSeq++
+	tables.crashes.Row(append([]any{crashSeq, crash, target.text, writeNo, writes}, s.imageColumns(image)...)...)
 }
 
 // landedOn confirms strace killed the child with SIGKILL on entry to the exact
@@ -1676,8 +1709,8 @@ func landedOn(run *trace.Result, dir string, target op) (string, bool) {
 // deleting it after all database writes completed (silently committing a
 // transaction whose COMMIT never returned).
 func partE(ctx context.Context, base string, s *states, fullTargets []op) {
-	fmt.Printf("\n== E. failure cases: losing the hot journal (step %d, synchronous=FULL) ==\n", s.step)
-	fmt.Printf("contents: pre-step %s; post-step %s\n", countsOf(ctx, s.prePath), countsOf(ctx, filepath.Join(filepath.Dir(s.prePath), "post.db")))
+	reopenRow(ctx, fmt.Sprintf("pre-step file (step %d)", s.preStep), s.prePath, s, false)
+	reopenRow(ctx, fmt.Sprintf("post-step file (step %d)", s.step), filepath.Join(filepath.Dir(s.prePath), "post.db"), s, false)
 	var dbWrites []op
 	var dbSync op
 	for _, t := range fullTargets {
@@ -1692,16 +1725,12 @@ func partE(ctx context.Context, base string, s *states, fullTargets []op) {
 		fatal("failure cases", errors.New("the synchronous=FULL commit has too few database writes"))
 	}
 	middle := dbWrites[len(dbWrites)/2]
-	fmt.Printf("crash state: killed on entry to %s (database write %d of %d)\n", middle.text, len(dbWrites)/2+1, len(dbWrites))
 
 	deleted := filepath.Join(base, "e-deleted")
 	recreateKilled(ctx, deleted, s, middle)
-	image, err := os.ReadFile(filepath.Join(deleted, dbName))
-	if err != nil {
-		fatal("read", err)
-	}
+	writeCrash("mid-write", middle, len(dbWrites)/2+1, len(dbWrites), s, deleted)
 	j, present := journalInfo(filepath.Join(deleted, dbName+"-journal"))
-	fmt.Printf("on disk: database %s\n         %s\n", s.classifyImage(image), journalSummary(j, present))
+	writeJournal("E", "mid-write crash", j, present)
 
 	copied := filepath.Join(base, "e-copied")
 	original := filepath.Join(base, "e-with-journal")
@@ -1714,30 +1743,22 @@ func partE(ctx context.Context, base string, s *states, fullTargets []op) {
 	if err := os.Remove(filepath.Join(deleted, dbName+"-journal")); err != nil {
 		fatal("delete journal", err)
 	}
-	report, deletedOutcome := damageReport(ctx, filepath.Join(deleted, dbName), s)
-	fmt.Printf("1. -journal deleted, then reopened: %s\n   state: %s\n", report, deletedOutcome.describe(s))
-	check(deletedOutcome.kind == outcomeUnreadable || deletedOutcome.kind == outcomeThird, "deleting the hot journal before reopening leaves a damaged database that is neither the pre-step nor the post-step state")
+	report, deletedOutcome := reopenRow(ctx, "1. -journal deleted", filepath.Join(deleted, dbName), s, true)
+	set.Check("E", deletedOutcome.kind == outcomeUnreadable || deletedOutcome.kind == outcomeThird, "deleting the hot journal before reopening leaves a damaged database that is neither the pre-step nor the post-step state")
 
-	copyReport, copyOutcome := damageReport(ctx, filepath.Join(copied, dbName), s)
-	fmt.Printf("2. the database file copied without its -journal, copy opened: %s\n   state: %s\n", copyReport, copyOutcome.describe(s))
-	check(copyOutcome.kind == deletedOutcome.kind && copyReport == report && !copyOutcome.before(), "a copy made without the -journal is the same damaged database")
-	originalReport, originalOutcome := damageReport(ctx, filepath.Join(original, dbName), s)
-	fmt.Printf("   the same crashed bytes copied together with their -journal, opened: %s\n   state: %s\n", originalReport, originalOutcome.describe(s))
-	check(originalOutcome.before(), "the same crashed file copied together with its -journal rolls back to pre-step")
+	copyReport, copyOutcome := reopenRow(ctx, "2. copied without -journal", filepath.Join(copied, dbName), s, true)
+	set.Check("E", copyOutcome.kind == deletedOutcome.kind && copyReport == report && !copyOutcome.before(), "a copy made without the -journal is the same damaged database")
+	_, originalOutcome := reopenRow(ctx, "2. copied with -journal", filepath.Join(original, dbName), s, true)
+	set.Check("E", originalOutcome.before(), "the same crashed file copied together with its -journal rolls back to pre-step")
 
 	late := filepath.Join(base, "e-late")
 	recreateKilled(ctx, late, s, dbSync)
-	image, err = os.ReadFile(filepath.Join(late, dbName))
-	if err != nil {
-		fatal("read", err)
-	}
-	fmt.Printf("3. killed on entry to %s (every database page written, journal still hot): database %s\n", dbSync.text, s.classifyImage(image))
+	writeCrash("before db sync", dbSync, nil, len(dbWrites), s, late)
 	if err := os.Remove(filepath.Join(late, dbName+"-journal")); err != nil {
 		fatal("delete journal", err)
 	}
-	lateReport, lateOutcome := damageReport(ctx, filepath.Join(late, dbName), s)
-	fmt.Printf("   -journal deleted, then reopened: %s\n   state: %s\n", lateReport, lateOutcome.describe(s))
-	check(lateOutcome.kind == outcomePost, "deleting the journal after the last database write turns a commit that never returned into a committed one (post-step)")
+	_, lateOutcome := reopenRow(ctx, "3. late crash, -journal deleted", filepath.Join(late, dbName), s, true)
+	set.Check("E", lateOutcome.kind == outcomePost, "deleting the journal after the last database write turns a commit that never returned into a committed one (post-step)")
 }
 
 // partF locates the exact commit-point syscall for DELETE (unlink), TRUNCATE
@@ -1745,52 +1766,35 @@ func partE(ctx context.Context, base string, s *states, fullTargets []op) {
 // to that syscall and on the syscall immediately after it
 // (pager_end_transaction, src/pager.c:2086-2122).
 func partF(ctx context.Context, base string, s *states) {
-	fmt.Printf("\n== F. the commit point in DELETE, TRUNCATE and PERSIST journal modes (step %d, synchronous=FULL) ==\n", s.step)
-	type row struct{ mode, point, at, after, left string }
-	var rows []row
-	for _, mode := range []string{sqlitex.JournalDelete, sqlitex.JournalTruncate, sqlitex.JournalPersist} {
+	for seq, mode := range []string{sqlitex.JournalDelete, sqlitex.JournalTruncate, sqlitex.JournalPersist} {
 		dir := filepath.Join(base, "f-"+mode)
-		fmt.Printf("-- journal_mode=%s --\n", mode)
 		w, image := baseline(ctx, filepath.Join(dir, "baseline"), s, mode, sqlitex.SyncFull)
-		checkBaseline(w, image, s, mode, sqlitex.SyncFull)
+		checkBaseline("F", w, image, s, mode, sqlitex.SyncFull)
 		left, there := journalInfo(filepath.Join(dir, "baseline", dbName+"-journal"))
-		leftText := journalSummary(left, there)
+		writeJournal("F", mode, left, there)
 		commitKind := map[string]string{sqlitex.JournalDelete: "journal-unlink", sqlitex.JournalTruncate: "journal-truncate", sqlitex.JournalPersist: "journal-zero-header"}[mode]
-		var commitPoint, next op
+		index := -1
 		for i, t := range w.targets {
 			if t.kind == commitKind && i+1 < len(w.targets) {
-				commitPoint, next = t, w.targets[i+1]
+				index = i
 				break
 			}
 		}
-		if commitPoint.kind == "" {
-			check(false, mode+": commit point found in the trace")
+		if index < 0 {
+			set.Check("F", false, mode+": commit point found in the trace")
 			continue
 		}
+		commitPoint, next := w.targets[index], w.targets[index+1]
 		at := runKill(ctx, filepath.Join(dir, "at"), s, mode, sqlitex.SyncFull, commitPoint)
 		after := runKill(ctx, filepath.Join(dir, "after"), s, mode, sqlitex.SyncFull, next)
-		rows = append(rows, row{mode, commitPoint.text, at.after.shortName(), after.after.shortName() + " (kill on " + next.kind + ")", leftText})
-		check(at.landedOK && after.landedOK && at.after.before() && after.after.kind == outcomePost, mode+": a kill on entry to the commit point gives pre-step, the next kill gives post-step")
+		writeKill("F", s, mode, sqlitex.SyncFull, index+1, at, nil)
+		writeKill("F", s, mode, sqlitex.SyncFull, index+2, after, nil)
+		tables.commitPoints.Row(seq+1, mode, commitPoint.text, at.after.shortName(), next.kind, after.after.shortName())
+		set.Check("F", at.landedOK && after.landedOK && at.after.before() && after.after.kind == outcomePost, mode+": a kill on entry to the commit point gives pre-step, the next kill gives post-step")
 		if mode != sqlitex.JournalDelete {
-			check(there && !left.LooksHot(), mode+": the journal file stays beside the database after a clean commit, and it is not hot")
+			set.Check("F", there && !left.LooksHot(), mode+": the journal file stays beside the database after a clean commit, and it is not hot")
 		}
 	}
-	fmt.Printf("%-9s %-34s %-26s %-44s %s\n", "mode", "commit point (syscall)", "killed on entry", "killed on the next syscall", "-journal after a clean commit")
-	for _, r := range rows {
-		fmt.Printf("%-9s %-34s %-26s %-44s %s\n", r.mode, r.point, r.at, r.after, r.left)
-	}
-}
-
-func (o outcome) shortName() string {
-	switch o.kind {
-	case outcomePre:
-		return "before (pre-step)"
-	case outcomePreFreelist:
-		return "before (pre-step, logical)"
-	case outcomePost:
-		return "after (post-step)"
-	}
-	return "neither"
 }
 
 func portableLevels(ctx context.Context, base string, s *states) {
@@ -1808,16 +1812,37 @@ func portableLevels(ctx context.Context, base string, s *states) {
 			fatal("close", err)
 		}
 		match := s.matchFile(filepath.Join(dir, dbName))
-		check(match.Step == s.step && match.Exact, fmt.Sprintf("step %d, synchronous=%s: the step committed in process leaves the post-step bytes", s.step, level))
+		set.Check("D", match.Step == s.step && match.Exact, fmt.Sprintf("step %d, synchronous=%s: the step committed in process leaves the post-step bytes", s.step, level))
 	}
 }
 
-func describeStates(s *states) {
-	fmt.Println(s.stepStatements.Summary())
-	fmt.Printf("pre-step state (after step %d): %d pages, sha256 %s, freelist leaves %s\n", s.preStep, s.prePages, s.hashes[s.preStep].Exact[:16], pageList(s.preFreeLeaves))
-	fmt.Printf("post-step state (after step %d): %d pages, sha256 %s\n", s.step, s.postPages, s.hashes[s.step].Exact[:16])
+func describeStates(part string, r recipe.Recipe, s *states) {
+	c := s.stepStatements.Counts()
+	tables.steps.Row(s.step, s.preStep, r.String(), c.Schema, c.Inserts, c.Updates, c.Deletes, c.Indexes)
+	tables.states.Row(s.step, "pre-step", s.preStep, s.prePages, s.hashes[s.preStep].Exact[:16], pageList(s.preFreeLeaves))
+	tables.states.Row(s.step, "post-step", s.step, s.postPages, s.hashes[s.step].Exact[:16], nil)
 	preMatch, postMatch := s.matchFile(s.prePath), s.matchFile(filepath.Join(filepath.Dir(s.prePath), "post.db"))
-	check(preMatch.Step == s.preStep && preMatch.Exact && postMatch.Step == s.step && postMatch.Exact, fmt.Sprintf("the pre-step and post-step files equal the recipe's hashes for steps %d and %d", s.preStep, s.step))
+	set.Check(part, preMatch.Step == s.preStep && preMatch.Exact && postMatch.Step == s.step && postMatch.Exact, fmt.Sprintf("the pre-step and post-step files equal the recipe's hashes for steps %d and %d", s.preStep, s.step))
+}
+
+func writeParts() {
+	status := "ran"
+	if !trace.Supported {
+		status = "skipped: needs strace (Linux)"
+	}
+	tables.parts.Row("A", "journal_mode and header bytes 18-19 of a new file", "ran")
+	tables.parts.Row("A", "syscalls of the first commits of a new file", status)
+	tables.parts.Row("B", "the recipe step: pre-step and post-step files", "ran")
+	tables.parts.Row("C", "the journal of an open transaction", "ran")
+	if !trace.Supported {
+		tables.parts.Row("D", "the step committed in process at each synchronous level", "ran")
+	}
+	tables.parts.Row("D", "the commit traced and killed at every write and sync", status)
+	if *exactFlag != 0 {
+		tables.parts.Row("D2", "the same for a step whose pre-step file has no freelist", status)
+	}
+	tables.parts.Row("E", "losing the hot journal", status)
+	tables.parts.Row("F", "the commit point in DELETE, TRUNCATE and PERSIST modes", status)
 }
 
 func main() {
@@ -1843,6 +1868,9 @@ func main() {
 		fatal("work dir", err)
 	}
 	fmt.Printf("INFO: work dir %s\n", displayPath(base))
+	set = results.MustOpen(base)
+	openTables()
+	writeParts()
 	var cli sqlitex.CLI
 	haveCLI := false
 	if trace.Supported {
@@ -1852,7 +1880,7 @@ func main() {
 			fmt.Println(cli.PinLine())
 		} else {
 			fmt.Printf("sqlite3 CLI: unavailable: %v\n", cliErr)
-			failures = append(failures, "the pinned sqlite3 CLI is available")
+			set.Check("D", false, "the pinned sqlite3 CLI is available")
 		}
 	}
 
@@ -1864,14 +1892,12 @@ func main() {
 			fatal("step", fmt.Errorf("steps must be 1..%d, got %d", r.Steps, k))
 		}
 	}
-	fmt.Printf("\n== B. the recipe step ==\n")
-	fmt.Printf("recipe: %s\n", r)
 	hashes, err := r.StepHashes(ctx)
 	if err != nil {
 		fatal("step hashes", err)
 	}
 	main := newStates(ctx, filepath.Join(base, fmt.Sprintf("step-%d", *stepFlag)), r, *stepFlag, hashes)
-	describeStates(main)
+	describeStates("B", r, main)
 
 	partC(ctx, base, main)
 
@@ -1883,28 +1909,20 @@ func main() {
 	}
 
 	levels := []string{sqlitex.SyncFull, sqlitex.SyncNormal, sqlitex.SyncOff}
-	var mainResults []levelResult
 	var fullTargets []op
 	for _, level := range levels {
-		result := runLevel(ctx, filepath.Join(base, fmt.Sprintf("step-%d", *stepFlag)), main, level, cli, haveCLI, true)
-		mainResults = append(mainResults, result)
+		targets := runLevel(ctx, "D", filepath.Join(base, fmt.Sprintf("step-%d", *stepFlag)), main, level, cli, haveCLI)
 		if level == sqlitex.SyncFull {
-			for _, kill := range result.results {
-				fullTargets = append(fullTargets, kill.target)
-			}
+			fullTargets = targets
 		}
 	}
-	printSummary(main, mainResults)
 
 	if *exactFlag != 0 {
-		fmt.Printf("\n== D2. a step whose pre-step file has no freelist: step %d, every kill point, all three levels ==\n", *exactFlag)
 		exact := newStates(ctx, filepath.Join(base, fmt.Sprintf("step-%d", *exactFlag)), r, *exactFlag, hashes)
-		describeStates(exact)
-		var exactResults []levelResult
+		describeStates("D2", r, exact)
 		for _, level := range levels {
-			exactResults = append(exactResults, runLevel(ctx, filepath.Join(base, fmt.Sprintf("step-%d", *exactFlag)), exact, level, cli, false, false))
+			runLevel(ctx, "D2", filepath.Join(base, fmt.Sprintf("step-%d", *exactFlag)), exact, level, cli, false)
 		}
-		printSummary(exact, exactResults)
 	}
 
 	partE(ctx, base, main, fullTargets)
@@ -1913,13 +1931,8 @@ func main() {
 }
 
 func finish(started time.Time) {
-	fmt.Printf("INFO: runtime %s\n", time.Since(started).Round(100*time.Millisecond))
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("ATOMIC COMMIT FAILED: %d claim(s) do not hold: %s\n", len(failures), strings.Join(failures, "; "))
-		os.Exit(1)
-	}
-	fmt.Println("ATOMIC COMMIT OK")
+	info("runtime, seconds", time.Since(started).Round(100*time.Millisecond).Seconds())
+	set.Finish("ATOMIC COMMIT")
 }
 
 func displayPath(path string) string {
@@ -1938,1391 +1951,1166 @@ func displayPath(path string) string {
 }
 ```
 
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/4.1-atomic-commit-and-hot-journal/report.sql -->
+```sql
+-- Walkthrough of experiment 4.1. Run it with:
+--   go run ./cmd/course run 4.1        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   parts            what ran and what was skipped (parts B to F need strace, so Linux)
+--   header_modes     part A: journal_mode and header bytes 18-19 of a new file, by stage
+--   creations        part A: one traced statement of a new file, with its -journal and -wal writes
+--   creation_calls   part A: one -journal syscall of such a statement
+--   steps            the recipe steps whose commit is traced (3, and 1 for part D2)
+--   states           the pre-step and post-step file of each traced step
+--   journals         a -journal decoded in Go: part C (open transaction), E (crash), F (after commit)
+--   journal_records  part C: one page record of the open transaction's -journal
+--   live_rollback    part C: the file after ROLLBACK and close
+--   commits          one traced commit: its syscall sequence, page writes and syncs
+--   commit_calls     one syscall of a traced commit, on the database directory
+--   twins            part D: the C CLI's writes and syncs against the Go driver's
+--   twin_diffs       part D: a position where they differ (empty when they agree)
+--   kills            one child killed on entry to one syscall: the files it left, and the reopen
+--   crashes          part E: the two crashes whose -journal is then lost
+--   reopens          part E: one database opened after a crash, or the pre/post-step file
+--   commit_points    part F: the commit-point syscall of each journal mode
+--   checks           every claim the experiment asserted (the runner lists it last)
+-- Run-dependent values (sync syscall names, timings, journal nonces) are in
+-- info and info_kills, shown by info.sql.
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  4.1  Atomic commit in rollback-journal mode, and the hot journal'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'A rollback-journal commit of recipe step 3 (seed 1) is traced with strace,'
+.print 'then rerun and killed with SIGKILL on entry to each of its writes, syncs'
+.print 'and unlinks, at synchronous=FULL, NORMAL and OFF. After each kill Go reads'
+.print 'the database and -journal as bytes, then SQLite reopens the database.'
+.print
+.print 'What ran:'
+
+SELECT part, what, status FROM parts ORDER BY part, what;
+
+.print
+.print '── A. Where a WAL-default platform meets rollback mode ─────────────────'
+.print
+.print 'A1. A new file starts in rollback mode (header bytes 18 and 19 = 1) until'
+.print '    PRAGMA journal_mode=wal rewrites them to 2.'
+
+SELECT stage, journal_mode, byte_18, byte_19 FROM header_modes ORDER BY seq;
+
+.print
+.print 'A2. Each statement traced in a fresh process. The switch to WAL, and the'
+.print '    first commit of a WAL file opened with sqlitex.Open, still go through'
+.print '    a -journal; the statements after them write only to the -wal.'
+
+SELECT c.opener, c.statement,
+       string_agg(split_part(k.call, ' ', 1), ' ' ORDER BY k.n) AS journal_syscalls,
+       c.wal_writes
+FROM creations c LEFT JOIN creation_calls k ON k.creation_seq = c.seq
+GROUP BY c.seq, c.opener, c.statement, c.wal_writes
+ORDER BY c.seq;
+
+.print
+.print 'A3. The -journal syscalls of each of those rollback-mode commits:'
+
+SELECT c.statement, k.n, k.call
+FROM creations c JOIN creation_calls k ON k.creation_seq = c.seq
+ORDER BY c.seq, k.n;
+
+.print
+.print '── B. The recipe step ──────────────────────────────────────────────────'
+.print
+.print 'B1. Step 3 of the recipe, the transaction this walkthrough commits:'
+
+SELECT step, recipe, schema, inserts, updates, deletes, indexes FROM steps WHERE step = 3;
+
+.print
+.print 'B2. The file before (after recipe step 2) and after it. Page 22 is a'
+.print '    freelist leaf in the pre-step file; remember it for part D.'
+
+SELECT state, recipe_step, pages, sha256_prefix, freelist_leaves
+FROM states WHERE step = 3 ORDER BY state DESC;
+
+.print
+.print '── C. The journal of an open transaction, read before COMMIT ──────────'
+.print
+.print 'C1. Every statement of step 3 has run; COMMIT is not issued. The header'
+.print '    is written but magic and record count are still zero, so the journal'
+.print '    is not hot. It records the pre-transaction size: 29 pages.'
+
+SELECT journal_bytes AS bytes, printf('0x%02x', first_byte) AS first_byte, hot, header,
+       record_count AS count, initial_pages AS init_pages, sector_size AS sector, page_size AS page, records,
+       checksum_failures AS bad_sums, trailing_bytes AS partial
+FROM journals WHERE part = 'C';
+
+.print
+.print 'C2. Each record is a page number, the original image of the page and a checksum.'
+.print '    Page 22, the reused freelist leaf, is not among them: SQLite fetches it'
+.print '    with PAGER_GET_NOCONTENT and never journals it.'
+
+SELECT file_offset, page, role, checksum, same_as_pre_step FROM journal_records ORDER BY seq;
+
+.print
+.print 'C3. ROLLBACK by the live connection, then close:'
+
+SELECT file_after, journal_left FROM live_rollback;
+
+.print
+.print '── D. Step 3: one commit traced, then killed at every write and sync ──'
+.print
+.print 'D1. The synchronous=FULL commit: syscalls of the writer thread on the database'
+.print '    directory, between the start of the step and its return. The journal'
+.print '    records come first, then two journal syncs around the record count,'
+.print '    then the database pages, one database sync, and the unlink.'
+
+SELECT n, kind, call
+FROM commit_calls
+WHERE commit_seq = (SELECT seq FROM commits WHERE part = 'D' AND synchronous = 'FULL')
+ORDER BY n;
+
+.print
+.print 'D2. The same commit at NORMAL and OFF is identical up to the last journal'
+.print '    record. From there on: NORMAL writes the record count before a single'
+.print '    journal sync; OFF syncs nothing.'
+
+SELECT c.synchronous, k.n, k.kind, k.call
+FROM commits c JOIN commit_calls k ON k.commit_seq = c.seq
+WHERE c.part = 'D' AND c.synchronous IN ('NORMAL', 'OFF')
+  AND k.n > (SELECT max(n) FROM commit_calls WHERE commit_seq = c.seq AND kind = 'journal-record')
+ORDER BY c.seq, k.n;
+
+.print
+.print 'D3. The three sequences side by side (other syscalls left out, repeats folded):'
+
+WITH s AS (
+  SELECT synchronous, unnest(string_split(sequence, ', ')) AS what,
+         generate_subscripts(string_split(sequence, ', '), 1) AS i
+  FROM commits WHERE part = 'D')
+SELECT i,
+       max(what) FILTER (synchronous = 'FULL')   AS "FULL",
+       max(what) FILTER (synchronous = 'NORMAL') AS "NORMAL",
+       max(what) FILTER (synchronous = 'OFF')    AS "OFF"
+FROM s GROUP BY i ORDER BY i;
+
+SELECT synchronous, journaled_pages AS pages, record_writes, db_page_writes AS db_writes, syncs, sync_targets
+FROM commits WHERE part = 'D' ORDER BY seq;
+
+.print
+.print 'D4. The pinned C sqlite3 CLI runs the same step as literal SQL. Its writes,'
+.print '    syncs and unlink equal those of the Go driver in file, offset, length, order.'
+
+SELECT synchronous, go_calls, cli_calls, identical, cli_leaves_post_step
+FROM twins ORDER BY go_calls DESC;
+
+.print
+.print 'D5. Kill points: every pwrite64, sync and unlink of the commit, then the'
+.print '    first syscall after the step returned.'
+
+SELECT synchronous, count(*) AS kill_points
+FROM kills WHERE part = 'D' GROUP BY synchronous ORDER BY kill_points DESC;
+
+.print
+.print 'D6. synchronous=FULL: what each kill left on disk. Until the record count is'
+.print '    written and synced (kill 26) the journal is not hot and the database'
+.print '    file is untouched. From kill 28 on, the database is torn mid-write.'
+.print '    chg_pre and chg_post count the pages of the database file that differ'
+.print '    from the pre-step and post-step files.'
+
+SELECT kill_no AS kill, syscall, differ_pre AS chg_pre, differ_post AS chg_post,
+       journal_bytes AS bytes, hot, header, records AS recs, trailing_bytes AS partial
+FROM kills WHERE part = 'D' AND synchronous = 'FULL' ORDER BY kill_no;
+
+.print
+.print 'D7. synchronous=FULL: what SQLite did on reopen. A hot journal is played'
+.print '    back and the file truncated to its 29 original pages; the result is the'
+.print '    pre-step state (B), or pre-step except page 22 (b). After the unlink,'
+.print '    the reopened file is the post-step state (A).'
+
+SELECT kill_no AS kill, playback, playback_pages, truncate_to AS trunc,
+       outcome, outcome_pages AS differs_in, integrity,
+       regexp_replace(journal_after, 'cold -journal left \((\d+) bytes, first byte (0x..)\)', 'cold, \1 bytes, \2') AS journal_after
+FROM kills WHERE part = 'D' AND synchronous = 'FULL' ORDER BY kill_no;
+
+.print
+.print 'b means the reopened file equals pre-step except in reused freelist leaves'
+.print '(page 22): the rollback cannot restore their unused bytes because they were'
+.print 'never journaled, and VACUUM INTO of the file equals that of the pre-step file.'
+.print
+.print 'D8. synchronous=NORMAL, every kill: the record count is written before the'
+.print '    single journal sync, so the journal is hot from kill 24 on.'
+
+SELECT kill_no AS kill, syscall, differ_pre AS chg_pre, differ_post AS chg_post,
+       journal_bytes AS bytes, hot, header, outcome
+FROM kills WHERE part = 'D' AND synchronous = 'NORMAL' ORDER BY kill_no;
+
+.print
+.print 'D9. synchronous=OFF, every kill: the header is written at once with its magic'
+.print '    and record count 0xffffffff (no-sync: read to the end of the file), so'
+.print '    the journal is hot from the first record on.'
+
+SELECT kill_no AS kill, syscall, differ_pre AS chg_pre, differ_post AS chg_post,
+       journal_bytes AS bytes, hot, header, printf('0x%x', record_count) AS count, outcome
+FROM kills WHERE part = 'D' AND synchronous = 'OFF' ORDER BY kill_no;
+
+.print
+.print 'D10. The outcome of every kill, in commit order. B = pre-step exact bytes,'
+.print '     b = pre-step except reused freelist leaves, A = post-step exact bytes,'
+.print '     ? = anything else. The last B or b is the kill on entry to the unlink.'
+
+SELECT synchronous,
+       string_agg(outcome, '' ORDER BY kill_no) AS outcome_per_kill_point
+FROM kills WHERE part = 'D' GROUP BY synchronous ORDER BY count(*) DESC;
+
+SELECT synchronous,
+       count(*) FILTER (outcome = 'B') AS "B pre exact",
+       count(*) FILTER (outcome = 'b') AS "b pre logical",
+       count(*) FILTER (outcome = 'A') AS "A post exact",
+       count(*) FILTER (outcome = '?') AS "? other",
+       count(*) FILTER (NOT landed_ok) AS missed_kills,
+       count(*) FILTER (integrity <> 'ok') AS integrity_bad,
+       count(*) FILTER (covered = false) AS not_covered
+FROM kills WHERE part = 'D' GROUP BY synchronous ORDER BY count(*) DESC;
+
+.print
+.print '── D2. A step whose pre-step file has no freelist: step 1 ─────────────'
+.print
+.print 'Step 1 starts from the file after step 0, which has no freelist, so there'
+.print 'is no b: every reopen gives the pre-step or post-step bytes exactly.'
+
+SELECT step, recipe, schema, inserts, updates, deletes, indexes FROM steps WHERE step = 1;
+
+SELECT state, recipe_step, pages, sha256_prefix, freelist_leaves
+FROM states WHERE step = 1 ORDER BY state DESC;
+
+SELECT synchronous, journaled_pages AS pages, record_writes, db_page_writes AS db_writes, syncs, sync_targets
+FROM commits WHERE part = 'D2' ORDER BY seq;
+
+WITH s AS (
+  SELECT synchronous, unnest(string_split(sequence, ', ')) AS what,
+         generate_subscripts(string_split(sequence, ', '), 1) AS i
+  FROM commits WHERE part = 'D2')
+SELECT i,
+       max(what) FILTER (synchronous = 'FULL')   AS "FULL",
+       max(what) FILTER (synchronous = 'NORMAL') AS "NORMAL",
+       max(what) FILTER (synchronous = 'OFF')    AS "OFF"
+FROM s GROUP BY i ORDER BY i;
+
+SELECT synchronous,
+       string_agg(outcome, '' ORDER BY kill_no) AS outcome_per_kill_point
+FROM kills WHERE part = 'D2' GROUP BY synchronous ORDER BY count(*) DESC;
+
+SELECT synchronous,
+       count(*) FILTER (outcome = 'B') AS "B pre exact",
+       count(*) FILTER (outcome = 'b') AS "b pre logical",
+       count(*) FILTER (outcome = 'A') AS "A post exact",
+       count(*) FILTER (outcome = '?') AS "? other",
+       count(*) FILTER (NOT landed_ok) AS missed_kills,
+       count(*) FILTER (integrity <> 'ok') AS integrity_bad
+FROM kills WHERE part = 'D2' GROUP BY synchronous ORDER BY count(*) DESC;
+
+.print
+.print '── E. Losing the hot journal (step 3, synchronous=FULL) ───────────────'
+.print
+.print 'E1. Two crashes: in the middle of the database writes, and on entry to the'
+.print '    database sync, when every page is written but the journal is still hot.'
+
+SELECT crash, killed_on, db_write_no AS write_no, db_writes AS writes, db_file,
+       db_pages AS pages, differ_pre AS chg_pre, differ_post AS chg_post
+FROM crashes ORDER BY seq;
+
+.print
+.print 'The hot journal beside the mid-write crash:'
+
+SELECT journal_bytes, printf('0x%02x', first_byte) AS first_byte, hot, header, record_count, initial_pages, records, record_pages
+FROM journals WHERE part = 'E';
+
+.print
+.print 'E2. What each file holds when opened. Without its journal the torn file is'
+.print '    unreadable, and a copy of the file alone is the same damage. Copied with'
+.print '    its journal, it rolls back. Deleting the journal after the last database'
+.print '    write commits a transaction whose COMMIT never returned.'
+
+SELECT scenario, integrity, user_version, accounts, documents, events
+FROM reopens ORDER BY seq;
+
+SELECT scenario, outcome_name AS state, outcome_pages AS differs_in
+FROM reopens WHERE outcome_name IS NOT NULL ORDER BY seq;
+
+SELECT scenario, open_error FROM reopens WHERE open_error IS NOT NULL ORDER BY seq;
+
+.print
+.print '── F. The commit point in DELETE, TRUNCATE and PERSIST modes ──────────'
+.print
+.print 'F1. The same commit (step 3, synchronous=FULL) in each mode. Only the end'
+.print '    differs: TRUNCATE and PERSIST finish the journal and sync it again.'
+
+WITH s AS (
+  SELECT journal_mode, unnest(string_split(sequence, ', ')) AS what,
+         generate_subscripts(string_split(sequence, ', '), 1) AS i
+  FROM commits WHERE part = 'F')
+SELECT i,
+       max(what) FILTER (journal_mode = 'delete')   AS "delete",
+       max(what) FILTER (journal_mode = 'truncate') AS "truncate",
+       max(what) FILTER (journal_mode = 'persist')  AS "persist"
+FROM s GROUP BY i ORDER BY i;
+
+SELECT journal_mode, journaled_pages AS pages, record_writes, db_page_writes AS db_writes, syncs, sync_targets
+FROM commits WHERE part = 'F' ORDER BY seq;
+
+.print
+.print 'F2. A kill on entry to the commit-point syscall gives the pre-step state; a'
+.print '    kill on the syscall after it gives the post-step state.'
+
+SELECT journal_mode, commit_point, killed_on_entry, next_kind, killed_on_next
+FROM commit_points ORDER BY seq;
+
+.print
+.print 'F3. The -journal left beside the database after a clean commit. TRUNCATE'
+.print '    leaves 0 bytes; PERSIST leaves the whole journal with a zeroed header.'
+.print '    Neither is hot.'
+
+SELECT label AS journal_mode,
+       coalesce(journal_bytes::VARCHAR, 'no -journal') AS journal_bytes,
+       printf('0x%02x', first_byte) AS first_byte, hot, header
+FROM journals WHERE part = 'F' ORDER BY seq;
+```
+
+`course run` also prints the run-dependent values, which are not part of the stored evidence: the sync syscall each program used, the timings, and the random nonce and run time of each journal the kills left behind.
+
 #### Captured evidence (`4.1-atomic-commit-and-hot-journal.txt`)
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/4.1-atomic-commit-and-hot-journal/`](evidence/4.1-atomic-commit-and-hot-journal/), and `go run ./cmd/course check evidence ch04` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/4.1-atomic-commit-and-hot-journal.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/4.1
-sqlite3 CLI sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
 
-== A. where a WAL-default platform meets rollback mode ==
-a new file opened by the driver with no settings reports journal_mode=delete
-check ok: a new database starts in rollback-journal mode (journal_mode=delete) until something switches it
-after its first CREATE TABLE: header bytes 18,19 = 1,1 (1 = rollback journal)
-check ok: the file records rollback mode in header bytes 18 and 19 (value 1)
-after PRAGMA journal_mode=wal: header bytes 18,19 = 2,2; a fresh connection reports journal_mode=wal
-check ok: switching to WAL rewrites bytes 18 and 19 to 2, and the mode persists in the file
-CREATE TABLE (driver defaults, first write): -journal [open plain.db-journal pwrite64 plain.db-journal off=0 len=512 sync plain.db-journal pwrite64 plain.db-journal off=0 len=12 sync plain.db-journal unlink plain.db-journal]; -wal writes 0
-PRAGMA journal_mode=wal on the new empty file: -journal [open switch.db-journal pwrite64 switch.db-journal off=0 len=512 sync switch.db-journal pwrite64 switch.db-journal off=0 len=12 sync switch.db-journal unlink switch.db-journal]; -wal writes 0
-CREATE TABLE after the switch: -journal []; -wal writes 5
-sqlitex.Open of a new file with journal_mode=wal: -journal [open platform.db-journal pwrite64 platform.db-journal off=0 len=512 sync platform.db-journal pwrite64 platform.db-journal off=0 len=12 sync platform.db-journal unlink platform.db-journal]; -wal writes 5
-CREATE TABLE after it: -journal []; -wal writes 4
-check ok: a file created with driver defaults commits its first transaction through a -journal (opened, written, synced, unlinked)
-check ok: the switch to WAL is itself a rollback-mode commit: it writes page 1 through a -journal
-check ok: after the switch, commits go to the -wal and no -journal is opened
-check ok: a WAL database created by the platform opener (sqlitex.Open) is also born through one -journal commit, then never uses one
+════════════════════════════════════════════════════════════════════════
+  4.1  Atomic commit in rollback-journal mode, and the hot journal
+════════════════════════════════════════════════════════════════════════
 
-== B. the recipe step ==
-recipe: seed=1 steps=30 journal_mode=delete
-step 3: schema=0 inserts=53 updates=5 deletes=5 indexes=0
-pre-step state (after step 2): 29 pages, sha256 b8a0bd0796442099, freelist leaves [22]
-post-step state (after step 3): 39 pages, sha256 0ef90bd0e64af1e3
-check ok: the pre-step and post-step files equal the recipe's hashes for steps 2 and 3
+A rollback-journal commit of recipe step 3 (seed 1) is traced with strace,
+then rerun and killed with SIGKILL on entry to each of its writes, syncs
+and unlinks, at synchronous=FULL, NORMAL and OFF. After each kill Go reads
+the database and -journal as bytes, then SQLite reopens the database.
 
-== C. the journal of an open transaction, read before COMMIT ==
-every statement of step 3 executed, COMMIT not yet issued: -journal 29240 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-  record at offset    512: page   2 (b-tree or overflow page), checksum ok, image equals the pre-step page
-  record at offset   4616: page   1 (header and schema root), checksum ok, image equals the pre-step page
-  record at offset   8720: page  20 (b-tree or overflow page), checksum ok, image equals the pre-step page
-  record at offset  12824: page   3 (b-tree or overflow page), checksum ok, image equals the pre-step page
-  record at offset  16928: page  27 (b-tree or overflow page), checksum ok, image equals the pre-step page
-  record at offset  21032: page   4 (b-tree or overflow page), checksum ok, image equals the pre-step page
-  record at offset  25136: page  26 (b-tree or overflow page), checksum ok, image equals the pre-step page
-check ok: every journal record holds the page's original (pre-step) image with a valid checksum
-check ok: before COMMIT (synchronous=FULL) the header's magic and record count are still zero, so the journal is not hot yet
-check ok: the header records the database size before the transaction (29 pages)
-pre-step freelist leaf pages (never journaled when reused): [22]
-after ROLLBACK and close: pre-step exact bytes
-check ok: a ROLLBACK by the live connection restores the pre-step bytes exactly (the reused freelist pages were never written to the file)
-check ok: no -journal remains after ROLLBACK and close
+What ran:
+┌──────┬─────────────────────────────────────────────────────────┬────────┐
+│ part │                          what                           │ status │
+├──────┼─────────────────────────────────────────────────────────┼────────┤
+│ A    │ journal_mode and header bytes 18-19 of a new file       │ ran    │
+│ A    │ syscalls of the first commits of a new file             │ ran    │
+│ B    │ the recipe step: pre-step and post-step files           │ ran    │
+│ C    │ the journal of an open transaction                      │ ran    │
+│ D    │ the commit traced and killed at every write and sync    │ ran    │
+│ D2   │ the same for a step whose pre-step file has no freelist │ ran    │
+│ E    │ losing the hot journal                                  │ ran    │
+│ F    │ the commit point in DELETE, TRUNCATE and PERSIST modes  │ ran    │
+└──────┴─────────────────────────────────────────────────────────┴────────┘
 
-== D. step 3, synchronous=FULL: one commit traced, then killed at every write and sync ==
-the commit's syscalls on the database directory (writer thread, between the step's start and its return):
-    1 other            fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
-    2 other            fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
-    3 other            fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
-    4 other            pread64 t.db off=24 len=16
-    5 other            fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
-    6 other            pread64 t.db off=4096 len=4096
-    7 other            open t.db-journal
-    8 other            fcntl t.db-journal F_SETFD
-    9 journal-header   pwrite64 t.db-journal off=0 len=512
-   10 journal-record   pwrite64 t.db-journal off=512 len=4
-   11 journal-record   pwrite64 t.db-journal off=516 len=4096
-   12 journal-record   pwrite64 t.db-journal off=4612 len=4
-   13 other            pread64 t.db off=8192 len=4096
-   14 other            pread64 t.db off=98304 len=4096
-   15 journal-record   pwrite64 t.db-journal off=4616 len=4
-   16 journal-record   pwrite64 t.db-journal off=4620 len=4096
-   17 journal-record   pwrite64 t.db-journal off=8716 len=4
-   18 other            pread64 t.db off=77824 len=4096
-   19 journal-record   pwrite64 t.db-journal off=8720 len=4
-   20 journal-record   pwrite64 t.db-journal off=8724 len=4096
-   21 journal-record   pwrite64 t.db-journal off=12820 len=4
-   22 journal-record   pwrite64 t.db-journal off=12824 len=4
-   23 journal-record   pwrite64 t.db-journal off=12828 len=4096
-   24 journal-record   pwrite64 t.db-journal off=16924 len=4
-   25 other            pread64 t.db off=12288 len=4096
-   26 other            pread64 t.db off=106496 len=4096
-   27 journal-record   pwrite64 t.db-journal off=16928 len=4
-   28 journal-record   pwrite64 t.db-journal off=16932 len=4096
-   29 journal-record   pwrite64 t.db-journal off=21028 len=4
-   30 journal-record   pwrite64 t.db-journal off=21032 len=4
-   31 journal-record   pwrite64 t.db-journal off=21036 len=4096
-   32 journal-record   pwrite64 t.db-journal off=25132 len=4
-   33 other            pread64 t.db off=102400 len=4096
-   34 journal-record   pwrite64 t.db-journal off=25136 len=4
-   35 journal-record   pwrite64 t.db-journal off=25140 len=4096
-   36 journal-record   pwrite64 t.db-journal off=29236 len=4
-   37 other            fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
-   38 other            fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
-   39 other            pread64 t.db-journal off=29696 len=8 = 0
-   40 journal-sync     sync t.db-journal
-   41 other            open .
-   42 other            fcntl . F_SETFD
-   43 dir-sync         sync .
-   44 other            close .
-   45 journal-count    pwrite64 t.db-journal off=0 len=12
-   46 journal-sync     sync t.db-journal
-   47 db-page          pwrite64 t.db off=0 len=4096
-   48 db-page          pwrite64 t.db off=4096 len=4096
-   49 db-page          pwrite64 t.db off=8192 len=4096
-   50 db-page          pwrite64 t.db off=12288 len=4096
-   51 db-page          pwrite64 t.db off=77824 len=4096
-   52 db-page          pwrite64 t.db off=86016 len=4096
-   53 db-page          pwrite64 t.db off=102400 len=4096
-   54 db-page          pwrite64 t.db off=106496 len=4096
-   55 db-page          pwrite64 t.db off=118784 len=4096
-   56 db-page          pwrite64 t.db off=122880 len=4096
-   57 db-page          pwrite64 t.db off=126976 len=4096
-   58 db-page          pwrite64 t.db off=131072 len=4096
-   59 db-page          pwrite64 t.db off=135168 len=4096
-   60 db-page          pwrite64 t.db off=139264 len=4096
-   61 db-page          pwrite64 t.db off=143360 len=4096
-   62 db-page          pwrite64 t.db off=147456 len=4096
-   63 db-page          pwrite64 t.db off=151552 len=4096
-   64 db-page          pwrite64 t.db off=155648 len=4096
-   65 db-sync          sync t.db
-   66 other            close t.db-journal
-   67 journal-unlink   unlink t.db-journal
-   68 other            fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
-   69 other            fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
-   70 other            fcntl t.db F_SETLK F_UNLCK start=0 len=0
-sequence: journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-unlink
-journaled pages 7 (21 record writes), database page writes 18, syncs 4 [t.db-journal . t.db-journal t.db]
-INFO: sync syscall used by the Go driver: fsync
-check ok: step 3, journal_mode=delete, synchronous=FULL: order is journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-unlink
-check ok: step 3, journal_mode=delete, synchronous=FULL: 4 syncs per commit (journal, directory and database syncs counted)
-check ok: step 3, journal_mode=delete, synchronous=FULL: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
-check ok: step 3, journal_mode=delete, synchronous=FULL: the traced commit leaves exactly the post-step bytes
-twin check: the C CLI running the same step as literal SQL makes 46 writes, syncs and unlinks, identical to the Go driver's
-INFO: CLI sync syscall: fsync
-check ok: synchronous=FULL: the C CLI makes the same writes, syncs and unlink in the same order and leaves the post-step bytes
-kill points: 47 (every pwrite64, sync and unlink of the commit, then the first syscall after the step returned)
-INFO: 47 kill runs took 2.814s with 4 workers
-kill 01 on entry to pwrite64 t.db-journal off=0 len=512    [journal-header]
-    on disk:  database pre-step bytes
-              -journal 0 bytes (not hot)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (0 bytes, first byte 0x00)
-kill 02 on entry to pwrite64 t.db-journal off=512 len=4    [journal-record]
-    on disk:  database pre-step bytes
-              -journal 512 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 0 complete record(s) [], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (512 bytes, first byte 0x00)
-INFO: step 3 FULL kill 02 journal nonce 0xe0f43ab2, run 194ms
-kill 03 on entry to pwrite64 t.db-journal off=516 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 516 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 0 complete record(s) [], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (516 bytes, first byte 0x00)
-INFO: step 3 FULL kill 03 journal nonce 0xefbe53c2, run 136ms
-kill 04 on entry to pwrite64 t.db-journal off=4612 len=4   [journal-record]
-    on disk:  database pre-step bytes
-              -journal 4612 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 0 complete record(s) [], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (4612 bytes, first byte 0x00)
-INFO: step 3 FULL kill 04 journal nonce 0xccf3e01f, run 132ms
-kill 05 on entry to pwrite64 t.db-journal off=4616 len=4   [journal-record]
-    on disk:  database pre-step bytes
-              -journal 4616 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 1 complete record(s) [2], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (4616 bytes, first byte 0x00)
-INFO: step 3 FULL kill 05 journal nonce 0xb99c46ea, run 113ms
-kill 06 on entry to pwrite64 t.db-journal off=4620 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 4620 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 1 complete record(s) [2], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (4620 bytes, first byte 0x00)
-INFO: step 3 FULL kill 06 journal nonce 0xb6e389ff, run 233ms
-kill 07 on entry to pwrite64 t.db-journal off=8716 len=4   [journal-record]
-    on disk:  database pre-step bytes
-              -journal 8716 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 1 complete record(s) [2], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (8716 bytes, first byte 0x00)
-INFO: step 3 FULL kill 07 journal nonce 0x91a49b26, run 156ms
-kill 08 on entry to pwrite64 t.db-journal off=8720 len=4   [journal-record]
-    on disk:  database pre-step bytes
-              -journal 8720 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 2 complete record(s) [2 1], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (8720 bytes, first byte 0x00)
-INFO: step 3 FULL kill 08 journal nonce 0xa4f036a1, run 139ms
-kill 09 on entry to pwrite64 t.db-journal off=8724 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 8724 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 2 complete record(s) [2 1], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (8724 bytes, first byte 0x00)
-INFO: step 3 FULL kill 09 journal nonce 0x14acca1c, run 183ms
-kill 10 on entry to pwrite64 t.db-journal off=12820 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 12820 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 2 complete record(s) [2 1], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (12820 bytes, first byte 0x00)
-INFO: step 3 FULL kill 10 journal nonce 0x6cf94ba7, run 152ms
-kill 11 on entry to pwrite64 t.db-journal off=12824 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 12824 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 3 complete record(s) [2 1 20], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (12824 bytes, first byte 0x00)
-INFO: step 3 FULL kill 11 journal nonce 0x4a66efe2, run 187ms
-kill 12 on entry to pwrite64 t.db-journal off=12828 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 12828 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 3 complete record(s) [2 1 20], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (12828 bytes, first byte 0x00)
-INFO: step 3 FULL kill 12 journal nonce 0xd2fb7f7e, run 229ms
-kill 13 on entry to pwrite64 t.db-journal off=16924 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 16924 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 3 complete record(s) [2 1 20], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (16924 bytes, first byte 0x00)
-INFO: step 3 FULL kill 13 journal nonce 0x4ea3f1cc, run 162ms
-kill 14 on entry to pwrite64 t.db-journal off=16928 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 16928 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 4 complete record(s) [2 1 20 3], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (16928 bytes, first byte 0x00)
-INFO: step 3 FULL kill 14 journal nonce 0x47964e95, run 264ms
-kill 15 on entry to pwrite64 t.db-journal off=16932 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 16932 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 4 complete record(s) [2 1 20 3], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (16932 bytes, first byte 0x00)
-INFO: step 3 FULL kill 15 journal nonce 0x5d95d9ef, run 162ms
-kill 16 on entry to pwrite64 t.db-journal off=21028 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 21028 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 4 complete record(s) [2 1 20 3], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (21028 bytes, first byte 0x00)
-INFO: step 3 FULL kill 16 journal nonce 0x27ead1e3, run 104ms
-kill 17 on entry to pwrite64 t.db-journal off=21032 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 21032 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 5 complete record(s) [2 1 20 3 27], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (21032 bytes, first byte 0x00)
-INFO: step 3 FULL kill 17 journal nonce 0x22351c50, run 109ms
-kill 18 on entry to pwrite64 t.db-journal off=21036 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 21036 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 5 complete record(s) [2 1 20 3 27], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (21036 bytes, first byte 0x00)
-INFO: step 3 FULL kill 18 journal nonce 0x9f14b3de, run 60ms
-kill 19 on entry to pwrite64 t.db-journal off=25132 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 25132 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 5 complete record(s) [2 1 20 3 27], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (25132 bytes, first byte 0x00)
-INFO: step 3 FULL kill 19 journal nonce 0x167388b7, run 298ms
-kill 20 on entry to pwrite64 t.db-journal off=25136 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 25136 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 6 complete record(s) [2 1 20 3 27 4], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (25136 bytes, first byte 0x00)
-INFO: step 3 FULL kill 20 journal nonce 0xd22af796, run 196ms
-kill 21 on entry to pwrite64 t.db-journal off=25140 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 25140 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 6 complete record(s) [2 1 20 3 27 4], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (25140 bytes, first byte 0x00)
-INFO: step 3 FULL kill 21 journal nonce 0x4b1efede, run 397ms
-kill 22 on entry to pwrite64 t.db-journal off=29236 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 29236 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 6 complete record(s) [2 1 20 3 27 4], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (29236 bytes, first byte 0x00)
-INFO: step 3 FULL kill 22 journal nonce 0xb21e17f6, run 191ms
-kill 23 on entry to sync t.db-journal                      [journal-sync]
-    on disk:  database pre-step bytes
-              -journal 29240 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (29240 bytes, first byte 0x00)
-INFO: step 3 FULL kill 23 journal nonce 0x5cf5a80c, run 125ms
-kill 24 on entry to sync .                                 [dir-sync]
-    on disk:  database pre-step bytes
-              -journal 29240 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (29240 bytes, first byte 0x00)
-INFO: step 3 FULL kill 24 journal nonce 0xc7de1ee0, run 156ms
-kill 25 on entry to pwrite64 t.db-journal off=0 len=12     [journal-count]
-    on disk:  database pre-step bytes
-              -journal 29240 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (29240 bytes, first byte 0x00)
-INFO: step 3 FULL kill 25 journal nonce 0xbe83245a, run 70ms
-kill 26 on entry to sync t.db-journal                      [journal-sync]
-    on disk:  database pre-step bytes
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 FULL kill 26 journal nonce 0xcbdbbb84, run 130ms
-kill 27 on entry to pwrite64 t.db off=0 len=4096           [db-page]
-    on disk:  database pre-step bytes
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 FULL kill 27 journal nonce 0xf1f366d6, run 117ms
-kill 28 on entry to pwrite64 t.db off=4096 len=4096        [db-page]
-    on disk:  database torn: 29 pages, 1 differ from pre-step, 17 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 FULL kill 28 journal nonce 0xa966d865, run 140ms
-kill 29 on entry to pwrite64 t.db off=8192 len=4096        [db-page]
-    on disk:  database torn: 29 pages, 2 differ from pre-step, 16 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 FULL kill 29 journal nonce 0x43944b46, run 268ms
-kill 30 on entry to pwrite64 t.db off=12288 len=4096       [db-page]
-    on disk:  database torn: 29 pages, 3 differ from pre-step, 15 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 FULL kill 30 journal nonce 0xeffa4cda, run 211ms
-kill 31 on entry to pwrite64 t.db off=77824 len=4096       [db-page]
-    on disk:  database torn: 29 pages, 4 differ from pre-step, 14 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 FULL kill 31 journal nonce 0x59ea3a01, run 82ms
-kill 32 on entry to pwrite64 t.db off=86016 len=4096       [db-page]
-    on disk:  database torn: 29 pages, 5 differ from pre-step, 13 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 FULL kill 32 journal nonce 0x174a2f5b, run 242ms
-kill 33 on entry to pwrite64 t.db off=102400 len=4096      [db-page]
-    on disk:  database torn: 29 pages, 6 differ from pre-step, 12 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 FULL kill 33 journal nonce 0xd6f07aec, run 166ms
-kill 34 on entry to pwrite64 t.db off=106496 len=4096      [db-page]
-    on disk:  database torn: 29 pages, 7 differ from pre-step, 11 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 FULL kill 34 journal nonce 0x03e146fa, run 182ms
-kill 35 on entry to pwrite64 t.db off=118784 len=4096      [db-page]
-    on disk:  database torn: 29 pages, 8 differ from pre-step, 10 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 FULL kill 35 journal nonce 0xda00d7a1, run 165ms
-kill 36 on entry to pwrite64 t.db off=122880 len=4096      [db-page]
-    on disk:  database torn: 30 pages, 9 differ from pre-step, 9 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 FULL kill 36 journal nonce 0x557c44a3, run 169ms
-kill 37 on entry to pwrite64 t.db off=126976 len=4096      [db-page]
-    on disk:  database torn: 31 pages, 10 differ from pre-step, 8 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 FULL kill 37 journal nonce 0x690c04f0, run 274ms
-kill 38 on entry to pwrite64 t.db off=131072 len=4096      [db-page]
-    on disk:  database torn: 32 pages, 11 differ from pre-step, 7 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 FULL kill 38 journal nonce 0x252769fa, run 137ms
-kill 39 on entry to pwrite64 t.db off=135168 len=4096      [db-page]
-    on disk:  database torn: 33 pages, 12 differ from pre-step, 6 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 FULL kill 39 journal nonce 0x99d792fa, run 192ms
-kill 40 on entry to pwrite64 t.db off=139264 len=4096      [db-page]
-    on disk:  database torn: 34 pages, 13 differ from pre-step, 5 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 FULL kill 40 journal nonce 0xca91e2d4, run 202ms
-kill 41 on entry to pwrite64 t.db off=143360 len=4096      [db-page]
-    on disk:  database torn: 35 pages, 14 differ from pre-step, 4 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 FULL kill 41 journal nonce 0xc21473df, run 168ms
-kill 42 on entry to pwrite64 t.db off=147456 len=4096      [db-page]
-    on disk:  database torn: 36 pages, 15 differ from pre-step, 3 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 FULL kill 42 journal nonce 0x387ac55b, run 204ms
-kill 43 on entry to pwrite64 t.db off=151552 len=4096      [db-page]
-    on disk:  database torn: 37 pages, 16 differ from pre-step, 2 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 FULL kill 43 journal nonce 0x1ca9acf4, run 115ms
-kill 44 on entry to pwrite64 t.db off=155648 len=4096      [db-page]
-    on disk:  database torn: 38 pages, 17 differ from pre-step, 1 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 FULL kill 44 journal nonce 0x4f892f8a, run 208ms
-kill 45 on entry to sync t.db                              [db-sync]
-    on disk:  database post-step bytes
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 FULL kill 45 journal nonce 0xa4801c49, run 241ms
-kill 46 on entry to unlink t.db-journal                    [journal-unlink]
-    on disk:  database post-step bytes
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 FULL kill 46 journal nonce 0x14c383bc, run 188ms
-kill 47 on entry to open marker-end                        [step-returned]
-    on disk:  database post-step bytes
-              no -journal
-              SQLite on reopen nothing to roll back
-    reopened: post-step, exact bytes (recipe step 3); integrity_check ok; no -journal
-outcomes: 32 pre-step exact, 14 pre-step except reused freelist leaves, 1 post-step exact, 0 other
-check ok: step 3, synchronous=FULL: every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)
-check ok: step 3, synchronous=FULL: every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)
-check ok: step 3, synchronous=FULL: every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)
-check ok: step 3, synchronous=FULL: integrity_check is ok after every reopen
-check ok: step 3, synchronous=FULL: for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves
+── A. Where a WAL-default platform meets rollback mode ─────────────────
 
-== D. step 3, synchronous=NORMAL: one commit traced, then killed at every write and sync ==
-the commit's syscalls on the database directory (writer thread, between the step's start and its return):
-    1 other            fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
-    2 other            fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
-    3 other            fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
-    4 other            pread64 t.db off=24 len=16
-    5 other            fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
-    6 other            pread64 t.db off=4096 len=4096
-    7 other            open t.db-journal
-    8 other            fcntl t.db-journal F_SETFD
-    9 journal-header   pwrite64 t.db-journal off=0 len=512
-   10 journal-record   pwrite64 t.db-journal off=512 len=4
-   11 journal-record   pwrite64 t.db-journal off=516 len=4096
-   12 journal-record   pwrite64 t.db-journal off=4612 len=4
-   13 other            pread64 t.db off=8192 len=4096
-   14 other            pread64 t.db off=98304 len=4096
-   15 journal-record   pwrite64 t.db-journal off=4616 len=4
-   16 journal-record   pwrite64 t.db-journal off=4620 len=4096
-   17 journal-record   pwrite64 t.db-journal off=8716 len=4
-   18 other            pread64 t.db off=77824 len=4096
-   19 journal-record   pwrite64 t.db-journal off=8720 len=4
-   20 journal-record   pwrite64 t.db-journal off=8724 len=4096
-   21 journal-record   pwrite64 t.db-journal off=12820 len=4
-   22 journal-record   pwrite64 t.db-journal off=12824 len=4
-   23 journal-record   pwrite64 t.db-journal off=12828 len=4096
-   24 journal-record   pwrite64 t.db-journal off=16924 len=4
-   25 other            pread64 t.db off=12288 len=4096
-   26 other            pread64 t.db off=106496 len=4096
-   27 journal-record   pwrite64 t.db-journal off=16928 len=4
-   28 journal-record   pwrite64 t.db-journal off=16932 len=4096
-   29 journal-record   pwrite64 t.db-journal off=21028 len=4
-   30 journal-record   pwrite64 t.db-journal off=21032 len=4
-   31 journal-record   pwrite64 t.db-journal off=21036 len=4096
-   32 journal-record   pwrite64 t.db-journal off=25132 len=4
-   33 other            pread64 t.db off=102400 len=4096
-   34 journal-record   pwrite64 t.db-journal off=25136 len=4
-   35 journal-record   pwrite64 t.db-journal off=25140 len=4096
-   36 journal-record   pwrite64 t.db-journal off=29236 len=4
-   37 other            fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
-   38 other            fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
-   39 other            pread64 t.db-journal off=29696 len=8 = 0
-   40 journal-count    pwrite64 t.db-journal off=0 len=12
-   41 journal-sync     sync t.db-journal
-   42 other            open .
-   43 other            fcntl . F_SETFD
-   44 dir-sync         sync .
-   45 other            close .
-   46 db-page          pwrite64 t.db off=0 len=4096
-   47 db-page          pwrite64 t.db off=4096 len=4096
-   48 db-page          pwrite64 t.db off=8192 len=4096
-   49 db-page          pwrite64 t.db off=12288 len=4096
-   50 db-page          pwrite64 t.db off=77824 len=4096
-   51 db-page          pwrite64 t.db off=86016 len=4096
-   52 db-page          pwrite64 t.db off=102400 len=4096
-   53 db-page          pwrite64 t.db off=106496 len=4096
-   54 db-page          pwrite64 t.db off=118784 len=4096
-   55 db-page          pwrite64 t.db off=122880 len=4096
-   56 db-page          pwrite64 t.db off=126976 len=4096
-   57 db-page          pwrite64 t.db off=131072 len=4096
-   58 db-page          pwrite64 t.db off=135168 len=4096
-   59 db-page          pwrite64 t.db off=139264 len=4096
-   60 db-page          pwrite64 t.db off=143360 len=4096
-   61 db-page          pwrite64 t.db off=147456 len=4096
-   62 db-page          pwrite64 t.db off=151552 len=4096
-   63 db-page          pwrite64 t.db off=155648 len=4096
-   64 db-sync          sync t.db
-   65 other            close t.db-journal
-   66 journal-unlink   unlink t.db-journal
-   67 other            fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
-   68 other            fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
-   69 other            fcntl t.db F_SETLK F_UNLCK start=0 len=0
-sequence: journal-header, journal-record x21, journal-count, journal-sync, dir-sync, db-page x18, db-sync, journal-unlink
-journaled pages 7 (21 record writes), database page writes 18, syncs 3 [t.db-journal . t.db]
-INFO: sync syscall used by the Go driver: fsync
-check ok: step 3, journal_mode=delete, synchronous=NORMAL: order is journal-header, journal-record x21, journal-count, journal-sync, dir-sync, db-page x18, db-sync, journal-unlink
-check ok: step 3, journal_mode=delete, synchronous=NORMAL: 3 syncs per commit (journal, directory and database syncs counted)
-check ok: step 3, journal_mode=delete, synchronous=NORMAL: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
-check ok: step 3, journal_mode=delete, synchronous=NORMAL: the traced commit leaves exactly the post-step bytes
-twin check: the C CLI running the same step as literal SQL makes 45 writes, syncs and unlinks, identical to the Go driver's
-INFO: CLI sync syscall: fsync
-check ok: synchronous=NORMAL: the C CLI makes the same writes, syncs and unlink in the same order and leaves the post-step bytes
-kill points: 46 (every pwrite64, sync and unlink of the commit, then the first syscall after the step returned)
-INFO: 46 kill runs took 2.876s with 4 workers
-kill 01 on entry to pwrite64 t.db-journal off=0 len=512    [journal-header]
-    on disk:  database pre-step bytes
-              -journal 0 bytes (not hot)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (0 bytes, first byte 0x00)
-kill 02 on entry to pwrite64 t.db-journal off=512 len=4    [journal-record]
-    on disk:  database pre-step bytes
-              -journal 512 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 0 complete record(s) [], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (512 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 02 journal nonce 0xbad8982d, run 132ms
-kill 03 on entry to pwrite64 t.db-journal off=516 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 516 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 0 complete record(s) [], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (516 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 03 journal nonce 0xd45ca09a, run 163ms
-kill 04 on entry to pwrite64 t.db-journal off=4612 len=4   [journal-record]
-    on disk:  database pre-step bytes
-              -journal 4612 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 0 complete record(s) [], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (4612 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 04 journal nonce 0xdbe5ef92, run 164ms
-kill 05 on entry to pwrite64 t.db-journal off=4616 len=4   [journal-record]
-    on disk:  database pre-step bytes
-              -journal 4616 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 1 complete record(s) [2], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (4616 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 05 journal nonce 0xc754555a, run 152ms
-kill 06 on entry to pwrite64 t.db-journal off=4620 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 4620 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 1 complete record(s) [2], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (4620 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 06 journal nonce 0x504dd325, run 88ms
-kill 07 on entry to pwrite64 t.db-journal off=8716 len=4   [journal-record]
-    on disk:  database pre-step bytes
-              -journal 8716 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 1 complete record(s) [2], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (8716 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 07 journal nonce 0x9538b1cf, run 225ms
-kill 08 on entry to pwrite64 t.db-journal off=8720 len=4   [journal-record]
-    on disk:  database pre-step bytes
-              -journal 8720 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 2 complete record(s) [2 1], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (8720 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 08 journal nonce 0x4d5b32db, run 70ms
-kill 09 on entry to pwrite64 t.db-journal off=8724 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 8724 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 2 complete record(s) [2 1], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (8724 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 09 journal nonce 0x86b228b0, run 102ms
-kill 10 on entry to pwrite64 t.db-journal off=12820 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 12820 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 2 complete record(s) [2 1], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (12820 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 10 journal nonce 0xb8dcae80, run 189ms
-kill 11 on entry to pwrite64 t.db-journal off=12824 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 12824 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 3 complete record(s) [2 1 20], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (12824 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 11 journal nonce 0x827fe55d, run 149ms
-kill 12 on entry to pwrite64 t.db-journal off=12828 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 12828 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 3 complete record(s) [2 1 20], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (12828 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 12 journal nonce 0xdf1d48b8, run 82ms
-kill 13 on entry to pwrite64 t.db-journal off=16924 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 16924 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 3 complete record(s) [2 1 20], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (16924 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 13 journal nonce 0xe2d897e4, run 164ms
-kill 14 on entry to pwrite64 t.db-journal off=16928 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 16928 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 4 complete record(s) [2 1 20 3], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (16928 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 14 journal nonce 0xad3ecb79, run 111ms
-kill 15 on entry to pwrite64 t.db-journal off=16932 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 16932 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 4 complete record(s) [2 1 20 3], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (16932 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 15 journal nonce 0xa58308c9, run 202ms
-kill 16 on entry to pwrite64 t.db-journal off=21028 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 21028 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 4 complete record(s) [2 1 20 3], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (21028 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 16 journal nonce 0x07661664, run 187ms
-kill 17 on entry to pwrite64 t.db-journal off=21032 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 21032 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 5 complete record(s) [2 1 20 3 27], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (21032 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 17 journal nonce 0x8eb943f0, run 108ms
-kill 18 on entry to pwrite64 t.db-journal off=21036 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 21036 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 5 complete record(s) [2 1 20 3 27], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (21036 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 18 journal nonce 0x040f4014, run 220ms
-kill 19 on entry to pwrite64 t.db-journal off=25132 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 25132 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 5 complete record(s) [2 1 20 3 27], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (25132 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 19 journal nonce 0x1dbba345, run 83ms
-kill 20 on entry to pwrite64 t.db-journal off=25136 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 25136 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 6 complete record(s) [2 1 20 3 27 4], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (25136 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 20 journal nonce 0x26bc451a, run 130ms
-kill 21 on entry to pwrite64 t.db-journal off=25140 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 25140 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 6 complete record(s) [2 1 20 3 27 4], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (25140 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 21 journal nonce 0x9edbbedd, run 162ms
-kill 22 on entry to pwrite64 t.db-journal off=29236 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 29236 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 6 complete record(s) [2 1 20 3 27 4], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (29236 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 22 journal nonce 0x5f7dbf06, run 111ms
-kill 23 on entry to pwrite64 t.db-journal off=0 len=12     [journal-count]
-    on disk:  database pre-step bytes
-              -journal 29240 bytes, first byte 0x00 (not hot), header not-yet-synced (magic and record count still zero), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (29240 bytes, first byte 0x00)
-INFO: step 3 NORMAL kill 23 journal nonce 0x964e5825, run 92ms
-kill 24 on entry to sync t.db-journal                      [journal-sync]
-    on disk:  database pre-step bytes
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 24 journal nonce 0x89806b2c, run 163ms
-kill 25 on entry to sync .                                 [dir-sync]
-    on disk:  database pre-step bytes
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 25 journal nonce 0x0aeb35a4, run 100ms
-kill 26 on entry to pwrite64 t.db off=0 len=4096           [db-page]
-    on disk:  database pre-step bytes
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 26 journal nonce 0xad4b27fb, run 163ms
-kill 27 on entry to pwrite64 t.db off=4096 len=4096        [db-page]
-    on disk:  database torn: 29 pages, 1 differ from pre-step, 17 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 27 journal nonce 0xeed0b805, run 149ms
-kill 28 on entry to pwrite64 t.db off=8192 len=4096        [db-page]
-    on disk:  database torn: 29 pages, 2 differ from pre-step, 16 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 28 journal nonce 0x9e3b3528, run 306ms
-kill 29 on entry to pwrite64 t.db off=12288 len=4096       [db-page]
-    on disk:  database torn: 29 pages, 3 differ from pre-step, 15 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 29 journal nonce 0xa4735b4d, run 318ms
-kill 30 on entry to pwrite64 t.db off=77824 len=4096       [db-page]
-    on disk:  database torn: 29 pages, 4 differ from pre-step, 14 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 30 journal nonce 0x32e99f4d, run 162ms
-kill 31 on entry to pwrite64 t.db off=86016 len=4096       [db-page]
-    on disk:  database torn: 29 pages, 5 differ from pre-step, 13 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 31 journal nonce 0xd436539c, run 302ms
-kill 32 on entry to pwrite64 t.db off=102400 len=4096      [db-page]
-    on disk:  database torn: 29 pages, 6 differ from pre-step, 12 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 32 journal nonce 0x5b4f98d8, run 197ms
-kill 33 on entry to pwrite64 t.db off=106496 len=4096      [db-page]
-    on disk:  database torn: 29 pages, 7 differ from pre-step, 11 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 33 journal nonce 0x1f5822f4, run 319ms
-kill 34 on entry to pwrite64 t.db off=118784 len=4096      [db-page]
-    on disk:  database torn: 29 pages, 8 differ from pre-step, 10 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 34 journal nonce 0xffe663d5, run 219ms
-kill 35 on entry to pwrite64 t.db off=122880 len=4096      [db-page]
-    on disk:  database torn: 30 pages, 9 differ from pre-step, 9 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 35 journal nonce 0x38796d7a, run 303ms
-kill 36 on entry to pwrite64 t.db off=126976 len=4096      [db-page]
-    on disk:  database torn: 31 pages, 10 differ from pre-step, 8 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 36 journal nonce 0x85d501ba, run 328ms
-kill 37 on entry to pwrite64 t.db off=131072 len=4096      [db-page]
-    on disk:  database torn: 32 pages, 11 differ from pre-step, 7 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 37 journal nonce 0xd776e25c, run 208ms
-kill 38 on entry to pwrite64 t.db off=135168 len=4096      [db-page]
-    on disk:  database torn: 33 pages, 12 differ from pre-step, 6 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 38 journal nonce 0xc6d7b100, run 165ms
-kill 39 on entry to pwrite64 t.db off=139264 len=4096      [db-page]
-    on disk:  database torn: 34 pages, 13 differ from pre-step, 5 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 39 journal nonce 0xb96f8c84, run 351ms
-kill 40 on entry to pwrite64 t.db off=143360 len=4096      [db-page]
-    on disk:  database torn: 35 pages, 14 differ from pre-step, 4 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 40 journal nonce 0xd349dbb4, run 278ms
-kill 41 on entry to pwrite64 t.db off=147456 len=4096      [db-page]
-    on disk:  database torn: 36 pages, 15 differ from pre-step, 3 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 41 journal nonce 0xa81d61ad, run 369ms
-kill 42 on entry to pwrite64 t.db off=151552 len=4096      [db-page]
-    on disk:  database torn: 37 pages, 16 differ from pre-step, 2 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 42 journal nonce 0x06a83b73, run 321ms
-kill 43 on entry to pwrite64 t.db off=155648 len=4096      [db-page]
-    on disk:  database torn: 38 pages, 17 differ from pre-step, 1 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 43 journal nonce 0x92cc927d, run 129ms
-kill 44 on entry to sync t.db                              [db-sync]
-    on disk:  database post-step bytes
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 44 journal nonce 0x77ffa38d, run 224ms
-kill 45 on entry to unlink t.db-journal                    [journal-unlink]
-    on disk:  database post-step bytes
-              -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 NORMAL kill 45 journal nonce 0x7445db09, run 202ms
-kill 46 on entry to open marker-end                        [step-returned]
-    on disk:  database post-step bytes
-              no -journal
-              SQLite on reopen nothing to roll back
-    reopened: post-step, exact bytes (recipe step 3); integrity_check ok; no -journal
-outcomes: 31 pre-step exact, 14 pre-step except reused freelist leaves, 1 post-step exact, 0 other
-check ok: step 3, synchronous=NORMAL: every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)
-check ok: step 3, synchronous=NORMAL: every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)
-check ok: step 3, synchronous=NORMAL: every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)
-check ok: step 3, synchronous=NORMAL: integrity_check is ok after every reopen
-check ok: step 3, synchronous=NORMAL: for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves
+A1. A new file starts in rollback mode (header bytes 18 and 19 = 1) until
+    PRAGMA journal_mode=wal rewrites them to 2.
+┌───────────────────────────────────────────────────────────┬──────────────┬─────────┬─────────┐
+│                           stage                           │ journal_mode │ byte_18 │ byte_19 │
+├───────────────────────────────────────────────────────────┼──────────────┼─────────┼─────────┤
+│ new file, driver defaults, before any write               │ delete       │         │         │
+│ after its first CREATE TABLE                              │              │ 1       │ 1       │
+│ after PRAGMA journal_mode=wal, read by a fresh connection │ wal          │ 2       │ 2       │
+└───────────────────────────────────────────────────────────┴──────────────┴─────────┴─────────┘
 
-== D. step 3, synchronous=OFF: one commit traced, then killed at every write and sync ==
-the commit's syscalls on the database directory (writer thread, between the step's start and its return):
-    1 other            fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
-    2 other            fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
-    3 other            fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
-    4 other            pread64 t.db off=24 len=16
-    5 other            fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
-    6 other            pread64 t.db off=4096 len=4096
-    7 other            open t.db-journal
-    8 other            fcntl t.db-journal F_SETFD
-    9 journal-header   pwrite64 t.db-journal off=0 len=512
-   10 journal-record   pwrite64 t.db-journal off=512 len=4
-   11 journal-record   pwrite64 t.db-journal off=516 len=4096
-   12 journal-record   pwrite64 t.db-journal off=4612 len=4
-   13 other            pread64 t.db off=8192 len=4096
-   14 other            pread64 t.db off=98304 len=4096
-   15 journal-record   pwrite64 t.db-journal off=4616 len=4
-   16 journal-record   pwrite64 t.db-journal off=4620 len=4096
-   17 journal-record   pwrite64 t.db-journal off=8716 len=4
-   18 other            pread64 t.db off=77824 len=4096
-   19 journal-record   pwrite64 t.db-journal off=8720 len=4
-   20 journal-record   pwrite64 t.db-journal off=8724 len=4096
-   21 journal-record   pwrite64 t.db-journal off=12820 len=4
-   22 journal-record   pwrite64 t.db-journal off=12824 len=4
-   23 journal-record   pwrite64 t.db-journal off=12828 len=4096
-   24 journal-record   pwrite64 t.db-journal off=16924 len=4
-   25 other            pread64 t.db off=12288 len=4096
-   26 other            pread64 t.db off=106496 len=4096
-   27 journal-record   pwrite64 t.db-journal off=16928 len=4
-   28 journal-record   pwrite64 t.db-journal off=16932 len=4096
-   29 journal-record   pwrite64 t.db-journal off=21028 len=4
-   30 journal-record   pwrite64 t.db-journal off=21032 len=4
-   31 journal-record   pwrite64 t.db-journal off=21036 len=4096
-   32 journal-record   pwrite64 t.db-journal off=25132 len=4
-   33 other            pread64 t.db off=102400 len=4096
-   34 journal-record   pwrite64 t.db-journal off=25136 len=4
-   35 journal-record   pwrite64 t.db-journal off=25140 len=4096
-   36 journal-record   pwrite64 t.db-journal off=29236 len=4
-   37 other            fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
-   38 other            fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
-   39 db-page          pwrite64 t.db off=0 len=4096
-   40 db-page          pwrite64 t.db off=4096 len=4096
-   41 db-page          pwrite64 t.db off=8192 len=4096
-   42 db-page          pwrite64 t.db off=12288 len=4096
-   43 db-page          pwrite64 t.db off=77824 len=4096
-   44 db-page          pwrite64 t.db off=86016 len=4096
-   45 db-page          pwrite64 t.db off=102400 len=4096
-   46 db-page          pwrite64 t.db off=106496 len=4096
-   47 db-page          pwrite64 t.db off=118784 len=4096
-   48 db-page          pwrite64 t.db off=122880 len=4096
-   49 db-page          pwrite64 t.db off=126976 len=4096
-   50 db-page          pwrite64 t.db off=131072 len=4096
-   51 db-page          pwrite64 t.db off=135168 len=4096
-   52 db-page          pwrite64 t.db off=139264 len=4096
-   53 db-page          pwrite64 t.db off=143360 len=4096
-   54 db-page          pwrite64 t.db off=147456 len=4096
-   55 db-page          pwrite64 t.db off=151552 len=4096
-   56 db-page          pwrite64 t.db off=155648 len=4096
-   57 other            close t.db-journal
-   58 journal-unlink   unlink t.db-journal
-   59 other            fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
-   60 other            fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
-   61 other            fcntl t.db F_SETLK F_UNLCK start=0 len=0
-sequence: journal-header, journal-record x21, db-page x18, journal-unlink
-journaled pages 7 (21 record writes), database page writes 18, syncs 0 []
-INFO: sync syscall used by the Go driver: (none)
-check ok: step 3, journal_mode=delete, synchronous=OFF: order is journal-header, journal-record x21, db-page x18, journal-unlink
-check ok: step 3, journal_mode=delete, synchronous=OFF: 0 syncs per commit (journal, directory and database syncs counted)
-check ok: step 3, journal_mode=delete, synchronous=OFF: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
-check ok: step 3, journal_mode=delete, synchronous=OFF: the traced commit leaves exactly the post-step bytes
-twin check: the C CLI running the same step as literal SQL makes 41 writes, syncs and unlinks, identical to the Go driver's
-INFO: CLI sync syscall: (none)
-check ok: synchronous=OFF: the C CLI makes the same writes, syncs and unlink in the same order and leaves the post-step bytes
-kill points: 42 (every pwrite64, sync and unlink of the commit, then the first syscall after the step returned)
-INFO: 42 kill runs took 2.839s with 4 workers
-kill 01 on entry to pwrite64 t.db-journal off=0 len=512    [journal-header]
-    on disk:  database pre-step bytes
-              -journal 0 bytes (not hot)
-              SQLite on reopen ignores it (not hot)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; cold -journal left (0 bytes, first byte 0x00)
-kill 02 on entry to pwrite64 t.db-journal off=512 len=4    [journal-record]
-    on disk:  database pre-step bytes
-              -journal 512 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 0 complete record(s) [], 0 checksum failure(s)
-              SQLite on reopen hot, but restores no page (end of journal)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 02 journal nonce 0xdef789d9, run 168ms
-kill 03 on entry to pwrite64 t.db-journal off=516 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 516 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 0 complete record(s) [], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen hot, but restores no page (end of journal)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 03 journal nonce 0x70145d63, run 199ms
-kill 04 on entry to pwrite64 t.db-journal off=4612 len=4   [journal-record]
-    on disk:  database pre-step bytes
-              -journal 4612 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 0 complete record(s) [], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen hot, but restores no page (end of journal)
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 04 journal nonce 0x988862eb, run 154ms
-kill 05 on entry to pwrite64 t.db-journal off=4616 len=4   [journal-record]
-    on disk:  database pre-step bytes
-              -journal 4616 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 1 complete record(s) [2], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 05 journal nonce 0x079c54d5, run 114ms
-kill 06 on entry to pwrite64 t.db-journal off=4620 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 4620 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 1 complete record(s) [2], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen rolls back: writes pages [2] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 06 journal nonce 0xf79a29d4, run 210ms
-kill 07 on entry to pwrite64 t.db-journal off=8716 len=4   [journal-record]
-    on disk:  database pre-step bytes
-              -journal 8716 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 1 complete record(s) [2], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen rolls back: writes pages [2] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 07 journal nonce 0x48c76a05, run 172ms
-kill 08 on entry to pwrite64 t.db-journal off=8720 len=4   [journal-record]
-    on disk:  database pre-step bytes
-              -journal 8720 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 2 complete record(s) [2 1], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 08 journal nonce 0x4c03710b, run 181ms
-kill 09 on entry to pwrite64 t.db-journal off=8724 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 8724 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 2 complete record(s) [2 1], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen rolls back: writes pages [2 1] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 09 journal nonce 0x5f04fda7, run 232ms
-kill 10 on entry to pwrite64 t.db-journal off=12820 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 12820 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 2 complete record(s) [2 1], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen rolls back: writes pages [2 1] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 10 journal nonce 0xc7f099c4, run 97ms
-kill 11 on entry to pwrite64 t.db-journal off=12824 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 12824 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 3 complete record(s) [2 1 20], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 11 journal nonce 0xda3a6054, run 227ms
-kill 12 on entry to pwrite64 t.db-journal off=12828 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 12828 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 3 complete record(s) [2 1 20], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen rolls back: writes pages [2 1 20] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 12 journal nonce 0xf1070e1b, run 111ms
-kill 13 on entry to pwrite64 t.db-journal off=16924 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 16924 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 3 complete record(s) [2 1 20], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen rolls back: writes pages [2 1 20] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 13 journal nonce 0x20a0cd2b, run 85ms
-kill 14 on entry to pwrite64 t.db-journal off=16928 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 16928 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 4 complete record(s) [2 1 20 3], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 14 journal nonce 0xa7a7e961, run 87ms
-kill 15 on entry to pwrite64 t.db-journal off=16932 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 16932 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 4 complete record(s) [2 1 20 3], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen rolls back: writes pages [2 1 20 3] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 15 journal nonce 0x169b3c65, run 223ms
-kill 16 on entry to pwrite64 t.db-journal off=21028 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 21028 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 4 complete record(s) [2 1 20 3], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen rolls back: writes pages [2 1 20 3] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 16 journal nonce 0x8f8ce055, run 216ms
-kill 17 on entry to pwrite64 t.db-journal off=21032 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 21032 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 5 complete record(s) [2 1 20 3 27], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 17 journal nonce 0x94206aa5, run 200ms
-kill 18 on entry to pwrite64 t.db-journal off=21036 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 21036 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 5 complete record(s) [2 1 20 3 27], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 18 journal nonce 0xe62c2204, run 156ms
-kill 19 on entry to pwrite64 t.db-journal off=25132 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 25132 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 5 complete record(s) [2 1 20 3 27], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 19 journal nonce 0xedfe0c5c, run 226ms
-kill 20 on entry to pwrite64 t.db-journal off=25136 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 25136 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 6 complete record(s) [2 1 20 3 27 4], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 20 journal nonce 0x522666de, run 230ms
-kill 21 on entry to pwrite64 t.db-journal off=25140 len=4096 [journal-record]
-    on disk:  database pre-step bytes
-              -journal 25140 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 6 complete record(s) [2 1 20 3 27 4], 0 checksum failure(s), 4 byte(s) of an incomplete record
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 21 journal nonce 0x2e6d506e, run 271ms
-kill 22 on entry to pwrite64 t.db-journal off=29236 len=4  [journal-record]
-    on disk:  database pre-step bytes
-              -journal 29236 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 6 complete record(s) [2 1 20 3 27 4], 0 checksum failure(s), 4100 byte(s) of an incomplete record
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 22 journal nonce 0xe585ae12, run 285ms
-kill 23 on entry to pwrite64 t.db off=0 len=4096           [db-page]
-    on disk:  database pre-step bytes
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 23 journal nonce 0x51e3305c, run 216ms
-kill 24 on entry to pwrite64 t.db off=4096 len=4096        [db-page]
-    on disk:  database torn: 29 pages, 1 differ from pre-step, 17 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 24 journal nonce 0x3f9ee19b, run 175ms
-kill 25 on entry to pwrite64 t.db off=8192 len=4096        [db-page]
-    on disk:  database torn: 29 pages, 2 differ from pre-step, 16 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 25 journal nonce 0x07109a10, run 125ms
-kill 26 on entry to pwrite64 t.db off=12288 len=4096       [db-page]
-    on disk:  database torn: 29 pages, 3 differ from pre-step, 15 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 26 journal nonce 0x835f9040, run 271ms
-kill 27 on entry to pwrite64 t.db off=77824 len=4096       [db-page]
-    on disk:  database torn: 29 pages, 4 differ from pre-step, 14 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 27 journal nonce 0x2e7cfb3b, run 177ms
-kill 28 on entry to pwrite64 t.db off=86016 len=4096       [db-page]
-    on disk:  database torn: 29 pages, 5 differ from pre-step, 13 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step, exact bytes (recipe step 2); integrity_check ok; no -journal
-INFO: step 3 OFF kill 28 journal nonce 0x302d7013, run 196ms
-kill 29 on entry to pwrite64 t.db off=102400 len=4096      [db-page]
-    on disk:  database torn: 29 pages, 6 differ from pre-step, 12 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 OFF kill 29 journal nonce 0x775ad0fc, run 193ms
-kill 30 on entry to pwrite64 t.db off=106496 len=4096      [db-page]
-    on disk:  database torn: 29 pages, 7 differ from pre-step, 11 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 OFF kill 30 journal nonce 0xd925991e, run 163ms
-kill 31 on entry to pwrite64 t.db off=118784 len=4096      [db-page]
-    on disk:  database torn: 29 pages, 8 differ from pre-step, 10 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 OFF kill 31 journal nonce 0x8d6c6f08, run 127ms
-kill 32 on entry to pwrite64 t.db off=122880 len=4096      [db-page]
-    on disk:  database torn: 30 pages, 9 differ from pre-step, 9 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 OFF kill 32 journal nonce 0x982be1f0, run 380ms
-kill 33 on entry to pwrite64 t.db off=126976 len=4096      [db-page]
-    on disk:  database torn: 31 pages, 10 differ from pre-step, 8 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 OFF kill 33 journal nonce 0x5cb602cb, run 161ms
-kill 34 on entry to pwrite64 t.db off=131072 len=4096      [db-page]
-    on disk:  database torn: 32 pages, 11 differ from pre-step, 7 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 OFF kill 34 journal nonce 0x9158dce2, run 299ms
-kill 35 on entry to pwrite64 t.db off=135168 len=4096      [db-page]
-    on disk:  database torn: 33 pages, 12 differ from pre-step, 6 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 OFF kill 35 journal nonce 0x2a3766f3, run 217ms
-kill 36 on entry to pwrite64 t.db off=139264 len=4096      [db-page]
-    on disk:  database torn: 34 pages, 13 differ from pre-step, 5 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 OFF kill 36 journal nonce 0xf269851f, run 198ms
-kill 37 on entry to pwrite64 t.db off=143360 len=4096      [db-page]
-    on disk:  database torn: 35 pages, 14 differ from pre-step, 4 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 OFF kill 37 journal nonce 0xe7b5a206, run 273ms
-kill 38 on entry to pwrite64 t.db off=147456 len=4096      [db-page]
-    on disk:  database torn: 36 pages, 15 differ from pre-step, 3 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 OFF kill 38 journal nonce 0x947b1093, run 256ms
-kill 39 on entry to pwrite64 t.db off=151552 len=4096      [db-page]
-    on disk:  database torn: 37 pages, 16 differ from pre-step, 2 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 OFF kill 39 journal nonce 0xf196e398, run 259ms
-kill 40 on entry to pwrite64 t.db off=155648 len=4096      [db-page]
-    on disk:  database torn: 38 pages, 17 differ from pre-step, 1 differ from post-step
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 OFF kill 40 journal nonce 0x6fd2da03, run 67ms
-kill 41 on entry to unlink t.db-journal                    [journal-unlink]
-    on disk:  database post-step bytes
-              -journal 29240 bytes, first byte 0xd9 (hot), header no-sync (record count 0xffffffff: read to end of file), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-              SQLite on reopen rolls back: writes pages [2 1 20 3 27 4 26] from the journal, truncates to 29 pages
-    reopened: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's; integrity_check ok; no -journal
-INFO: step 3 OFF kill 41 journal nonce 0x05e488b1, run 222ms
-kill 42 on entry to open marker-end                        [step-returned]
-    on disk:  database post-step bytes
-              no -journal
-              SQLite on reopen nothing to roll back
-    reopened: post-step, exact bytes (recipe step 3); integrity_check ok; no -journal
-outcomes: 28 pre-step exact, 13 pre-step except reused freelist leaves, 1 post-step exact, 0 other
-check ok: step 3, synchronous=OFF: every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)
-check ok: step 3, synchronous=OFF: every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)
-check ok: step 3, synchronous=OFF: every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)
-check ok: step 3, synchronous=OFF: integrity_check is ok after every reopen
-check ok: step 3, synchronous=OFF: for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves
+A2. Each statement traced in a fresh process. The switch to WAL, and the
+    first commit of a WAL file opened with sqlitex.Open, still go through
+    a -journal; the statements after them write only to the -wal.
+┌──────────┬──────────────────────────────────────────────────┬─────────────────────────────────────────┬────────────┐
+│  opener  │                    statement                     │            journal_syscalls             │ wal_writes │
+├──────────┼──────────────────────────────────────────────────┼─────────────────────────────────────────┼────────────┤
+│ plain    │ CREATE TABLE (driver defaults, first write)      │ open pwrite64 sync pwrite64 sync unlink │ 0          │
+│ switch   │ PRAGMA journal_mode=wal on the new empty file    │ open pwrite64 sync pwrite64 sync unlink │ 0          │
+│ switch   │ CREATE TABLE after the switch                    │                                         │ 5          │
+│ platform │ sqlitex.Open of a new file with journal_mode=wal │ open pwrite64 sync pwrite64 sync unlink │ 5          │
+│ platform │ CREATE TABLE after it                            │                                         │ 4          │
+└──────────┴──────────────────────────────────────────────────┴─────────────────────────────────────────┴────────────┘
 
-== summary for step 3: reopened state per kill point, in commit order ==
-synchronous=FULL   BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBbbbbbbbbbbbbbbA
-synchronous=NORMAL BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBbbbbbbbbbbbbbbA
-synchronous=OFF    BBBBBBBBBBBBBBBBBBBBBBBBBBBBbbbbbbbbbbbbbA
-(B = pre-step exact bytes, b = pre-step except reused freelist leaves, A = post-step exact bytes, ? = anything else; the last B or b is the kill on entry to the journal unlink)
+A3. The -journal syscalls of each of those rollback-mode commits:
+┌──────────────────────────────────────────────────┬───┬────────────────────────────────────────────┐
+│                    statement                     │ n │                    call                    │
+├──────────────────────────────────────────────────┼───┼────────────────────────────────────────────┤
+│ CREATE TABLE (driver defaults, first write)      │ 1 │ open plain.db-journal                      │
+│ CREATE TABLE (driver defaults, first write)      │ 2 │ pwrite64 plain.db-journal off=0 len=512    │
+│ CREATE TABLE (driver defaults, first write)      │ 3 │ sync plain.db-journal                      │
+│ CREATE TABLE (driver defaults, first write)      │ 4 │ pwrite64 plain.db-journal off=0 len=12     │
+│ CREATE TABLE (driver defaults, first write)      │ 5 │ sync plain.db-journal                      │
+│ CREATE TABLE (driver defaults, first write)      │ 6 │ unlink plain.db-journal                    │
+│ PRAGMA journal_mode=wal on the new empty file    │ 1 │ open switch.db-journal                     │
+│ PRAGMA journal_mode=wal on the new empty file    │ 2 │ pwrite64 switch.db-journal off=0 len=512   │
+│ PRAGMA journal_mode=wal on the new empty file    │ 3 │ sync switch.db-journal                     │
+│ PRAGMA journal_mode=wal on the new empty file    │ 4 │ pwrite64 switch.db-journal off=0 len=12    │
+│ PRAGMA journal_mode=wal on the new empty file    │ 5 │ sync switch.db-journal                     │
+│ PRAGMA journal_mode=wal on the new empty file    │ 6 │ unlink switch.db-journal                   │
+│ sqlitex.Open of a new file with journal_mode=wal │ 1 │ open platform.db-journal                   │
+│ sqlitex.Open of a new file with journal_mode=wal │ 2 │ pwrite64 platform.db-journal off=0 len=512 │
+│ sqlitex.Open of a new file with journal_mode=wal │ 3 │ sync platform.db-journal                   │
+│ sqlitex.Open of a new file with journal_mode=wal │ 4 │ pwrite64 platform.db-journal off=0 len=12  │
+│ sqlitex.Open of a new file with journal_mode=wal │ 5 │ sync platform.db-journal                   │
+│ sqlitex.Open of a new file with journal_mode=wal │ 6 │ unlink platform.db-journal                 │
+└──────────────────────────────────────────────────┴───┴────────────────────────────────────────────┘
 
-== D2. a step whose pre-step file has no freelist: step 1, every kill point, all three levels ==
-step 1: schema=0 inserts=65 updates=6 deletes=0 indexes=0
-pre-step state (after step 0): 4 pages, sha256 e551bbfca2c05cd9, freelist leaves []
-post-step state (after step 1): 22 pages, sha256 6207fb74284d25e8
-check ok: the pre-step and post-step files equal the recipe's hashes for steps 0 and 1
+── B. The recipe step ──────────────────────────────────────────────────
 
--- step 1, synchronous=FULL --
-sequence: journal-header, journal-record x12, journal-sync, dir-sync, journal-count, journal-sync, db-page x22, db-sync, journal-unlink
-journaled pages 4 (12 record writes), database page writes 22, syncs 4 [t.db-journal . t.db-journal t.db]
-INFO: sync syscall used by the Go driver: fsync
-check ok: step 1, journal_mode=delete, synchronous=FULL: order is journal-header, journal-record x12, journal-sync, dir-sync, journal-count, journal-sync, db-page x22, db-sync, journal-unlink
-check ok: step 1, journal_mode=delete, synchronous=FULL: 4 syncs per commit (journal, directory and database syncs counted)
-check ok: step 1, journal_mode=delete, synchronous=FULL: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
-check ok: step 1, journal_mode=delete, synchronous=FULL: the traced commit leaves exactly the post-step bytes
-kill points: 42 (every pwrite64, sync and unlink of the commit, then the first syscall after the step returned)
-INFO: 42 kill runs took 2.442s with 4 workers
-INFO: step 1 FULL kill 02 journal nonce 0x7c11adeb, run 219ms
-INFO: step 1 FULL kill 03 journal nonce 0xf5ac25d6, run 84ms
-INFO: step 1 FULL kill 04 journal nonce 0x92156157, run 142ms
-INFO: step 1 FULL kill 05 journal nonce 0xb0407916, run 157ms
-INFO: step 1 FULL kill 06 journal nonce 0xfbd85bf6, run 64ms
-INFO: step 1 FULL kill 07 journal nonce 0xa2ecea52, run 87ms
-INFO: step 1 FULL kill 08 journal nonce 0xf2cfb53d, run 116ms
-INFO: step 1 FULL kill 09 journal nonce 0x397f533e, run 205ms
-INFO: step 1 FULL kill 10 journal nonce 0x660841c0, run 120ms
-INFO: step 1 FULL kill 11 journal nonce 0x76df42e5, run 68ms
-INFO: step 1 FULL kill 12 journal nonce 0xb7701e63, run 105ms
-INFO: step 1 FULL kill 13 journal nonce 0x11f4bcbf, run 111ms
-INFO: step 1 FULL kill 14 journal nonce 0x95644f09, run 192ms
-INFO: step 1 FULL kill 15 journal nonce 0x3ec385b1, run 162ms
-INFO: step 1 FULL kill 16 journal nonce 0x3419d69e, run 186ms
-INFO: step 1 FULL kill 17 journal nonce 0x66978411, run 122ms
-INFO: step 1 FULL kill 18 journal nonce 0xac51b144, run 137ms
-INFO: step 1 FULL kill 19 journal nonce 0x9b8749bc, run 126ms
-INFO: step 1 FULL kill 20 journal nonce 0xea711dd4, run 121ms
-INFO: step 1 FULL kill 21 journal nonce 0xab6f080b, run 187ms
-INFO: step 1 FULL kill 22 journal nonce 0xa76bf054, run 210ms
-INFO: step 1 FULL kill 23 journal nonce 0xcb74b902, run 159ms
-INFO: step 1 FULL kill 24 journal nonce 0x4550e0e8, run 219ms
-INFO: step 1 FULL kill 25 journal nonce 0x3e17c5af, run 80ms
-INFO: step 1 FULL kill 26 journal nonce 0xa655de8d, run 294ms
-INFO: step 1 FULL kill 27 journal nonce 0xd9f09d80, run 288ms
-INFO: step 1 FULL kill 28 journal nonce 0x3427c17e, run 138ms
-INFO: step 1 FULL kill 29 journal nonce 0x2182a097, run 103ms
-INFO: step 1 FULL kill 30 journal nonce 0xa88db848, run 225ms
-INFO: step 1 FULL kill 31 journal nonce 0x376d7fa8, run 140ms
-INFO: step 1 FULL kill 32 journal nonce 0x92e9298b, run 188ms
-INFO: step 1 FULL kill 33 journal nonce 0xa42aefae, run 230ms
-INFO: step 1 FULL kill 34 journal nonce 0xba11f7c7, run 332ms
-INFO: step 1 FULL kill 35 journal nonce 0x5c2bdf7c, run 234ms
-INFO: step 1 FULL kill 36 journal nonce 0x24edef49, run 229ms
-INFO: step 1 FULL kill 37 journal nonce 0xa6348b48, run 228ms
-INFO: step 1 FULL kill 38 journal nonce 0xcffe6963, run 206ms
-INFO: step 1 FULL kill 39 journal nonce 0x81518d52, run 304ms
-INFO: step 1 FULL kill 40 journal nonce 0xfc6db764, run 176ms
-INFO: step 1 FULL kill 41 journal nonce 0xe0735cff, run 288ms
-outcomes: 41 pre-step exact, 0 pre-step except reused freelist leaves, 1 post-step exact, 0 other
-check ok: step 1, synchronous=FULL: every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)
-check ok: step 1, synchronous=FULL: every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)
-check ok: step 1, synchronous=FULL: the pre-step file has no freelist, and every reopened database equals the pre-step or post-step bytes exactly
-check ok: step 1, synchronous=FULL: every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)
-check ok: step 1, synchronous=FULL: integrity_check is ok after every reopen
-check ok: step 1, synchronous=FULL: for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves
+B1. Step 3 of the recipe, the transaction this walkthrough commits:
+┌──────┬─────────────────────────────────────┬────────┬─────────┬─────────┬─────────┬─────────┐
+│ step │               recipe                │ schema │ inserts │ updates │ deletes │ indexes │
+├──────┼─────────────────────────────────────┼────────┼─────────┼─────────┼─────────┼─────────┤
+│ 3    │ seed=1 steps=30 journal_mode=delete │ 0      │ 53      │ 5       │ 5       │ 0       │
+└──────┴─────────────────────────────────────┴────────┴─────────┴─────────┴─────────┴─────────┘
 
--- step 1, synchronous=NORMAL --
-sequence: journal-header, journal-record x12, journal-count, journal-sync, dir-sync, db-page x22, db-sync, journal-unlink
-journaled pages 4 (12 record writes), database page writes 22, syncs 3 [t.db-journal . t.db]
-INFO: sync syscall used by the Go driver: fsync
-check ok: step 1, journal_mode=delete, synchronous=NORMAL: order is journal-header, journal-record x12, journal-count, journal-sync, dir-sync, db-page x22, db-sync, journal-unlink
-check ok: step 1, journal_mode=delete, synchronous=NORMAL: 3 syncs per commit (journal, directory and database syncs counted)
-check ok: step 1, journal_mode=delete, synchronous=NORMAL: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
-check ok: step 1, journal_mode=delete, synchronous=NORMAL: the traced commit leaves exactly the post-step bytes
-kill points: 41 (every pwrite64, sync and unlink of the commit, then the first syscall after the step returned)
-INFO: 41 kill runs took 3.289s with 4 workers
-INFO: step 1 NORMAL kill 02 journal nonce 0xada15aa8, run 246ms
-INFO: step 1 NORMAL kill 03 journal nonce 0xa1e4fd21, run 147ms
-INFO: step 1 NORMAL kill 04 journal nonce 0x24b50a4f, run 288ms
-INFO: step 1 NORMAL kill 05 journal nonce 0x5a44005f, run 404ms
-INFO: step 1 NORMAL kill 06 journal nonce 0x603091ee, run 294ms
-INFO: step 1 NORMAL kill 07 journal nonce 0x43d5be83, run 225ms
-INFO: step 1 NORMAL kill 08 journal nonce 0x22fc062f, run 155ms
-INFO: step 1 NORMAL kill 09 journal nonce 0x7dad5b8b, run 296ms
-INFO: step 1 NORMAL kill 10 journal nonce 0x1855e7d4, run 146ms
-INFO: step 1 NORMAL kill 11 journal nonce 0x7e9db7a1, run 339ms
-INFO: step 1 NORMAL kill 12 journal nonce 0xf3075a4b, run 271ms
-INFO: step 1 NORMAL kill 13 journal nonce 0xdad51718, run 141ms
-INFO: step 1 NORMAL kill 14 journal nonce 0xd885ab91, run 315ms
-INFO: step 1 NORMAL kill 15 journal nonce 0x31e59d22, run 499ms
-INFO: step 1 NORMAL kill 16 journal nonce 0x74fef789, run 146ms
-INFO: step 1 NORMAL kill 17 journal nonce 0x99b440bd, run 276ms
-INFO: step 1 NORMAL kill 18 journal nonce 0xf563a7f4, run 128ms
-INFO: step 1 NORMAL kill 19 journal nonce 0xa4b1a1a1, run 172ms
-INFO: step 1 NORMAL kill 20 journal nonce 0xcc4cb938, run 456ms
-INFO: step 1 NORMAL kill 21 journal nonce 0x44fac056, run 159ms
-INFO: step 1 NORMAL kill 22 journal nonce 0xc17023d2, run 184ms
-INFO: step 1 NORMAL kill 23 journal nonce 0x0ac82838, run 193ms
-INFO: step 1 NORMAL kill 24 journal nonce 0x458faa93, run 267ms
-INFO: step 1 NORMAL kill 25 journal nonce 0x5c967480, run 310ms
-INFO: step 1 NORMAL kill 26 journal nonce 0x86242d9b, run 295ms
-INFO: step 1 NORMAL kill 27 journal nonce 0xa01a64bb, run 411ms
-INFO: step 1 NORMAL kill 28 journal nonce 0xd7a6c9ed, run 317ms
-INFO: step 1 NORMAL kill 29 journal nonce 0xf3de73c8, run 303ms
-INFO: step 1 NORMAL kill 30 journal nonce 0x5bac35a4, run 199ms
-INFO: step 1 NORMAL kill 31 journal nonce 0x83e5d3ee, run 132ms
-INFO: step 1 NORMAL kill 32 journal nonce 0x9fc49219, run 295ms
-INFO: step 1 NORMAL kill 33 journal nonce 0xe165b704, run 251ms
-INFO: step 1 NORMAL kill 34 journal nonce 0xb5434bbd, run 194ms
-INFO: step 1 NORMAL kill 35 journal nonce 0xfb27792f, run 216ms
-INFO: step 1 NORMAL kill 36 journal nonce 0xc71e8e65, run 205ms
-INFO: step 1 NORMAL kill 37 journal nonce 0x7828a20b, run 193ms
-INFO: step 1 NORMAL kill 38 journal nonce 0x449d9fa2, run 184ms
-INFO: step 1 NORMAL kill 39 journal nonce 0x8593aba8, run 162ms
-INFO: step 1 NORMAL kill 40 journal nonce 0x6be0e5f4, run 343ms
-outcomes: 40 pre-step exact, 0 pre-step except reused freelist leaves, 1 post-step exact, 0 other
-check ok: step 1, synchronous=NORMAL: every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)
-check ok: step 1, synchronous=NORMAL: every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)
-check ok: step 1, synchronous=NORMAL: the pre-step file has no freelist, and every reopened database equals the pre-step or post-step bytes exactly
-check ok: step 1, synchronous=NORMAL: every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)
-check ok: step 1, synchronous=NORMAL: integrity_check is ok after every reopen
-check ok: step 1, synchronous=NORMAL: for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves
+B2. The file before (after recipe step 2) and after it. Page 22 is a
+    freelist leaf in the pre-step file; remember it for part D.
+┌───────────┬─────────────┬───────┬──────────────────┬─────────────────┐
+│   state   │ recipe_step │ pages │  sha256_prefix   │ freelist_leaves │
+├───────────┼─────────────┼───────┼──────────────────┼─────────────────┤
+│ pre-step  │ 2           │ 29    │ b8a0bd0796442099 │ 22              │
+│ post-step │ 3           │ 39    │ 0ef90bd0e64af1e3 │                 │
+└───────────┴─────────────┴───────┴──────────────────┴─────────────────┘
 
--- step 1, synchronous=OFF --
-sequence: journal-header, journal-record x12, db-page x22, journal-unlink
-journaled pages 4 (12 record writes), database page writes 22, syncs 0 []
-INFO: sync syscall used by the Go driver: (none)
-check ok: step 1, journal_mode=delete, synchronous=OFF: order is journal-header, journal-record x12, db-page x22, journal-unlink
-check ok: step 1, journal_mode=delete, synchronous=OFF: 0 syncs per commit (journal, directory and database syncs counted)
-check ok: step 1, journal_mode=delete, synchronous=OFF: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
-check ok: step 1, journal_mode=delete, synchronous=OFF: the traced commit leaves exactly the post-step bytes
-kill points: 37 (every pwrite64, sync and unlink of the commit, then the first syscall after the step returned)
-INFO: 37 kill runs took 2.512s with 4 workers
-INFO: step 1 OFF kill 02 journal nonce 0xccb9b413, run 155ms
-INFO: step 1 OFF kill 03 journal nonce 0x0e6862e8, run 152ms
-INFO: step 1 OFF kill 04 journal nonce 0x60196006, run 256ms
-INFO: step 1 OFF kill 05 journal nonce 0x189be526, run 112ms
-INFO: step 1 OFF kill 06 journal nonce 0xaafdc307, run 126ms
-INFO: step 1 OFF kill 07 journal nonce 0x916b6056, run 194ms
-INFO: step 1 OFF kill 08 journal nonce 0x1f578149, run 194ms
-INFO: step 1 OFF kill 09 journal nonce 0x89c4d975, run 144ms
-INFO: step 1 OFF kill 10 journal nonce 0x3baca44f, run 122ms
-INFO: step 1 OFF kill 11 journal nonce 0x684c2afc, run 108ms
-INFO: step 1 OFF kill 12 journal nonce 0xab83dce2, run 179ms
-INFO: step 1 OFF kill 13 journal nonce 0x80ee9036, run 508ms
-INFO: step 1 OFF kill 14 journal nonce 0xbf335337, run 492ms
-INFO: step 1 OFF kill 15 journal nonce 0x5a114a38, run 239ms
-INFO: step 1 OFF kill 16 journal nonce 0xaff8786f, run 195ms
-INFO: step 1 OFF kill 17 journal nonce 0xd1d9cfee, run 248ms
-INFO: step 1 OFF kill 18 journal nonce 0x58e9ec98, run 136ms
-INFO: step 1 OFF kill 19 journal nonce 0x459ee930, run 137ms
-INFO: step 1 OFF kill 20 journal nonce 0xe0d098f5, run 266ms
-INFO: step 1 OFF kill 21 journal nonce 0x6d1fad98, run 114ms
-INFO: step 1 OFF kill 22 journal nonce 0x0427693b, run 203ms
-INFO: step 1 OFF kill 23 journal nonce 0xd777a335, run 86ms
-INFO: step 1 OFF kill 24 journal nonce 0x3d50d712, run 295ms
-INFO: step 1 OFF kill 25 journal nonce 0xa021fa96, run 290ms
-INFO: step 1 OFF kill 26 journal nonce 0x8b73692f, run 176ms
-INFO: step 1 OFF kill 27 journal nonce 0xccd5d0be, run 97ms
-INFO: step 1 OFF kill 28 journal nonce 0xaf9cfdda, run 349ms
-INFO: step 1 OFF kill 29 journal nonce 0xec80da12, run 327ms
-INFO: step 1 OFF kill 30 journal nonce 0x46b78445, run 249ms
-INFO: step 1 OFF kill 31 journal nonce 0x51f56279, run 94ms
-INFO: step 1 OFF kill 32 journal nonce 0xba9b86e3, run 167ms
-INFO: step 1 OFF kill 33 journal nonce 0xba6d2f2c, run 236ms
-INFO: step 1 OFF kill 34 journal nonce 0xb8a08afd, run 198ms
-INFO: step 1 OFF kill 35 journal nonce 0x5c2bf5b7, run 229ms
-INFO: step 1 OFF kill 36 journal nonce 0x73351f95, run 143ms
-outcomes: 36 pre-step exact, 0 pre-step except reused freelist leaves, 1 post-step exact, 0 other
-check ok: step 1, synchronous=OFF: every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)
-check ok: step 1, synchronous=OFF: every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)
-check ok: step 1, synchronous=OFF: the pre-step file has no freelist, and every reopened database equals the pre-step or post-step bytes exactly
-check ok: step 1, synchronous=OFF: every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)
-check ok: step 1, synchronous=OFF: integrity_check is ok after every reopen
-check ok: step 1, synchronous=OFF: for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves
+── C. The journal of an open transaction, read before COMMIT ──────────
 
-== summary for step 1: reopened state per kill point, in commit order ==
-synchronous=FULL   BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA
-synchronous=NORMAL BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA
-synchronous=OFF    BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA
-(B = pre-step exact bytes, b = pre-step except reused freelist leaves, A = post-step exact bytes, ? = anything else; the last B or b is the kill on entry to the journal unlink)
+C1. Every statement of step 3 has run; COMMIT is not issued. The header
+    is written but magic and record count are still zero, so the journal
+    is not hot. It records the pre-transaction size: 29 pages.
+┌───────┬────────────┬───────┬────────────────┬───────┬────────────┬────────┬──────┬─────────┬──────────┬─────────┐
+│ bytes │ first_byte │  hot  │     header     │ count │ init_pages │ sector │ page │ records │ bad_sums │ partial │
+├───────┼────────────┼───────┼────────────────┼───────┼────────────┼────────┼──────┼─────────┼──────────┼─────────┤
+│ 29240 │ 0x00       │ false │ not-yet-synced │ 0     │ 29         │ 512    │ 4096 │ 7       │ 0        │ 0       │
+└───────┴────────────┴───────┴────────────────┴───────┴────────────┴────────┴──────┴─────────┴──────────┴─────────┘
 
-== E. failure cases: losing the hot journal (step 3, synchronous=FULL) ==
-contents: pre-step user_version=2 accounts=15 documents=7 events=108; post-step user_version=3 accounts=21 documents=10 events=147
-crash state: killed on entry to pwrite64 t.db off=122880 len=4096 (database write 10 of 18)
-on disk: database torn: 30 pages, 9 differ from pre-step, 9 differ from post-step
-         -journal 29240 bytes, first byte 0xd9 (hot), header synced (record count 7), initial size 29 pages, sector 512, page 4096, 7 complete record(s) [2 1 20 3 27 4 26], 0 checksum failure(s)
-1. -journal deleted, then reopened: open failed: open t.db: PRAGMA page_count: database disk image is malformed (11)
-   state: unreadable
-check ok: deleting the hot journal before reopening leaves a damaged database that is neither the pre-step nor the post-step state
-2. the database file copied without its -journal, copy opened: open failed: open t.db: PRAGMA page_count: database disk image is malformed (11)
-   state: unreadable
-check ok: a copy made without the -journal is the same damaged database
-   the same crashed bytes copied together with their -journal, opened: integrity_check: ok; user_version=2 accounts=15 documents=7 events=108
-   state: pre-step except page(s) [22], which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's
-check ok: the same crashed file copied together with its -journal rolls back to pre-step
-3. killed on entry to sync t.db (every database page written, journal still hot): database post-step bytes
-   -journal deleted, then reopened: integrity_check: ok; user_version=3 accounts=21 documents=10 events=147
-   state: post-step, exact bytes (recipe step 3)
-check ok: deleting the journal after the last database write turns a commit that never returned into a committed one (post-step)
+C2. Each record is a page number, the original image of the page and a checksum.
+    Page 22, the reused freelist leaf, is not among them: SQLite fetches it
+    with PAGER_GET_NOCONTENT and never journals it.
+┌─────────────┬──────┬─────────────────────────┬──────────┬──────────────────┐
+│ file_offset │ page │          role           │ checksum │ same_as_pre_step │
+├─────────────┼──────┼─────────────────────────┼──────────┼──────────────────┤
+│ 512         │ 2    │ b-tree or overflow page │ ok       │ true             │
+│ 4616        │ 1    │ header and schema root  │ ok       │ true             │
+│ 8720        │ 20   │ b-tree or overflow page │ ok       │ true             │
+│ 12824       │ 3    │ b-tree or overflow page │ ok       │ true             │
+│ 16928       │ 27   │ b-tree or overflow page │ ok       │ true             │
+│ 21032       │ 4    │ b-tree or overflow page │ ok       │ true             │
+│ 25136       │ 26   │ b-tree or overflow page │ ok       │ true             │
+└─────────────┴──────┴─────────────────────────┴──────────┴──────────────────┘
 
-== F. the commit point in DELETE, TRUNCATE and PERSIST journal modes (step 3, synchronous=FULL) ==
--- journal_mode=delete --
-sequence: journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-unlink
-journaled pages 7 (21 record writes), database page writes 18, syncs 4 [t.db-journal . t.db-journal t.db]
-INFO: sync syscall used by the Go driver: fsync
-check ok: step 3, journal_mode=delete, synchronous=FULL: order is journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-unlink
-check ok: step 3, journal_mode=delete, synchronous=FULL: 4 syncs per commit (journal, directory and database syncs counted)
-check ok: step 3, journal_mode=delete, synchronous=FULL: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
-check ok: step 3, journal_mode=delete, synchronous=FULL: the traced commit leaves exactly the post-step bytes
-check ok: delete: a kill on entry to the commit point gives pre-step, the next kill gives post-step
--- journal_mode=truncate --
-sequence: journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-truncate, journal-sync
-journaled pages 7 (21 record writes), database page writes 18, syncs 5 [t.db-journal . t.db-journal t.db t.db-journal]
-INFO: sync syscall used by the Go driver: fsync
-check ok: step 3, journal_mode=truncate, synchronous=FULL: order is journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-truncate, journal-sync
-check ok: step 3, journal_mode=truncate, synchronous=FULL: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
-check ok: step 3, journal_mode=truncate, synchronous=FULL: the traced commit leaves exactly the post-step bytes
-check ok: truncate: a kill on entry to the commit point gives pre-step, the next kill gives post-step
-check ok: truncate: the journal file stays beside the database after a clean commit, and it is not hot
--- journal_mode=persist --
-sequence: journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-zero-header, journal-sync
-journaled pages 7 (21 record writes), database page writes 18, syncs 5 [t.db-journal . t.db-journal t.db t.db-journal]
-INFO: sync syscall used by the Go driver: fsync
-check ok: step 3, journal_mode=persist, synchronous=FULL: order is journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-zero-header, journal-sync
-check ok: step 3, journal_mode=persist, synchronous=FULL: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
-check ok: step 3, journal_mode=persist, synchronous=FULL: the traced commit leaves exactly the post-step bytes
-check ok: persist: a kill on entry to the commit point gives pre-step, the next kill gives post-step
-check ok: persist: the journal file stays beside the database after a clean commit, and it is not hot
-mode      commit point (syscall)             killed on entry            killed on the next syscall                   -journal after a clean commit
-delete    unlink t.db-journal                before (pre-step, logical) after (post-step) (kill on step-returned)    no -journal
-truncate  ftruncate t.db-journal len=0       before (pre-step, logical) after (post-step) (kill on journal-sync)     -journal 0 bytes (not hot)
-persist   pwrite64 t.db-journal off=0 len=28 before (pre-step, logical) after (post-step) (kill on journal-sync)     -journal 29240 bytes, first byte 0x00 (not hot), header zeroed
-INFO: runtime 23.2s
+C3. ROLLBACK by the live connection, then close:
+┌──────────────────────┬──────────────┐
+│      file_after      │ journal_left │
+├──────────────────────┼──────────────┤
+│ pre-step exact bytes │ false        │
+└──────────────────────┴──────────────┘
 
-ATOMIC COMMIT OK
+── D. Step 3: one commit traced, then killed at every write and sync ──
+
+D1. The synchronous=FULL commit: syscalls of the writer thread on the database
+    directory, between the start of the step and its return. The journal
+    records come first, then two journal syncs around the record count,
+    then the database pages, one database sync, and the unlink.
+┌────┬────────────────┬─────────────────────────────────────────────────────┐
+│ n  │      kind      │                        call                         │
+├────┼────────────────┼─────────────────────────────────────────────────────┤
+│ 1  │ other          │ fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1   │
+│ 2  │ other          │ fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 │
+│ 3  │ other          │ fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1   │
+│ 4  │ other          │ pread64 t.db off=24 len=16                          │
+│ 5  │ other          │ fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1   │
+│ 6  │ other          │ pread64 t.db off=4096 len=4096                      │
+│ 7  │ other          │ open t.db-journal                                   │
+│ 8  │ other          │ fcntl t.db-journal F_SETFD                          │
+│ 9  │ journal-header │ pwrite64 t.db-journal off=0 len=512                 │
+│ 10 │ journal-record │ pwrite64 t.db-journal off=512 len=4                 │
+│ 11 │ journal-record │ pwrite64 t.db-journal off=516 len=4096              │
+│ 12 │ journal-record │ pwrite64 t.db-journal off=4612 len=4                │
+│ 13 │ other          │ pread64 t.db off=8192 len=4096                      │
+│ 14 │ other          │ pread64 t.db off=98304 len=4096                     │
+│ 15 │ journal-record │ pwrite64 t.db-journal off=4616 len=4                │
+│ 16 │ journal-record │ pwrite64 t.db-journal off=4620 len=4096             │
+│ 17 │ journal-record │ pwrite64 t.db-journal off=8716 len=4                │
+│ 18 │ other          │ pread64 t.db off=77824 len=4096                     │
+│ 19 │ journal-record │ pwrite64 t.db-journal off=8720 len=4                │
+│ 20 │ journal-record │ pwrite64 t.db-journal off=8724 len=4096             │
+│ 21 │ journal-record │ pwrite64 t.db-journal off=12820 len=4               │
+│ 22 │ journal-record │ pwrite64 t.db-journal off=12824 len=4               │
+│ 23 │ journal-record │ pwrite64 t.db-journal off=12828 len=4096            │
+│ 24 │ journal-record │ pwrite64 t.db-journal off=16924 len=4               │
+│ 25 │ other          │ pread64 t.db off=12288 len=4096                     │
+│ 26 │ other          │ pread64 t.db off=106496 len=4096                    │
+│ 27 │ journal-record │ pwrite64 t.db-journal off=16928 len=4               │
+│ 28 │ journal-record │ pwrite64 t.db-journal off=16932 len=4096            │
+│ 29 │ journal-record │ pwrite64 t.db-journal off=21028 len=4               │
+│ 30 │ journal-record │ pwrite64 t.db-journal off=21032 len=4               │
+│ 31 │ journal-record │ pwrite64 t.db-journal off=21036 len=4096            │
+│ 32 │ journal-record │ pwrite64 t.db-journal off=25132 len=4               │
+│ 33 │ other          │ pread64 t.db off=102400 len=4096                    │
+│ 34 │ journal-record │ pwrite64 t.db-journal off=25136 len=4               │
+│ 35 │ journal-record │ pwrite64 t.db-journal off=25140 len=4096            │
+│ 36 │ journal-record │ pwrite64 t.db-journal off=29236 len=4               │
+│ 37 │ other          │ fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1   │
+│ 38 │ other          │ fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510 │
+│ 39 │ other          │ pread64 t.db-journal off=29696 len=8 = 0            │
+│ 40 │ journal-sync   │ sync t.db-journal                                   │
+│ 41 │ other          │ open .                                              │
+│ 42 │ other          │ fcntl . F_SETFD                                     │
+│ 43 │ dir-sync       │ sync .                                              │
+│ 44 │ other          │ close .                                             │
+│ 45 │ journal-count  │ pwrite64 t.db-journal off=0 len=12                  │
+│ 46 │ journal-sync   │ sync t.db-journal                                   │
+│ 47 │ db-page        │ pwrite64 t.db off=0 len=4096                        │
+│ 48 │ db-page        │ pwrite64 t.db off=4096 len=4096                     │
+│ 49 │ db-page        │ pwrite64 t.db off=8192 len=4096                     │
+│ 50 │ db-page        │ pwrite64 t.db off=12288 len=4096                    │
+│ 51 │ db-page        │ pwrite64 t.db off=77824 len=4096                    │
+│ 52 │ db-page        │ pwrite64 t.db off=86016 len=4096                    │
+│ 53 │ db-page        │ pwrite64 t.db off=102400 len=4096                   │
+│ 54 │ db-page        │ pwrite64 t.db off=106496 len=4096                   │
+│ 55 │ db-page        │ pwrite64 t.db off=118784 len=4096                   │
+│ 56 │ db-page        │ pwrite64 t.db off=122880 len=4096                   │
+│ 57 │ db-page        │ pwrite64 t.db off=126976 len=4096                   │
+│ 58 │ db-page        │ pwrite64 t.db off=131072 len=4096                   │
+│ 59 │ db-page        │ pwrite64 t.db off=135168 len=4096                   │
+│ 60 │ db-page        │ pwrite64 t.db off=139264 len=4096                   │
+│ 61 │ db-page        │ pwrite64 t.db off=143360 len=4096                   │
+│ 62 │ db-page        │ pwrite64 t.db off=147456 len=4096                   │
+│ 63 │ db-page        │ pwrite64 t.db off=151552 len=4096                   │
+│ 64 │ db-page        │ pwrite64 t.db off=155648 len=4096                   │
+│ 65 │ db-sync        │ sync t.db                                           │
+│ 66 │ other          │ close t.db-journal                                  │
+│ 67 │ journal-unlink │ unlink t.db-journal                                 │
+│ 68 │ other          │ fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 │
+│ 69 │ other          │ fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2   │
+│ 70 │ other          │ fcntl t.db F_SETLK F_UNLCK start=0 len=0            │
+└────┴────────────────┴─────────────────────────────────────────────────────┘
+
+D2. The same commit at NORMAL and OFF is identical up to the last journal
+    record. From there on: NORMAL writes the record count before a single
+    journal sync; OFF syncs nothing.
+┌─────────────┬────┬────────────────┬─────────────────────────────────────────────────────┐
+│ synchronous │ n  │      kind      │                        call                         │
+├─────────────┼────┼────────────────┼─────────────────────────────────────────────────────┤
+│ NORMAL      │ 37 │ other          │ fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1   │
+│ NORMAL      │ 38 │ other          │ fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510 │
+│ NORMAL      │ 39 │ other          │ pread64 t.db-journal off=29696 len=8 = 0            │
+│ NORMAL      │ 40 │ journal-count  │ pwrite64 t.db-journal off=0 len=12                  │
+│ NORMAL      │ 41 │ journal-sync   │ sync t.db-journal                                   │
+│ NORMAL      │ 42 │ other          │ open .                                              │
+│ NORMAL      │ 43 │ other          │ fcntl . F_SETFD                                     │
+│ NORMAL      │ 44 │ dir-sync       │ sync .                                              │
+│ NORMAL      │ 45 │ other          │ close .                                             │
+│ NORMAL      │ 46 │ db-page        │ pwrite64 t.db off=0 len=4096                        │
+│ NORMAL      │ 47 │ db-page        │ pwrite64 t.db off=4096 len=4096                     │
+│ NORMAL      │ 48 │ db-page        │ pwrite64 t.db off=8192 len=4096                     │
+│ NORMAL      │ 49 │ db-page        │ pwrite64 t.db off=12288 len=4096                    │
+│ NORMAL      │ 50 │ db-page        │ pwrite64 t.db off=77824 len=4096                    │
+│ NORMAL      │ 51 │ db-page        │ pwrite64 t.db off=86016 len=4096                    │
+│ NORMAL      │ 52 │ db-page        │ pwrite64 t.db off=102400 len=4096                   │
+│ NORMAL      │ 53 │ db-page        │ pwrite64 t.db off=106496 len=4096                   │
+│ NORMAL      │ 54 │ db-page        │ pwrite64 t.db off=118784 len=4096                   │
+│ NORMAL      │ 55 │ db-page        │ pwrite64 t.db off=122880 len=4096                   │
+│ NORMAL      │ 56 │ db-page        │ pwrite64 t.db off=126976 len=4096                   │
+│ NORMAL      │ 57 │ db-page        │ pwrite64 t.db off=131072 len=4096                   │
+│ NORMAL      │ 58 │ db-page        │ pwrite64 t.db off=135168 len=4096                   │
+│ NORMAL      │ 59 │ db-page        │ pwrite64 t.db off=139264 len=4096                   │
+│ NORMAL      │ 60 │ db-page        │ pwrite64 t.db off=143360 len=4096                   │
+│ NORMAL      │ 61 │ db-page        │ pwrite64 t.db off=147456 len=4096                   │
+│ NORMAL      │ 62 │ db-page        │ pwrite64 t.db off=151552 len=4096                   │
+│ NORMAL      │ 63 │ db-page        │ pwrite64 t.db off=155648 len=4096                   │
+│ NORMAL      │ 64 │ db-sync        │ sync t.db                                           │
+│ NORMAL      │ 65 │ other          │ close t.db-journal                                  │
+│ NORMAL      │ 66 │ journal-unlink │ unlink t.db-journal                                 │
+│ NORMAL      │ 67 │ other          │ fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 │
+│ NORMAL      │ 68 │ other          │ fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2   │
+│ NORMAL      │ 69 │ other          │ fcntl t.db F_SETLK F_UNLCK start=0 len=0            │
+│ OFF         │ 37 │ other          │ fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1   │
+│ OFF         │ 38 │ other          │ fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510 │
+│ OFF         │ 39 │ db-page        │ pwrite64 t.db off=0 len=4096                        │
+│ OFF         │ 40 │ db-page        │ pwrite64 t.db off=4096 len=4096                     │
+│ OFF         │ 41 │ db-page        │ pwrite64 t.db off=8192 len=4096                     │
+│ OFF         │ 42 │ db-page        │ pwrite64 t.db off=12288 len=4096                    │
+│ OFF         │ 43 │ db-page        │ pwrite64 t.db off=77824 len=4096                    │
+│ OFF         │ 44 │ db-page        │ pwrite64 t.db off=86016 len=4096                    │
+│ OFF         │ 45 │ db-page        │ pwrite64 t.db off=102400 len=4096                   │
+│ OFF         │ 46 │ db-page        │ pwrite64 t.db off=106496 len=4096                   │
+│ OFF         │ 47 │ db-page        │ pwrite64 t.db off=118784 len=4096                   │
+│ OFF         │ 48 │ db-page        │ pwrite64 t.db off=122880 len=4096                   │
+│ OFF         │ 49 │ db-page        │ pwrite64 t.db off=126976 len=4096                   │
+│ OFF         │ 50 │ db-page        │ pwrite64 t.db off=131072 len=4096                   │
+│ OFF         │ 51 │ db-page        │ pwrite64 t.db off=135168 len=4096                   │
+│ OFF         │ 52 │ db-page        │ pwrite64 t.db off=139264 len=4096                   │
+│ OFF         │ 53 │ db-page        │ pwrite64 t.db off=143360 len=4096                   │
+│ OFF         │ 54 │ db-page        │ pwrite64 t.db off=147456 len=4096                   │
+│ OFF         │ 55 │ db-page        │ pwrite64 t.db off=151552 len=4096                   │
+│ OFF         │ 56 │ db-page        │ pwrite64 t.db off=155648 len=4096                   │
+│ OFF         │ 57 │ other          │ close t.db-journal                                  │
+│ OFF         │ 58 │ journal-unlink │ unlink t.db-journal                                 │
+│ OFF         │ 59 │ other          │ fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 │
+│ OFF         │ 60 │ other          │ fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2   │
+│ OFF         │ 61 │ other          │ fcntl t.db F_SETLK F_UNLCK start=0 len=0            │
+└─────────────┴────┴────────────────┴─────────────────────────────────────────────────────┘
+
+D3. The three sequences side by side (other syscalls left out, repeats folded):
+┌───┬────────────────────┬────────────────────┬────────────────────┐
+│ i │        FULL        │       NORMAL       │        OFF         │
+├───┼────────────────────┼────────────────────┼────────────────────┤
+│ 1 │ journal-header     │ journal-header     │ journal-header     │
+│ 2 │ journal-record x21 │ journal-record x21 │ journal-record x21 │
+│ 3 │ journal-sync       │ journal-count      │ db-page x18        │
+│ 4 │ dir-sync           │ journal-sync       │ journal-unlink     │
+│ 5 │ journal-count      │ dir-sync           │                    │
+│ 6 │ journal-sync       │ db-page x18        │                    │
+│ 7 │ db-page x18        │ db-sync            │                    │
+│ 8 │ db-sync            │ journal-unlink     │                    │
+│ 9 │ journal-unlink     │                    │                    │
+└───┴────────────────────┴────────────────────┴────────────────────┘
+┌─────────────┬───────┬───────────────┬───────────┬───────┬──────────────────────────────────┐
+│ synchronous │ pages │ record_writes │ db_writes │ syncs │           sync_targets           │
+├─────────────┼───────┼───────────────┼───────────┼───────┼──────────────────────────────────┤
+│ FULL        │ 7     │ 21            │ 18        │ 4     │ t.db-journal . t.db-journal t.db │
+│ NORMAL      │ 7     │ 21            │ 18        │ 3     │ t.db-journal . t.db              │
+│ OFF         │ 7     │ 21            │ 18        │ 0     │                                  │
+└─────────────┴───────┴───────────────┴───────────┴───────┴──────────────────────────────────┘
+
+D4. The pinned C sqlite3 CLI runs the same step as literal SQL. Its writes,
+    syncs and unlink equal those of the Go driver in file, offset, length, order.
+┌─────────────┬──────────┬───────────┬───────────┬──────────────────────┐
+│ synchronous │ go_calls │ cli_calls │ identical │ cli_leaves_post_step │
+├─────────────┼──────────┼───────────┼───────────┼──────────────────────┤
+│ FULL        │ 46       │ 46        │ true      │ true                 │
+│ NORMAL      │ 45       │ 45        │ true      │ true                 │
+│ OFF         │ 41       │ 41        │ true      │ true                 │
+└─────────────┴──────────┴───────────┴───────────┴──────────────────────┘
+
+D5. Kill points: every pwrite64, sync and unlink of the commit, then the
+    first syscall after the step returned.
+┌─────────────┬─────────────┐
+│ synchronous │ kill_points │
+├─────────────┼─────────────┤
+│ FULL        │ 47          │
+│ NORMAL      │ 46          │
+│ OFF         │ 42          │
+└─────────────┴─────────────┘
+
+D6. synchronous=FULL: what each kill left on disk. Until the record count is
+    written and synced (kill 26) the journal is not hot and the database
+    file is untouched. From kill 28 on, the database is torn mid-write.
+    chg_pre and chg_post count the pages of the database file that differ
+    from the pre-step and post-step files.
+┌──────┬──────────────────────────────────────────┬─────────┬──────────┬───────┬───────┬────────────────┬──────┬─────────┐
+│ kill │                 syscall                  │ chg_pre │ chg_post │ bytes │  hot  │     header     │ recs │ partial │
+├──────┼──────────────────────────────────────────┼─────────┼──────────┼───────┼───────┼────────────────┼──────┼─────────┤
+│ 1    │ pwrite64 t.db-journal off=0 len=512      │ 0       │ 18       │ 0     │ false │                │      │         │
+│ 2    │ pwrite64 t.db-journal off=512 len=4      │ 0       │ 18       │ 512   │ false │ not-yet-synced │ 0    │ 0       │
+│ 3    │ pwrite64 t.db-journal off=516 len=4096   │ 0       │ 18       │ 516   │ false │ not-yet-synced │ 0    │ 4       │
+│ 4    │ pwrite64 t.db-journal off=4612 len=4     │ 0       │ 18       │ 4612  │ false │ not-yet-synced │ 0    │ 4100    │
+│ 5    │ pwrite64 t.db-journal off=4616 len=4     │ 0       │ 18       │ 4616  │ false │ not-yet-synced │ 1    │ 0       │
+│ 6    │ pwrite64 t.db-journal off=4620 len=4096  │ 0       │ 18       │ 4620  │ false │ not-yet-synced │ 1    │ 4       │
+│ 7    │ pwrite64 t.db-journal off=8716 len=4     │ 0       │ 18       │ 8716  │ false │ not-yet-synced │ 1    │ 4100    │
+│ 8    │ pwrite64 t.db-journal off=8720 len=4     │ 0       │ 18       │ 8720  │ false │ not-yet-synced │ 2    │ 0       │
+│ 9    │ pwrite64 t.db-journal off=8724 len=4096  │ 0       │ 18       │ 8724  │ false │ not-yet-synced │ 2    │ 4       │
+│ 10   │ pwrite64 t.db-journal off=12820 len=4    │ 0       │ 18       │ 12820 │ false │ not-yet-synced │ 2    │ 4100    │
+│ 11   │ pwrite64 t.db-journal off=12824 len=4    │ 0       │ 18       │ 12824 │ false │ not-yet-synced │ 3    │ 0       │
+│ 12   │ pwrite64 t.db-journal off=12828 len=4096 │ 0       │ 18       │ 12828 │ false │ not-yet-synced │ 3    │ 4       │
+│ 13   │ pwrite64 t.db-journal off=16924 len=4    │ 0       │ 18       │ 16924 │ false │ not-yet-synced │ 3    │ 4100    │
+│ 14   │ pwrite64 t.db-journal off=16928 len=4    │ 0       │ 18       │ 16928 │ false │ not-yet-synced │ 4    │ 0       │
+│ 15   │ pwrite64 t.db-journal off=16932 len=4096 │ 0       │ 18       │ 16932 │ false │ not-yet-synced │ 4    │ 4       │
+│ 16   │ pwrite64 t.db-journal off=21028 len=4    │ 0       │ 18       │ 21028 │ false │ not-yet-synced │ 4    │ 4100    │
+│ 17   │ pwrite64 t.db-journal off=21032 len=4    │ 0       │ 18       │ 21032 │ false │ not-yet-synced │ 5    │ 0       │
+│ 18   │ pwrite64 t.db-journal off=21036 len=4096 │ 0       │ 18       │ 21036 │ false │ not-yet-synced │ 5    │ 4       │
+│ 19   │ pwrite64 t.db-journal off=25132 len=4    │ 0       │ 18       │ 25132 │ false │ not-yet-synced │ 5    │ 4100    │
+│ 20   │ pwrite64 t.db-journal off=25136 len=4    │ 0       │ 18       │ 25136 │ false │ not-yet-synced │ 6    │ 0       │
+│ 21   │ pwrite64 t.db-journal off=25140 len=4096 │ 0       │ 18       │ 25140 │ false │ not-yet-synced │ 6    │ 4       │
+│ 22   │ pwrite64 t.db-journal off=29236 len=4    │ 0       │ 18       │ 29236 │ false │ not-yet-synced │ 6    │ 4100    │
+│ 23   │ sync t.db-journal                        │ 0       │ 18       │ 29240 │ false │ not-yet-synced │ 7    │ 0       │
+│ 24   │ sync .                                   │ 0       │ 18       │ 29240 │ false │ not-yet-synced │ 7    │ 0       │
+│ 25   │ pwrite64 t.db-journal off=0 len=12       │ 0       │ 18       │ 29240 │ false │ not-yet-synced │ 7    │ 0       │
+│ 26   │ sync t.db-journal                        │ 0       │ 18       │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 27   │ pwrite64 t.db off=0 len=4096             │ 0       │ 18       │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 28   │ pwrite64 t.db off=4096 len=4096          │ 1       │ 17       │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 29   │ pwrite64 t.db off=8192 len=4096          │ 2       │ 16       │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 30   │ pwrite64 t.db off=12288 len=4096         │ 3       │ 15       │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 31   │ pwrite64 t.db off=77824 len=4096         │ 4       │ 14       │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 32   │ pwrite64 t.db off=86016 len=4096         │ 5       │ 13       │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 33   │ pwrite64 t.db off=102400 len=4096        │ 6       │ 12       │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 34   │ pwrite64 t.db off=106496 len=4096        │ 7       │ 11       │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 35   │ pwrite64 t.db off=118784 len=4096        │ 8       │ 10       │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 36   │ pwrite64 t.db off=122880 len=4096        │ 9       │ 9        │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 37   │ pwrite64 t.db off=126976 len=4096        │ 10      │ 8        │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 38   │ pwrite64 t.db off=131072 len=4096        │ 11      │ 7        │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 39   │ pwrite64 t.db off=135168 len=4096        │ 12      │ 6        │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 40   │ pwrite64 t.db off=139264 len=4096        │ 13      │ 5        │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 41   │ pwrite64 t.db off=143360 len=4096        │ 14      │ 4        │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 42   │ pwrite64 t.db off=147456 len=4096        │ 15      │ 3        │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 43   │ pwrite64 t.db off=151552 len=4096        │ 16      │ 2        │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 44   │ pwrite64 t.db off=155648 len=4096        │ 17      │ 1        │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 45   │ sync t.db                                │ 18      │ 0        │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 46   │ unlink t.db-journal                      │ 18      │ 0        │ 29240 │ true  │ synced         │ 7    │ 0       │
+│ 47   │ open marker-end                          │ 18      │ 0        │       │       │                │      │         │
+└──────┴──────────────────────────────────────────┴─────────┴──────────┴───────┴───────┴────────────────┴──────┴─────────┘
+
+D7. synchronous=FULL: what SQLite did on reopen. A hot journal is played
+    back and the file truncated to its 29 original pages; the result is the
+    pre-step state (B), or pre-step except page 22 (b). After the unlink,
+    the reopened file is the post-step state (A).
+┌──────┬───────────────────┬──────────────────┬───────┬─────────┬────────────┬───────────┬─────────────────────────┐
+│ kill │     playback      │  playback_pages  │ trunc │ outcome │ differs_in │ integrity │      journal_after      │
+├──────┼───────────────────┼──────────────────┼───────┼─────────┼────────────┼───────────┼─────────────────────────┤
+│ 1    │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 0 bytes, 0x00     │
+│ 2    │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 512 bytes, 0x00   │
+│ 3    │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 516 bytes, 0x00   │
+│ 4    │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 4612 bytes, 0x00  │
+│ 5    │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 4616 bytes, 0x00  │
+│ 6    │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 4620 bytes, 0x00  │
+│ 7    │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 8716 bytes, 0x00  │
+│ 8    │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 8720 bytes, 0x00  │
+│ 9    │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 8724 bytes, 0x00  │
+│ 10   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 12820 bytes, 0x00 │
+│ 11   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 12824 bytes, 0x00 │
+│ 12   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 12828 bytes, 0x00 │
+│ 13   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 16924 bytes, 0x00 │
+│ 14   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 16928 bytes, 0x00 │
+│ 15   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 16932 bytes, 0x00 │
+│ 16   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 21028 bytes, 0x00 │
+│ 17   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 21032 bytes, 0x00 │
+│ 18   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 21036 bytes, 0x00 │
+│ 19   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 25132 bytes, 0x00 │
+│ 20   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 25136 bytes, 0x00 │
+│ 21   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 25140 bytes, 0x00 │
+│ 22   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 29236 bytes, 0x00 │
+│ 23   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 29240 bytes, 0x00 │
+│ 24   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 29240 bytes, 0x00 │
+│ 25   │ ignored (not hot) │                  │       │ B       │            │ ok        │ cold, 29240 bytes, 0x00 │
+│ 26   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ B       │            │ ok        │ no -journal             │
+│ 27   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ B       │            │ ok        │ no -journal             │
+│ 28   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ B       │            │ ok        │ no -journal             │
+│ 29   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ B       │            │ ok        │ no -journal             │
+│ 30   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ B       │            │ ok        │ no -journal             │
+│ 31   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ B       │            │ ok        │ no -journal             │
+│ 32   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ B       │            │ ok        │ no -journal             │
+│ 33   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ b       │ 22         │ ok        │ no -journal             │
+│ 34   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ b       │ 22         │ ok        │ no -journal             │
+│ 35   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ b       │ 22         │ ok        │ no -journal             │
+│ 36   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ b       │ 22         │ ok        │ no -journal             │
+│ 37   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ b       │ 22         │ ok        │ no -journal             │
+│ 38   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ b       │ 22         │ ok        │ no -journal             │
+│ 39   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ b       │ 22         │ ok        │ no -journal             │
+│ 40   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ b       │ 22         │ ok        │ no -journal             │
+│ 41   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ b       │ 22         │ ok        │ no -journal             │
+│ 42   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ b       │ 22         │ ok        │ no -journal             │
+│ 43   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ b       │ 22         │ ok        │ no -journal             │
+│ 44   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ b       │ 22         │ ok        │ no -journal             │
+│ 45   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ b       │ 22         │ ok        │ no -journal             │
+│ 46   │ rolled back       │ 2 1 20 3 27 4 26 │ 29    │ b       │ 22         │ ok        │ no -journal             │
+│ 47   │ no journal        │                  │       │ A       │            │ ok        │ no -journal             │
+└──────┴───────────────────┴──────────────────┴───────┴─────────┴────────────┴───────────┴─────────────────────────┘
+
+b means the reopened file equals pre-step except in reused freelist leaves
+(page 22): the rollback cannot restore their unused bytes because they were
+never journaled, and VACUUM INTO of the file equals that of the pre-step file.
+
+D8. synchronous=NORMAL, every kill: the record count is written before the
+    single journal sync, so the journal is hot from kill 24 on.
+┌──────┬──────────────────────────────────────────┬─────────┬──────────┬───────┬───────┬────────────────┬─────────┐
+│ kill │                 syscall                  │ chg_pre │ chg_post │ bytes │  hot  │     header     │ outcome │
+├──────┼──────────────────────────────────────────┼─────────┼──────────┼───────┼───────┼────────────────┼─────────┤
+│ 1    │ pwrite64 t.db-journal off=0 len=512      │ 0       │ 18       │ 0     │ false │                │ B       │
+│ 2    │ pwrite64 t.db-journal off=512 len=4      │ 0       │ 18       │ 512   │ false │ not-yet-synced │ B       │
+│ 3    │ pwrite64 t.db-journal off=516 len=4096   │ 0       │ 18       │ 516   │ false │ not-yet-synced │ B       │
+│ 4    │ pwrite64 t.db-journal off=4612 len=4     │ 0       │ 18       │ 4612  │ false │ not-yet-synced │ B       │
+│ 5    │ pwrite64 t.db-journal off=4616 len=4     │ 0       │ 18       │ 4616  │ false │ not-yet-synced │ B       │
+│ 6    │ pwrite64 t.db-journal off=4620 len=4096  │ 0       │ 18       │ 4620  │ false │ not-yet-synced │ B       │
+│ 7    │ pwrite64 t.db-journal off=8716 len=4     │ 0       │ 18       │ 8716  │ false │ not-yet-synced │ B       │
+│ 8    │ pwrite64 t.db-journal off=8720 len=4     │ 0       │ 18       │ 8720  │ false │ not-yet-synced │ B       │
+│ 9    │ pwrite64 t.db-journal off=8724 len=4096  │ 0       │ 18       │ 8724  │ false │ not-yet-synced │ B       │
+│ 10   │ pwrite64 t.db-journal off=12820 len=4    │ 0       │ 18       │ 12820 │ false │ not-yet-synced │ B       │
+│ 11   │ pwrite64 t.db-journal off=12824 len=4    │ 0       │ 18       │ 12824 │ false │ not-yet-synced │ B       │
+│ 12   │ pwrite64 t.db-journal off=12828 len=4096 │ 0       │ 18       │ 12828 │ false │ not-yet-synced │ B       │
+│ 13   │ pwrite64 t.db-journal off=16924 len=4    │ 0       │ 18       │ 16924 │ false │ not-yet-synced │ B       │
+│ 14   │ pwrite64 t.db-journal off=16928 len=4    │ 0       │ 18       │ 16928 │ false │ not-yet-synced │ B       │
+│ 15   │ pwrite64 t.db-journal off=16932 len=4096 │ 0       │ 18       │ 16932 │ false │ not-yet-synced │ B       │
+│ 16   │ pwrite64 t.db-journal off=21028 len=4    │ 0       │ 18       │ 21028 │ false │ not-yet-synced │ B       │
+│ 17   │ pwrite64 t.db-journal off=21032 len=4    │ 0       │ 18       │ 21032 │ false │ not-yet-synced │ B       │
+│ 18   │ pwrite64 t.db-journal off=21036 len=4096 │ 0       │ 18       │ 21036 │ false │ not-yet-synced │ B       │
+│ 19   │ pwrite64 t.db-journal off=25132 len=4    │ 0       │ 18       │ 25132 │ false │ not-yet-synced │ B       │
+│ 20   │ pwrite64 t.db-journal off=25136 len=4    │ 0       │ 18       │ 25136 │ false │ not-yet-synced │ B       │
+│ 21   │ pwrite64 t.db-journal off=25140 len=4096 │ 0       │ 18       │ 25140 │ false │ not-yet-synced │ B       │
+│ 22   │ pwrite64 t.db-journal off=29236 len=4    │ 0       │ 18       │ 29236 │ false │ not-yet-synced │ B       │
+│ 23   │ pwrite64 t.db-journal off=0 len=12       │ 0       │ 18       │ 29240 │ false │ not-yet-synced │ B       │
+│ 24   │ sync t.db-journal                        │ 0       │ 18       │ 29240 │ true  │ synced         │ B       │
+│ 25   │ sync .                                   │ 0       │ 18       │ 29240 │ true  │ synced         │ B       │
+│ 26   │ pwrite64 t.db off=0 len=4096             │ 0       │ 18       │ 29240 │ true  │ synced         │ B       │
+│ 27   │ pwrite64 t.db off=4096 len=4096          │ 1       │ 17       │ 29240 │ true  │ synced         │ B       │
+│ 28   │ pwrite64 t.db off=8192 len=4096          │ 2       │ 16       │ 29240 │ true  │ synced         │ B       │
+│ 29   │ pwrite64 t.db off=12288 len=4096         │ 3       │ 15       │ 29240 │ true  │ synced         │ B       │
+│ 30   │ pwrite64 t.db off=77824 len=4096         │ 4       │ 14       │ 29240 │ true  │ synced         │ B       │
+│ 31   │ pwrite64 t.db off=86016 len=4096         │ 5       │ 13       │ 29240 │ true  │ synced         │ B       │
+│ 32   │ pwrite64 t.db off=102400 len=4096        │ 6       │ 12       │ 29240 │ true  │ synced         │ b       │
+│ 33   │ pwrite64 t.db off=106496 len=4096        │ 7       │ 11       │ 29240 │ true  │ synced         │ b       │
+│ 34   │ pwrite64 t.db off=118784 len=4096        │ 8       │ 10       │ 29240 │ true  │ synced         │ b       │
+│ 35   │ pwrite64 t.db off=122880 len=4096        │ 9       │ 9        │ 29240 │ true  │ synced         │ b       │
+│ 36   │ pwrite64 t.db off=126976 len=4096        │ 10      │ 8        │ 29240 │ true  │ synced         │ b       │
+│ 37   │ pwrite64 t.db off=131072 len=4096        │ 11      │ 7        │ 29240 │ true  │ synced         │ b       │
+│ 38   │ pwrite64 t.db off=135168 len=4096        │ 12      │ 6        │ 29240 │ true  │ synced         │ b       │
+│ 39   │ pwrite64 t.db off=139264 len=4096        │ 13      │ 5        │ 29240 │ true  │ synced         │ b       │
+│ 40   │ pwrite64 t.db off=143360 len=4096        │ 14      │ 4        │ 29240 │ true  │ synced         │ b       │
+│ 41   │ pwrite64 t.db off=147456 len=4096        │ 15      │ 3        │ 29240 │ true  │ synced         │ b       │
+│ 42   │ pwrite64 t.db off=151552 len=4096        │ 16      │ 2        │ 29240 │ true  │ synced         │ b       │
+│ 43   │ pwrite64 t.db off=155648 len=4096        │ 17      │ 1        │ 29240 │ true  │ synced         │ b       │
+│ 44   │ sync t.db                                │ 18      │ 0        │ 29240 │ true  │ synced         │ b       │
+│ 45   │ unlink t.db-journal                      │ 18      │ 0        │ 29240 │ true  │ synced         │ b       │
+│ 46   │ open marker-end                          │ 18      │ 0        │       │       │                │ A       │
+└──────┴──────────────────────────────────────────┴─────────┴──────────┴───────┴───────┴────────────────┴─────────┘
+
+D9. synchronous=OFF, every kill: the header is written at once with its magic
+    and record count 0xffffffff (no-sync: read to the end of the file), so
+    the journal is hot from the first record on.
+┌──────┬──────────────────────────────────────────┬─────────┬──────────┬───────┬───────┬─────────┬────────────┬─────────┐
+│ kill │                 syscall                  │ chg_pre │ chg_post │ bytes │  hot  │ header  │   count    │ outcome │
+├──────┼──────────────────────────────────────────┼─────────┼──────────┼───────┼───────┼─────────┼────────────┼─────────┤
+│ 1    │ pwrite64 t.db-journal off=0 len=512      │ 0       │ 18       │ 0     │ false │         │            │ B       │
+│ 2    │ pwrite64 t.db-journal off=512 len=4      │ 0       │ 18       │ 512   │ true  │ no-sync │ 0xffffffff │ B       │
+│ 3    │ pwrite64 t.db-journal off=516 len=4096   │ 0       │ 18       │ 516   │ true  │ no-sync │ 0xffffffff │ B       │
+│ 4    │ pwrite64 t.db-journal off=4612 len=4     │ 0       │ 18       │ 4612  │ true  │ no-sync │ 0xffffffff │ B       │
+│ 5    │ pwrite64 t.db-journal off=4616 len=4     │ 0       │ 18       │ 4616  │ true  │ no-sync │ 0xffffffff │ B       │
+│ 6    │ pwrite64 t.db-journal off=4620 len=4096  │ 0       │ 18       │ 4620  │ true  │ no-sync │ 0xffffffff │ B       │
+│ 7    │ pwrite64 t.db-journal off=8716 len=4     │ 0       │ 18       │ 8716  │ true  │ no-sync │ 0xffffffff │ B       │
+│ 8    │ pwrite64 t.db-journal off=8720 len=4     │ 0       │ 18       │ 8720  │ true  │ no-sync │ 0xffffffff │ B       │
+│ 9    │ pwrite64 t.db-journal off=8724 len=4096  │ 0       │ 18       │ 8724  │ true  │ no-sync │ 0xffffffff │ B       │
+│ 10   │ pwrite64 t.db-journal off=12820 len=4    │ 0       │ 18       │ 12820 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 11   │ pwrite64 t.db-journal off=12824 len=4    │ 0       │ 18       │ 12824 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 12   │ pwrite64 t.db-journal off=12828 len=4096 │ 0       │ 18       │ 12828 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 13   │ pwrite64 t.db-journal off=16924 len=4    │ 0       │ 18       │ 16924 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 14   │ pwrite64 t.db-journal off=16928 len=4    │ 0       │ 18       │ 16928 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 15   │ pwrite64 t.db-journal off=16932 len=4096 │ 0       │ 18       │ 16932 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 16   │ pwrite64 t.db-journal off=21028 len=4    │ 0       │ 18       │ 21028 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 17   │ pwrite64 t.db-journal off=21032 len=4    │ 0       │ 18       │ 21032 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 18   │ pwrite64 t.db-journal off=21036 len=4096 │ 0       │ 18       │ 21036 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 19   │ pwrite64 t.db-journal off=25132 len=4    │ 0       │ 18       │ 25132 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 20   │ pwrite64 t.db-journal off=25136 len=4    │ 0       │ 18       │ 25136 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 21   │ pwrite64 t.db-journal off=25140 len=4096 │ 0       │ 18       │ 25140 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 22   │ pwrite64 t.db-journal off=29236 len=4    │ 0       │ 18       │ 29236 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 23   │ pwrite64 t.db off=0 len=4096             │ 0       │ 18       │ 29240 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 24   │ pwrite64 t.db off=4096 len=4096          │ 1       │ 17       │ 29240 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 25   │ pwrite64 t.db off=8192 len=4096          │ 2       │ 16       │ 29240 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 26   │ pwrite64 t.db off=12288 len=4096         │ 3       │ 15       │ 29240 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 27   │ pwrite64 t.db off=77824 len=4096         │ 4       │ 14       │ 29240 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 28   │ pwrite64 t.db off=86016 len=4096         │ 5       │ 13       │ 29240 │ true  │ no-sync │ 0xffffffff │ B       │
+│ 29   │ pwrite64 t.db off=102400 len=4096        │ 6       │ 12       │ 29240 │ true  │ no-sync │ 0xffffffff │ b       │
+│ 30   │ pwrite64 t.db off=106496 len=4096        │ 7       │ 11       │ 29240 │ true  │ no-sync │ 0xffffffff │ b       │
+│ 31   │ pwrite64 t.db off=118784 len=4096        │ 8       │ 10       │ 29240 │ true  │ no-sync │ 0xffffffff │ b       │
+│ 32   │ pwrite64 t.db off=122880 len=4096        │ 9       │ 9        │ 29240 │ true  │ no-sync │ 0xffffffff │ b       │
+│ 33   │ pwrite64 t.db off=126976 len=4096        │ 10      │ 8        │ 29240 │ true  │ no-sync │ 0xffffffff │ b       │
+│ 34   │ pwrite64 t.db off=131072 len=4096        │ 11      │ 7        │ 29240 │ true  │ no-sync │ 0xffffffff │ b       │
+│ 35   │ pwrite64 t.db off=135168 len=4096        │ 12      │ 6        │ 29240 │ true  │ no-sync │ 0xffffffff │ b       │
+│ 36   │ pwrite64 t.db off=139264 len=4096        │ 13      │ 5        │ 29240 │ true  │ no-sync │ 0xffffffff │ b       │
+│ 37   │ pwrite64 t.db off=143360 len=4096        │ 14      │ 4        │ 29240 │ true  │ no-sync │ 0xffffffff │ b       │
+│ 38   │ pwrite64 t.db off=147456 len=4096        │ 15      │ 3        │ 29240 │ true  │ no-sync │ 0xffffffff │ b       │
+│ 39   │ pwrite64 t.db off=151552 len=4096        │ 16      │ 2        │ 29240 │ true  │ no-sync │ 0xffffffff │ b       │
+│ 40   │ pwrite64 t.db off=155648 len=4096        │ 17      │ 1        │ 29240 │ true  │ no-sync │ 0xffffffff │ b       │
+│ 41   │ unlink t.db-journal                      │ 18      │ 0        │ 29240 │ true  │ no-sync │ 0xffffffff │ b       │
+│ 42   │ open marker-end                          │ 18      │ 0        │       │       │         │            │ A       │
+└──────┴──────────────────────────────────────────┴─────────┴──────────┴───────┴───────┴─────────┴────────────┴─────────┘
+
+D10. The outcome of every kill, in commit order. B = pre-step exact bytes,
+     b = pre-step except reused freelist leaves, A = post-step exact bytes,
+     ? = anything else. The last B or b is the kill on entry to the unlink.
+┌─────────────┬─────────────────────────────────────────────────┐
+│ synchronous │             outcome_per_kill_point              │
+├─────────────┼─────────────────────────────────────────────────┤
+│ FULL        │ BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBbbbbbbbbbbbbbbA │
+│ NORMAL      │ BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBbbbbbbbbbbbbbbA  │
+│ OFF         │ BBBBBBBBBBBBBBBBBBBBBBBBBBBBbbbbbbbbbbbbbA      │
+└─────────────┴─────────────────────────────────────────────────┘
+┌─────────────┬─────────────┬───────────────┬──────────────┬─────────┬──────────────┬───────────────┬─────────────┐
+│ synchronous │ B pre exact │ b pre logical │ A post exact │ ? other │ missed_kills │ integrity_bad │ not_covered │
+├─────────────┼─────────────┼───────────────┼──────────────┼─────────┼──────────────┼───────────────┼─────────────┤
+│ FULL        │ 32          │ 14            │ 1            │ 0       │ 0            │ 0             │ 0           │
+│ NORMAL      │ 31          │ 14            │ 1            │ 0       │ 0            │ 0             │ 0           │
+│ OFF         │ 28          │ 13            │ 1            │ 0       │ 0            │ 0             │ 0           │
+└─────────────┴─────────────┴───────────────┴──────────────┴─────────┴──────────────┴───────────────┴─────────────┘
+
+── D2. A step whose pre-step file has no freelist: step 1 ─────────────
+
+Step 1 starts from the file after step 0, which has no freelist, so there
+is no b: every reopen gives the pre-step or post-step bytes exactly.
+┌──────┬─────────────────────────────────────┬────────┬─────────┬─────────┬─────────┬─────────┐
+│ step │               recipe                │ schema │ inserts │ updates │ deletes │ indexes │
+├──────┼─────────────────────────────────────┼────────┼─────────┼─────────┼─────────┼─────────┤
+│ 1    │ seed=1 steps=30 journal_mode=delete │ 0      │ 65      │ 6       │ 0       │ 0       │
+└──────┴─────────────────────────────────────┴────────┴─────────┴─────────┴─────────┴─────────┘
+┌───────────┬─────────────┬───────┬──────────────────┬─────────────────┐
+│   state   │ recipe_step │ pages │  sha256_prefix   │ freelist_leaves │
+├───────────┼─────────────┼───────┼──────────────────┼─────────────────┤
+│ pre-step  │ 0           │ 4     │ e551bbfca2c05cd9 │                 │
+│ post-step │ 1           │ 22    │ 6207fb74284d25e8 │                 │
+└───────────┴─────────────┴───────┴──────────────────┴─────────────────┘
+┌─────────────┬───────┬───────────────┬───────────┬───────┬──────────────────────────────────┐
+│ synchronous │ pages │ record_writes │ db_writes │ syncs │           sync_targets           │
+├─────────────┼───────┼───────────────┼───────────┼───────┼──────────────────────────────────┤
+│ FULL        │ 4     │ 12            │ 22        │ 4     │ t.db-journal . t.db-journal t.db │
+│ NORMAL      │ 4     │ 12            │ 22        │ 3     │ t.db-journal . t.db              │
+│ OFF         │ 4     │ 12            │ 22        │ 0     │                                  │
+└─────────────┴───────┴───────────────┴───────────┴───────┴──────────────────────────────────┘
+┌───┬────────────────────┬────────────────────┬────────────────────┐
+│ i │        FULL        │       NORMAL       │        OFF         │
+├───┼────────────────────┼────────────────────┼────────────────────┤
+│ 1 │ journal-header     │ journal-header     │ journal-header     │
+│ 2 │ journal-record x12 │ journal-record x12 │ journal-record x12 │
+│ 3 │ journal-sync       │ journal-count      │ db-page x22        │
+│ 4 │ dir-sync           │ journal-sync       │ journal-unlink     │
+│ 5 │ journal-count      │ dir-sync           │                    │
+│ 6 │ journal-sync       │ db-page x22        │                    │
+│ 7 │ db-page x22        │ db-sync            │                    │
+│ 8 │ db-sync            │ journal-unlink     │                    │
+│ 9 │ journal-unlink     │                    │                    │
+└───┴────────────────────┴────────────────────┴────────────────────┘
+┌─────────────┬────────────────────────────────────────────┐
+│ synchronous │           outcome_per_kill_point           │
+├─────────────┼────────────────────────────────────────────┤
+│ FULL        │ BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA │
+│ NORMAL      │ BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA  │
+│ OFF         │ BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA      │
+└─────────────┴────────────────────────────────────────────┘
+┌─────────────┬─────────────┬───────────────┬──────────────┬─────────┬──────────────┬───────────────┐
+│ synchronous │ B pre exact │ b pre logical │ A post exact │ ? other │ missed_kills │ integrity_bad │
+├─────────────┼─────────────┼───────────────┼──────────────┼─────────┼──────────────┼───────────────┤
+│ FULL        │ 41          │ 0             │ 1            │ 0       │ 0            │ 0             │
+│ NORMAL      │ 40          │ 0             │ 1            │ 0       │ 0            │ 0             │
+│ OFF         │ 36          │ 0             │ 1            │ 0       │ 0            │ 0             │
+└─────────────┴─────────────┴───────────────┴──────────────┴─────────┴──────────────┴───────────────┘
+
+── E. Losing the hot journal (step 3, synchronous=FULL) ───────────────
+
+E1. Two crashes: in the middle of the database writes, and on entry to the
+    database sync, when every page is written but the journal is still hot.
+┌────────────────┬───────────────────────────────────┬──────────┬────────┬───────────┬───────┬─────────┬──────────┐
+│     crash      │             killed_on             │ write_no │ writes │  db_file  │ pages │ chg_pre │ chg_post │
+├────────────────┼───────────────────────────────────┼──────────┼────────┼───────────┼───────┼─────────┼──────────┤
+│ mid-write      │ pwrite64 t.db off=122880 len=4096 │ 10       │ 18     │ torn      │ 30    │ 9       │ 9        │
+│ before db sync │ sync t.db                         │          │ 18     │ post-step │ 39    │ 18      │ 0        │
+└────────────────┴───────────────────────────────────┴──────────┴────────┴───────────┴───────┴─────────┴──────────┘
+
+The hot journal beside the mid-write crash:
+┌───────────────┬────────────┬──────┬────────┬──────────────┬───────────────┬─────────┬──────────────────┐
+│ journal_bytes │ first_byte │ hot  │ header │ record_count │ initial_pages │ records │   record_pages   │
+├───────────────┼────────────┼──────┼────────┼──────────────┼───────────────┼─────────┼──────────────────┤
+│ 29240         │ 0xd9       │ true │ synced │ 7            │ 29            │ 7       │ 2 1 20 3 27 4 26 │
+└───────────────┴────────────┴──────┴────────┴──────────────┴───────────────┴─────────┴──────────────────┘
+
+E2. What each file holds when opened. Without its journal the torn file is
+    unreadable, and a copy of the file alone is the same damage. Copied with
+    its journal, it rolls back. Deleting the journal after the last database
+    write commits a transaction whose COMMIT never returned.
+┌─────────────────────────────────┬───────────┬──────────────┬──────────┬───────────┬────────┐
+│            scenario             │ integrity │ user_version │ accounts │ documents │ events │
+├─────────────────────────────────┼───────────┼──────────────┼──────────┼───────────┼────────┤
+│ pre-step file (step 2)          │ ok        │ 2            │ 15       │ 7         │ 108    │
+│ post-step file (step 3)         │ ok        │ 3            │ 21       │ 10        │ 147    │
+│ 1. -journal deleted             │           │              │          │           │        │
+│ 2. copied without -journal      │           │              │          │           │        │
+│ 2. copied with -journal         │ ok        │ 2            │ 15       │ 7         │ 108    │
+│ 3. late crash, -journal deleted │ ok        │ 3            │ 21       │ 10        │ 147    │
+└─────────────────────────────────┴───────────┴──────────────┴──────────┴───────────┴────────┘
+┌─────────────────────────────────┬─────────────────────────────────┬────────────┐
+│            scenario             │              state              │ differs_in │
+├─────────────────────────────────┼─────────────────────────────────┼────────────┤
+│ 1. -journal deleted             │ unreadable                      │            │
+│ 2. copied without -journal      │ unreadable                      │            │
+│ 2. copied with -journal         │ pre-step except freelist leaves │ 22         │
+│ 3. late crash, -journal deleted │ post-step exact                 │            │
+└─────────────────────────────────┴─────────────────────────────────┴────────────┘
+┌────────────────────────────┬──────────────────────────────────────────────────────────────────────────────────┐
+│          scenario          │                                    open_error                                    │
+├────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────┤
+│ 1. -journal deleted        │ open failed: open t.db: PRAGMA page_count: database disk image is malformed (11) │
+│ 2. copied without -journal │ open failed: open t.db: PRAGMA page_count: database disk image is malformed (11) │
+└────────────────────────────┴──────────────────────────────────────────────────────────────────────────────────┘
+
+── F. The commit point in DELETE, TRUNCATE and PERSIST modes ──────────
+
+F1. The same commit (step 3, synchronous=FULL) in each mode. Only the end
+    differs: TRUNCATE and PERSIST finish the journal and sync it again.
+┌────┬────────────────────┬────────────────────┬─────────────────────┐
+│ i  │       delete       │      truncate      │       persist       │
+├────┼────────────────────┼────────────────────┼─────────────────────┤
+│ 1  │ journal-header     │ journal-header     │ journal-header      │
+│ 2  │ journal-record x21 │ journal-record x21 │ journal-record x21  │
+│ 3  │ journal-sync       │ journal-sync       │ journal-sync        │
+│ 4  │ dir-sync           │ dir-sync           │ dir-sync            │
+│ 5  │ journal-count      │ journal-count      │ journal-count       │
+│ 6  │ journal-sync       │ journal-sync       │ journal-sync        │
+│ 7  │ db-page x18        │ db-page x18        │ db-page x18         │
+│ 8  │ db-sync            │ db-sync            │ db-sync             │
+│ 9  │ journal-unlink     │ journal-truncate   │ journal-zero-header │
+│ 10 │                    │ journal-sync       │ journal-sync        │
+└────┴────────────────────┴────────────────────┴─────────────────────┘
+┌──────────────┬───────┬───────────────┬───────────┬───────┬───────────────────────────────────────────────┐
+│ journal_mode │ pages │ record_writes │ db_writes │ syncs │                 sync_targets                  │
+├──────────────┼───────┼───────────────┼───────────┼───────┼───────────────────────────────────────────────┤
+│ delete       │ 7     │ 21            │ 18        │ 4     │ t.db-journal . t.db-journal t.db              │
+│ truncate     │ 7     │ 21            │ 18        │ 5     │ t.db-journal . t.db-journal t.db t.db-journal │
+│ persist      │ 7     │ 21            │ 18        │ 5     │ t.db-journal . t.db-journal t.db t.db-journal │
+└──────────────┴───────┴───────────────┴───────────┴───────┴───────────────────────────────────────────────┘
+
+F2. A kill on entry to the commit-point syscall gives the pre-step state; a
+    kill on the syscall after it gives the post-step state.
+┌──────────────┬────────────────────────────────────┬────────────────────────────┬───────────────┬───────────────────┐
+│ journal_mode │            commit_point            │      killed_on_entry       │   next_kind   │  killed_on_next   │
+├──────────────┼────────────────────────────────────┼────────────────────────────┼───────────────┼───────────────────┤
+│ delete       │ unlink t.db-journal                │ before (pre-step, logical) │ step-returned │ after (post-step) │
+│ truncate     │ ftruncate t.db-journal len=0       │ before (pre-step, logical) │ journal-sync  │ after (post-step) │
+│ persist      │ pwrite64 t.db-journal off=0 len=28 │ before (pre-step, logical) │ journal-sync  │ after (post-step) │
+└──────────────┴────────────────────────────────────┴────────────────────────────┴───────────────┴───────────────────┘
+
+F3. The -journal left beside the database after a clean commit. TRUNCATE
+    leaves 0 bytes; PERSIST leaves the whole journal with a zeroed header.
+    Neither is hot.
+┌──────────────┬───────────────┬────────────┬───────┬────────┐
+│ journal_mode │ journal_bytes │ first_byte │  hot  │ header │
+├──────────────┼───────────────┼────────────┼───────┼────────┤
+│ delete       │ no -journal   │            │       │        │
+│ truncate     │ 0             │            │ false │        │
+│ persist      │ 29240         │ 0x00       │ false │ zeroed │
+└──────────────┴───────────────┴────────────┴───────┴────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  a new database starts in rollback-journal mode (journal_mode=delete) until something switches it
+A  ✓  the file records rollback mode in header bytes 18 and 19 (value 1)
+A  ✓  switching to WAL rewrites bytes 18 and 19 to 2, and the mode persists in the file
+A  ✓  a file created with driver defaults commits its first transaction through a -journal (opened, written, synced, unlinked)
+A  ✓  the switch to WAL is itself a rollback-mode commit: it writes page 1 through a -journal
+A  ✓  after the switch, commits go to the -wal and no -journal is opened
+A  ✓  a WAL database created by the platform opener (sqlitex.Open) is also born through one -journal commit, then never uses one
+B  ✓  the pre-step and post-step files equal the recipe's hashes for steps 2 and 3
+C  ✓  every journal record holds the page's original (pre-step) image with a valid checksum
+C  ✓  before COMMIT (synchronous=FULL) the header's magic and record count are still zero, so the journal is not hot yet
+C  ✓  the header records the database size before the transaction (29 pages)
+C  ✓  a ROLLBACK by the live connection restores the pre-step bytes exactly (the reused freelist pages were never written to the file)
+C  ✓  no -journal remains after ROLLBACK and close
+D  ✓  step 3, journal_mode=delete, synchronous=FULL: order is journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-unlink
+D  ✓  step 3, journal_mode=delete, synchronous=FULL: 4 syncs per commit (journal, directory and database syncs counted)
+D  ✓  step 3, journal_mode=delete, synchronous=FULL: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
+D  ✓  step 3, journal_mode=delete, synchronous=FULL: the traced commit leaves exactly the post-step bytes
+D  ✓  synchronous=FULL: the C CLI makes the same writes, syncs and unlink in the same order and leaves the post-step bytes
+D  ✓  step 3, synchronous=FULL: every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)
+D  ✓  step 3, synchronous=FULL: every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)
+D  ✓  step 3, synchronous=FULL: every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)
+D  ✓  step 3, synchronous=FULL: integrity_check is ok after every reopen
+D  ✓  step 3, synchronous=FULL: for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves
+D  ✓  step 3, journal_mode=delete, synchronous=NORMAL: order is journal-header, journal-record x21, journal-count, journal-sync, dir-sync, db-page x18, db-sync, journal-unlink
+D  ✓  step 3, journal_mode=delete, synchronous=NORMAL: 3 syncs per commit (journal, directory and database syncs counted)
+D  ✓  step 3, journal_mode=delete, synchronous=NORMAL: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
+D  ✓  step 3, journal_mode=delete, synchronous=NORMAL: the traced commit leaves exactly the post-step bytes
+D  ✓  synchronous=NORMAL: the C CLI makes the same writes, syncs and unlink in the same order and leaves the post-step bytes
+D  ✓  step 3, synchronous=NORMAL: every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)
+D  ✓  step 3, synchronous=NORMAL: every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)
+D  ✓  step 3, synchronous=NORMAL: every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)
+D  ✓  step 3, synchronous=NORMAL: integrity_check is ok after every reopen
+D  ✓  step 3, synchronous=NORMAL: for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves
+D  ✓  step 3, journal_mode=delete, synchronous=OFF: order is journal-header, journal-record x21, db-page x18, journal-unlink
+D  ✓  step 3, journal_mode=delete, synchronous=OFF: 0 syncs per commit (journal, directory and database syncs counted)
+D  ✓  step 3, journal_mode=delete, synchronous=OFF: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
+D  ✓  step 3, journal_mode=delete, synchronous=OFF: the traced commit leaves exactly the post-step bytes
+D  ✓  synchronous=OFF: the C CLI makes the same writes, syncs and unlink in the same order and leaves the post-step bytes
+D  ✓  step 3, synchronous=OFF: every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)
+D  ✓  step 3, synchronous=OFF: every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)
+D  ✓  step 3, synchronous=OFF: every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)
+D  ✓  step 3, synchronous=OFF: integrity_check is ok after every reopen
+D  ✓  step 3, synchronous=OFF: for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves
+D2  ✓  the pre-step and post-step files equal the recipe's hashes for steps 0 and 1
+D2  ✓  step 1, journal_mode=delete, synchronous=FULL: order is journal-header, journal-record x12, journal-sync, dir-sync, journal-count, journal-sync, db-page x22, db-sync, journal-unlink
+D2  ✓  step 1, journal_mode=delete, synchronous=FULL: 4 syncs per commit (journal, directory and database syncs counted)
+D2  ✓  step 1, journal_mode=delete, synchronous=FULL: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
+D2  ✓  step 1, journal_mode=delete, synchronous=FULL: the traced commit leaves exactly the post-step bytes
+D2  ✓  step 1, synchronous=FULL: every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)
+D2  ✓  step 1, synchronous=FULL: every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)
+D2  ✓  step 1, synchronous=FULL: the pre-step file has no freelist, and every reopened database equals the pre-step or post-step bytes exactly
+D2  ✓  step 1, synchronous=FULL: every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)
+D2  ✓  step 1, synchronous=FULL: integrity_check is ok after every reopen
+D2  ✓  step 1, synchronous=FULL: for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves
+D2  ✓  step 1, journal_mode=delete, synchronous=NORMAL: order is journal-header, journal-record x12, journal-count, journal-sync, dir-sync, db-page x22, db-sync, journal-unlink
+D2  ✓  step 1, journal_mode=delete, synchronous=NORMAL: 3 syncs per commit (journal, directory and database syncs counted)
+D2  ✓  step 1, journal_mode=delete, synchronous=NORMAL: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
+D2  ✓  step 1, journal_mode=delete, synchronous=NORMAL: the traced commit leaves exactly the post-step bytes
+D2  ✓  step 1, synchronous=NORMAL: every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)
+D2  ✓  step 1, synchronous=NORMAL: every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)
+D2  ✓  step 1, synchronous=NORMAL: the pre-step file has no freelist, and every reopened database equals the pre-step or post-step bytes exactly
+D2  ✓  step 1, synchronous=NORMAL: every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)
+D2  ✓  step 1, synchronous=NORMAL: integrity_check is ok after every reopen
+D2  ✓  step 1, synchronous=NORMAL: for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves
+D2  ✓  step 1, journal_mode=delete, synchronous=OFF: order is journal-header, journal-record x12, db-page x22, journal-unlink
+D2  ✓  step 1, journal_mode=delete, synchronous=OFF: 0 syncs per commit (journal, directory and database syncs counted)
+D2  ✓  step 1, journal_mode=delete, synchronous=OFF: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
+D2  ✓  step 1, journal_mode=delete, synchronous=OFF: the traced commit leaves exactly the post-step bytes
+D2  ✓  step 1, synchronous=OFF: every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)
+D2  ✓  step 1, synchronous=OFF: every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)
+D2  ✓  step 1, synchronous=OFF: the pre-step file has no freelist, and every reopened database equals the pre-step or post-step bytes exactly
+D2  ✓  step 1, synchronous=OFF: every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)
+D2  ✓  step 1, synchronous=OFF: integrity_check is ok after every reopen
+D2  ✓  step 1, synchronous=OFF: for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves
+E  ✓  deleting the hot journal before reopening leaves a damaged database that is neither the pre-step nor the post-step state
+E  ✓  a copy made without the -journal is the same damaged database
+E  ✓  the same crashed file copied together with its -journal rolls back to pre-step
+E  ✓  deleting the journal after the last database write turns a commit that never returned into a committed one (post-step)
+F  ✓  step 3, journal_mode=delete, synchronous=FULL: order is journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-unlink
+F  ✓  step 3, journal_mode=delete, synchronous=FULL: 4 syncs per commit (journal, directory and database syncs counted)
+F  ✓  step 3, journal_mode=delete, synchronous=FULL: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
+F  ✓  step 3, journal_mode=delete, synchronous=FULL: the traced commit leaves exactly the post-step bytes
+F  ✓  delete: a kill on entry to the commit point gives pre-step, the next kill gives post-step
+F  ✓  step 3, journal_mode=truncate, synchronous=FULL: order is journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-truncate, journal-sync
+F  ✓  step 3, journal_mode=truncate, synchronous=FULL: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
+F  ✓  step 3, journal_mode=truncate, synchronous=FULL: the traced commit leaves exactly the post-step bytes
+F  ✓  truncate: a kill on entry to the commit point gives pre-step, the next kill gives post-step
+F  ✓  truncate: the journal file stays beside the database after a clean commit, and it is not hot
+F  ✓  step 3, journal_mode=persist, synchronous=FULL: order is journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-zero-header, journal-sync
+F  ✓  step 3, journal_mode=persist, synchronous=FULL: each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)
+F  ✓  step 3, journal_mode=persist, synchronous=FULL: the traced commit leaves exactly the post-step bytes
+F  ✓  persist: a kill on entry to the commit point gives pre-step, the next kill gives post-step
+F  ✓  persist: the journal file stays beside the database after a clean commit, and it is not hot
+
+93 of 93 claims hold
+
+Experiment verdict: ATOMIC COMMIT OK
 ```
 
 #### Reading the evidence (Parts A–D2)
 
 Parts E and F are analyzed in Section 6 alongside the hot-journal failure cases. Parts A through D2 establish:
 
-- **Lines 5–20 (Part A: where a WAL-default platform meets rollback mode).** Opening a new path with plain `sql.Open("sqlite", path)` reports `journal_mode=delete`, and its first `CREATE TABLE` writes `1,1` into header bytes 18–19. Running `PRAGMA journal_mode=wal` rewrites bytes 18–19 to `2,2` so a fresh connection reports `journal_mode=wal`. The three traced children show that not only does a driver-default `CREATE TABLE` go through `plain.db-journal`, but `PRAGMA journal_mode=wal` on an empty file (`switch.db-journal`) and `sqlitex.Open` with `journal_mode=wal` (`platform.db-journal`) each run the exact same six `-journal` syscalls (`open`, `pwrite64 off=0 len=512`, `sync`, `pwrite64 off=0 len=12`, `sync`, `unlink`). The journal holds zero page records because page 1 is past the 0-page initial file size (`pager_write`, `src/pager.c:6139-6147`). Only *after* page 1 records format version `2` do commits move to `-wal` (`-journal []`; `-wal writes 5` for `sqlitex.Open`'s `application_id`/`user_version` commit and `4` for the subsequent `CREATE TABLE`).
-- **Lines 22–27 (Part B: the recipe step).** Step 3 of the rollback-mode recipe (`seed=1`) executes 53 inserts, 5 updates, and 5 deletes, growing the database from 29 pages (`b8a0bd0796442099`, with freelist leaves `[22]`) to 39 pages (`0ef90bd0e64af1e3`).
-- **Lines 29–44 (Part C: the live journal before `COMMIT`, portable).** After executing every statement of step 3 without committing (the transaction fits in `cache_size=-2000`, so `spill=0`), `internal/journalfile` reads `t.db-journal` (29,240 bytes = 512-byte header sector + 7 × 4,104-byte records). Its first byte is `0x00` (`not hot`, header `not-yet-synced`), initial size is `29` pages, sector size is `512` (the unix VFS advertises `SQLITE_IOCAP_POWERSAFE_OVERWRITE`, so the pager uses 512-byte sectors), and all 7 records (`[2 1 20 3 27 4 26]`) pass their checksums and match the exact pre-step pages byte for byte. Page `22` (the reused freelist leaf) is absent from the journal. Issuing `ROLLBACK` on the live connection restores `pre-step exact bytes` because page 22 was modified only in memory and never written to disk.
-- **Lines 46–415 (Part D: step 3 at `synchronous=FULL`).** The baseline trace records 70 syscalls (examined line by line in Section 4): 7 journaled pages (21 record writes, verified as `(4, 4096, 4)` triples), 18 database page writes, and 4 syncs (`[t.db-journal . t.db-journal t.db]`). The twin check confirms the pinned C `sqlite3` CLI issues the exact same 46 writes, syncs, and unlink in the same order and produces identical post-step bytes. Killing on entry to each of the 47 kill points yields:
-  - **Kills 01–25** (through entry to `journal-count` at offset 0 len 12): database untouched; journal first byte is `0x00` (cold); SQLite ignores the journal on reopen, leaving `pre-step, exact bytes` and a harmless cold `-journal` on disk.
-  - **Kill 26** (entry to second `journal-sync`): `journal-count` has written magic `0xd9...` and record count `7`, turning the journal hot; database is still untouched; SQLite rolls back the 7 pages and deletes `-journal`, leaving `pre-step, exact bytes`.
-  - **Kills 27–32** (database writes of pages 1, 2, 3, 4, 20, and entry to page 22 at offset `86016`): database is torn (1 to 5 pages differ from pre-step); hot journal restores all 7 original pages; `pre-step, exact bytes`.
-  - **Kills 33–46** (after page 22 is written through entry to `unlink t.db-journal`): database is torn (or post-step bytes at kills 45–46); hot journal restores the 7 original pages and truncates to 29 pages; reopened database equals `pre-step except page(s) [22]`, `integrity_check ok`, and `VACUUM INTO` matches pre-step's canonical hash.
-  - **Kill 47** (entry to `open marker-end`, immediately after `unlink`): no journal remains; reopened database equals `post-step, exact bytes`.
-- **Lines 417–1117 (Part D: `NORMAL`, `OFF`, and the summary strip).**
-  - `NORMAL` (46 kill points, 3 syncs `[t.db-journal . t.db]`, 45 twin-check ops identical to C CLI): moves `journal-count` ahead of the single journal sync, so the journal becomes hot at kill 24 (entry to `journal-sync`) rather than kill 26. Outcomes: 31 pre-step exact, 14 pre-step except page 22, 1 post-step exact.
-  - `OFF` (42 kill points, 0 syncs `[]`, 41 twin-check ops identical to C CLI): writes magic + `0xffffffff` in the initial 512-byte header, so the journal is hot from kill 02 onward. Even with zero syncs, every process kill reopens to pre-step (28 exact, 13 except page 22) or post-step (1 exact) because completed writes survive a process crash in the OS kernel buffer cache.
-  - Summary lines 1114–1116 show the single flip from `B`/`b` to `A` right after `unlink`:
+- **A1–A3 (Part A: where a WAL-default platform meets rollback mode).** Opening a new path with plain `sql.Open("sqlite", path)` reports `journal_mode=delete`, and its first `CREATE TABLE` writes `1,1` into header bytes 18–19. Running `PRAGMA journal_mode=wal` rewrites bytes 18–19 to `2,2` so a fresh connection reports `journal_mode=wal`. The three traced children show that not only does a driver-default `CREATE TABLE` go through `plain.db-journal`, but `PRAGMA journal_mode=wal` on an empty file (`switch.db-journal`) and `sqlitex.Open` with `journal_mode=wal` (`platform.db-journal`) each run the exact same six `-journal` syscalls (`open`, `pwrite64 off=0 len=512`, `sync`, `pwrite64 off=0 len=12`, `sync`, `unlink`). The journal holds zero page records because page 1 is past the 0-page initial file size (`pager_write`, `src/pager.c:6139-6147`). Only *after* page 1 records format version `2` do commits move to `-wal` (no `-journal` syscalls; `5` WAL writes for `sqlitex.Open`'s `application_id`/`user_version` commit and `4` for the subsequent `CREATE TABLE`).
+- **B1–B2 (Part B: the recipe step).** Step 3 of the rollback-mode recipe (`seed=1`) executes 53 inserts, 5 updates, and 5 deletes, growing the database from 29 pages (`b8a0bd0796442099`, with freelist leaf `22`) to 39 pages (`0ef90bd0e64af1e3`).
+- **C1–C3 (Part C: the live journal before `COMMIT`, portable).** After executing every statement of step 3 without committing (the transaction fits in `cache_size=-2000`, so `spill=0`), `internal/journalfile` reads `t.db-journal` (29,240 bytes = 512-byte header sector + 7 × 4,104-byte records). Its first byte is `0x00` (not hot, header `not-yet-synced`), initial size is `29` pages, sector size is `512` (the unix VFS advertises `SQLITE_IOCAP_POWERSAFE_OVERWRITE`, so the pager uses 512-byte sectors), and all 7 records (pages `2 1 20 3 27 4 26`) pass their checksums and match the exact pre-step pages byte for byte. Page `22` (the reused freelist leaf) is absent from the journal. Issuing `ROLLBACK` on the live connection restores `pre-step exact bytes` because page 22 was modified only in memory and never written to disk.
+- **D1 and D3–D7, D10 (Part D: step 3 at `synchronous=FULL`).** The baseline trace (D1) records 70 syscalls (examined line by line in Section 4): 7 journaled pages (21 record writes, verified as `(4, 4096, 4)` triples), 18 database page writes, and 4 syncs (`t.db-journal . t.db-journal t.db`). The twin check confirms the pinned C `sqlite3` CLI issues the exact same 46 writes, syncs, and unlink in the same order and produces identical post-step bytes. Killing on entry to each of the 47 kill points yields:
+  - **Kills 1–25** (through entry to `journal-count` at offset 0 len 12): database untouched; journal first byte is `0x00` (cold); SQLite ignores the journal on reopen, leaving pre-step exact bytes (`B`) and a harmless cold `-journal` on disk.
+  - **Kill 26** (entry to second `journal-sync`): `journal-count` has written magic `0xd9...` and record count `7`, turning the journal hot; database is still untouched; SQLite rolls back the 7 pages and deletes `-journal`, leaving pre-step exact bytes (`B`).
+  - **Kills 27–32** (database writes of pages 1, 2, 3, 4, 20, and entry to page 22 at offset `86016`): database is torn (1 to 5 pages differ from pre-step); hot journal restores all 7 original pages; pre-step exact bytes (`B`).
+  - **Kills 33–46** (after page 22 is written through entry to `unlink t.db-journal`): database is torn (or post-step bytes at kills 45–46); hot journal restores the 7 original pages and truncates to 29 pages; reopened database equals pre-step except page `22` (`b`), integrity `ok`, and `VACUUM INTO` matches pre-step's canonical hash.
+  - **Kill 47** (entry to `open marker-end`, immediately after `unlink`): no journal remains; reopened database equals post-step exact bytes (`A`).
+- **D2–D4, D8–D10 (Part D: `NORMAL`, `OFF`, and the summary strip).**
+  - `NORMAL` (46 kill points, 3 syncs `t.db-journal . t.db`, 45 twin-check ops identical to C CLI): moves `journal-count` ahead of the single journal sync, so the journal becomes hot at kill 24 (entry to `journal-sync`) rather than kill 26. Outcomes: 31 pre-step exact, 14 pre-step except page 22, 1 post-step exact.
+  - `OFF` (42 kill points, 0 syncs, 41 twin-check ops identical to C CLI): writes magic + `0xffffffff` in the initial 512-byte header, so the journal is hot from kill 2 onward. Even with zero syncs, every process kill reopens to pre-step (28 exact, 13 except page 22) or post-step (1 exact) because completed writes survive a process crash in the OS kernel buffer cache.
+  - The D10 summary shows the single flip from `B`/`b` to `A` right after `unlink`:
     - `FULL`: 32 `B`, 14 `b`, 1 `A`
     - `NORMAL`: 31 `B`, 14 `b`, 1 `A`
     - `OFF`: 28 `B`, 13 `b`, 1 `A`
-- **Lines 1119–1297 (Part D2: step 1 with no freelist).** Pre-step (after step 0) has 4 pages and `freelist leaves []`; step 1 grows it to 22 pages (4 journaled pages, 22 database writes—18 of them appended past page 4 and undone by truncation). Across all 42 (`FULL`), 41 (`NORMAL`), and 37 (`OFF`) kill points, every reopened database matches pre-step or post-step **to the exact byte** (`41 B + 1 A`, `40 B + 1 A`, `36 B + 1 A`, zero `b` outcomes).
+- **Section D2 (Part D2: step 1 with no freelist).** Pre-step (after step 0) has 4 pages and no freelist leaves; step 1 grows it to 22 pages (4 journaled pages, 22 database writes—18 of them appended past page 4 and undone by truncation). Across all 42 (`FULL`), 41 (`NORMAL`), and 37 (`OFF`) kill points, every reopened database matches pre-step or post-step **to the exact byte** (`41 B + 1 A`, `40 B + 1 A`, `36 B + 1 A`, zero `b` outcomes).
 
 ---
 
 ## 4. Timeline
 
-One non-spilling rollback-mode commit of recipe step 3 (`synchronous=FULL`, `journal_mode=delete`, Experiment 4.1 Part D lines 48–117) crosses every pager state in 70 traced syscalls on the database directory:
+One non-spilling rollback-mode commit of recipe step 3 (`synchronous=FULL`, `journal_mode=delete`, Experiment 4.1 Part D, D1) crosses every pager state in 70 traced syscalls on the database directory:
 
 | Syscall # | Syscalls in the trace | Pager action | Pager state / lock |
 | --- | --- | --- | --- |
@@ -3887,13 +3675,13 @@ go test ./internal/journalfile/
   3. Total cached pages and process RSS grow linearly with open connections—whether those connections open `N` distinct files (Part B) or the same single file (Part C, proving connections do not share a cache). With this driver's `modernc.org/memory` power-of-two allocator, RSS growth is roughly `2x` summed `CACHE_USED` (each ~4.3 KiB page allocation occupies an 8 KiB slot).
   4. Visiting `N` files through an LRU pool capped at `K` open connections holds cached pages (within `K × (full + 1)`) and process RSS flat past `K` (Part D).
   5. On a checkpointed database (no pending frames in `-wal`), enabling `PRAGMA mmap_size` to cover the file drops `CACHE_USED` near zero (from `482` to `2` pages) while total RSS still grows by the file's size—shifted from anonymous heap (`RssAnon`) to file-backed mapped pages (`RssFile`, Part E).
-- **Evidence form:** `BOUND` and `SHAPE` for process RSS and pool bounds, with `EXACT` page counts and hit/miss/spill counters on every non-`INFO:` line.
-- **Portable (Linux-only split in Part E):** Runs on Linux and macOS; the `RssFile`/`RssAnon` split in Part E requires `/proc/self/status` (**Linux only**; on macOS use `docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget`).
-- **Run command:**
+- **Evidence form:** `BOUND` and `SHAPE` for process RSS and pool bounds, with `EXACT` page counts and hit/miss/spill counters in every stored table. Process RSS and raw `CACHE_USED` bytes are run-dependent: they are in `info` tables, printed by `course run`, and not stored.
+- **Portable (Linux-only split in Part E):** Runs on Linux and macOS; the `RssFile`/`RssAnon` split in Part E requires `/proc/self/status` (**Linux only**; `course run` runs it in the Linux `lab` container).
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget
+  go run ./cmd/course run 4.2
   ```
-  Optional flags: `-n 64` (unbounded connection count), `-k 8` (pool cap), `-cache-size -2000` (must represent a budget of at least `1 MiB`; positive page counts are verified in pages rather than bytes), `-rows 1000` (must be at least `1.2 × max(200, budget pages)` so the database exceeds both the 200-page calibration cache and the requested budget).
+  Optional flags: `-n 64` (unbounded connection count), `-k 8` (pool cap), `-cache-size -2000` (must represent a budget of at least `1 MiB`; positive page counts are verified in pages rather than bytes), `-rows 1000` (must be at least `1.2 × max(200, budget pages)` so the database exceeds both the 200-page calibration cache and the requested budget). `course run` cannot pass them; run a flag variant directly in the container, for example `docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget -k 4`.
 
 <!-- include: experiments/4.2-cache-budget/main.go -->
 ```go
@@ -3903,10 +3691,9 @@ go test ./internal/journalfile/
 // connections to one file (Part C), N files visited through a K-connection LRU
 // pool (Part D), and memory-mapped reads via PRAGMA mmap_size (Part E).
 //
-// Run from the repo root (portable; the anonymous vs file-backed RSS split in
-// Part E uses /proc/self/status on Linux):
-//
-//	go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 4.2 (portable; the anonymous vs
+// file-backed RSS split in Part E uses /proc/self/status on Linux).
 package main
 
 import (
@@ -3928,6 +3715,7 @@ import (
 	"time"
 
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -3938,7 +3726,6 @@ const (
 )
 
 var (
-	failures      []string
 	connectionsN  = flag.Int("n", 64, "connections opened in the unbounded runs")
 	boundK        = flag.Int("k", 8, "open connections allowed by the bounded LRU pool")
 	cacheSizeFlag = flag.Int("cache-size", -2000, "PRAGMA cache_size for every connection (negative = KiB, positive = pages)")
@@ -4008,15 +3795,6 @@ func (c checkpoint) cacheMinMax() (int, int) {
 		lo, hi = min(lo, s.CacheUsed), max(hi, s.CacheUsed)
 	}
 	return lo, hi
-}
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
 }
 
 func fatal(what string, err error) {
@@ -4311,20 +4089,6 @@ func runChild(args ...string) []checkpoint {
 	return points
 }
 
-func mib(b int64) string {
-	if b < 0 {
-		return "n/a"
-	}
-	return fmt.Sprintf("%.1f MiB", float64(b)/(1<<20))
-}
-
-func memoryInfo(m processMemory) string {
-	if m.Anon < 0 {
-		return "RSS " + mib(m.RSS)
-	}
-	return fmt.Sprintf("RSS %s (anon %s, file %s, shmem %s)", mib(m.RSS), mib(m.Anon), mib(m.File), mib(m.Shmem))
-}
-
 func find(points []checkpoint, label string) checkpoint {
 	for _, p := range points {
 		if p.Label == label {
@@ -4332,26 +4096,6 @@ func find(points []checkpoint, label string) checkpoint {
 		}
 	}
 	fatal("checkpoint", fmt.Errorf("no checkpoint %q", label))
-	return checkpoint{}
-}
-
-func printGrowth(points []checkpoint) {
-	start := points[0]
-	fmt.Printf("  %-12s %5s %18s %32s\n", "checkpoint", "open", "cached pages (sum)", "cached pages per connection min..max")
-	for _, p := range points[1:] {
-		lo, hi := p.pagesMinMax()
-		fmt.Printf("  %-12s %5d %18d %21d..%-10d\n", p.Label, p.Open, p.pagesTotal(), lo, hi)
-		fmt.Printf("INFO:   %-12s sum CACHE_USED %d bytes; %s, growth since start %s\n", p.Label, p.cacheTotal(), memoryInfo(p.Memory), mib(p.Memory.RSS-start.Memory.RSS))
-	}
-}
-
-func lastWithOpen(points []checkpoint) checkpoint {
-	for i := len(points) - 1; i >= 0; i-- {
-		if points[i].Open > 0 {
-			return points[i]
-		}
-	}
-	fatal("checkpoint", errors.New("no checkpoint with open connections"))
 	return checkpoint{}
 }
 
@@ -4383,6 +4127,62 @@ func growth(points []checkpoint, label string) int64 {
 	return find(points, label).Memory.RSS - points[0].Memory.RSS
 }
 
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 4.2" runs
+// both. Raw CACHE_USED bytes include the Pager allocation, which holds the
+// file names, and RSS varies by machine: both go to info tables.
+var (
+	set    *results.Set
+	tables struct {
+		parts, settings, calibration, scans, checkpoints, connections, info, infoMemory, infoCacheUsed *results.Table
+	}
+	settingSeq, infoSeq int
+)
+
+func openTables() {
+	tables.parts = set.Table("parts", "part", "what", "status")
+	tables.settings = set.Table("settings", "seq", "name", "value")
+	tables.calibration = set.Table("calibration", "cache_size", "cached_pages")
+	tables.scans = set.Table("scans", "cache_size", "budget_bytes", "scan", "cached_pages", "hits", "misses", "spills")
+	tables.checkpoints = set.Table("checkpoints", "scenario", "seq", "checkpoint", "open", "visited")
+	tables.connections = set.Table("connections", "scenario", "seq", "checkpoint", "conn", "cached_pages", "hits", "misses", "spills")
+	tables.info = set.Table("info", "seq", "name", "value")
+	tables.infoMemory = set.Table("info_memory", "scenario", "seq", "checkpoint", "rss", "rss_anon", "rss_file", "rss_shmem", "cache_used_sum")
+	tables.infoCacheUsed = set.Table("info_cache_used", "scenario", "seq", "checkpoint", "conn", "cache_used")
+}
+
+func setting(name string, value any) {
+	settingSeq++
+	tables.settings.Row(settingSeq, name, value)
+}
+
+func info(name string, value any) {
+	infoSeq++
+	tables.info.Row(infoSeq, name, value)
+}
+
+// writePoints writes the checkpoints of one child run: the open connections
+// and their cache counters, and the process memory as info.
+func writePoints(scenario string, points []checkpoint) {
+	for i, p := range points {
+		tables.checkpoints.Row(scenario, i+1, p.Label, p.Open, p.Visited)
+		for j, c := range p.Conns {
+			tables.connections.Row(scenario, i+1, p.Label, j+1, cachedPages(c.CacheUsed), c.Hits, c.Misses, c.Spills)
+			tables.infoCacheUsed.Row(scenario, i+1, p.Label, j+1, c.CacheUsed)
+		}
+		m := p.Memory
+		tables.infoMemory.Row(scenario, i+1, p.Label, m.RSS, known(m.Anon), known(m.File), known(m.Shmem), p.cacheTotal())
+	}
+}
+
+// known returns nil for a memory figure the platform does not report (-1).
+func known(b int64) any {
+	if b < 0 {
+		return nil
+	}
+	return b
+}
+
 func main() {
 	if len(os.Args) > 2 && os.Args[1] == "child" {
 		childMain(os.Args[2:])
@@ -4402,11 +4202,13 @@ func main() {
 		fatal("flags", fmt.Errorf("-cache-size %d is a budget of %d bytes; need at least %d so that cache memory dominates per-connection memory in the RSS checks", *cacheSizeFlag, budgetBytes(*cacheSizeFlag), minBudgetBytes))
 	}
 	work := sqlitex.MustWorkDir("4.2")
+	set = results.MustOpen(work)
+	openTables()
 	n, k, cacheSize := *connectionsN, *boundK, *cacheSizeFlag
 	budget := budgetBytes(cacheSize)
 	source := fileName(work, 0)
 	buildSource(ctx, source, *rowsFlag)
-	info, err := os.Stat(source)
+	stat, err := os.Stat(source)
 	if err != nil {
 		fatal("stat", err)
 	}
@@ -4419,12 +4221,6 @@ func main() {
 			fatal("copy", err)
 		}
 	}
-	fmt.Printf("\n== setup ==\n")
-	fmt.Printf("database files: %d copies of one WAL-mode file, table t with %d rows of %d bytes, %d pages (%d bytes)\n", n, *rowsFlag, bodyBytes, info.Size()/pageSize, info.Size())
-	fmt.Printf("every connection: sqlitex defaults (journal_mode=wal, synchronous=FULL) with cache_size=%d; budget %d bytes per connection\n", cacheSize, budget)
-	fmt.Printf("scan: %s (reads every leaf page)\n", scanSQL)
-	fmt.Printf("N=%d unbounded connections, K=%d in the bounded pool\n", n, k)
-	fmt.Printf("INFO: process memory read from %s; runs in child processes so every measurement starts from a fresh process\n", memorySource)
 	var compileMM int
 	db, err := sqlitex.OpenMemory(ctx)
 	if err != nil {
@@ -4434,9 +4230,19 @@ func main() {
 		fatal("compile option", err)
 	}
 	db.Close()
-	fmt.Printf("driver compiled with ENABLE_MEMORY_MANAGEMENT: %d (1 = every connection's page cache is one process-wide LRU group, pcache1.c:718-719)\n", compileMM)
+	setting("database files (copies of one WAL-mode file)", n)
+	setting("rows in table t", *rowsFlag)
+	setting("bytes per row (body BLOB)", bodyBytes)
+	setting("pages per file", stat.Size()/pageSize)
+	setting("bytes per file", stat.Size())
+	setting("cache_size of every connection", cacheSize)
+	setting("cache budget per connection, bytes", budget)
+	setting("scan", scanSQL)
+	setting("N: connections kept open (parts B, C)", n)
+	setting("K: connections in the bounded pool (part D)", k)
+	setting("driver compiled with ENABLE_MEMORY_MANAGEMENT", compileMM)
+	info("process memory read from", memorySource)
 
-	fmt.Printf("\n== A. one connection, the same scan twice ==\n")
 	// Measure exact bytes per cached page from sqlite3PagerMemUsed
 	// (src/pager.c:6881-6887) by comparing two full caches 100 pages apart.
 	// pcache1FetchStage2 recycles at nPage+1 >= nMax (src/pcache1.c:902), so
@@ -4448,111 +4254,104 @@ func main() {
 		fatal("per-page size", fmt.Errorf("CACHE_USED at cache_size=200 minus at 100 is %d, not a multiple of 100", large-small))
 	}
 	perPage = (large - small) / 100
-	fmt.Printf("CACHE_USED counts %d bytes per cached page (measured: cache_size=200 minus cache_size=100, both full, divided by 100); the %d-byte page plus %d bytes of headers (sqlite3PagerMemUsed, pager.c:6881)\n", perPage, pageSize, perPage-pageSize)
-	fmt.Printf("INFO: fixed part of CACHE_USED per connection %d bytes (the Pager allocation, which holds the file names, plus one page buffer)\n", small-cachedPages(small)*perPage)
-	fmt.Printf("cache_size=100 holds %d pages, cache_size=200 holds %d pages\n", cachedPages(small), cachedPages(large))
-	for _, size := range []int{cacheSize, -2 * int(info.Size()) / 1024} {
+	setting("CACHE_USED bytes per cached page", perPage)
+	setting("of which page header bytes", perPage-pageSize)
+	// The fixed part is the Pager allocation, which holds the file names, plus one page buffer.
+	info("fixed part of CACHE_USED per connection, bytes", small-cachedPages(small)*perPage)
+	tables.calibration.Row(100, cachedPages(small))
+	tables.calibration.Row(200, cachedPages(large))
+	for _, size := range []int{cacheSize, -2 * int(stat.Size()) / 1024} {
 		scans := runChild("scans", work, strconv.Itoa(size))[0]
-		fmt.Printf("cache_size=%d (budget %d bytes):\n", size, budgetBytes(size))
 		for i, s := range scans.Conns {
-			fmt.Printf("  after scan %d: cached pages=%d hit=%d miss=%d spill=%d\n", i+1, cachedPages(s.CacheUsed), s.Hits, s.Misses, s.Spills)
-			fmt.Printf("INFO:   after scan %d: CACHE_USED=%d bytes\n", i+1, s.CacheUsed)
+			tables.scans.Row(size, budgetBytes(size), i+1, cachedPages(s.CacheUsed), s.Hits, s.Misses, s.Spills)
+			info(fmt.Sprintf("part A, cache_size=%d, CACHE_USED after scan %d, bytes", size, i+1), s.CacheUsed)
 		}
 		first, second := scans.Conns[0], scans.Conns[1]
 		budgetClaim := fmt.Sprintf("cache_size=%d: CACHE_USED stays within the budget plus 5%% (%d pages x %d bytes against %d bytes)", size, cachedPages(first.CacheUsed), perPage, budgetBytes(size))
 		if size > 0 {
 			budgetClaim = fmt.Sprintf("cache_size=%d: the cache holds at most %d pages (it holds %d)", size, size, cachedPages(first.CacheUsed))
 		}
-		check(withinBudget(first.CacheUsed, size), budgetClaim)
+		set.Check("A", withinBudget(first.CacheUsed, size), budgetClaim)
 		if size == cacheSize {
-			check(second.Misses-first.Misses >= int(info.Size()/pageSize)*9/10, "a file larger than the cache misses again on the second scan (the LRU evicted the pages the scan needs next)")
+			set.Check("A", second.Misses-first.Misses >= int(stat.Size()/pageSize)*9/10, "a file larger than the cache misses again on the second scan (the LRU evicted the pages the scan needs next)")
 		} else {
-			check(second.Misses == first.Misses && second.Hits > first.Hits, "a cache larger than the file serves the second scan from memory: no new misses")
+			set.Check("A", second.Misses == first.Misses && second.Hits > first.Hits, "a cache larger than the file serves the second scan from memory: no new misses")
 		}
 	}
 
 	full := cachedPages(runChild("scans", work, strconv.Itoa(cacheSize))[0].Conns[0].CacheUsed)
 	nLabel, halfLabel := fmt.Sprintf("after %d", n), fmt.Sprintf("after %d", reportPoints(n)[len(reportPoints(n))-2])
 
-	fmt.Printf("\n== B. %d connections to %d files, all kept open ==\n", n, n)
 	files := runChild("files", work, strconv.Itoa(n), strconv.Itoa(cacheSize))
-	printGrowth(files)
-	last := lastWithOpen(files)
-	fmt.Printf("  at %s: connection 1 cached pages=%d hit=%d miss=%d; connection %d cached pages=%d hit=%d miss=%d\n", last.Label, cachedPages(last.Conns[0].CacheUsed), last.Conns[0].Hits, last.Conns[0].Misses, len(last.Conns), cachedPages(last.Conns[len(last.Conns)-1].CacheUsed), last.Conns[len(last.Conns)-1].Hits, last.Conns[len(last.Conns)-1].Misses)
-	lo, hi := last.pagesMinMax()
-	check(sumsMatch(files, full), fmt.Sprintf("the cached pages of all open connections add up to exactly (open connections) x %d, the pages one connection holds when it fills its budget", full))
+	writePoints("B", files)
+	lo, hi := find(files, nLabel).pagesMinMax()
+	set.Check("B", sumsMatch(files, full), fmt.Sprintf("the cached pages of all open connections add up to exactly (open connections) x %d, the pages one connection holds when it fills its budget", full))
 	// With ENABLE_MEMORY_MANAGEMENT, pcache1Init sets separateCache=0
 	// (src/pcache1.c:718-719), putting every open connection in one process-wide
 	// PGroup LRU. Active scanners recycle idle connections' pages
 	// (pcache1FetchStage2, src/pcache1.c:899-912) while the group total equals
 	// open * perConnBudget (pcache1Cachesize, src/pcache1.c:814-832).
 	if compileMM == 1 {
-		check(hi > full && lo < full, fmt.Sprintf("in this driver build cache_size is not a per-connection cap: the connection that scanned last holds %d pages (its own budget is %d) while the idle connections were left with %d", hi, full, lo))
+		set.Check("B", hi > full && lo < full, fmt.Sprintf("in this driver build cache_size is not a per-connection cap: the connection that scanned last holds %d pages (its own budget is %d) while the idle connections were left with %d", hi, full, lo))
 	} else {
-		check(hi <= full, "every connection stays within its own budget")
+		set.Check("B", hi <= full, "every connection stays within its own budget")
 	}
 	rssN, rssHalf, cacheN := growth(files, nLabel), growth(files, halfLabel), int64(find(files, nLabel).cacheTotal())
-	fmt.Printf("INFO: RSS growth at %s %s, at %s %s; RSS growth / summed CACHE_USED %.2f\n", nLabel, mib(rssN), halfLabel, mib(rssHalf), float64(rssN)/float64(cacheN))
-	check(rssN >= cacheN*9/10, "process memory grows by at least the summed CACHE_USED of the open connections")
+	info(fmt.Sprintf("part B, RSS growth / summed CACHE_USED at %s", nLabel), fmt.Sprintf("%.2f", float64(rssN)/float64(cacheN)))
+	set.Check("B", rssN >= cacheN*9/10, "process memory grows by at least the summed CACHE_USED of the open connections")
 	half := find(files, halfLabel).Open
 	perN, perHalf := float64(rssN)/float64(n), float64(rssHalf)/float64(half)
-	fmt.Printf("INFO: RSS growth per open connection: %s at %d, %s at %d\n", mib(int64(perN)), n, mib(int64(perHalf)), half)
-	check(perN >= perHalf*0.8 && perN <= perHalf*1.25, fmt.Sprintf("process memory grows linearly with open connections: growth per open connection at %d is within -20%%/+25%% of that at %d", n, half))
+	info(fmt.Sprintf("part B, RSS growth per open connection at %d, bytes", n), int64(perN))
+	info(fmt.Sprintf("part B, RSS growth per open connection at %d, bytes", half), int64(perHalf))
+	set.Check("B", perN >= perHalf*0.8 && perN <= perHalf*1.25, fmt.Sprintf("process memory grows linearly with open connections: growth per open connection at %d is within -20%%/+25%% of that at %d", n, half))
 
-	fmt.Printf("\n== C. %d connections to one file, all kept open ==\n", n)
 	oneFile := runChild("one-file", work, strconv.Itoa(n), strconv.Itoa(cacheSize))
-	printGrowth(oneFile)
-	check(sumsMatch(oneFile, full) && pagesMatch(oneFile, files), "connections to one file do not share a cache: the totals equal the N-files run at every checkpoint")
+	writePoints("C", oneFile)
+	set.Check("C", sumsMatch(oneFile, full) && pagesMatch(oneFile, files), "connections to one file do not share a cache: the totals equal the N-files run at every checkpoint")
 	oneN := growth(oneFile, nLabel)
-	check(oneN >= cacheN*9/10, "process memory grows by the summed CACHE_USED here too")
+	set.Check("C", oneN >= cacheN*9/10, "process memory grows by the summed CACHE_USED here too")
 
-	fmt.Printf("\n== D. %d files visited through a pool of at most %d open connections (LRU close) ==\n", n, k)
 	bounded := runChild("bounded", work, strconv.Itoa(n), strconv.Itoa(k), strconv.Itoa(cacheSize))
-	printGrowth(bounded)
+	writePoints("D", bounded)
 	kLabel := fmt.Sprintf("after %d", k)
 	atK, atN := growth(bounded, kLabel), growth(bounded, nLabel)
-	fmt.Printf("INFO: RSS growth at %s %s, at %s %s\n", kLabel, mib(atK), nLabel, mib(atN))
-	check(find(bounded, nLabel).Open == k && find(bounded, nLabel).pagesTotal() <= k*(full+1), fmt.Sprintf("with the pool, %d connections are open at the end and their cached pages stay within %d x (%d + 1), the sum of their cache sizes in pages", k, k, full))
-	check(atN-atK <= atK/4, fmt.Sprintf("with the pool, process memory stays flat after %d connections: growth from %s to %s is at most a quarter of the growth up to %s", k, kLabel, nLabel, kLabel))
-	check(float64(atN) <= float64(rssN)*float64(k)/float64(n)*1.5, fmt.Sprintf("the pooled run ends with about %d/%d of the unbounded run's memory growth (at most 1.5 x that fraction)", k, n))
+	set.Check("D", find(bounded, nLabel).Open == k && find(bounded, nLabel).pagesTotal() <= k*(full+1), fmt.Sprintf("with the pool, %d connections are open at the end and their cached pages stay within %d x (%d + 1), the sum of their cache sizes in pages", k, k, full))
+	set.Check("D", atN-atK <= atK/4, fmt.Sprintf("with the pool, process memory stays flat after %d connections: growth from %s to %s is at most a quarter of the growth up to %s", k, kLabel, nLabel, kLabel))
+	set.Check("D", float64(atN) <= float64(rssN)*float64(k)/float64(n)*1.5, fmt.Sprintf("the pooled run ends with about %d/%d of the unbounded run's memory growth (at most 1.5 x that fraction)", k, n))
 
 	// PRAGMA mmap_size activates getPageMMap (pagerFixMaplimit,
 	// src/pager.c:3579-3590; getPageMMap, src/pager.c:5687-5752), which serves
 	// pages directly from the kernel's mapped file cache via sqlite3OsFetch and
 	// pagerAcquireMapPage outside pcache1, so CACHE_USED stays near zero while
 	// RssFile grows by the file size.
-	fmt.Printf("\n== E. mmap ==\n")
-	mmapSize := 2 * info.Size()
-	fmt.Printf("connection 1: no mmap, scans f-000; connection 2: PRAGMA mmap_size=%d (twice the file), scans f-001\n", mmapSize)
+	mmapSize := 2 * stat.Size()
+	setting("part E: mmap_size of connection 2 (twice the file)", mmapSize)
 	mapped := runChild("mmap", work, strconv.Itoa(cacheSize), strconv.FormatInt(mmapSize, 10))
-	for _, p := range mapped[1:] {
-		for i, s := range p.Conns {
-			fmt.Printf("  %-7s connection %d: cached pages=%d hit=%d miss=%d\n", p.Label, i+1, cachedPages(s.CacheUsed), s.Hits, s.Misses)
-			fmt.Printf("INFO:   %-7s connection %d: CACHE_USED=%d bytes\n", p.Label, i+1, s.CacheUsed)
-		}
-		fmt.Printf("INFO:   %-7s %s\n", p.Label, memoryInfo(p.Memory))
-	}
+	writePoints("E", mapped)
 	plain, withMap := find(mapped, "plain"), find(mapped, "mapped")
 	mappedConn := withMap.Conns[1]
-	check(mappedConn.CacheUsed*20 < plain.Conns[0].CacheUsed, "with mmap covering the file, the scan leaves CACHE_USED near zero (under 5% of the unmapped connection's)")
+	set.Check("E", mappedConn.CacheUsed*20 < plain.Conns[0].CacheUsed, "with mmap covering the file, the scan leaves CACHE_USED near zero (under 5% of the unmapped connection's)")
 	rssDelta := withMap.Memory.RSS - plain.Memory.RSS
-	fmt.Printf("INFO: the mapped scan added %s RSS (file %s)\n", mib(rssDelta), mib(info.Size()))
-	check(rssDelta >= info.Size()*8/10, "the mapped scan still adds about the file's size to process RSS: the memory moved from SQLite's heap to mapped file pages")
+	info("part E, RSS added by the mapped scan, bytes", rssDelta)
+	set.Check("E", rssDelta >= stat.Size()*8/10, "the mapped scan still adds about the file's size to process RSS: the memory moved from SQLite's heap to mapped file pages")
+	tables.parts.Row("A", "one connection, the same scan twice", "ran")
+	tables.parts.Row("B", fmt.Sprintf("%d connections to %d files, all kept open", n, n), "ran")
+	tables.parts.Row("C", fmt.Sprintf("%d connections to one file, all kept open", n), "ran")
+	tables.parts.Row("D", fmt.Sprintf("%d files through a pool of at most %d open connections", n, k), "ran")
+	tables.parts.Row("E", "one connection without and one with mmap", "ran")
 	if withMap.Memory.File >= 0 {
 		fileDelta, anonDelta := withMap.Memory.File-plain.Memory.File, withMap.Memory.Anon-plain.Memory.Anon
-		fmt.Printf("INFO: file-backed RSS +%s, anonymous RSS +%s\n", mib(fileDelta), mib(anonDelta))
-		check(fileDelta >= info.Size()*8/10 && anonDelta < info.Size()/4, "the added memory is file-backed (RssFile), not anonymous heap")
+		info("part E, file-backed RSS added, bytes", fileDelta)
+		info("part E, anonymous RSS added, bytes", anonDelta)
+		set.Check("E", fileDelta >= stat.Size()*8/10 && anonDelta < stat.Size()/4, "the added memory is file-backed (RssFile), not anonymous heap")
+		tables.parts.Row("E", "split of the added RSS into file-backed and anonymous", "ran")
 	} else {
 		fmt.Println("LINUX-ONLY: the split of RSS into anonymous and file-backed memory (/proc/self/status) skipped on " + runtime.GOOS + "; run it with: docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget")
+		tables.parts.Row("E", "split of the added RSS into file-backed and anonymous", "skipped: needs /proc/self/status (Linux)")
 	}
 
-	fmt.Printf("INFO: runtime %s\n", time.Since(started).Round(100*time.Millisecond))
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("CACHE BUDGET FAILED: %d claim(s) do not hold: %s\n", len(failures), strings.Join(failures, "; "))
-		os.Exit(1)
-	}
-	fmt.Println("CACHE BUDGET OK")
+	info("runtime, seconds", time.Since(started).Round(100*time.Millisecond).Seconds())
+	set.Finish("CACHE BUDGET")
 }
 ```
 
@@ -4637,143 +4436,344 @@ func readProcessMemory() (processMemory, error) {
 }
 ```
 
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/4.2-cache-budget/report.sql -->
+```sql
+-- Walkthrough of experiment 4.2. Run it with:
+--   go run ./cmd/course run 4.2        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   parts        what ran and what was skipped
+--   settings     one setting or derived constant of the run, by name
+--   calibration  part A: the pages a full cache holds at cache_size=100 and 200
+--   scans        part A: one connection after its first or second full scan
+--   checkpoints  parts B to E: one measurement point of a child process run
+--   connections  parts B to E: one open connection at one checkpoint
+--   checks       every claim the experiment asserted (the runner lists it last)
+-- Raw CACHE_USED bytes (they include the Pager allocation, which holds the file
+-- names) and process memory (RSS) differ between runs and machines. They are in
+-- info, info_memory and info_cache_used, shown by info.sql; the memory claims
+-- below are checked against them.
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  4.2  What a page cache budget costs, per connection and per process'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'Copies of one WAL-mode file are scanned by connections that keep their'
+.print 'page cache. Each scenario runs in a fresh child process, which reads'
+.print 'SQLITE_DBSTATUS_CACHE_USED, CACHE_HIT, CACHE_MISS and CACHE_SPILL of every'
+.print 'open connection and its own RSS at each checkpoint.'
+
+SELECT name, value FROM settings ORDER BY seq;
+
+.print
+.print 'ENABLE_MEMORY_MANAGEMENT = 1 means every page cache of the process is in'
+.print 'one LRU group (pcache1.c:718-719). Cached pages are CACHE_USED minus one'
+.print 'page buffer, divided by the bytes per cached page: the 4096-byte page plus'
+.print 'its headers (sqlite3PagerMemUsed, pager.c:6881).'
+
+SELECT part, what, status FROM parts ORDER BY part, what;
+
+.print
+.print '── A. One connection, the same scan twice ─────────────────────────────'
+.print
+.print 'A1. The bytes per cached page come from two full caches 100 pages apart.'
+.print '    A cache recycles a page when it is one page short of full'
+.print '    (pcache1.c:902), so cache_size=N holds N-1 pages.'
+
+SELECT cache_size, cached_pages FROM calibration ORDER BY cache_size;
+
+.print
+.print 'A2. At the default budget (2048000 bytes) the cache holds 482 pages of the'
+.print '    1004-page file, and the second scan misses every page again. A budget of'
+.print '    twice the file holds it all, and the second scan only hits.'
+
+SELECT cache_size, budget_bytes, scan, cached_pages, hits, misses, spills
+FROM scans ORDER BY cache_size DESC, scan;
+
+.print
+.print '── B. N connections to N files, all kept open ─────────────────────────'
+.print
+.print 'B1. Every connection opens its file, scans it and stays open. The cached'
+.print '    pages of all open connections add up to 482 per connection, but they'
+.print '    are not spread evenly: the one LRU group lets the connection that'
+.print '    scanned last take pages from the idle ones.'
+
+SELECT p.checkpoint, p.open,
+       coalesce(sum(c.cached_pages), 0)                 AS cached_pages_sum,
+       coalesce(sum(c.cached_pages), 0) // nullif(p.open, 0) AS per_open_conn,
+       min(c.cached_pages) || '..' || max(c.cached_pages) AS per_conn_min_max
+FROM checkpoints p LEFT JOIN connections c USING (scenario, seq)
+WHERE p.scenario = 'B' AND p.checkpoint <> 'start'
+GROUP BY p.seq, p.checkpoint, p.open ORDER BY p.seq;
+
+.print
+.print 'B2. At the last checkpoint, the first connection and the last one:'
+
+SELECT conn, cached_pages, hits, misses, spills
+FROM connections
+WHERE scenario = 'B' AND seq = (SELECT max(seq) FROM connections WHERE scenario = 'B')
+  AND conn IN (1, (SELECT max(conn) FROM connections WHERE scenario = 'B'))
+ORDER BY conn;
+
+.print
+.print 'B3. Cached pages per connection at the last checkpoint:'
+
+SELECT cached_pages, count(*) AS connections, min(conn) AS first_conn, max(conn) AS last_conn
+FROM connections
+WHERE scenario = 'B' AND seq = (SELECT max(seq) FROM connections WHERE scenario = 'B')
+GROUP BY cached_pages ORDER BY cached_pages;
+
+.print
+.print '── C. N connections to one file, all kept open ────────────────────────'
+.print
+.print 'C1. Connections to the same file do not share pages: every checkpoint'
+.print '    has the same cached pages as in part B.'
+
+SELECT p.checkpoint, p.open,
+       coalesce(sum(c.cached_pages), 0) AS cached_pages_sum,
+       min(c.cached_pages) || '..' || max(c.cached_pages) AS per_conn_min_max,
+       (SELECT coalesce(sum(b.cached_pages), 0) FROM connections b
+        WHERE b.scenario = 'B' AND b.checkpoint = p.checkpoint) AS part_b_sum
+FROM checkpoints p LEFT JOIN connections c USING (scenario, seq)
+WHERE p.scenario = 'C' AND p.checkpoint <> 'start'
+GROUP BY p.seq, p.checkpoint, p.open ORDER BY p.seq;
+
+.print
+.print '── D. N files visited through a pool of at most K open connections ────'
+.print
+.print 'D1. The pool closes its least recently used connection before it opens'
+.print '    the next. After K files the cached pages stop growing.'
+
+SELECT p.checkpoint, p.open, p.visited,
+       coalesce(sum(c.cached_pages), 0) AS cached_pages_sum,
+       min(c.cached_pages) || '..' || max(c.cached_pages) AS per_conn_min_max
+FROM checkpoints p LEFT JOIN connections c USING (scenario, seq)
+WHERE p.scenario = 'D' AND p.checkpoint <> 'start'
+GROUP BY p.seq, p.checkpoint, p.open, p.visited ORDER BY p.seq;
+
+.print
+.print '── E. mmap ─────────────────────────────────────────────────────────────'
+.print
+.print 'E1. Connection 1 scans f-000 without mmap. Connection 2 sets PRAGMA'
+.print '    mmap_size to twice the file and scans f-001: its pages come from the'
+.print '    mapped file, outside the page cache, so it caches almost nothing.'
+
+SELECT p.checkpoint, c.conn, c.cached_pages, c.hits, c.misses, c.spills
+FROM checkpoints p JOIN connections c USING (scenario, seq)
+WHERE p.scenario = 'E'
+ORDER BY p.seq, c.conn;
+
+.print
+.print 'The memory claims (RSS grows with the summed CACHE_USED, linearly with open'
+.print 'connections, stays flat with the pool, and moves to file-backed pages with'
+.print 'mmap) are in the checks below; the RSS figures are in info.sql.'
+```
+
+`course run` also prints the run-dependent values, which are not part of the stored evidence: the raw `CACHE_USED` bytes and the process memory (RSS, split into anonymous, file-backed and shared) at every checkpoint, and the values derived from them.
+
 #### Captured evidence (`4.2-cache-budget.txt`)
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/4.2-cache-budget/`](evidence/4.2-cache-budget/), and `go run ./cmd/course check evidence ch04` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/4.2-cache-budget.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
 
-== setup ==
-database files: 64 copies of one WAL-mode file, table t with 1000 rows of 3500 bytes, 1004 pages (4112384 bytes)
-every connection: sqlitex defaults (journal_mode=wal, synchronous=FULL) with cache_size=-2000; budget 2048000 bytes per connection
-scan: SELECT count(*), sum(length(body)) FROM t (reads every leaf page)
-N=64 unbounded connections, K=8 in the bounded pool
-INFO: process memory read from /proc/self/status; runs in child processes so every measurement starts from a fresh process
-driver compiled with ENABLE_MEMORY_MANAGEMENT: 1 (1 = every connection's page cache is one process-wide LRU group, pcache1.c:718-719)
+════════════════════════════════════════════════════════════════════════
+  4.2  What a page cache budget costs, per connection and per process
+════════════════════════════════════════════════════════════════════════
 
-== A. one connection, the same scan twice ==
-CACHE_USED counts 4352 bytes per cached page (measured: cache_size=200 minus cache_size=100, both full, divided by 100); the 4096-byte page plus 256 bytes of headers (sqlite3PagerMemUsed, pager.c:6881)
-INFO: fixed part of CACHE_USED per connection 5077 bytes (the Pager allocation, which holds the file names, plus one page buffer)
-cache_size=100 holds 99 pages, cache_size=200 holds 199 pages
-cache_size=-2000 (budget 2048000 bytes):
-  after scan 1: cached pages=482 hit=7 miss=1005 spill=0
-INFO:   after scan 1: CACHE_USED=2102741 bytes
-  after scan 2: cached pages=482 hit=9 miss=2007 spill=0
-INFO:   after scan 2: CACHE_USED=2102741 bytes
-check ok: cache_size=-2000: CACHE_USED stays within the budget plus 5% (482 pages x 4352 bytes against 2048000 bytes)
-check ok: a file larger than the cache misses again on the second scan (the LRU evicted the pages the scan needs next)
-cache_size=-8032 (budget 8224768 bytes):
-  after scan 1: cached pages=1004 hit=7 miss=1005 spill=0
-INFO:   after scan 1: CACHE_USED=4374485 bytes
-  after scan 2: cached pages=1004 hit=1011 miss=1005 spill=0
-INFO:   after scan 2: CACHE_USED=4374485 bytes
-check ok: cache_size=-8032: CACHE_USED stays within the budget plus 5% (1004 pages x 4352 bytes against 8224768 bytes)
-check ok: a cache larger than the file serves the second scan from memory: no new misses
+Copies of one WAL-mode file are scanned by connections that keep their
+page cache. Each scenario runs in a fresh child process, which reads
+SQLITE_DBSTATUS_CACHE_USED, CACHE_HIT, CACHE_MISS and CACHE_SPILL of every
+open connection and its own RSS at each checkpoint.
+┌────────────────────────────────────────────────────┬───────────────────────────────────────────┐
+│                        name                        │                   value                   │
+├────────────────────────────────────────────────────┼───────────────────────────────────────────┤
+│ database files (copies of one WAL-mode file)       │ 64                                        │
+│ rows in table t                                    │ 1000                                      │
+│ bytes per row (body BLOB)                          │ 3500                                      │
+│ pages per file                                     │ 1004                                      │
+│ bytes per file                                     │ 4112384                                   │
+│ cache_size of every connection                     │ -2000                                     │
+│ cache budget per connection, bytes                 │ 2048000                                   │
+│ scan                                               │ SELECT count(*), sum(length(body)) FROM t │
+│ N: connections kept open (parts B, C)              │ 64                                        │
+│ K: connections in the bounded pool (part D)        │ 8                                         │
+│ driver compiled with ENABLE_MEMORY_MANAGEMENT      │ 1                                         │
+│ CACHE_USED bytes per cached page                   │ 4352                                      │
+│ of which page header bytes                         │ 256                                       │
+│ part E: mmap_size of connection 2 (twice the file) │ 8224768                                   │
+└────────────────────────────────────────────────────┴───────────────────────────────────────────┘
 
-== B. 64 connections to 64 files, all kept open ==
-  checkpoint    open cached pages (sum) cached pages per connection min..max
-  after 1          1                482                   482..482       
-INFO:   after 1      sum CACHE_USED 2102741 bytes; RSS 12.9 MiB (anon 5.8 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 6.0 MiB
-  after 2          2                964                     0..964       
-INFO:   after 2      sum CACHE_USED 4205482 bytes; RSS 16.9 MiB (anon 9.8 MiB, file 7.1 MiB, shmem 0.0 MiB), growth since start 10.0 MiB
-  after 4          4               1928                     0..1004      
-INFO:   after 4      sum CACHE_USED 8410964 bytes; RSS 24.8 MiB (anon 17.6 MiB, file 7.1 MiB, shmem 0.0 MiB), growth since start 17.9 MiB
-  after 8          8               3856                     0..1004      
-INFO:   after 8      sum CACHE_USED 16821928 bytes; RSS 40.8 MiB (anon 33.2 MiB, file 7.6 MiB, shmem 0.0 MiB), growth since start 33.9 MiB
-  after 16        16               7712                     0..1004      
-INFO:   after 16     sum CACHE_USED 33643856 bytes; RSS 72.6 MiB (anon 64.4 MiB, file 8.2 MiB, shmem 0.0 MiB), growth since start 65.7 MiB
-  after 32        32              15424                     0..1004      
-INFO:   after 32     sum CACHE_USED 67287712 bytes; RSS 135.2 MiB (anon 126.4 MiB, file 8.8 MiB, shmem 0.0 MiB), growth since start 128.3 MiB
-  after 64        64              30848                     0..1004      
-INFO:   after 64     sum CACHE_USED 134575424 bytes; RSS 260.7 MiB (anon 250.6 MiB, file 10.1 MiB, shmem 0.0 MiB), growth since start 253.8 MiB
-  all closed       0                  0                     0..0         
-INFO:   all closed   sum CACHE_USED 0 bytes; RSS 32.3 MiB (anon 24.2 MiB, file 8.1 MiB, shmem 0.0 MiB), growth since start 25.4 MiB
-  at after 64: connection 1 cached pages=0 hit=7 miss=1005; connection 64 cached pages=1004 hit=7 miss=1005
-check ok: the cached pages of all open connections add up to exactly (open connections) x 482, the pages one connection holds when it fills its budget
-check ok: in this driver build cache_size is not a per-connection cap: the connection that scanned last holds 1004 pages (its own budget is 482) while the idle connections were left with 0
-INFO: RSS growth at after 64 253.8 MiB, at after 32 128.3 MiB; RSS growth / summed CACHE_USED 1.98
-check ok: process memory grows by at least the summed CACHE_USED of the open connections
-INFO: RSS growth per open connection: 4.0 MiB at 64, 4.0 MiB at 32
-check ok: process memory grows linearly with open connections: growth per open connection at 64 is within -20%/+25% of that at 32
+ENABLE_MEMORY_MANAGEMENT = 1 means every page cache of the process is in
+one LRU group (pcache1.c:718-719). Cached pages are CACHE_USED minus one
+page buffer, divided by the bytes per cached page: the 4096-byte page plus
+its headers (sqlite3PagerMemUsed, pager.c:6881).
+┌──────┬───────────────────────────────────────────────────────┬────────┐
+│ part │                         what                          │ status │
+├──────┼───────────────────────────────────────────────────────┼────────┤
+│ A    │ one connection, the same scan twice                   │ ran    │
+│ B    │ 64 connections to 64 files, all kept open             │ ran    │
+│ C    │ 64 connections to one file, all kept open             │ ran    │
+│ D    │ 64 files through a pool of at most 8 open connections │ ran    │
+│ E    │ one connection without and one with mmap              │ ran    │
+│ E    │ split of the added RSS into file-backed and anonymous │ ran    │
+└──────┴───────────────────────────────────────────────────────┴────────┘
 
-== C. 64 connections to one file, all kept open ==
-  checkpoint    open cached pages (sum) cached pages per connection min..max
-  after 1          1                482                   482..482       
-INFO:   after 1      sum CACHE_USED 2102741 bytes; RSS 12.8 MiB (anon 5.8 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 6.0 MiB
-  after 2          2                964                     0..964       
-INFO:   after 2      sum CACHE_USED 4205482 bytes; RSS 16.8 MiB (anon 9.7 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 9.9 MiB
-  after 4          4               1928                     0..1004      
-INFO:   after 4      sum CACHE_USED 8410964 bytes; RSS 24.6 MiB (anon 17.6 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 17.8 MiB
-  after 8          8               3856                     0..1004      
-INFO:   after 8      sum CACHE_USED 16821928 bytes; RSS 40.8 MiB (anon 33.1 MiB, file 7.7 MiB, shmem 0.0 MiB), growth since start 33.9 MiB
-  after 16        16               7712                     0..1004      
-INFO:   after 16     sum CACHE_USED 33643856 bytes; RSS 72.1 MiB (anon 64.3 MiB, file 7.8 MiB, shmem 0.0 MiB), growth since start 65.3 MiB
-  after 32        32              15424                     0..1004      
-INFO:   after 32     sum CACHE_USED 67287712 bytes; RSS 134.2 MiB (anon 126.4 MiB, file 7.9 MiB, shmem 0.0 MiB), growth since start 127.4 MiB
-  after 64        64              30848                     0..1004      
-INFO:   after 64     sum CACHE_USED 134575424 bytes; RSS 258.5 MiB (anon 250.5 MiB, file 8.0 MiB, shmem 0.0 MiB), growth since start 251.7 MiB
-  all closed       0                  0                     0..0         
-INFO:   all closed   sum CACHE_USED 0 bytes; RSS 32.2 MiB (anon 24.2 MiB, file 8.0 MiB, shmem 0.0 MiB), growth since start 25.3 MiB
-check ok: connections to one file do not share a cache: the totals equal the N-files run at every checkpoint
-check ok: process memory grows by the summed CACHE_USED here too
+── A. One connection, the same scan twice ─────────────────────────────
 
-== D. 64 files visited through a pool of at most 8 open connections (LRU close) ==
-  checkpoint    open cached pages (sum) cached pages per connection min..max
-  after 1          1                482                   482..482       
-INFO:   after 1      sum CACHE_USED 2102741 bytes; RSS 12.9 MiB (anon 5.9 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 6.1 MiB
-  after 2          2                964                     0..964       
-INFO:   after 2      sum CACHE_USED 4205482 bytes; RSS 17.0 MiB (anon 9.9 MiB, file 7.1 MiB, shmem 0.0 MiB), growth since start 10.1 MiB
-  after 4          4               1928                     0..1004      
-INFO:   after 4      sum CACHE_USED 8410964 bytes; RSS 24.8 MiB (anon 17.7 MiB, file 7.1 MiB, shmem 0.0 MiB), growth since start 18.0 MiB
-  after 8          8               3856                     0..1004      
-INFO:   after 8      sum CACHE_USED 16821928 bytes; RSS 40.6 MiB (anon 33.3 MiB, file 7.3 MiB, shmem 0.0 MiB), growth since start 33.7 MiB
-  after 16         8               3863                     0..1004      
-INFO:   after 16     sum CACHE_USED 16852392 bytes; RSS 41.1 MiB (anon 33.5 MiB, file 7.5 MiB, shmem 0.0 MiB), growth since start 34.2 MiB
-  after 32         8               3863                     0..1004      
-INFO:   after 32     sum CACHE_USED 16852392 bytes; RSS 41.7 MiB (anon 33.8 MiB, file 7.9 MiB, shmem 0.0 MiB), growth since start 34.8 MiB
-  after 64         8               3863                     0..1004      
-INFO:   after 64     sum CACHE_USED 16852392 bytes; RSS 42.1 MiB (anon 34.0 MiB, file 8.1 MiB, shmem 0.0 MiB), growth since start 35.2 MiB
-INFO: RSS growth at after 8 33.7 MiB, at after 64 35.2 MiB
-check ok: with the pool, 8 connections are open at the end and their cached pages stay within 8 x (482 + 1), the sum of their cache sizes in pages
-check ok: with the pool, process memory stays flat after 8 connections: growth from after 8 to after 64 is at most a quarter of the growth up to after 8
-check ok: the pooled run ends with about 8/64 of the unbounded run's memory growth (at most 1.5 x that fraction)
+A1. The bytes per cached page come from two full caches 100 pages apart.
+    A cache recycles a page when it is one page short of full
+    (pcache1.c:902), so cache_size=N holds N-1 pages.
+┌────────────┬──────────────┐
+│ cache_size │ cached_pages │
+├────────────┼──────────────┤
+│ 100        │ 99           │
+│ 200        │ 199          │
+└────────────┴──────────────┘
 
-== E. mmap ==
-connection 1: no mmap, scans f-000; connection 2: PRAGMA mmap_size=8224768 (twice the file), scans f-001
-  plain   connection 1: cached pages=482 hit=7 miss=1005
-INFO:   plain   connection 1: CACHE_USED=2102741 bytes
-INFO:   plain   RSS 12.9 MiB (anon 5.8 MiB, file 7.0 MiB, shmem 0.0 MiB)
-  mapped  connection 1: cached pages=482 hit=7 miss=1005
-INFO:   mapped  connection 1: CACHE_USED=2102741 bytes
-  mapped  connection 2: cached pages=2 hit=7 miss=3
-INFO:   mapped  connection 2: CACHE_USED=13781 bytes
-INFO:   mapped  RSS 17.1 MiB (anon 6.1 MiB, file 11.0 MiB, shmem 0.0 MiB)
-check ok: with mmap covering the file, the scan leaves CACHE_USED near zero (under 5% of the unmapped connection's)
-INFO: the mapped scan added 4.2 MiB RSS (file 3.9 MiB)
-check ok: the mapped scan still adds about the file's size to process RSS: the memory moved from SQLite's heap to mapped file pages
-INFO: file-backed RSS +4.0 MiB, anonymous RSS +0.2 MiB
-check ok: the added memory is file-backed (RssFile), not anonymous heap
-INFO: runtime 4.9s
+A2. At the default budget (2048000 bytes) the cache holds 482 pages of the
+    1004-page file, and the second scan misses every page again. A budget of
+    twice the file holds it all, and the second scan only hits.
+┌────────────┬──────────────┬──────┬──────────────┬──────┬────────┬────────┐
+│ cache_size │ budget_bytes │ scan │ cached_pages │ hits │ misses │ spills │
+├────────────┼──────────────┼──────┼──────────────┼──────┼────────┼────────┤
+│ -2000      │ 2048000      │ 1    │ 482          │ 7    │ 1005   │ 0      │
+│ -2000      │ 2048000      │ 2    │ 482          │ 9    │ 2007   │ 0      │
+│ -8032      │ 8224768      │ 1    │ 1004         │ 7    │ 1005   │ 0      │
+│ -8032      │ 8224768      │ 2    │ 1004         │ 1011 │ 1005   │ 0      │
+└────────────┴──────────────┴──────┴──────────────┴──────┴────────┴────────┘
 
-CACHE BUDGET OK
+── B. N connections to N files, all kept open ─────────────────────────
+
+B1. Every connection opens its file, scans it and stays open. The cached
+    pages of all open connections add up to 482 per connection, but they
+    are not spread evenly: the one LRU group lets the connection that
+    scanned last take pages from the idle ones.
+┌────────────┬──────┬──────────────────┬───────────────┬──────────────────┐
+│ checkpoint │ open │ cached_pages_sum │ per_open_conn │ per_conn_min_max │
+├────────────┼──────┼──────────────────┼───────────────┼──────────────────┤
+│ after 1    │ 1    │ 482              │ 482           │ 482..482         │
+│ after 2    │ 2    │ 964              │ 482           │ 0..964           │
+│ after 4    │ 4    │ 1928             │ 482           │ 0..1004          │
+│ after 8    │ 8    │ 3856             │ 482           │ 0..1004          │
+│ after 16   │ 16   │ 7712             │ 482           │ 0..1004          │
+│ after 32   │ 32   │ 15424            │ 482           │ 0..1004          │
+│ after 64   │ 64   │ 30848            │ 482           │ 0..1004          │
+│ all closed │ 0    │ 0                │               │                  │
+└────────────┴──────┴──────────────────┴───────────────┴──────────────────┘
+
+B2. At the last checkpoint, the first connection and the last one:
+┌──────┬──────────────┬──────┬────────┬────────┐
+│ conn │ cached_pages │ hits │ misses │ spills │
+├──────┼──────────────┼──────┼────────┼────────┤
+│ 1    │ 0            │ 7    │ 1005   │ 0      │
+│ 64   │ 1004         │ 7    │ 1005   │ 0      │
+└──────┴──────────────┴──────┴────────┴────────┘
+
+B3. Cached pages per connection at the last checkpoint:
+┌──────────────┬─────────────┬────────────┬───────────┐
+│ cached_pages │ connections │ first_conn │ last_conn │
+├──────────────┼─────────────┼────────────┼───────────┤
+│ 0            │ 33          │ 1          │ 33        │
+│ 728          │ 1           │ 34         │ 34        │
+│ 1004         │ 30          │ 35         │ 64        │
+└──────────────┴─────────────┴────────────┴───────────┘
+
+── C. N connections to one file, all kept open ────────────────────────
+
+C1. Connections to the same file do not share pages: every checkpoint
+    has the same cached pages as in part B.
+┌────────────┬──────┬──────────────────┬──────────────────┬────────────┐
+│ checkpoint │ open │ cached_pages_sum │ per_conn_min_max │ part_b_sum │
+├────────────┼──────┼──────────────────┼──────────────────┼────────────┤
+│ after 1    │ 1    │ 482              │ 482..482         │ 482        │
+│ after 2    │ 2    │ 964              │ 0..964           │ 964        │
+│ after 4    │ 4    │ 1928             │ 0..1004          │ 1928       │
+│ after 8    │ 8    │ 3856             │ 0..1004          │ 3856       │
+│ after 16   │ 16   │ 7712             │ 0..1004          │ 7712       │
+│ after 32   │ 32   │ 15424            │ 0..1004          │ 15424      │
+│ after 64   │ 64   │ 30848            │ 0..1004          │ 30848      │
+│ all closed │ 0    │ 0                │                  │ 0          │
+└────────────┴──────┴──────────────────┴──────────────────┴────────────┘
+
+── D. N files visited through a pool of at most K open connections ────
+
+D1. The pool closes its least recently used connection before it opens
+    the next. After K files the cached pages stop growing.
+┌────────────┬──────┬─────────┬──────────────────┬──────────────────┐
+│ checkpoint │ open │ visited │ cached_pages_sum │ per_conn_min_max │
+├────────────┼──────┼─────────┼──────────────────┼──────────────────┤
+│ after 1    │ 1    │ 1       │ 482              │ 482..482         │
+│ after 2    │ 2    │ 2       │ 964              │ 0..964           │
+│ after 4    │ 4    │ 4       │ 1928             │ 0..1004          │
+│ after 8    │ 8    │ 8       │ 3856             │ 0..1004          │
+│ after 16   │ 8    │ 16      │ 3863             │ 0..1004          │
+│ after 32   │ 8    │ 32      │ 3863             │ 0..1004          │
+│ after 64   │ 8    │ 64      │ 3863             │ 0..1004          │
+└────────────┴──────┴─────────┴──────────────────┴──────────────────┘
+
+── E. mmap ─────────────────────────────────────────────────────────────
+
+E1. Connection 1 scans f-000 without mmap. Connection 2 sets PRAGMA
+    mmap_size to twice the file and scans f-001: its pages come from the
+    mapped file, outside the page cache, so it caches almost nothing.
+┌────────────┬──────┬──────────────┬──────┬────────┬────────┐
+│ checkpoint │ conn │ cached_pages │ hits │ misses │ spills │
+├────────────┼──────┼──────────────┼──────┼────────┼────────┤
+│ plain      │ 1    │ 482          │ 7    │ 1005   │ 0      │
+│ mapped     │ 1    │ 482          │ 7    │ 1005   │ 0      │
+│ mapped     │ 2    │ 2            │ 7    │ 3      │ 0      │
+└────────────┴──────┴──────────────┴──────┴────────┴────────┘
+
+The memory claims (RSS grows with the summed CACHE_USED, linearly with open
+connections, stays flat with the pool, and moves to file-backed pages with
+mmap) are in the checks below; the RSS figures are in info.sql.
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  cache_size=-2000: CACHE_USED stays within the budget plus 5% (482 pages x 4352 bytes against 2048000 bytes)
+A  ✓  a file larger than the cache misses again on the second scan (the LRU evicted the pages the scan needs next)
+A  ✓  cache_size=-8032: CACHE_USED stays within the budget plus 5% (1004 pages x 4352 bytes against 8224768 bytes)
+A  ✓  a cache larger than the file serves the second scan from memory: no new misses
+B  ✓  the cached pages of all open connections add up to exactly (open connections) x 482, the pages one connection holds when it fills its budget
+B  ✓  in this driver build cache_size is not a per-connection cap: the connection that scanned last holds 1004 pages (its own budget is 482) while the idle connections were left with 0
+B  ✓  process memory grows by at least the summed CACHE_USED of the open connections
+B  ✓  process memory grows linearly with open connections: growth per open connection at 64 is within -20%/+25% of that at 32
+C  ✓  connections to one file do not share a cache: the totals equal the N-files run at every checkpoint
+C  ✓  process memory grows by the summed CACHE_USED here too
+D  ✓  with the pool, 8 connections are open at the end and their cached pages stay within 8 x (482 + 1), the sum of their cache sizes in pages
+D  ✓  with the pool, process memory stays flat after 8 connections: growth from after 8 to after 64 is at most a quarter of the growth up to after 8
+D  ✓  the pooled run ends with about 8/64 of the unbounded run's memory growth (at most 1.5 x that fraction)
+E  ✓  with mmap covering the file, the scan leaves CACHE_USED near zero (under 5% of the unmapped connection's)
+E  ✓  the mapped scan still adds about the file's size to process RSS: the memory moved from SQLite's heap to mapped file pages
+E  ✓  the added memory is file-backed (RssFile), not anonymous heap
+
+16 of 16 claims hold
+
+Experiment verdict: CACHE BUDGET OK
 ```
 
 #### Reading the evidence
 
-- **Lines 3–9 (Setup).** Builds one WAL-mode database (`1,000` rows × `3,500` bytes = `1,004` pages = `4,112,384` bytes, ~3.9 MiB) and copies it 64 times. Each connection opens with `sqlitex.DefaultOptions()` (`journal_mode=wal`, `synchronous=FULL`) and `cache_size=-2000` (`2,048,000`-byte budget). Line 9 prints `driver compiled with ENABLE_MEMORY_MANAGEMENT: 1`, confirming the unified `PGroup` mode (`src/pcache1.c:718-719`).
-- **Lines 11–28 (Part A: single connection, page accounting, and LRU behavior).**
-  - Subtracting `CACHE_USED` at `cache_size=100` from `cache_size=200` and dividing by `100` measures `4,352` bytes per cached page (`4,096` page bytes + `256` bytes of `PgHdr`/extra/pointers from `sqlite3PagerMemUsed`, `src/pager.c:6881-6887`). The fixed overhead (`5,077` bytes on this host) is the `Pager` struct (whose size includes the database, journal, and WAL paths, which is why raw `CACHE_USED` bytes are `INFO:` lines while derived page counts are `EXACT`) plus one 4,096-byte page buffer.
-  - Line 14 shows the `N - 1` recycle rule: `cache_size=100 holds 99 pages, cache_size=200 holds 199 pages` (`pCache->nPage + 1 >= pCache->nMax`, `src/pcache1.c:902`).
-  - At `cache_size=-2000`, scan 1 fills `482` pages (`hit=7 miss=1005 spill=0`, `CACHE_USED=2,102,741` bytes). Scan 2 ends at `hit=9 miss=2007`: because the 1,004-page table exceeds the 482-page cache, the LRU evicts every leaf page before the second scan reaches it again.
+- **Opening tables (Setup).** Builds one WAL-mode database (`1,000` rows × `3,500` bytes = `1,004` pages = `4,112,384` bytes, ~3.9 MiB) and copies it 64 times. Each connection opens with `sqlitex.DefaultOptions()` (`journal_mode=wal`, `synchronous=FULL`) and `cache_size=-2000` (`2,048,000`-byte budget). The settings table shows `driver compiled with ENABLE_MEMORY_MANAGEMENT` = `1`, confirming the unified `PGroup` mode (`src/pcache1.c:718-719`).
+- **A1–A2 (Part A: single connection, page accounting, and LRU behavior).**
+  - Subtracting `CACHE_USED` at `cache_size=100` from `cache_size=200` and dividing by `100` measures `4,352` bytes per cached page (`4,096` page bytes + `256` bytes of `PgHdr`/extra/pointers from `sqlite3PagerMemUsed`, `src/pager.c:6881-6887`). The fixed overhead (a run-dependent value printed by `course run`: about `4,951` bytes in the lab run, `5,077` on the earlier `linux/amd64` host) is the `Pager` struct (whose size includes the database, journal, and WAL paths, which is why raw `CACHE_USED` bytes are run-dependent `info` values while derived page counts are `EXACT`) plus one 4,096-byte page buffer.
+  - A1 shows the `N - 1` recycle rule: `cache_size=100` holds `99` pages, `cache_size=200` holds `199` pages (`pCache->nPage + 1 >= pCache->nMax`, `src/pcache1.c:902`).
+  - At `cache_size=-2000`, scan 1 fills `482` pages (`hit=7 miss=1005 spill=0`; `CACHE_USED` is run-dependent, about `2,102,615` bytes in the lab run). Scan 2 ends at `hit=9 miss=2007`: because the 1,004-page table exceeds the 482-page cache, the LRU evicts every leaf page before the second scan reaches it again.
   - At `cache_size=-8032` (8,224,768 bytes, twice the file), scan 1 caches all `1,004` pages (`hit=7 miss=1005`), and scan 2 records `hit=1011 miss=1005`—zero new misses.
-- **Lines 30–54 (Part B: 64 open connections to 64 files).**
+- **B1–B3 (Part B: 64 open connections to 64 files).**
   - At every checkpoint (`1, 2, 4, 8, 16, 32, 64` open connections), `cached pages (sum)` equals `open × 482` (`482`, `964`, `1,928`, `3,856`, `7,712`, `15,424`, `30,848`).
-  - In the `min..max` column, after connection 2 scans, `min..max` is `0..964`; from connection 4 onward it is `0..1004`. Line 48 confirms `connection 1 cached pages=0` while `connection 64 cached pages=1004`. Because `ENABLE_MEMORY_MANAGEMENT` puts every connection in one `PGroup`, each scanning connection steals the LRU pages of idle connections until it holds the entire 1,004-page file.
-  - In the `INFO:` RSS lines, at 64 connections summed `CACHE_USED` is `134,575,424` bytes (`128.3 MiB`), while RSS growth is `253.8 MiB` (`RSS growth / summed CACHE_USED = 1.98`, `4.0 MiB` per connection at both 32 and 64). That `~2x` factor is a property of `modernc.org/memory` v1.12.1, whose power-of-two allocator places each ~4.3 KiB page allocation into an 8 KiB slot; a C build using glibc `malloc` would show much smaller allocator overhead. File-backed RSS rises by `3.1 MiB` (from `7.0` to `10.1 MiB`), largely the 64 × 32 KiB (`2.0 MiB`) WAL `-shm` mappings.
-  - Closing all 64 connections drops `sum CACHE_USED` to `0` and RSS from `260.7 MiB` to `32.3 MiB` (the remaining `25.4 MiB` growth is retained Go/driver allocator arenas).
-- **Lines 56–75 (Part C: 64 open connections to one file).** Every `cached pages (sum)` line equals Part B's (`30,848` at 64, `CACHE_USED=134,575,424` bytes), and RSS growth (`251.7 MiB`) matches. Opening 64 connections to one database does not share a page cache; each connection adds its own `cache_size` share to the process total. File-backed RSS rises by only `1.0 MiB` (`7.0` to `8.0 MiB`) instead of `3.1 MiB` because all 64 connections share one `-shm` mapping.
-- **Lines 77–96 (Part D: 64 files visited through an 8-connection LRU pool).** Up to 8 connections, cached pages climb to `3,856` (`8 × 482`) and RSS growth reaches `33.7 MiB`. Across connections 9 through 64, closing the least recently used connection before opening the next keeps open connections at `8`, cached pages flat at `3,863 <= 8 × (482 + 1) = 3,864` (the true `PGroup.nMaxPage` cap: closing an evicted 0-page connection leaves `pGroup->nMaxPage = 7 × 483 = 3,381`, and the newly opened scanner adds `482`, totaling `3,863`), and RSS growth flat at `35.2 MiB`—`14%` of Part B's `253.8 MiB` (matching `8/64 = 12.5%` within the `1.5x` bound).
-- **Lines 98–112 (Part E: `mmap`).** Connection 1 (no `mmap`) scans `f-000` and holds `482` cached pages (`CACHE_USED=2,102,741` bytes, `hit=7 miss=1005`, `RSS 12.9 MiB`). Connection 2 sets `PRAGMA mmap_size=8224768` (twice the file) and scans `f-001` (which is cleanly closed and checkpointed, so no page sits in `-wal`): it holds only `2` cached pages (`CACHE_USED=13,781` bytes, `hit=7 miss=3`). Total RSS still rises by `+4.2 MiB` (the `3.9 MiB` file size), and `/proc/self/status` shows where it went: `file-backed RSS +4.0 MiB, anonymous RSS +0.2 MiB`. `mmap` does not eliminate memory usage—it moves the read cache for checkpointed `.db` pages from SQLite's private heap into the OS kernel's shared, reclaimable page cache.
+  - In the `min..max` column, after connection 2 scans, `min..max` is `0..964`; from connection 4 onward it is `0..1004`. B2 confirms connection 1 holds `0` cached pages while connection 64 holds `1004`. Because `ENABLE_MEMORY_MANAGEMENT` puts every connection in one `PGroup`, each scanning connection steals the LRU pages of idle connections until it holds the entire 1,004-page file.
+  - In the run-dependent RSS figures that `course run` prints, at 64 connections summed `CACHE_USED` is about `134,567,360` bytes (`128.3 MiB`), while RSS growth is about `252.2 MiB` (`RSS growth / summed CACHE_USED = 1.97`) in the lab run; the earlier `linux/amd64` capture showed `253.8 MiB` and `1.98`, with `4.0 MiB` per connection at both 32 and 64. That `~2x` factor is a property of `modernc.org/memory` v1.12.1, whose power-of-two allocator places each ~4.3 KiB page allocation into an 8 KiB slot; a C build using glibc `malloc` would show much smaller allocator overhead. File-backed RSS rose by `3.1 MiB` in the earlier capture (from `7.0` to `10.1 MiB`; the lab run starts at about `7.2 MiB`), largely the 64 × 32 KiB (`2.0 MiB`) WAL `-shm` mappings.
+  - Closing all 64 connections drops the cached pages to `0` and, in the earlier capture, RSS from `260.7 MiB` to `32.3 MiB` (the remaining `25.4 MiB` growth is retained Go/driver allocator arenas).
+- **C1 (Part C: 64 open connections to one file).** Every `cached_pages_sum` row equals Part B's (`30,848` at 64), and the run-dependent RSS growth matches (`251.7 MiB` in the earlier capture). Opening 64 connections to one database does not share a page cache; each connection adds its own `cache_size` share to the process total. File-backed RSS rose by only `1.0 MiB` in the earlier capture (`7.0` to `8.0 MiB`) instead of `3.1 MiB` because all 64 connections share one `-shm` mapping.
+- **D1 (Part D: 64 files visited through an 8-connection LRU pool).** Up to 8 connections, cached pages climb to `3,856` (`8 × 482`) and RSS growth reaches `33.7 MiB` (earlier capture; RSS is run-dependent). Across connections 9 through 64, closing the least recently used connection before opening the next keeps open connections at `8`, cached pages flat at `3,863 <= 8 × (482 + 1) = 3,864` (the true `PGroup.nMaxPage` cap: closing an evicted 0-page connection leaves `pGroup->nMaxPage = 7 × 483 = 3,381`, and the newly opened scanner adds `482`, totaling `3,863`), and RSS growth flat at `35.2 MiB`—`14%` of Part B's `253.8 MiB` in that capture (matching `8/64 = 12.5%` within the `1.5x` bound).
+- **E1 (Part E: `mmap`).** Connection 1 (no `mmap`) scans `f-000` and holds `482` cached pages (`hit=7 miss=1005`; run-dependent `CACHE_USED` about `2,102,615` bytes in the lab run, RSS `12.9 MiB` in the earlier capture). Connection 2 sets `PRAGMA mmap_size=8224768` (twice the file) and scans `f-001` (which is cleanly closed and checkpointed, so no page sits in `-wal`): it holds only `2` cached pages (`hit=7 miss=3`; `CACHE_USED` about `13,655` bytes in the lab run). Total RSS still rises by about `+4.2 MiB` (the `3.9 MiB` file size; earlier capture), and `/proc/self/status` shows where it went (run-dependent, printed by `course run`): file-backed RSS about `+4,145,152` bytes and anonymous RSS about `+245,760` bytes in the lab run (`+4.0 MiB` and `+0.2 MiB` in the earlier capture). `mmap` does not eliminate memory usage—it moves the read cache for checkpointed `.db` pages from SQLite's private heap into the OS kernel's shared, reclaimable page cache.
 
 ---
 
@@ -4781,11 +4781,11 @@ CACHE BUDGET OK
 
 ### 6.1 Cold journals versus hot journals
 
-For a transaction that fits in the page cache (`spill=0`), a rollback journal under `synchronous=FULL` or `NORMAL` starts with 12 zero bytes (`writeJournalHdr`, `src/pager.c:1500-1502`) until `syncJournal` writes the 12-byte magic and record count at offset 0 (call #45 in Section 4). Experiment 4.1 Part D shows what happens if the writer dies during that window (kills 01–25 at `FULL`, kills 01–22 at `NORMAL`):
+For a transaction that fits in the page cache (`spill=0`), a rollback journal under `synchronous=FULL` or `NORMAL` starts with 12 zero bytes (`writeJournalHdr`, `src/pager.c:1500-1502`) until `syncJournal` writes the 12-byte magic and record count at offset 0 (call #45 in Section 4). Experiment 4.1 Part D shows what happens if the writer dies during that window (kills 1–25 at `FULL`, kills 1–22 at `NORMAL`):
 
 - `t.db` still holds the exact pre-step bytes.
-- `t.db-journal` has `first byte 0x00 (not hot)` and `header not-yet-synced`.
-- On reopen, `hasHotJournal` (`src/pager.c:5244-5251`) reads byte 0, sees `0x00`, and ignores the file without deleting it (`cold -journal left (29240 bytes, first byte 0x00)`).
+- `t.db-journal` has first byte `0x00` (not hot) and header `not-yet-synced`.
+- On reopen, `hasHotJournal` (`src/pager.c:5244-5251`) reads byte 0, sees `0x00`, and ignores the file without deleting it (`cold, 29240 bytes, 0x00` left behind).
 
 A cold `-journal` left beside a database is harmless because no write reached `t.db` before the header was activated. Once a transaction overflows `cache_size` and spills via `pagerStress`, however, `syncJournal` runs *before* `COMMIT`: the journal's first byte flips to `0xd9` (hot), dirty pages reach `t.db` before `COMMIT`, and subsequent writes open new sector-aligned segments (`JRN-04`, `JRN-05a`). A platform check that asks "is this database at rest?" by testing only whether `<db>-journal` exists will misclassify a cold journal; the right test is `journalfile.LooksHot()` (`size > 0 && firstByte != 0`), matching `hasHotJournal` and Chapter 2's `capture.CheckAtRest`.
 
@@ -4793,31 +4793,31 @@ A cold `-journal` left beside a database is harmless because no write reached `t
 
 Hot-journal recovery always restores a database that is **logically** pre-step or post-step, never a third logical state. At the raw byte level, two SQLite mechanisms can make a crashed file differ from the exact pre-step or post-step SHA-256:
 
-- **Reused freelist leaves (`PAGER_GET_NOCONTENT`, Experiment 4.1 Parts D and D2).** In step 3 (`freelist leaves [22]`), kills 01–32 at `FULL` reopen to `pre-step, exact bytes`. Kill 32 lands on entry to `pwrite64 t.db off=86016 len=4096`—the write of page 22 (`21 × 4096 = 86016`). From kill 33 through kill 46 (`unlink t.db-journal`), page 22's new bytes are on disk. Because `allocateBtreePage` (`src/btree.c:6740`) fetched page 22 with `PAGER_GET_NOCONTENT`, `getPageNormal` (`src/pager.c:5645-5656`) marked page 22 in `pInJournal` without writing a journal record for it. When SQLite replays the hot journal on reopen, it restores the freelist trunk page—putting page 22 back on the freelist—but never overwrites page 22's bytes. With `secure_delete=ON`, pre-step page 22 was all zeros, so the leftover bytes make the raw file SHA-256 differ from both pre-step and post-step (`14` kills at `FULL`, `14` at `NORMAL`, `13` at `OFF`). Every one of those files passes `PRAGMA integrity_check`, has the exact pre-step size (`29` pages), differs from pre-step *only* in page 22, and produces the exact pre-step `VACUUM INTO` canonical hash (equality level E3 turned into E1). In Part D2 (step 1, `freelist leaves []`), with no freelist pages to reuse, every kill across all three `synchronous` levels (`42` at `FULL`, `41` at `NORMAL`, `37` at `OFF`) reopens to the exact pre-step or post-step bytes (`BBBB…BA`).
+- **Reused freelist leaves (`PAGER_GET_NOCONTENT`, Experiment 4.1 Parts D and D2).** In step 3 (freelist leaf `22`), kills 1–32 at `FULL` reopen to pre-step exact bytes (`B`). Kill 32 lands on entry to `pwrite64 t.db off=86016 len=4096`—the write of page 22 (`21 × 4096 = 86016`). From kill 33 through kill 46 (`unlink t.db-journal`), page 22's new bytes are on disk. Because `allocateBtreePage` (`src/btree.c:6740`) fetched page 22 with `PAGER_GET_NOCONTENT`, `getPageNormal` (`src/pager.c:5645-5656`) marked page 22 in `pInJournal` without writing a journal record for it. When SQLite replays the hot journal on reopen, it restores the freelist trunk page—putting page 22 back on the freelist—but never overwrites page 22's bytes. With `secure_delete=ON`, pre-step page 22 was all zeros, so the leftover bytes make the raw file SHA-256 differ from both pre-step and post-step (`14` kills at `FULL`, `14` at `NORMAL`, `13` at `OFF`). Every one of those files passes `PRAGMA integrity_check`, has the exact pre-step size (`29` pages), differs from pre-step *only* in page 22, and produces the exact pre-step `VACUUM INTO` canonical hash (equality level E3 turned into E1). In Part D2 (step 1, no freelist leaves), with no freelist pages to reuse, every kill across all three `synchronous` levels (`42` at `FULL`, `41` at `NORMAL`, `37` at `OFF`) reopens to the exact pre-step or post-step bytes (`BBBB…BA`).
 - **Post-commit truncation of a shrinking file (`pager_end_transaction`, `src/pager.c:2155-2164`; `RCM-06`).** `sqlite3PagerCommitPhaseOne` only extends an undersized file (`src/pager.c:6704-6715`); shrinking a database (for example, `DELETE` under `auto_vacuum=FULL`) calls `ftruncate` in `pager_end_transaction` *after* the journal is unlinked. Killing the writer on entry to that `ftruncate` leaves a committed database whose logical content is post-step and passes `integrity_check`, while the OS file still carries trailing slack pages beyond the header's page count (`155,648` bytes instead of `53,248` bytes in `RCM-06`).
 
 ### 6.3 Losing a hot journal (Experiment 4.1 Part E)
 
-Part E kills the `synchronous=FULL` step-3 writer at two points and shows what happens if an operator, backup script, or copy tool loses `-journal` (evidence lines 1299–1316):
+Part E kills the `synchronous=FULL` step-3 writer at two points and shows what happens if an operator, backup script, or copy tool loses `-journal` (evidence section E):
 
 | Case | Crash point before action | Action taken | Reopen result |
 | --- | --- | --- | --- |
 | **E1** | Killed on entry to db write 10 of 18 (`pwrite64 t.db off=122880 len=4096`); database torn (30 pages, 9 differ from pre, 9 differ from post); hot `-journal` present | Delete `t.db-journal`, reopen `t.db` | `open failed: open t.db: PRAGMA page_count: database disk image is malformed (11)` (`unreadable`) |
 | **E2a** | Same torn database and hot `-journal` | Copy `t.db` alone to another directory, open copy | `open failed: open t.db: PRAGMA page_count: database disk image is malformed (11)` (`unreadable`) |
-| **E2b** | Same torn database and hot `-journal` | Copy `t.db` **and** `t.db-journal` together, open copy | `integrity_check: ok; user_version=2 accounts=15 documents=7 events=108` (pre-step except freelist leaf 22) |
-| **E3** | Killed on entry to `sync t.db` (all 18 database writes done, `COMMIT` never returned, hot `-journal` present) | Delete `t.db-journal`, reopen `t.db` | `integrity_check: ok; user_version=3 accounts=21 documents=10 events=147` (`post-step, exact bytes`) |
+| **E2b** | Same torn database and hot `-journal` | Copy `t.db` **and** `t.db-journal` together, open copy | integrity `ok`; `user_version` `2`, accounts `15`, documents `7`, events `108` (pre-step except freelist leaf 22) |
+| **E3** | Killed on entry to `sync t.db` (all 18 database writes done, `COMMIT` never returned, hot `-journal` present) | Delete `t.db-journal`, reopen `t.db` | integrity `ok`; `user_version` `3`, accounts `21`, documents `10`, events `147` (`post-step exact`) |
 
 Case E3 is as dangerous as E1: deleting the hot journal after the last database write produces a clean `integrity_check: ok`, turning a transaction that died inside `COMMIT` and never acknowledged to the application into a committed transaction. With the journal kept (kill 45 in Part D), SQLite rolled that exact state back to pre-step.
 
 ### 6.4 The commit point across `DELETE`, `TRUNCATE`, and `PERSIST` (Experiment 4.1 Part F)
 
-Part F traces step 3 at `synchronous=FULL` in all three disk-backed rollback modes and kills the writer on entry to the finalization syscall and on the syscall immediately after it (evidence lines 1318–1349):
+Part F traces step 3 at `synchronous=FULL` in all three disk-backed rollback modes and kills the writer on entry to the finalization syscall and on the syscall immediately after it (evidence section F):
 
 | `journal_mode` | Syncs at `FULL` | Commit-point syscall | Killed on entry | Killed on next syscall | `-journal` left after clean commit |
 | --- | --- | --- | --- | --- | --- |
 | `delete` | `4` | `unlink t.db-journal` | pre-step (logical) | post-step (kill on `step-returned`) | no `-journal` |
-| `truncate` | `5` | `ftruncate t.db-journal len=0` | pre-step (logical) | post-step (kill on `journal-sync`) | `-journal 0 bytes (not hot)` |
-| `persist` | `5` | `pwrite64 t.db-journal off=0 len=28` | pre-step (logical) | post-step (kill on `journal-sync`) | `-journal 29240 bytes, first byte 0x00 (not hot), header zeroed` |
+| `truncate` | `5` | `ftruncate t.db-journal len=0` | pre-step (logical) | post-step (kill on `journal-sync`) | `0` bytes (not hot) |
+| `persist` | `5` | `pwrite64 t.db-journal off=0 len=28` | pre-step (logical) | post-step (kill on `journal-sync`) | `29240` bytes, first byte `0x00` (not hot), header `zeroed` |
 
 In all three modes, a kill on entry to the commit point rolls back to pre-step and a kill on the very next syscall opens to post-step. `TRUNCATE` and `PERSIST` avoid directory-entry creation/deletion overhead on every transaction, at the cost of a fifth sync (`fsync t.db-journal`) at `synchronous=FULL` (`pager_end_transaction`, `src/pager.c:2091-2105`) and leaving a cold `-journal` file beside the database. By contrast, `journal_mode=MEMORY` and `journal_mode=OFF` keep no journal on disk and leave a damaged database on a mid-write `SIGKILL` (`RCM-05`).
 
@@ -4881,9 +4881,9 @@ Every operational rule below is backed directly by this chapter's experiments an
 4. **Rollback mode costs at least 3 (`NORMAL`) or 4 (`FULL`) syncs per commit and writes every modified page twice (Experiment 4.1 Part D, `RCM-03a`).** Step 3 (non-spilling) wrote 7 pages to `-journal`, synced twice (plus a directory sync at `FULL`), wrote 18 pages to `t.db`, and synced `t.db`; transactions that spill past `cache_size` multiply those syncs (`20` at `FULL`, `11` at `NORMAL` in `RCM-03a`). Chapter 1 showed WAL mode needed 1 sync per commit after the first; Chapter 7 measures the full I/O matrix across modes.
 5. **Every newly created WAL database passes through one rollback-journal commit, and imported files start in rollback mode (Experiment 4.1 Part A, `RCM-04`).** Even `sqlitex.Open` with `journal_mode=wal` opens, syncs twice, and unlinks a `-journal` when initializing a brand-new file; a crash mid-open can leave a hot `-journal` that a retry cleans up. A platform opener must explicitly switch new files to WAL and refuse to silently flip existing files whose mode disagrees with policy.
 6. **Verify rollback-mode crash recovery at E3 (or canonical E1), not raw E1 (Experiment 4.1 Parts D and D2, `RCM-06`).** Because `PAGER_GET_NOCONTENT` skips journaling reused freelist leaves (`14` of `47` kills in step 3) and shrinking commits truncate *after* journal unlink (`pager_end_transaction`, `src/pager.c:2155-2164`), a valid rollback or post-commit recovery can leave unused bytes in freelist leaves or trailing slack pages. Compare recovered rollback-mode files with `VACUUM INTO` canonical SHA-256 or logical equality (E3), not raw file SHA-256 (E1).
-7. **Size a multi-database Go service by its open-connection cap, not its file count (Experiment 4.2 Parts B, C, D, `SCL-01`–`SCL-03`).** Page-cache memory scales linearly with open connections—even when multiple connections open the same file (`134.6 MB` `CACHE_USED`, `~252–254 MiB` RSS for 64 connections at `cache_size=-2000`; confirmed to 1,000 connections in `SCL-01` and `SCL-02`). An 8-connection LRU pool capped memory flat at `35.2 MiB` across 64 files (and a 16-connection pool held `14.5 MiB` across 1,000 files at `-256 KiB` in `SCL-03`).
+7. **Size a multi-database Go service by its open-connection cap, not its file count (Experiment 4.2 Parts B, C, D, `SCL-01`–`SCL-03`).** Page-cache memory scales linearly with open connections—even when multiple connections open the same file (`134.6 MB` `CACHE_USED`, `~252–254 MiB` RSS for 64 connections at `cache_size=-2000`; confirmed to 1,000 connections in `SCL-01` and `SCL-02`). An 8-connection LRU pool capped memory flat at `35.2 MiB` across 64 files (earlier `linux/amd64` capture; RSS is run-dependent) (and a 16-connection pool held `14.5 MiB` across 1,000 files at `-256 KiB` in `SCL-03`).
 8. **Account for `ENABLE_MEMORY_MANAGEMENT` pooling, process-wide `shrink_memory`, and the driver's `~2x` RSS multiplier (Experiment 4.2 Parts B and D, `CAC-02a`, `SCL-07`).** With `modernc.org/sqlite`, `cache_size` adds to one process-wide `PGroup` budget capped at `open × nMax` pages (`open × 483` at `-2000`), so active connections automatically reuse idle connections' pages and closing an idle connection frees its fixed overhead (~5 KiB `CACHE_USED`, 32 KiB `-shm` mapping, Go/driver structs) while shrinking the group cap. Never call `PRAGMA shrink_memory` expecting it to affect only one connection—in this build it evicts every connection's unpinned clean pages across the whole process. Budget roughly `2 × summed CACHE_USED` for process RSS (`~4.0 MiB` per connection at `-2000`) because `modernc.org/memory` rounds ~4.3 KiB page allocations into 8 KiB slots.
-9. **Use `PRAGMA mmap_size` to move read-cache memory for checkpointed `.db` pages into the kernel page cache (Experiment 4.2 Part E, `CAC-04`, `SCL-05`).** Covering the checkpointed 3.9 MiB file with `mmap_size` cut `CACHE_USED` from `482` pages (`2.1 MB`) to `2` pages (`13.8 KB`) while shifting the `4.0 MiB` resident footprint into file-backed RSS (`RssFile`), which the OS shares across processes and reclaims under memory pressure. Pages still sitting in an uncheckpointed `-wal` fall back to `pcache1` (`CAC-04`), and on Linux use `Pss_File` (`/proc/self/smaps_rollup`) rather than `RssFile` when measuring shared-file mappings across many connections in one process (`SCL-05`).
+9. **Use `PRAGMA mmap_size` to move read-cache memory for checkpointed `.db` pages into the kernel page cache (Experiment 4.2 Part E, `CAC-04`, `SCL-05`).** Covering the checkpointed 3.9 MiB file with `mmap_size` cut `CACHE_USED` from `482` pages (`2.1 MB`) to `2` pages (about `13.7 KB` in the lab run; raw `CACHE_USED` bytes are run-dependent) while shifting the `4.0 MiB` resident footprint into file-backed RSS (`RssFile`), which the OS shares across processes and reclaims under memory pressure. Pages still sitting in an uncheckpointed `-wal` fall back to `pcache1` (`CAC-04`), and on Linux use `Pss_File` (`/proc/self/smaps_rollup`) rather than `RssFile` when measuring shared-file mappings across many connections in one process (`SCL-05`).
 
 ---
 
@@ -4891,8 +4891,8 @@ Every operational rule below is backed directly by this chapter's experiments an
 
 Answers are in [answers.md](answers.md).
 
-1. In Experiment 4.1 Part D (`synchronous=FULL`), why did killing the writer during kills 01–25 leave a `-journal` file on disk that SQLite ignored and did *not* delete on reopen, whereas kills 26–46 triggered rollback and deleted `-journal`—and what condition on the transaction's size kept the journal cold until `COMMIT`?
+1. In Experiment 4.1 Part D (`synchronous=FULL`), why did killing the writer during kills 1–25 leave a `-journal` file on disk that SQLite ignored and did *not* delete on reopen, whereas kills 26–46 triggered rollback and deleted `-journal`—and what condition on the transaction's size kept the journal cold until `COMMIT`?
 2. In Experiment 4.1 Part D (step 3), 14 kill points at `synchronous=FULL` reopened to a database whose raw SHA-256 matched neither pre-step nor post-step, yet Part D2 (step 1) reopened to exact pre-step or post-step bytes at every kill point. What exact SQLite mechanism caused the difference, which page differed in step 3, and how did the experiment verify the database was still logically pre-step?
 3. Compare what happened in Experiment 4.1 Part E when `t.db-journal` was deleted after a crash at database write 10 of 18 (E1) versus after a crash on entry to `sync t.db` (E3). Why is E3 dangerous even though `PRAGMA integrity_check` returns `ok`?
-4. In Experiment 4.2 Part B (`64` connections, `cache_size=-2000`), connection 1 held `0` cached pages and connection 64 held `1,004` cached pages—more than double its `482`-page budget—while the sum across all 64 connections was `30,848` (`64 × 482`). Which compile option and `pcache1.c` mechanism caused this, what is the true group ceiling under pool churn or repeated sweeps, and why did RSS grow by `253.8 MiB` when summed `CACHE_USED` was only `128.3 MiB`?
-5. In Experiment 4.2 Part E, setting `PRAGMA mmap_size=8224768` cut `CACHE_USED` from `2,102,741` bytes (`482` pages) to `13,781` bytes (`2` pages), yet process RSS still grew by `4.2 MiB`. What happened to the memory, how did `/proc/self/status` prove it, and when does `getPageMMap` fall back to `pcache1` in WAL mode?
+4. In Experiment 4.2 Part B (`64` connections, `cache_size=-2000`), connection 1 held `0` cached pages and connection 64 held `1,004` cached pages—more than double its `482`-page budget—while the sum across all 64 connections was `30,848` (`64 × 482`). Which compile option and `pcache1.c` mechanism caused this, what is the true group ceiling under pool churn or repeated sweeps, and why did RSS grow by about `252 MiB` (a run-dependent value printed by `course run`: `252.2 MiB` in the lab run) when summed `CACHE_USED` was only `128.3 MiB`?
+5. In Experiment 4.2 Part E, setting `PRAGMA mmap_size=8224768` cut `CACHE_USED` from about `2,102,615` bytes (`482` pages) to about `13,655` bytes (`2` pages) in the lab run (raw `CACHE_USED` bytes and RSS are run-dependent values printed by `course run`), yet process RSS still grew by about `4.2 MiB`. What happened to the memory, how did `/proc/self/status` prove it, and when does `getPageMMap` fall back to `pcache1` in WAL mode?

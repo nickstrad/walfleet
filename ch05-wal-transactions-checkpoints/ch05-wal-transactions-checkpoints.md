@@ -12,28 +12,22 @@
 
 > **How to run the experiments**
 >
-> - **Prerequisites:** Go 1.26 (`go.mod` specifies `go 1.26.0`).
-> - **Fetch the pinned SQLite source tree** into `_src/sqlite-3.53.4` (or point `SQLITE_SRC` at an existing checkout of tag `version-3.53.4`):
+> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to start the runner from the host. Build the `lab` image once, from the repository root:
 >   ```text
->   go run ./cmd/course fetch-source
+>   docker compose build lab
 >   ```
-> - **Build the pinned C tools** (`sqlite3`, `showwal`, `dbhash`) into `_tools/bin/` for Experiment 5.1's `showwal` cross-check (if `showwal` is not built, Experiment 5.1 still runs, prints a `NO-SHOWWAL:` line, and skips that cross-check):
+>   The image already contains the pinned SQLite `3.53.4` source tree, the C tools (`sqlite3`, `showwal`, `dbhash`; Experiment 5.1 uses `showwal` as a cross-check), `strace`, and the DuckDB CLI that presents the results.
+> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment in it, and prints its walkthrough; add `-i` (`go run ./cmd/course run -i 5.1`) to stay in DuckDB afterwards with the tables loaded:
 >   ```text
->   go run ./cmd/course build-tools
+>   go run ./cmd/course run 5.1
+>   go run ./cmd/course run 5.2
+>   go run ./cmd/course run 5.3
+>   go run ./cmd/course run 5.4
 >   ```
-> - **Run an experiment** from the repository root:
->   ```text
->   go run ./ch05-wal-transactions-checkpoints/experiments/5.1-wal-inspector
->   go run ./ch05-wal-transactions-checkpoints/experiments/5.2-wal-replay
->   go run ./ch05-wal-transactions-checkpoints/experiments/5.3-reader-pins-the-wal
->   go run ./ch05-wal-transactions-checkpoints/experiments/5.4-checkpoint-modes
->   ```
->   Scratch databases are written under `_work/5.1/` through `_work/5.4/`, which are git-ignored and safe to delete.
-> - **Cross-platform notes and macOS:** Nothing in Chapter 5 is Linux-only (no `strace`, no `/proc`). All four experiments copy live files by re-executing themselves as a child process and parse bytes in plain Go. On macOS, run the `go run` commands above directly or inside the repository's Linux container:
->   ```text
->   docker compose run --rm lab go run ./ch05-wal-transactions-checkpoints/experiments/5.1-wal-inspector
->   ```
->   All captured evidence in this chapter was measured on Linux (`linux/amd64`, Go 1.26.8, ext4) and verified inside the Debian `lab` container. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and vetted only, not run.
+>   In the container, scratch databases and tables are written under `/work/5.1/` through `/work/5.4/` (the `lab-work` volume); run directly, under `_work/5.1/` through `_work/5.4/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch05-wal-transactions-checkpoints/experiments/5.1-wal-inspector`). Run this way it prints only its verdict and leaves its tables under `_work/5.1/results/`. Experiment 5.1's `showwal` cross-check then needs the C tools on the host (`go run ./cmd/course fetch-source`, then `go run ./cmd/course build-tools`); without `showwal`, Experiment 5.1 still runs, prints a `NO-SHOWWAL:` line, and skips that cross-check.
+> - **Cross-platform notes and macOS:** Nothing in Chapter 5 is Linux-only (no `strace`, no `/proc`). All four experiments copy live files by re-executing themselves as a child process and parse bytes in plain Go, so they also run directly on macOS.
+> - **Measured platform:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). The checked values are identical to the earlier `linux/amd64` capture; the WAL salts, the checksums that depend on them, and checkpoint timings differ on every run and are not part of the stored evidence.
 
 ---
 
@@ -193,10 +187,10 @@ Behavior differences across SQLite releases relevant to WAL mode (sources: [`doc
 ### Experiment 5.1 — WAL inspector (`5.1-wal-inspector`)
 
 - **Claim:** A WAL file is a 32-byte header plus whole frames of a 24-byte header and one page image, linked by salts and a running checksum; a transaction commits exactly on the frame carrying a non-zero commit size (equal to `PRAGMA page_count`); the frame count equals `PRAGMA wal_checkpoint(NOOP)`'s `log` column, `-shm`'s `mxFrame`, and `showwal`'s listing; and repeated runs (and different `synchronous` levels: `FULL`, `NORMAL`, `OFF`) write the exact same `(page, page sha256, commit size)` frame sequence, differing only inside salt and checksum bytes.
-- **Evidence form:** `EXACT` (all lines except `INFO:` lines).
-- **Run command:**
+- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./ch05-wal-transactions-checkpoints/experiments/5.1-wal-inspector
+  go run ./cmd/course run 5.1
   ```
 
 <!-- include: experiments/5.1-wal-inspector/main.go -->
@@ -206,6 +200,9 @@ Behavior differences across SQLite releases relevant to WAL mode (sources: [`doc
 // against PRAGMA wal_checkpoint(NOOP) and SQLite's showwal utility, and proves
 // that repeated runs and different synchronous settings produce the exact same
 // frame sequence, differing only in random salts and dependent checksums.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 5.1
 package main
 
 import (
@@ -217,6 +214,7 @@ import (
 	"strings"
 
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walfile"
 
@@ -228,15 +226,31 @@ const (
 	lastStep  = 5
 )
 
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 5.1" runs both.
+var (
+	set    *results.Set
+	tables struct {
+		walHeader, frames, commits, noop, walIndex, showwal, regions, sequences *results.Table
+		infoSalts, infoRegionBytes                                              *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+)
+
+func openTables() {
+	tables.walHeader = set.Table("wal_header", "magic", "checksum_order", "version", "page_size", "checkpoint_seq", "wal_bytes", "header_bytes", "frame_header_bytes", "frames", "valid_frames", "partial_bytes", "stop_reason")
+	tables.frames = set.Table("frames", "frame_no", "page", "commit_size", "sha256_16")
+	tables.commits = set.Table("commits", "commit_no", "recipe_step", "first_frame", "last_frame", "frames", "commit_size", "page_count")
+	tables.noop = set.Table("noop_checkpoint", "busy", "log_frames", "checkpointed")
+	tables.walIndex = set.Table("wal_index", "bytes", "byte_order", "headers_agree", "checksum_ok", "mx_frame", "n_page", "page_size", "n_backfill", "salts_equal_wal", "page_array_matches", "frames")
+	tables.showwal = set.Table("showwal", "frames_listed", "disagreements", "problems")
+	tables.regions = set.Table("regions", "seq", "region", "differs")
+	tables.sequences = set.Table("sequences", "part", "run", "synchronous", "wal_bytes", "frames", "commits", "same_sequence", "first_difference")
+	tables.infoSalts = set.Table("info_salts", "run", "salt1", "salt2", "header_checksum")
+	tables.infoRegionBytes = set.Table("info_region_bytes", "seq", "region", "differing_bytes")
+}
+
+func check(part string, ok bool, claim string) {
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -319,47 +333,35 @@ func buildRun(ctx context.Context, dir, name, synchronous string) run {
 func shortHash(h string) string { return h[:16] }
 
 func partA(ctx context.Context, dir string) run {
-	fmt.Println()
-	fmt.Printf("== A. one WAL holding recipe steps %d-%d: one connection, wal_autocheckpoint=0, synchronous=FULL\n", firstStep, lastStep)
 	first := buildRun(ctx, dir, "run-1", sqlitex.SyncFull)
 	wal := first.wal
-	fmt.Printf("base: recipe step %d built and closed; then steps %d-%d committed on one connection; a child process copied the database, -wal and -shm while that connection was still open\n", firstStep-1, firstStep, lastStep)
-	fmt.Printf("WAL header: magic=0x%08x (%s checksums) version=%d page-size=%d checkpoint-seq=%d\n",
-		wal.Header.Magic, wal.Header.ChecksumByteOrder(), wal.Header.Version, wal.Header.PageSize, wal.Header.CheckpointSequence)
-	fmt.Printf("INFO: salt-1=0x%08x salt-2=0x%08x header checksum %s\n", wal.Header.Salt1, wal.Header.Salt2, wal.Header.Checksum)
-	fmt.Printf("WAL size %d bytes = %d + %d frames x (%d + %d)\n", wal.Size, walfile.HeaderSize, len(wal.Frames), walfile.FrameHeaderSize, wal.PageSize())
-	check(wal.Size == walfile.HeaderSize+int64(len(wal.Frames))*int64(walfile.FrameHeaderSize+wal.PageSize()) && wal.PartialFrameBytes == 0,
+	tables.walHeader.Row(wal.Header.Magic, wal.Header.ChecksumByteOrder(), wal.Header.Version, wal.Header.PageSize, wal.Header.CheckpointSequence,
+		wal.Size, walfile.HeaderSize, walfile.FrameHeaderSize, len(wal.Frames), wal.ValidFrames, wal.PartialFrameBytes, wal.StopReason())
+	tables.infoSalts.Row("run 1", wal.Header.Salt1, wal.Header.Salt2, wal.Header.Checksum)
+	check("A", wal.Size == walfile.HeaderSize+int64(len(wal.Frames))*int64(walfile.FrameHeaderSize+wal.PageSize()) && wal.PartialFrameBytes == 0,
 		"the WAL is a 32-byte header plus whole frames of a 24-byte header and one 4096-byte page")
-	fmt.Println("frames (number, page, commit size, sha256 of the page image, first 16 hex digits):")
 	for _, frame := range wal.Frames {
-		marker := ""
-		if frame.IsCommit() {
-			marker = "  <- commit"
-		}
-		fmt.Printf("  frame %3d  page %3d  commit-size %3d  sha256 %s%s\n", frame.Number, frame.Page, frame.CommitSize, shortHash(frame.PageSHA256), marker)
+		tables.frames.Row(frame.Number, frame.Page, frame.CommitSize, shortHash(frame.PageSHA256))
 	}
 	saltsMatch := true
 	for _, frame := range wal.Frames {
 		saltsMatch = saltsMatch && frame.SaltsMatchHeader
 	}
-	fmt.Printf("checksum chain: %d of %d frames verify, stop reason: %s\n", wal.ValidFrames, len(wal.Frames), wal.StopReason())
-	check(wal.ValidFrames == len(wal.Frames) && saltsMatch, "every frame carries the header's salts and continues the running checksum chain")
+	check("A", wal.ValidFrames == len(wal.Frames) && saltsMatch, "every frame carries the header's salts and continues the running checksum chain")
 	commits := wal.Commits()
-	fmt.Println("transactions (a commit frame is the only frame with a non-zero commit size):")
 	sizesMatch := len(commits) == len(first.pageCounts)
 	for i, c := range commits {
 		pageCount := -1
 		if i < len(first.pageCounts) {
 			pageCount = first.pageCounts[i]
 		}
-		fmt.Printf("  commit %d = recipe step %d: frames %d-%d (%d frames), commit size %d pages; PRAGMA page_count after the step: %d\n",
-			i+1, firstStep+i, c.FirstFrame, c.LastFrame, c.Frames(), c.Pages, pageCount)
+		tables.commits.Row(i+1, firstStep+i, c.FirstFrame, c.LastFrame, c.Frames(), c.Pages, pageCount)
 		sizesMatch = sizesMatch && int(c.Pages) == pageCount
 	}
-	check(len(commits) == lastStep-firstStep+1, "five recipe steps left exactly five commit frames")
-	check(sizesMatch, "each commit frame's size field equals the database's page count after that transaction")
-	fmt.Printf("PRAGMA wal_checkpoint(NOOP) on the open connection: %s\n", first.noop)
-	check(first.noop.LogFrames == len(wal.Frames) && first.noop.Checkpointed == 0, "the frame count equals the log column of wal_checkpoint(NOOP); nothing was checkpointed")
+	check("A", len(commits) == lastStep-firstStep+1, "five recipe steps left exactly five commit frames")
+	check("A", sizesMatch, "each commit frame's size field equals the database's page count after that transaction")
+	tables.noop.Row(first.noop.Busy, first.noop.LogFrames, first.noop.Checkpointed)
+	check("A", first.noop.LogFrames == len(wal.Frames) && first.noop.Checkpointed == 0, "the frame count equals the log column of wal_checkpoint(NOOP); nothing was checkpointed")
 	describeIndex(first)
 	crossCheckShowwal(first)
 	return first
@@ -368,16 +370,15 @@ func partA(ctx context.Context, dir string) run {
 func describeIndex(r run) {
 	h := r.index.Header()
 	wal := r.wal
-	fmt.Printf("wal-index (-shm copy): %d bytes, %s, header copies agree: %v, header checksum ok: %v\n", r.index.Size, r.index.ByteOrderName(), r.index.HeadersAgree(), h.ChecksumOK)
-	fmt.Printf("  mxFrame=%d nPage=%d page-size=%d nBackfill=%d salts equal the WAL header: %v\n", h.MaxFrame, h.Pages, h.PageSize(), r.index.Checkpoint.Backfill, h.Salt1 == wal.Header.Salt1 && h.Salt2 == wal.Header.Salt2)
+	saltsEqual := h.Salt1 == wal.Header.Salt1 && h.Salt2 == wal.Header.Salt2
 	pages, err := r.index.FramePages(h.MaxFrame)
 	mappingMatches := err == nil && len(pages) == len(wal.Frames)
 	for i := 0; mappingMatches && i < len(pages); i++ {
 		mappingMatches = pages[i] == wal.Frames[i].Page
 	}
-	fmt.Printf("  page-number array for frames 1-%d equals the WAL's frame pages: %v\n", h.MaxFrame, mappingMatches)
-	check(r.index.HeadersAgree() && h.ChecksumOK && int(h.MaxFrame) == wal.LastCommitFrame && h.Pages == wal.DatabasePages() &&
-		h.Salt1 == wal.Header.Salt1 && h.Salt2 == wal.Header.Salt2 && mappingMatches,
+	tables.walIndex.Row(r.index.Size, r.index.ByteOrderName(), r.index.HeadersAgree(), h.ChecksumOK, h.MaxFrame, h.Pages, h.PageSize(), r.index.Checkpoint.Backfill, saltsEqual, mappingMatches, len(pages))
+	check("A", r.index.HeadersAgree() && h.ChecksumOK && int(h.MaxFrame) == wal.LastCommitFrame && h.Pages == wal.DatabasePages() &&
+		saltsEqual && mappingMatches,
 		"the -shm header names the last commit frame (mxFrame), the database size and the WAL's salts, and its page array maps every frame to its page")
 }
 
@@ -393,39 +394,33 @@ func crossCheckShowwal(r run) {
 	}
 	listing := must(walfile.ParseShowwal(string(out)))("parse showwal output")
 	problems := r.wal.CompareWithShowwal(listing)
-	fmt.Printf("showwal (built from the pinned tree) lists %d frames; disagreements with walfile: %d\n", len(listing.Frames), len(problems))
-	for _, p := range problems {
-		fmt.Printf("  %s\n", p)
-	}
-	check(len(problems) == 0, "showwal and walfile agree on every frame's page, commit size, salts and stored checksums, and on which checksums verify")
+	tables.showwal.Row(len(listing.Frames), len(problems), strings.Join(problems, "; "))
+	check("A", len(problems) == 0, "showwal and walfile agree on every frame's page, commit size, salts and stored checksums, and on which checksums verify")
+}
+
+func sequenceRow(part, name, synchronous string, other run, equal bool, at int) {
+	tables.sequences.Row(part, name, synchronous, len(other.walBytes), len(other.wal.Frames), len(other.wal.Commits()), equal, at)
 }
 
 func partB(ctx context.Context, dir string, first run) {
-	fmt.Println()
-	fmt.Println("== B. the same workload again: what differs between two WALs")
 	second := buildRun(ctx, dir, "run-2", sqlitex.SyncFull)
-	fmt.Printf("INFO: run 2 salt-1=0x%08x salt-2=0x%08x\n", second.wal.Header.Salt1, second.wal.Header.Salt2)
+	tables.infoSalts.Row("run 2", second.wal.Header.Salt1, second.wal.Header.Salt2, second.wal.Header.Checksum)
 	comparison := walfile.CompareBytes(first.walBytes, second.walBytes, first.wal.PageSize())
-	fmt.Printf("byte comparison run 1 vs run 2: sizes %d and %d\n", comparison.SizeA, comparison.SizeB)
 	for r := walfile.RegionHeaderMagic; r <= walfile.RegionBeyondShorterFile; r++ {
-		changed := comparison.ByRegion[r] > 0
-		fmt.Printf("  %-40s %s\n", r.String()+":", map[bool]string{true: "differs", false: "same"}[changed])
+		tables.regions.Row(int(r), r.String(), comparison.ByRegion[r] > 0)
+		tables.infoRegionBytes.Row(int(r), r.String(), comparison.ByRegion[r])
 	}
-	fmt.Printf("INFO: differing bytes per region: %s\n", comparison)
-	check(!comparison.Identical() && comparison.OnlyIn(walfile.RegionHeaderSalt, walfile.RegionHeaderChecksum, walfile.RegionFrameSalt, walfile.RegionFrameChecksum),
+	check("B", !comparison.Identical() && comparison.OnlyIn(walfile.RegionHeaderSalt, walfile.RegionHeaderChecksum, walfile.RegionFrameSalt, walfile.RegionFrameChecksum),
 		"the two WALs differ, and only inside the salt and checksum fields")
 	equal, at := walfile.EqualTuples(first.wal.Tuples(true), second.wal.Tuples(true))
-	fmt.Printf("frame sequences as (page, page sha256, commit size): equal %v (first difference at frame %d, 0 = none)\n", equal, at)
-	check(equal, "the two runs wrote the same pages, with the same images, in the same order, with the same commit sizes")
+	sequenceRow("B", "run 2", sqlitex.SyncFull, second, equal, at)
+	check("B", equal, "the two runs wrote the same pages, with the same images, in the same order, with the same commit sizes")
 
-	fmt.Println()
-	fmt.Println("== C. other synchronous levels write the same frames")
 	for _, level := range []string{sqlitex.SyncNormal, sqlitex.SyncOff} {
 		other := buildRun(ctx, dir, "sync-"+strings.ToLower(level), level)
 		equal, at := walfile.EqualTuples(first.wal.Tuples(true), other.wal.Tuples(true))
-		fmt.Printf("synchronous=%s: %d frames, %d commits; frame sequence equal to synchronous=FULL: %v (first difference at frame %d)\n",
-			level, len(other.wal.Frames), len(other.wal.Commits()), equal, at)
-		check(equal, fmt.Sprintf("synchronous=%s changes when SQLite syncs, not which frames it writes", level))
+		sequenceRow("C", "sync-"+strings.ToLower(level), level, other, equal, at)
+		check("C", equal, fmt.Sprintf("synchronous=%s changes when SQLite syncs, not which frames it writes", level))
 	}
 }
 
@@ -438,17 +433,11 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("5.1")
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
+	set = results.MustOpen(dir)
+	openTables()
 	first := partA(ctx, dir)
 	partB(ctx, dir, first)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("WAL INSPECTOR FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("WAL INSPECTOR OK")
+	set.Finish("WAL INSPECTOR")
 }
 
 func displayPath(path string) string {
@@ -467,169 +456,376 @@ func displayPath(path string) string {
 }
 ```
 
-Captured output (`evidence/5.1-wal-inspector.txt`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/5.1-wal-inspector/report.sql -->
+```sql
+-- Walkthrough of experiment 5.1. Run it with:
+--   go run ./cmd/course run 5.1        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   wal_header       one row: the WAL header and size of run 1 (recipe steps 1-5)
+--   frames           one row per frame of run 1: page, commit size, first 16 hex digits of the page sha256
+--   commits          one row per commit frame (one per recipe step)
+--   noop_checkpoint  one row: PRAGMA wal_checkpoint(NOOP) on the open connection
+--   wal_index        one row: the -shm copy (wal-index) of run 1
+--   showwal          one row: the cross-check against SQLite's showwal utility (absent when skipped)
+--   regions          one row per region of the WAL file: do run 1 and run 2 differ there
+--   sequences        one row per further run: is its frame sequence equal to run 1
+--   checks           every claim the experiment asserted (the runner lists it last)
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  5.1  What is inside a live WAL, and what differs between two of them?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'Recipe steps 1-5 are committed on one connection with wal_autocheckpoint=0,'
+.print 'synchronous=FULL. While that connection is still open, a child process'
+.print 'copies the database, the -wal and the -shm. Plain Go parses both sidecar'
+.print 'files and checks them against PRAGMA wal_checkpoint(NOOP) and showwal.'
+.print 'Base: recipe step 0, built and closed before the five steps.'
+
+.print
+.print '── A. One WAL holding recipe steps 1-5 ─────────────────────────────────'
+.print
+.print 'A1. The header and the size. The file is a 32-byte header plus whole frames'
+.print '    of a 24-byte frame header and one page; the arithmetic must match.'
+
+SELECT printf('0x%08x', magic) AS magic, checksum_order, version, page_size, checkpoint_seq, wal_bytes,
+       header_bytes + frames * (frame_header_bytes + page_size) AS computed_bytes,
+       partial_bytes
+FROM wal_header;
+
+.print
+.print 'A2. The checksum chain: every frame carries the header salts and continues'
+.print '    the running checksum, so all frames verify.'
+
+SELECT frames, valid_frames, stop_reason FROM wal_header;
+
+.print
+.print 'A3. The frames in order, with the commit they belong to. Only the last frame'
+.print '    of a transaction has a non-zero commit size, and it equals the database'
+.print '    size in pages at that point. Later transactions rewrite early pages'
+.print '    such as 1 and 2; an identical sha256 means the same page image.'
+
+SELECT f.frame_no, f.page, f.commit_size, f.sha256_16,
+       (SELECT min(c.commit_no) FROM commits c WHERE c.last_frame >= f.frame_no) AS commit_no,
+       CASE WHEN f.commit_size > 0 THEN '<- commit' ELSE '' END AS marker
+FROM frames f
+ORDER BY f.frame_no;
+
+.print
+.print 'A4. The transactions. The commit size equals PRAGMA page_count after the step.'
+
+SELECT *, commit_size = page_count AS sizes_match FROM commits ORDER BY commit_no;
+
+.print
+.print 'A5. PRAGMA wal_checkpoint(NOOP) on the open connection takes no locks and'
+.print '    reports the wal-index counts: log is the frame count of the WAL, and nothing'
+.print '    is checkpointed.'
+
+SELECT n.busy, n.log_frames, n.checkpointed, (SELECT count(*) FROM frames) AS frames_in_wal
+FROM noop_checkpoint n;
+
+.print
+.print 'A6. The wal-index (the -shm copy): both header copies agree, the checksum'
+.print '    is good, mxFrame is the last commit frame, nPage the database size, and'
+.print '    its page-number array maps every frame to the page the WAL holds.'
+
+SELECT bytes, byte_order, headers_agree, checksum_ok, page_size
+FROM wal_index;
+
+.print
+.print '    What the header says, against the WAL itself:'
+
+SELECT w.mx_frame, w.n_page, w.n_backfill, w.salts_equal_wal,
+       w.page_array_matches, w.frames AS array_frames
+FROM wal_index w;
+
+.print
+.print 'A7. showwal (built from the pinned tree) against the Go parser: they agree on'
+.print '    every frame page, commit size, salts and checksum, so disagreements is 0.'
+
+SELECT frames_listed, disagreements, problems FROM showwal;
+
+.print
+.print '── B. The same workload again: what differs between two WALs ──────────'
+.print
+.print 'B1. Where run 1 and run 2 differ, by region of the file. Only the salts'
+.print '    and the checksums that depend on them: the page data is the same.'
+.print '    (The salts themselves are random; see the info report.)'
+
+SELECT region, CASE WHEN differs THEN 'differs' ELSE 'same' END AS result
+FROM regions
+ORDER BY seq;
+
+.print
+.print 'B2. The two runs wrote the same frames: the sequence of (page, page sha256,'
+.print '    commit size) is equal.'
+
+SELECT run, synchronous, wal_bytes, frames, commits, same_sequence, first_difference
+FROM sequences WHERE part = 'B';
+
+.print
+.print '── C. Other synchronous levels write the same frames ──────────────────'
+.print
+.print 'C1. synchronous changes when SQLite syncs, not which frames it writes.'
+.print '    first_difference is the first frame that differs; 0 means none.'
+
+SELECT run, synchronous, wal_bytes, frames, commits, same_sequence, first_difference
+FROM sequences WHERE part = 'C' ORDER BY run;
+```
+
+`course run` also prints the run-dependent values, which are not part of the stored evidence: the random salts, the checksums that depend on them, and how many bytes differ between run 1 and run 2.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/5.1-wal-inspector/`](evidence/5.1-wal-inspector/), and `go run ./cmd/course check evidence ch05` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/5.1-wal-inspector.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/5.1
 
-== A. one WAL holding recipe steps 1-5: one connection, wal_autocheckpoint=0, synchronous=FULL
-base: recipe step 0 built and closed; then steps 1-5 committed on one connection; a child process copied the database, -wal and -shm while that connection was still open
-WAL header: magic=0x377f0682 (little-endian checksums) version=3007000 page-size=4096 checkpoint-seq=0
-INFO: salt-1=0x7e75e7fe salt-2=0x89908e91 header checksum d3ce7891 1d44e0bf
-WAL size 387312 bytes = 32 + 94 frames x (24 + 4096)
-check ok: the WAL is a 32-byte header plus whole frames of a 24-byte header and one 4096-byte page
-frames (number, page, commit size, sha256 of the page image, first 16 hex digits):
-  frame   1  page   1  commit-size   0  sha256 59ffcca063706e7c
-  frame   2  page   2  commit-size   0  sha256 1d3a999cc98c2840
-  frame   3  page   3  commit-size   0  sha256 976f28147cdb33d9
-  frame   4  page   4  commit-size   0  sha256 bc8e1a0a073d87cc
-  frame   5  page   5  commit-size   0  sha256 7aad2880eb458697
-  frame   6  page   6  commit-size   0  sha256 7e7afe23ae214297
-  frame   7  page   7  commit-size   0  sha256 a534c6fdb6abf78b
-  frame   8  page   8  commit-size   0  sha256 603d2dd28b5b9466
-  frame   9  page   9  commit-size   0  sha256 ad7facb2586fc6e9
-  frame  10  page  10  commit-size   0  sha256 5bb69638130cf638
-  frame  11  page  11  commit-size   0  sha256 249ae8d5abec517a
-  frame  12  page  12  commit-size   0  sha256 7f5502748230a361
-  frame  13  page  13  commit-size   0  sha256 12a4b4e75b3e86d3
-  frame  14  page  14  commit-size   0  sha256 34962cb641e4deba
-  frame  15  page  15  commit-size   0  sha256 4d3175e4b2c34d53
-  frame  16  page  16  commit-size   0  sha256 a0572382d4875333
-  frame  17  page  17  commit-size   0  sha256 15b724903840c0ad
-  frame  18  page  18  commit-size   0  sha256 383820231ab24d46
-  frame  19  page  19  commit-size   0  sha256 a70e2bb302c4b820
-  frame  20  page  20  commit-size   0  sha256 88dec991912d57cd
-  frame  21  page  21  commit-size   0  sha256 8ecf5f8db76665de
-  frame  22  page  22  commit-size  22  sha256 5957d75016820319  <- commit
-  frame  23  page   1  commit-size   0  sha256 bd8534c764397e90
-  frame  24  page   2  commit-size   0  sha256 a2bf415c8897e0ae
-  frame  25  page   3  commit-size   0  sha256 acdc5e1702a86558
-  frame  26  page   4  commit-size   0  sha256 e41a92c0d1702744
-  frame  27  page   8  commit-size   0  sha256 fba5521b93297c4b
-  frame  28  page   9  commit-size   0  sha256 ca9a4af9e802b51d
-  frame  29  page  15  commit-size   0  sha256 4d3175e4b2c34d53
-  frame  30  page  19  commit-size   0  sha256 e3bb3b6b00cacac6
-  frame  31  page  20  commit-size   0  sha256 d2e5bb020e2f27de
-  frame  32  page  21  commit-size   0  sha256 9f00211d84c42594
-  frame  33  page  22  commit-size   0  sha256 ad7facb2586fc6e9
-  frame  34  page  23  commit-size   0  sha256 59134759e86d787f
-  frame  35  page  24  commit-size   0  sha256 deb86ca0005d14f7
-  frame  36  page  25  commit-size   0  sha256 732423d9158389d0
-  frame  37  page  26  commit-size   0  sha256 f5bebfb50ea0bb49
-  frame  38  page  27  commit-size   0  sha256 933d83c368aa19b3
-  frame  39  page  28  commit-size   0  sha256 44f3ca488e79cc19
-  frame  40  page  29  commit-size  29  sha256 862623cb8534c4f3  <- commit
-  frame  41  page   1  commit-size   0  sha256 565a6b55fcd12fa2
-  frame  42  page   2  commit-size   0  sha256 9e832dbc8e6c0016
-  frame  43  page   3  commit-size   0  sha256 cfa94ac9e81bf655
-  frame  44  page   4  commit-size   0  sha256 5e46c8dea368b648
-  frame  45  page  20  commit-size   0  sha256 3b65dbee9941c10a
-  frame  46  page  22  commit-size   0  sha256 e245c6247cbcc8c2
-  frame  47  page  26  commit-size   0  sha256 f296abd436098c82
-  frame  48  page  27  commit-size   0  sha256 8270bcf463d86ed8
-  frame  49  page  30  commit-size   0  sha256 2d8423154a553dbc
-  frame  50  page  31  commit-size   0  sha256 f3da9777ca90fcf5
-  frame  51  page  32  commit-size   0  sha256 ec7d9f3bb6c90249
-  frame  52  page  33  commit-size   0  sha256 4552b82b526e55ab
-  frame  53  page  34  commit-size   0  sha256 ce92b5493316efc5
-  frame  54  page  35  commit-size   0  sha256 5f88ea1f5fec7bf1
-  frame  55  page  36  commit-size   0  sha256 9398967028b09df2
-  frame  56  page  37  commit-size   0  sha256 6f229b1b93dd19df
-  frame  57  page  38  commit-size   0  sha256 10a2d292bc654bde
-  frame  58  page  39  commit-size  39  sha256 677a49036ee0b9f0  <- commit
-  frame  59  page   1  commit-size   0  sha256 7050f12d532e2ba0
-  frame  60  page   2  commit-size   0  sha256 aa08648bd4375304
-  frame  61  page   3  commit-size   0  sha256 120e8112163f5fc3
-  frame  62  page  19  commit-size   0  sha256 e3bb3b6b00cacac6
-  frame  63  page  21  commit-size   0  sha256 deb86ca0005d14f7
-  frame  64  page  24  commit-size   0  sha256 ad7facb2586fc6e9
-  frame  65  page  28  commit-size   0  sha256 ad7facb2586fc6e9
-  frame  66  page  29  commit-size   0  sha256 ad7facb2586fc6e9
-  frame  67  page  35  commit-size   0  sha256 2749f192057baac9
-  frame  68  page  36  commit-size   0  sha256 ad7facb2586fc6e9
-  frame  69  page  37  commit-size   0  sha256 ad7facb2586fc6e9
-  frame  70  page  38  commit-size   0  sha256 c2fae8bcd1c019e2
-  frame  71  page  39  commit-size   0  sha256 15146137ff3a1e9d
-  frame  72  page  40  commit-size   0  sha256 91be9b798474f1b3
-  frame  73  page  41  commit-size   0  sha256 de1b5cde831492f3
-  frame  74  page  42  commit-size   0  sha256 3a30707ad61b3366
-  frame  75  page  43  commit-size   0  sha256 b221d22756aae42e
-  frame  76  page  44  commit-size   0  sha256 887b2f0e56135974
-  frame  77  page  45  commit-size   0  sha256 5c63bd72305ee430
-  frame  78  page  46  commit-size   0  sha256 c8bee6ed976fd2a7
-  frame  79  page  47  commit-size   0  sha256 ef1c66b7fa90afff
-  frame  80  page  48  commit-size   0  sha256 d06e873c2057fd6e
-  frame  81  page  49  commit-size   0  sha256 216aec892a242448
-  frame  82  page  50  commit-size   0  sha256 aeec3729f9e1bb5c
-  frame  83  page  51  commit-size  51  sha256 0c62745060da6ad7  <- commit
-  frame  84  page   1  commit-size   0  sha256 5dccc56df1a35487
-  frame  85  page   2  commit-size   0  sha256 cc7b92e235c499b1
-  frame  86  page   3  commit-size   0  sha256 f895c8931cdbd22e
-  frame  87  page  24  commit-size   0  sha256 111b43f641f5f7fb
-  frame  88  page  28  commit-size   0  sha256 2cb8d341b022297d
-  frame  89  page  29  commit-size   0  sha256 afc954957f9089e6
-  frame  90  page  35  commit-size   0  sha256 e325e2d37e43aa15
-  frame  91  page  36  commit-size   0  sha256 12109790903aad13
-  frame  92  page  37  commit-size   0  sha256 5ea79dd1cb030de3
-  frame  93  page  39  commit-size   0  sha256 caea83ecb054ea08
-  frame  94  page  50  commit-size  51  sha256 3e3710812142b9df  <- commit
-checksum chain: 94 of 94 frames verify, stop reason: valid
-check ok: every frame carries the header's salts and continues the running checksum chain
-transactions (a commit frame is the only frame with a non-zero commit size):
-  commit 1 = recipe step 1: frames 1-22 (22 frames), commit size 22 pages; PRAGMA page_count after the step: 22
-  commit 2 = recipe step 2: frames 23-40 (18 frames), commit size 29 pages; PRAGMA page_count after the step: 29
-  commit 3 = recipe step 3: frames 41-58 (18 frames), commit size 39 pages; PRAGMA page_count after the step: 39
-  commit 4 = recipe step 4: frames 59-83 (25 frames), commit size 51 pages; PRAGMA page_count after the step: 51
-  commit 5 = recipe step 5: frames 84-94 (11 frames), commit size 51 pages; PRAGMA page_count after the step: 51
-check ok: five recipe steps left exactly five commit frames
-check ok: each commit frame's size field equals the database's page count after that transaction
-PRAGMA wal_checkpoint(NOOP) on the open connection: busy=0 log=94 checkpointed=0
-check ok: the frame count equals the log column of wal_checkpoint(NOOP); nothing was checkpointed
-wal-index (-shm copy): 32768 bytes, little-endian, header copies agree: true, header checksum ok: true
-  mxFrame=94 nPage=51 page-size=4096 nBackfill=0 salts equal the WAL header: true
-  page-number array for frames 1-94 equals the WAL's frame pages: true
-check ok: the -shm header names the last commit frame (mxFrame), the database size and the WAL's salts, and its page array maps every frame to its page
-showwal (built from the pinned tree) lists 94 frames; disagreements with walfile: 0
-check ok: showwal and walfile agree on every frame's page, commit size, salts and stored checksums, and on which checksums verify
+════════════════════════════════════════════════════════════════════════
+  5.1  What is inside a live WAL, and what differs between two of them?
+════════════════════════════════════════════════════════════════════════
 
-== B. the same workload again: what differs between two WALs
-INFO: run 2 salt-1=0x0ae3cd0f salt-2=0xaefe9d9a
-byte comparison run 1 vs run 2: sizes 387312 and 387312
-  header magic:                            same
-  header version:                          same
-  header page size:                        same
-  header checkpoint sequence:              same
-  header salts:                            differs
-  header checksum:                         differs
-  frame page number:                       same
-  frame commit size:                       same
-  frame salts:                             differs
-  frame checksums:                         differs
-  page data:                               same
-  bytes beyond the end of the shorter file: same
-INFO: differing bytes per region: 1518 differing bytes: header salts 8, header checksum 8, frame salts 752, frame checksums 750
-check ok: the two WALs differ, and only inside the salt and checksum fields
-frame sequences as (page, page sha256, commit size): equal true (first difference at frame 0, 0 = none)
-check ok: the two runs wrote the same pages, with the same images, in the same order, with the same commit sizes
+Recipe steps 1-5 are committed on one connection with wal_autocheckpoint=0,
+synchronous=FULL. While that connection is still open, a child process
+copies the database, the -wal and the -shm. Plain Go parses both sidecar
+files and checks them against PRAGMA wal_checkpoint(NOOP) and showwal.
+Base: recipe step 0, built and closed before the five steps.
 
-== C. other synchronous levels write the same frames
-synchronous=NORMAL: 94 frames, 5 commits; frame sequence equal to synchronous=FULL: true (first difference at frame 0)
-check ok: synchronous=NORMAL changes when SQLite syncs, not which frames it writes
-synchronous=OFF: 94 frames, 5 commits; frame sequence equal to synchronous=FULL: true (first difference at frame 0)
-check ok: synchronous=OFF changes when SQLite syncs, not which frames it writes
+── A. One WAL holding recipe steps 1-5 ─────────────────────────────────
 
-WAL INSPECTOR OK
+A1. The header and the size. The file is a 32-byte header plus whole frames
+    of a 24-byte frame header and one page; the arithmetic must match.
+┌────────────┬────────────────┬─────────┬───────────┬────────────────┬───────────┬────────────────┬───────────────┐
+│   magic    │ checksum_order │ version │ page_size │ checkpoint_seq │ wal_bytes │ computed_bytes │ partial_bytes │
+├────────────┼────────────────┼─────────┼───────────┼────────────────┼───────────┼────────────────┼───────────────┤
+│ 0x377f0682 │ little-endian  │ 3007000 │ 4096      │ 0              │ 387312    │ 387312         │ 0             │
+└────────────┴────────────────┴─────────┴───────────┴────────────────┴───────────┴────────────────┴───────────────┘
+
+A2. The checksum chain: every frame carries the header salts and continues
+    the running checksum, so all frames verify.
+┌────────┬──────────────┬─────────────┐
+│ frames │ valid_frames │ stop_reason │
+├────────┼──────────────┼─────────────┤
+│ 94     │ 94           │ valid       │
+└────────┴──────────────┴─────────────┘
+
+A3. The frames in order, with the commit they belong to. Only the last frame
+    of a transaction has a non-zero commit size, and it equals the database
+    size in pages at that point. Later transactions rewrite early pages
+    such as 1 and 2; an identical sha256 means the same page image.
+┌──────────┬──────┬─────────────┬──────────────────┬───────────┬───────────┐
+│ frame_no │ page │ commit_size │    sha256_16     │ commit_no │  marker   │
+├──────────┼──────┼─────────────┼──────────────────┼───────────┼───────────┤
+│ 1        │ 1    │ 0           │ 59ffcca063706e7c │ 1         │           │
+│ 2        │ 2    │ 0           │ 1d3a999cc98c2840 │ 1         │           │
+│ 3        │ 3    │ 0           │ 976f28147cdb33d9 │ 1         │           │
+│ 4        │ 4    │ 0           │ bc8e1a0a073d87cc │ 1         │           │
+│ 5        │ 5    │ 0           │ 7aad2880eb458697 │ 1         │           │
+│ 6        │ 6    │ 0           │ 7e7afe23ae214297 │ 1         │           │
+│ 7        │ 7    │ 0           │ a534c6fdb6abf78b │ 1         │           │
+│ 8        │ 8    │ 0           │ 603d2dd28b5b9466 │ 1         │           │
+│ 9        │ 9    │ 0           │ ad7facb2586fc6e9 │ 1         │           │
+│ 10       │ 10   │ 0           │ 5bb69638130cf638 │ 1         │           │
+│ 11       │ 11   │ 0           │ 249ae8d5abec517a │ 1         │           │
+│ 12       │ 12   │ 0           │ 7f5502748230a361 │ 1         │           │
+│ 13       │ 13   │ 0           │ 12a4b4e75b3e86d3 │ 1         │           │
+│ 14       │ 14   │ 0           │ 34962cb641e4deba │ 1         │           │
+│ 15       │ 15   │ 0           │ 4d3175e4b2c34d53 │ 1         │           │
+│ 16       │ 16   │ 0           │ a0572382d4875333 │ 1         │           │
+│ 17       │ 17   │ 0           │ 15b724903840c0ad │ 1         │           │
+│ 18       │ 18   │ 0           │ 383820231ab24d46 │ 1         │           │
+│ 19       │ 19   │ 0           │ a70e2bb302c4b820 │ 1         │           │
+│ 20       │ 20   │ 0           │ 88dec991912d57cd │ 1         │           │
+│ 21       │ 21   │ 0           │ 8ecf5f8db76665de │ 1         │           │
+│ 22       │ 22   │ 22          │ 5957d75016820319 │ 1         │ <- commit │
+│ 23       │ 1    │ 0           │ bd8534c764397e90 │ 2         │           │
+│ 24       │ 2    │ 0           │ a2bf415c8897e0ae │ 2         │           │
+│ 25       │ 3    │ 0           │ acdc5e1702a86558 │ 2         │           │
+│ 26       │ 4    │ 0           │ e41a92c0d1702744 │ 2         │           │
+│ 27       │ 8    │ 0           │ fba5521b93297c4b │ 2         │           │
+│ 28       │ 9    │ 0           │ ca9a4af9e802b51d │ 2         │           │
+│ 29       │ 15   │ 0           │ 4d3175e4b2c34d53 │ 2         │           │
+│ 30       │ 19   │ 0           │ e3bb3b6b00cacac6 │ 2         │           │
+│ 31       │ 20   │ 0           │ d2e5bb020e2f27de │ 2         │           │
+│ 32       │ 21   │ 0           │ 9f00211d84c42594 │ 2         │           │
+│ 33       │ 22   │ 0           │ ad7facb2586fc6e9 │ 2         │           │
+│ 34       │ 23   │ 0           │ 59134759e86d787f │ 2         │           │
+│ 35       │ 24   │ 0           │ deb86ca0005d14f7 │ 2         │           │
+│ 36       │ 25   │ 0           │ 732423d9158389d0 │ 2         │           │
+│ 37       │ 26   │ 0           │ f5bebfb50ea0bb49 │ 2         │           │
+│ 38       │ 27   │ 0           │ 933d83c368aa19b3 │ 2         │           │
+│ 39       │ 28   │ 0           │ 44f3ca488e79cc19 │ 2         │           │
+│ 40       │ 29   │ 29          │ 862623cb8534c4f3 │ 2         │ <- commit │
+│ 41       │ 1    │ 0           │ 565a6b55fcd12fa2 │ 3         │           │
+│ 42       │ 2    │ 0           │ 9e832dbc8e6c0016 │ 3         │           │
+│ 43       │ 3    │ 0           │ cfa94ac9e81bf655 │ 3         │           │
+│ 44       │ 4    │ 0           │ 5e46c8dea368b648 │ 3         │           │
+│ 45       │ 20   │ 0           │ 3b65dbee9941c10a │ 3         │           │
+│ 46       │ 22   │ 0           │ e245c6247cbcc8c2 │ 3         │           │
+│ 47       │ 26   │ 0           │ f296abd436098c82 │ 3         │           │
+│ 48       │ 27   │ 0           │ 8270bcf463d86ed8 │ 3         │           │
+│ 49       │ 30   │ 0           │ 2d8423154a553dbc │ 3         │           │
+│ 50       │ 31   │ 0           │ f3da9777ca90fcf5 │ 3         │           │
+│ 51       │ 32   │ 0           │ ec7d9f3bb6c90249 │ 3         │           │
+│ 52       │ 33   │ 0           │ 4552b82b526e55ab │ 3         │           │
+│ 53       │ 34   │ 0           │ ce92b5493316efc5 │ 3         │           │
+│ 54       │ 35   │ 0           │ 5f88ea1f5fec7bf1 │ 3         │           │
+│ 55       │ 36   │ 0           │ 9398967028b09df2 │ 3         │           │
+│ 56       │ 37   │ 0           │ 6f229b1b93dd19df │ 3         │           │
+│ 57       │ 38   │ 0           │ 10a2d292bc654bde │ 3         │           │
+│ 58       │ 39   │ 39          │ 677a49036ee0b9f0 │ 3         │ <- commit │
+│ 59       │ 1    │ 0           │ 7050f12d532e2ba0 │ 4         │           │
+│ 60       │ 2    │ 0           │ aa08648bd4375304 │ 4         │           │
+│ 61       │ 3    │ 0           │ 120e8112163f5fc3 │ 4         │           │
+│ 62       │ 19   │ 0           │ e3bb3b6b00cacac6 │ 4         │           │
+│ 63       │ 21   │ 0           │ deb86ca0005d14f7 │ 4         │           │
+│ 64       │ 24   │ 0           │ ad7facb2586fc6e9 │ 4         │           │
+│ 65       │ 28   │ 0           │ ad7facb2586fc6e9 │ 4         │           │
+│ 66       │ 29   │ 0           │ ad7facb2586fc6e9 │ 4         │           │
+│ 67       │ 35   │ 0           │ 2749f192057baac9 │ 4         │           │
+│ 68       │ 36   │ 0           │ ad7facb2586fc6e9 │ 4         │           │
+│ 69       │ 37   │ 0           │ ad7facb2586fc6e9 │ 4         │           │
+│ 70       │ 38   │ 0           │ c2fae8bcd1c019e2 │ 4         │           │
+│ 71       │ 39   │ 0           │ 15146137ff3a1e9d │ 4         │           │
+│ 72       │ 40   │ 0           │ 91be9b798474f1b3 │ 4         │           │
+│ 73       │ 41   │ 0           │ de1b5cde831492f3 │ 4         │           │
+│ 74       │ 42   │ 0           │ 3a30707ad61b3366 │ 4         │           │
+│ 75       │ 43   │ 0           │ b221d22756aae42e │ 4         │           │
+│ 76       │ 44   │ 0           │ 887b2f0e56135974 │ 4         │           │
+│ 77       │ 45   │ 0           │ 5c63bd72305ee430 │ 4         │           │
+│ 78       │ 46   │ 0           │ c8bee6ed976fd2a7 │ 4         │           │
+│ 79       │ 47   │ 0           │ ef1c66b7fa90afff │ 4         │           │
+│ 80       │ 48   │ 0           │ d06e873c2057fd6e │ 4         │           │
+│ 81       │ 49   │ 0           │ 216aec892a242448 │ 4         │           │
+│ 82       │ 50   │ 0           │ aeec3729f9e1bb5c │ 4         │           │
+│ 83       │ 51   │ 51          │ 0c62745060da6ad7 │ 4         │ <- commit │
+│ 84       │ 1    │ 0           │ 5dccc56df1a35487 │ 5         │           │
+│ 85       │ 2    │ 0           │ cc7b92e235c499b1 │ 5         │           │
+│ 86       │ 3    │ 0           │ f895c8931cdbd22e │ 5         │           │
+│ 87       │ 24   │ 0           │ 111b43f641f5f7fb │ 5         │           │
+│ 88       │ 28   │ 0           │ 2cb8d341b022297d │ 5         │           │
+│ 89       │ 29   │ 0           │ afc954957f9089e6 │ 5         │           │
+│ 90       │ 35   │ 0           │ e325e2d37e43aa15 │ 5         │           │
+│ 91       │ 36   │ 0           │ 12109790903aad13 │ 5         │           │
+│ 92       │ 37   │ 0           │ 5ea79dd1cb030de3 │ 5         │           │
+│ 93       │ 39   │ 0           │ caea83ecb054ea08 │ 5         │           │
+│ 94       │ 50   │ 51          │ 3e3710812142b9df │ 5         │ <- commit │
+└──────────┴──────┴─────────────┴──────────────────┴───────────┴───────────┘
+
+A4. The transactions. The commit size equals PRAGMA page_count after the step.
+┌───────────┬─────────────┬─────────────┬────────────┬────────┬─────────────┬────────────┬─────────────┐
+│ commit_no │ recipe_step │ first_frame │ last_frame │ frames │ commit_size │ page_count │ sizes_match │
+├───────────┼─────────────┼─────────────┼────────────┼────────┼─────────────┼────────────┼─────────────┤
+│ 1         │ 1           │ 1           │ 22         │ 22     │ 22          │ 22         │ true        │
+│ 2         │ 2           │ 23          │ 40         │ 18     │ 29          │ 29         │ true        │
+│ 3         │ 3           │ 41          │ 58         │ 18     │ 39          │ 39         │ true        │
+│ 4         │ 4           │ 59          │ 83         │ 25     │ 51          │ 51         │ true        │
+│ 5         │ 5           │ 84          │ 94         │ 11     │ 51          │ 51         │ true        │
+└───────────┴─────────────┴─────────────┴────────────┴────────┴─────────────┴────────────┴─────────────┘
+
+A5. PRAGMA wal_checkpoint(NOOP) on the open connection takes no locks and
+    reports the wal-index counts: log is the frame count of the WAL, and nothing
+    is checkpointed.
+┌───────┬────────────┬──────────────┬───────────────┐
+│ busy  │ log_frames │ checkpointed │ frames_in_wal │
+├───────┼────────────┼──────────────┼───────────────┤
+│ false │ 94         │ 0            │ 94            │
+└───────┴────────────┴──────────────┴───────────────┘
+
+A6. The wal-index (the -shm copy): both header copies agree, the checksum
+    is good, mxFrame is the last commit frame, nPage the database size, and
+    its page-number array maps every frame to the page the WAL holds.
+┌───────┬───────────────┬───────────────┬─────────────┬───────────┐
+│ bytes │  byte_order   │ headers_agree │ checksum_ok │ page_size │
+├───────┼───────────────┼───────────────┼─────────────┼───────────┤
+│ 32768 │ little-endian │ true          │ true        │ 4096      │
+└───────┴───────────────┴───────────────┴─────────────┴───────────┘
+
+    What the header says, against the WAL itself:
+┌──────────┬────────┬────────────┬─────────────────┬────────────────────┬──────────────┐
+│ mx_frame │ n_page │ n_backfill │ salts_equal_wal │ page_array_matches │ array_frames │
+├──────────┼────────┼────────────┼─────────────────┼────────────────────┼──────────────┤
+│ 94       │ 51     │ 0          │ true            │ true               │ 94           │
+└──────────┴────────┴────────────┴─────────────────┴────────────────────┴──────────────┘
+
+A7. showwal (built from the pinned tree) against the Go parser: they agree on
+    every frame page, commit size, salts and checksum, so disagreements is 0.
+┌───────────────┬───────────────┬──────────┐
+│ frames_listed │ disagreements │ problems │
+├───────────────┼───────────────┼──────────┤
+│ 94            │ 0             │          │
+└───────────────┴───────────────┴──────────┘
+
+── B. The same workload again: what differs between two WALs ──────────
+
+B1. Where run 1 and run 2 differ, by region of the file. Only the salts
+    and the checksums that depend on them: the page data is the same.
+    (The salts themselves are random; see the info report.)
+┌──────────────────────────────────────────┬─────────┐
+│                  region                  │ result  │
+├──────────────────────────────────────────┼─────────┤
+│ header magic                             │ same    │
+│ header version                           │ same    │
+│ header page size                         │ same    │
+│ header checkpoint sequence               │ same    │
+│ header salts                             │ differs │
+│ header checksum                          │ differs │
+│ frame page number                        │ same    │
+│ frame commit size                        │ same    │
+│ frame salts                              │ differs │
+│ frame checksums                          │ differs │
+│ page data                                │ same    │
+│ bytes beyond the end of the shorter file │ same    │
+└──────────────────────────────────────────┴─────────┘
+
+B2. The two runs wrote the same frames: the sequence of (page, page sha256,
+    commit size) is equal.
+┌───────┬─────────────┬───────────┬────────┬─────────┬───────────────┬──────────────────┐
+│  run  │ synchronous │ wal_bytes │ frames │ commits │ same_sequence │ first_difference │
+├───────┼─────────────┼───────────┼────────┼─────────┼───────────────┼──────────────────┤
+│ run 2 │ FULL        │ 387312    │ 94     │ 5       │ true          │ 0                │
+└───────┴─────────────┴───────────┴────────┴─────────┴───────────────┴──────────────────┘
+
+── C. Other synchronous levels write the same frames ──────────────────
+
+C1. synchronous changes when SQLite syncs, not which frames it writes.
+    first_difference is the first frame that differs; 0 means none.
+┌─────────────┬─────────────┬───────────┬────────┬─────────┬───────────────┬──────────────────┐
+│     run     │ synchronous │ wal_bytes │ frames │ commits │ same_sequence │ first_difference │
+├─────────────┼─────────────┼───────────┼────────┼─────────┼───────────────┼──────────────────┤
+│ sync-normal │ NORMAL      │ 387312    │ 94     │ 5       │ true          │ 0                │
+│ sync-off    │ OFF         │ 387312    │ 94     │ 5       │ true          │ 0                │
+└─────────────┴─────────────┴───────────┴────────┴─────────┴───────────────┴──────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the WAL is a 32-byte header plus whole frames of a 24-byte header and one 4096-byte page
+A  ✓  every frame carries the header's salts and continues the running checksum chain
+A  ✓  five recipe steps left exactly five commit frames
+A  ✓  each commit frame's size field equals the database's page count after that transaction
+A  ✓  the frame count equals the log column of wal_checkpoint(NOOP); nothing was checkpointed
+A  ✓  the -shm header names the last commit frame (mxFrame), the database size and the WAL's salts, and its page array maps every frame to its page
+A  ✓  showwal and walfile agree on every frame's page, commit size, salts and stored checksums, and on which checksums verify
+B  ✓  the two WALs differ, and only inside the salt and checksum fields
+B  ✓  the two runs wrote the same pages, with the same images, in the same order, with the same commit sizes
+C  ✓  synchronous=NORMAL changes when SQLite syncs, not which frames it writes
+C  ✓  synchronous=OFF changes when SQLite syncs, not which frames it writes
+
+11 of 11 claims hold
+
+Experiment verdict: WAL INSPECTOR OK
 ```
 
 **Reading the evidence:**
 
-- **Header and file size (lines 6–9):** `magic=0x377f0682` selects little-endian 32-bit word reads for the checksum (`WAL_MAGIC | SQLITE_BIGENDIAN` on this little-endian host), `version=3007000`, `page-size=4096`, and `checkpoint-seq=0`. The random salts (`0x7e75e7fe`, `0x89908e91`) and header checksum sit on an `INFO:` line because they change on every run. The file is `387,312` bytes, matching `32 + 94 * (24 + 4096)` with `0` trailing bytes.
-- **Frames and commits (lines 10–114):** Every one of the 94 frames verifies (`94 of 94 frames verify, stop reason: valid`). Five frames carry a non-zero commit size (`<- commit`): frames 22, 40, 58, 83, and 94, matching recipe steps 1–5 (22, 18, 18, 25, and 11 frames). Each commit starts with page 1 because every recipe step writes `PRAGMA user_version`, and each commit size (`22, 29, 39, 51, 51`) matches `PRAGMA page_count` read right after that step.
-- **Three independent oracles (lines 115–122):** `PRAGMA wal_checkpoint(NOOP)` reports `busy=0 log=94 checkpointed=0`; our plain-Go `-shm` decoder reads `32,768` bytes, little-endian, matching header copies, valid header checksum, `mxFrame=94`, `nPage=51`, `nBackfill=0`, identical salts, and a 94-entry page-number array identical to the WAL frames; and SQLite's pinned C `showwal` lists 94 frames with `0` disagreements.
-- **Part B — Repeat run (lines 124–142):** Run 2 produces the same `387,312`-byte size. The region breakdown shows `differs` only on `header salts`, `header checksum`, `frame salts`, and `frame checksums` (`1,518` differing bytes in this run: `8 + 8 + 752 + 750`, where two checksum bytes happened to collide). Every page number, commit size, and page-data byte is `same`, and the `(page, page sha256, commit size)` tuple sequences are equal.
-- **Part C — `synchronous` levels (lines 144–148):** `NORMAL` and `OFF` both write 94 frames and 5 commits with tuple sequences identical to `FULL`: `synchronous` controls when SQLite calls `fsync`, never which frames it writes.
+- **Header and file size (A1):** `magic=0x377f0682` selects little-endian 32-bit word reads for the checksum (`WAL_MAGIC | SQLITE_BIGENDIAN` on this little-endian host), `version=3007000`, `page-size=4096`, and `checkpoint-seq=0`. The random salts (`0x7e75e7fe` and `0x89908e91` in one run) and the header checksum change on every run, so they are in a run-dependent `info` table that `course run` prints, not in the stored evidence. The file is `387,312` bytes, matching `32 + 94 * (24 + 4096)` with `0` trailing bytes.
+- **Frames and commits (A2–A4):** Every one of the 94 frames verifies (`94` valid frames of `94`, stop reason `valid`). Five frames carry a non-zero commit size (`<- commit`): frames 22, 40, 58, 83, and 94, matching recipe steps 1–5 (22, 18, 18, 25, and 11 frames). Each commit starts with page 1 because every recipe step writes `PRAGMA user_version`, and each commit size (`22, 29, 39, 51, 51`) matches `PRAGMA page_count` read right after that step.
+- **Three independent oracles (A5–A7):** `PRAGMA wal_checkpoint(NOOP)` reports busy `false`, log `94`, checkpointed `0`; our plain-Go `-shm` decoder reads `32,768` bytes, little-endian, matching header copies, valid header checksum, `mxFrame=94`, `nPage=51`, `nBackfill=0`, identical salts, and a 94-entry page-number array identical to the WAL frames; and SQLite's pinned C `showwal` lists 94 frames with `0` disagreements.
+- **Part B — Repeat run (B1–B2):** Run 2 produces the same `387,312`-byte size. The region breakdown shows `differs` only on `header salts`, `header checksum`, `frame salts`, and `frame checksums` (the count of differing bytes is run-dependent, printed by `course run`: `1,518` in the earlier capture, `8 + 8 + 752 + 750`, where two checksum bytes happened to collide, and `1,514` in the lab run). Every page number, commit size, and page-data byte is `same`, and the `(page, page sha256, commit size)` tuple sequences are equal.
+- **Part C — `synchronous` levels (C1):** `NORMAL` and `OFF` both write 94 frames and 5 commits with tuple sequences identical to `FULL`: `synchronous` controls when SQLite calls `fsync`, never which frames it writes.
 
 ---
 
@@ -684,9 +880,9 @@ When a write transaction spills dirty pages out of a small page cache (`cache_si
 
 - **Claim:** An open read transaction stops checkpoints and forces unbounded WAL growth in both possible starting states: (A) when the WAL is not fully backfilled, the reader pins a read mark in `aReadMark[1..4]` equal to `mxFrame` when it began, so `nBackfill` stops at that mark, the WAL never restarts, and the reader's row count stays constant until it closes (leaving its stale mark in `-shm` until a checkpoint updates it, after which one `PASSIVE` checkpoint finishes backfilling and the next write restarts at frame 1 without shrinking the file); (B) when the WAL is already fully backfilled (`nBackfill == mxFrame`), the reader takes `WAL_READ_LOCK(0)` with no mark in `1..4`, allowing the next write to restart the WAL once while blocking every subsequent backfill (`nBackfill` stays `0`) until the reader closes.
 - **Evidence form:** `EXACT` throughout (scripted two-connection order with child-process sampling and no sleeps—narrowing the outline's original `SHAPE` expectation).
-- **Run command:**
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./ch05-wal-transactions-checkpoints/experiments/5.3-reader-pins-the-wal
+  go run ./cmd/course run 5.3
   ```
 
 <!-- include: experiments/5.3-reader-pins-the-wal/main.go -->
@@ -697,6 +893,9 @@ When a write transaction spills dirty pages out of a small page cache (`cache_si
 // cannot restart; part B begins on a fully checkpointed WAL so the reader holds
 // read lock 0 (WAL_READ_LOCK(0)), letting the WAL restart once while blocking
 // all subsequent backfill (nBackfill stays 0).
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 5.3
 package main
 
 import (
@@ -708,6 +907,7 @@ import (
 	"strings"
 
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walfile"
 
@@ -723,15 +923,27 @@ const (
 	countQuery         = "SELECT count(*) FROM events"
 )
 
-var failures []string
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 5.3" runs both.
+// part labels the rows written while a part runs; the first sample of a part is
+// the baseline of its salt-1 column, because the salts themselves are random.
+var (
+	set             *results.Set
+	part            string
+	seq             int
+	baseSalt        uint32
+	haveBase        bool
+	sampleTable     *results.Table
+	checkpointTable *results.Table
+)
+
+func openTables() {
+	sampleTable = set.Table("samples", "seq", "part", "moment", "step", "wal_bytes", "mx_frame", "n_backfill", "read_marks", "reader_rows", "writer_rows", "checkpoint_seq", "salt1_advance", "valid_frames", "frames_in_file")
+	checkpointTable = set.Table("checkpoints", "seq", "part", "moment", "busy", "log_frames", "checkpointed")
+}
 
 func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -822,19 +1034,27 @@ func openReader(ctx context.Context, path string) (*sqlitex.DB, *sql.Tx, int) {
 	return reader, tx, count(ctx, tx)
 }
 
-func header(label string) {
-	fmt.Printf("%-24s %9s %8s %9s  %-22s %11s %11s\n", label, "WAL bytes", "mxFrame", "nBackfill", "read marks [0..4]", "reader rows", "writer rows")
-}
-
-func row(label string, s sample, readerRows, writerRows int) {
-	fmt.Printf("%-24s %9d %8d %9d  %-22s %11s %11s\n", label, s.walSize, s.maxFrame, s.backfill, marksText(s.marks), rowsText(readerRows), rowsText(writerRows))
-}
-
-func rowsText(rows int) string {
-	if rows < 0 {
-		return "-"
+// row records one sample of the live WAL and wal-index. step is the recipe
+// step just committed (nil when none); a reader or writer count of -1 is not
+// taken at that moment.
+func row(moment string, step any, s sample, readerRows, writerRows int) {
+	if !haveBase {
+		baseSalt, haveBase = s.salt1, true
 	}
-	return fmt.Sprintf("%d", rows)
+	seq++
+	sampleTable.Row(seq, part, moment, step, s.walSize, s.maxFrame, s.backfill, marksText(s.marks), rowsValue(readerRows), rowsValue(writerRows), s.sequence, s.salt1-baseSalt, s.validCount, s.frames)
+}
+
+func rowsValue(rows int) any {
+	if rows < 0 {
+		return nil
+	}
+	return rows
+}
+
+func checkpointRow(moment string, result sqlitex.CheckpointResult) {
+	seq++
+	checkpointTable.Row(seq, part, moment, result.Busy, result.LogFrames, result.Checkpointed)
 }
 
 func prepare(ctx context.Context, dir, name string) (string, string) {
@@ -850,25 +1070,23 @@ func prepare(ctx context.Context, dir, name string) (string, string) {
 }
 
 func partA(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Printf("== A. a reader holds one read transaction open while a writer commits recipe steps %d-%d (wal_autocheckpoint=%d)\n", readerStartsAfter+1, lastLoopStep, autocheckpointSize)
+	part, haveBase = "A", false
 	r := recipe.Default().WithSteps(nextWriteStep)
 	path, scratch := prepare(ctx, dir, "a-pinned")
 	writer := openWriter(ctx, path)
 	if err := r.ApplyStep(ctx, writer, readerStartsAfter); err != nil {
 		fatal("step", err)
 	}
-	header("moment")
 	// Do not query writer before openReader: a SELECT on writer would run
 	// walTryBeginRead (src/wal.c:3182-3205) and write aReadMark[1] = 22 before
 	// the reader opens. Sampling after each writer SELECT inside the loop keeps
 	// every row's read marks aligned with that step's state.
 	start := take(ctx, path, scratch)
-	row(fmt.Sprintf("after step %d", readerStartsAfter), start, -1, -1)
+	row(fmt.Sprintf("after step %d", readerStartsAfter), readerStartsAfter, start, -1, -1)
 	reader, tx, readerRows := openReader(ctx, path)
 	writerRows := count(ctx, writer)
 	pinned := take(ctx, path, scratch)
-	row("reader began", pinned, readerRows, writerRows)
+	row("reader began", nil, pinned, readerRows, writerRows)
 	snapshot := pinned.maxFrame
 	check(snapshot == start.maxFrame && !hasMark(start.marks, snapshot) && hasMark(pinned.marks, snapshot) && pinned.backfill < snapshot,
 		"the reader's snapshot is a read mark equal to mxFrame when it began, and that WAL content was not yet checkpointed")
@@ -882,7 +1100,7 @@ func partA(ctx context.Context, dir string) {
 		writerRows := count(ctx, writer)
 		s := take(ctx, path, scratch)
 		rows := count(ctx, tx)
-		row(fmt.Sprintf("step %d committed", k), s, rows, writerRows)
+		row(fmt.Sprintf("step %d committed", k), k, s, rows, writerRows)
 		readerStable = readerStable && rows == readerRows
 		marksHeld = marksHeld && hasMark(s.marks, snapshot)
 		backfillBounded = backfillBounded && s.backfill <= snapshot
@@ -897,7 +1115,6 @@ func partA(ctx context.Context, dir string) {
 		neverRestarted = neverRestarted && samples[i].maxFrame > samples[i-1].maxFrame && samples[i].salt1 == pinned.salt1
 	}
 	last := samples[len(samples)-1]
-	fmt.Printf("autocheckpoint first reached the reader's mark %d at step %d; mxFrame at the end %d, so %d frames could not be checkpointed\n", snapshot, firstAutocheckpointed, last.maxFrame, last.maxFrame-last.backfill)
 	check(readerStable, "the reader's row count never changed while the writer committed")
 	check(growing && neverRestarted, "the WAL grew on every commit and never restarted while the reader stayed open")
 	check(marksHeld && backfillBounded && firstAutocheckpointed > 0 && last.backfill == snapshot,
@@ -914,12 +1131,12 @@ func partA(ctx context.Context, dir string) {
 	}
 	writerRows = count(ctx, writer)
 	ended := take(ctx, path, scratch)
-	row("reader ended", ended, -1, writerRows)
+	row("reader ended", nil, ended, -1, writerRows)
 	result := must(sqlitex.Checkpoint(ctx, writer, "", sqlitex.CheckpointPassive))("checkpoint")
 	writerRows = count(ctx, writer)
 	afterCheckpoint := take(ctx, path, scratch)
-	row("PASSIVE checkpoint", afterCheckpoint, -1, writerRows)
-	fmt.Printf("wal_checkpoint(PASSIVE) -> %s\n", result)
+	row("PASSIVE checkpoint", nil, afterCheckpoint, -1, writerRows)
+	checkpointRow("PASSIVE checkpoint", result)
 	check(!result.Busy && afterCheckpoint.backfill == afterCheckpoint.maxFrame && afterCheckpoint.walSize == last.walSize,
 		"with the reader gone one checkpoint brings nBackfill to mxFrame; the WAL file keeps its size")
 	if err := r.ApplyStep(ctx, writer, nextWriteStep); err != nil {
@@ -927,9 +1144,7 @@ func partA(ctx context.Context, dir string) {
 	}
 	writerRows = count(ctx, writer)
 	restarted := take(ctx, path, scratch)
-	row(fmt.Sprintf("step %d committed", nextWriteStep), restarted, -1, writerRows)
-	fmt.Printf("after the next write: WAL header checkpoint-seq %d -> %d, salt-1 advanced by %d; valid frames %d of %d in the file (the rest are the old generation)\n",
-		pinned.sequence, restarted.sequence, restarted.salt1-pinned.salt1, restarted.validCount, restarted.frames)
+	row(fmt.Sprintf("step %d committed", nextWriteStep), nextWriteStep, restarted, -1, writerRows)
 	check(restarted.maxFrame < last.maxFrame && restarted.validCount == int(restarted.maxFrame) && restarted.salt1 == pinned.salt1+1 && restarted.sequence == pinned.sequence+1 && restarted.walSize == last.walSize,
 		"the next write restarted the WAL at frame 1 (salt-1 + 1, checkpoint sequence + 1); the file is reused, not shrunk")
 	if err := writer.Close(); err != nil {
@@ -938,8 +1153,7 @@ func partA(ctx context.Context, dir string) {
 }
 
 func partB(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== B. a reader that began right after a complete checkpoint reads the database file only (read mark 0)")
+	part, haveBase = "B", false
 	r := recipe.Default()
 	path, scratch := prepare(ctx, dir, "b-mark-zero")
 	writer := openWriter(ctx, path)
@@ -947,10 +1161,9 @@ func partB(ctx context.Context, dir string) {
 		fatal("step", err)
 	}
 	result := must(sqlitex.Checkpoint(ctx, writer, "", sqlitex.CheckpointPassive))("checkpoint")
-	fmt.Printf("wal_checkpoint(PASSIVE) after step %d -> %s\n", readerStartsAfter, result)
-	header("moment")
 	before := take(ctx, path, scratch)
-	row("checkpointed", before, -1, -1)
+	row("checkpointed", readerStartsAfter, before, -1, -1)
+	checkpointRow(fmt.Sprintf("PASSIVE checkpoint after step %d", readerStartsAfter), result)
 	// With nBackfill == mxFrame, walTryBeginRead takes WAL_READ_LOCK(0) shared
 	// instead of setting a mark in slots 1..4 (src/wal.c:3134-3163). The writer
 	// can restart the WAL because walRestartLog only locks slots 1..4
@@ -959,7 +1172,7 @@ func partB(ctx context.Context, dir string) {
 	reader, tx, readerRows := openReader(ctx, path)
 	writerRows := count(ctx, writer)
 	began := take(ctx, path, scratch)
-	row("reader began", began, readerRows, writerRows)
+	row("reader began", nil, began, readerRows, writerRows)
 	check(began.backfill == began.maxFrame && began.marks == before.marks, "the WAL was fully checkpointed, so the reader took no read mark in 1..4 (it holds read lock 0 and ignores the WAL)")
 	readerStable, backfillZero := true, true
 	var samples []sample
@@ -970,14 +1183,12 @@ func partB(ctx context.Context, dir string) {
 		writerRows := count(ctx, writer)
 		s := take(ctx, path, scratch)
 		rows := count(ctx, tx)
-		row(fmt.Sprintf("step %d committed", k), s, rows, writerRows)
+		row(fmt.Sprintf("step %d committed", k), k, s, rows, writerRows)
 		readerStable = readerStable && rows == readerRows
 		backfillZero = backfillZero && s.backfill == 0
 		samples = append(samples, s)
 	}
 	first, last := samples[0], samples[len(samples)-1]
-	fmt.Printf("first write after the reader began: salt-1 advanced by %d, mxFrame %d (the WAL restarted); at the end mxFrame %d with nBackfill %d\n",
-		first.salt1-before.salt1, first.maxFrame, last.maxFrame, last.backfill)
 	check(first.salt1 == before.salt1+1 && first.maxFrame < before.maxFrame, "a reader on read lock 0 does not stop the writer from restarting the WAL")
 	check(readerStable, "the reader's row count never changed")
 	check(backfillZero && last.maxFrame >= autocheckpointSize, "but no checkpoint can copy a single frame while it is open: nBackfill stays 0 although autocheckpoint ran on every commit past the threshold")
@@ -990,8 +1201,8 @@ func partB(ctx context.Context, dir string) {
 	result = must(sqlitex.Checkpoint(ctx, writer, "", sqlitex.CheckpointPassive))("checkpoint")
 	writerRows = count(ctx, writer)
 	after := take(ctx, path, scratch)
-	row("reader ended + PASSIVE", after, -1, writerRows)
-	fmt.Printf("wal_checkpoint(PASSIVE) -> %s\n", result)
+	row("reader ended + PASSIVE", nil, after, -1, writerRows)
+	checkpointRow("PASSIVE checkpoint after the reader ended", result)
 	check(after.backfill == after.maxFrame, "once the reader ends, a checkpoint copies everything")
 	if err := writer.Close(); err != nil {
 		fatal("close", err)
@@ -1007,17 +1218,11 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("5.3")
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
+	set = results.MustOpen(dir)
+	openTables()
 	partA(ctx, dir)
 	partB(ctx, dir)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("READER PINS THE WAL FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("READER PINS THE WAL OK")
+	set.Finish("READER PINS THE WAL")
 }
 
 func displayPath(path string) string {
@@ -1036,106 +1241,316 @@ func displayPath(path string) string {
 }
 ```
 
-Captured output (`evidence/5.3-reader-pins-the-wal.txt`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/5.3-reader-pins-the-wal/report.sql -->
+```sql
+-- Walkthrough of experiment 5.3. Run it with:
+--   go run ./cmd/course run 5.3        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   samples      one row per look at the live -wal and its wal-index, parts A and B
+--   checkpoints  one row per wal_checkpoint(PASSIVE) the experiment ran
+--   checks       every claim the experiment asserted (the runner lists it last)
+-- In samples, reader_rows and writer_rows are blank where that connection was
+-- not queried; salt1_advance is salt-1 minus the salt-1 of the first sample of
+-- the part (the salts themselves are random).
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  5.3  How does an open reader stop checkpoints and grow the WAL?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'A writer commits recipe steps with wal_autocheckpoint=200 while a reader'
+.print 'holds a read transaction open. After every commit the experiment reads'
+.print 'the live -wal and the wal-index (-shm) from a child process and counts'
+.print 'the rows the reader and the writer see. The read marks column is the five'
+.print 'wal-index read marks [0..4]; "unused" is a slot nobody holds.'
+
+.print
+.print '── A. A reader that holds a read mark in slot 1 ───────────────────────'
+.print
+.print 'The reader begins after step 6 (mxFrame 22, nothing checkpointed yet).'
+.print
+.print 'A1. The reader takes read mark 22 in slot 1 and sees 251 rows for the'
+.print '    whole run; the writer moves on to 1177 rows. The WAL grows on every'
+.print '    commit and never restarts. Autocheckpoint runs, but n_backfill stops'
+.print '    at the reader mark (22) and stays there.'
+
+SELECT moment, wal_bytes, mx_frame, n_backfill, read_marks, reader_rows, writer_rows
+FROM samples WHERE part = 'A' ORDER BY seq;
+
+.print
+.print 'A2. Summary of the loop (steps 7-30):'
+
+WITH s AS (SELECT * FROM samples WHERE part = 'A'),
+     mark AS (SELECT mx_frame AS m FROM s WHERE moment = 'reader began'),
+     loop AS (SELECT * FROM s WHERE step BETWEEN 7 AND 30)
+SELECT (SELECT m FROM mark)                                           AS reader_mark,
+       (SELECT min(step) FROM loop WHERE n_backfill = (SELECT m FROM mark)) AS mark_reached_at_step,
+       max(mx_frame)                                                  AS final_mx_frame,
+       max(mx_frame) - max(n_backfill)                                AS frames_not_checkpointed,
+       count(DISTINCT reader_rows)                                    AS reader_row_counts,
+       min(salt1_advance) || '..' || max(salt1_advance)               AS salt1_advance
+FROM loop;
+
+.print
+.print 'A3. The reader ends. Its read mark stays written in slot 1 until a'
+.print '    checkpoint, so n_backfill is still 22 (row "reader ended"). One PASSIVE'
+.print '    checkpoint now brings n_backfill to mxFrame; the WAL file keeps its size.'
+
+SELECT moment, wal_bytes, mx_frame, n_backfill, read_marks
+FROM samples WHERE part = 'A' AND moment IN ('reader ended', 'PASSIVE checkpoint') ORDER BY seq;
+
+SELECT moment, busy, log_frames, checkpointed FROM checkpoints WHERE part = 'A' ORDER BY seq;
+
+.print
+.print 'A4. The next write (step 31) restarts the WAL at frame 1: salt-1 advances'
+.print '    by 1 and the checkpoint sequence by 1. The file is reused, not shrunk;'
+.print '    only valid_frames of the frames_in_file belong to the new generation.'
+
+SELECT moment, wal_bytes, mx_frame, checkpoint_seq, salt1_advance,
+       valid_frames, frames_in_file
+FROM samples WHERE part = 'A' AND moment IN ('reader began', 'PASSIVE checkpoint', 'step 31 committed')
+ORDER BY seq;
+
+.print
+.print '── B. A reader on read lock 0 ─────────────────────────────────────────'
+.print
+.print 'A PASSIVE checkpoint after step 6 copies every frame, so the reader that'
+.print 'begins next finds n_backfill = mxFrame and takes read lock 0: it reads the'
+.print 'database file and ignores the WAL.'
+.print
+.print 'B1. The checkpoint, and the reader that follows it. The read marks do not'
+.print '    change: the reader took no mark in slots 1..4.'
+
+SELECT moment, busy, log_frames, checkpointed FROM checkpoints WHERE part = 'B' ORDER BY seq;
+
+SELECT moment, wal_bytes, mx_frame, n_backfill, read_marks, reader_rows, writer_rows
+FROM samples WHERE part = 'B' AND moment IN ('checkpointed', 'reader began') ORDER BY seq;
+
+.print
+.print 'B2. The writer is free to restart the WAL (salt-1 advances by 1 and mxFrame'
+.print '    falls back to 16 on step 7), but no checkpoint can copy one frame while'
+.print '    the reader is open: n_backfill stays 0 although autocheckpoint ran on'
+.print '    every commit past 200 frames.'
+
+SELECT moment, wal_bytes, mx_frame, n_backfill, read_marks, reader_rows, writer_rows
+FROM samples WHERE part = 'B' AND step > 6 ORDER BY seq;
+
+.print
+.print 'B3. Summary of the loop (steps 7-30):'
+
+SELECT min(CASE WHEN step = 7 THEN salt1_advance END)  AS salt1_advance_at_step_7,
+       min(CASE WHEN step = 7 THEN mx_frame END)       AS mx_frame_at_step_7,
+       max(mx_frame)                                   AS final_mx_frame,
+       max(n_backfill)                                 AS final_n_backfill,
+       count(DISTINCT reader_rows)                     AS reader_row_counts
+FROM samples WHERE part = 'B' AND step BETWEEN 7 AND 30;
+
+.print
+.print 'B4. The reader ends and one PASSIVE checkpoint copies everything.'
+
+SELECT moment, busy, log_frames, checkpointed FROM checkpoints WHERE part = 'B' AND moment LIKE '%reader ended' ORDER BY seq;
+
+SELECT moment, wal_bytes, mx_frame, n_backfill, read_marks
+FROM samples WHERE part = 'B' AND moment = 'reader ended + PASSIVE' ORDER BY seq;
+```
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/5.3-reader-pins-the-wal/`](evidence/5.3-reader-pins-the-wal/), and `go run ./cmd/course check evidence ch05` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/5.3-reader-pins-the-wal.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/5.3
 
-== A. a reader holds one read transaction open while a writer commits recipe steps 7-30 (wal_autocheckpoint=200)
-moment                   WAL bytes  mxFrame nBackfill  read marks [0..4]      reader rows writer rows
-after step 6                 90672       22         0  0,0,unused,unused,unused           -           -
-reader began                 90672       22         0  0,22,unused,unused,unused         251         251
-check ok: the reader's snapshot is a read mark equal to mxFrame when it began, and that WAL content was not yet checkpointed
-step 7 committed            156592       38         0  0,22,38,unused,unused          251         287
-step 8 committed            251352       61         0  0,22,61,unused,unused          251         336
-step 9 committed            346112       84         0  0,22,84,unused,unused          251         372
-step 10 committed           416152      101         0  0,22,101,unused,unused         251         418
-step 11 committed           477952      116         0  0,22,116,unused,unused         251         458
-step 12 committed           597432      145         0  0,22,145,unused,unused         251         482
-step 13 committed           688072      167         0  0,22,167,unused,unused         251         524
-step 14 committed           762232      185         0  0,22,185,unused,unused         251         570
-step 15 committed           861112      209        22  0,22,209,unused,unused         251         600
-step 16 committed           992952      241        22  0,22,241,unused,unused         251         635
-step 17 committed          1046512      254        22  0,22,254,unused,unused         251         695
-step 18 committed          1149512      279        22  0,22,279,unused,unused         251         725
-step 19 committed          1190712      289        22  0,22,289,unused,unused         251         770
-step 20 committed          1297832      315        22  0,22,315,unused,unused         251         802
-step 21 committed          1417312      344        22  0,22,344,unused,unused         251         831
-step 22 committed          1503832      365        22  0,22,365,unused,unused         251         871
-step 23 committed          1586232      385        22  0,22,385,unused,unused         251         915
-step 24 committed          1705712      414        22  0,22,414,unused,unused         251         942
-step 25 committed          1788112      434        22  0,22,434,unused,unused         251         980
-step 26 committed          1899352      461        22  0,22,461,unused,unused         251        1024
-step 27 committed          2006472      487        22  0,22,487,unused,unused         251        1047
-step 28 committed          2088872      507        22  0,22,507,unused,unused         251        1095
-step 29 committed          2163032      525        22  0,22,525,unused,unused         251        1130
-step 30 committed          2286632      555        22  0,22,555,unused,unused         251        1177
-autocheckpoint first reached the reader's mark 22 at step 15; mxFrame at the end 555, so 533 frames could not be checkpointed
-check ok: the reader's row count never changed while the writer committed
-check ok: the WAL grew on every commit and never restarted while the reader stayed open
-check ok: checkpoints ran (autocheckpoint) but nBackfill stopped at the reader's mark and stayed there
-reader ended               2286632      555        22  0,22,555,unused,unused           -        1177
-PASSIVE checkpoint         2286632      555       555  0,555,555,unused,unused           -        1177
-wal_checkpoint(PASSIVE) -> busy=0 log=555 checkpointed=555
-check ok: with the reader gone one checkpoint brings nBackfill to mxFrame; the WAL file keeps its size
-step 31 committed          2286632       18         0  0,18,unused,unused,unused           -        1214
-after the next write: WAL header checkpoint-seq 0 -> 1, salt-1 advanced by 1; valid frames 18 of 555 in the file (the rest are the old generation)
-check ok: the next write restarted the WAL at frame 1 (salt-1 + 1, checkpoint sequence + 1); the file is reused, not shrunk
+════════════════════════════════════════════════════════════════════════
+  5.3  How does an open reader stop checkpoints and grow the WAL?
+════════════════════════════════════════════════════════════════════════
 
-== B. a reader that began right after a complete checkpoint reads the database file only (read mark 0)
-wal_checkpoint(PASSIVE) after step 6 -> busy=0 log=22 checkpointed=22
-moment                   WAL bytes  mxFrame nBackfill  read marks [0..4]      reader rows writer rows
-checkpointed                 90672       22        22  0,22,unused,unused,unused           -           -
-reader began                 90672       22        22  0,22,unused,unused,unused         251         251
-check ok: the WAL was fully checkpointed, so the reader took no read mark in 1..4 (it holds read lock 0 and ignores the WAL)
-step 7 committed             90672       16         0  0,16,unused,unused,unused         251         287
-step 8 committed            160712       39         0  0,39,unused,unused,unused         251         336
-step 9 committed            255472       62         0  0,62,unused,unused,unused         251         372
-step 10 committed           325512       79         0  0,79,unused,unused,unused         251         418
-step 11 committed           387312       94         0  0,94,unused,unused,unused         251         458
-step 12 committed           506792      123         0  0,123,unused,unused,unused         251         482
-step 13 committed           597432      145         0  0,145,unused,unused,unused         251         524
-step 14 committed           671592      163         0  0,163,unused,unused,unused         251         570
-step 15 committed           770472      187         0  0,187,unused,unused,unused         251         600
-step 16 committed           902312      219         0  0,219,unused,unused,unused         251         635
-step 17 committed           955872      232         0  0,232,unused,unused,unused         251         695
-step 18 committed          1058872      257         0  0,257,unused,unused,unused         251         725
-step 19 committed          1100072      267         0  0,267,unused,unused,unused         251         770
-step 20 committed          1207192      293         0  0,293,unused,unused,unused         251         802
-step 21 committed          1326672      322         0  0,322,unused,unused,unused         251         831
-step 22 committed          1413192      343         0  0,343,unused,unused,unused         251         871
-step 23 committed          1495592      363         0  0,363,unused,unused,unused         251         915
-step 24 committed          1615072      392         0  0,392,unused,unused,unused         251         942
-step 25 committed          1697472      412         0  0,412,unused,unused,unused         251         980
-step 26 committed          1808712      439         0  0,439,unused,unused,unused         251        1024
-step 27 committed          1915832      465         0  0,465,unused,unused,unused         251        1047
-step 28 committed          1998232      485         0  0,485,unused,unused,unused         251        1095
-step 29 committed          2072392      503         0  0,503,unused,unused,unused         251        1130
-step 30 committed          2195992      533         0  0,533,unused,unused,unused         251        1177
-first write after the reader began: salt-1 advanced by 1, mxFrame 16 (the WAL restarted); at the end mxFrame 533 with nBackfill 0
-check ok: a reader on read lock 0 does not stop the writer from restarting the WAL
-check ok: the reader's row count never changed
-check ok: but no checkpoint can copy a single frame while it is open: nBackfill stays 0 although autocheckpoint ran on every commit past the threshold
-reader ended + PASSIVE     2195992      533       533  0,533,unused,unused,unused           -        1177
-wal_checkpoint(PASSIVE) -> busy=0 log=533 checkpointed=533
-check ok: once the reader ends, a checkpoint copies everything
+A writer commits recipe steps with wal_autocheckpoint=200 while a reader
+holds a read transaction open. After every commit the experiment reads
+the live -wal and the wal-index (-shm) from a child process and counts
+the rows the reader and the writer see. The read marks column is the five
+wal-index read marks [0..4]; "unused" is a slot nobody holds.
 
-READER PINS THE WAL OK
+── A. A reader that holds a read mark in slot 1 ───────────────────────
+
+The reader begins after step 6 (mxFrame 22, nothing checkpointed yet).
+
+A1. The reader takes read mark 22 in slot 1 and sees 251 rows for the
+    whole run; the writer moves on to 1177 rows. The WAL grows on every
+    commit and never restarts. Autocheckpoint runs, but n_backfill stops
+    at the reader mark (22) and stays there.
+┌────────────────────┬───────────┬──────────┬────────────┬───────────────────────────┬─────────────┬─────────────┐
+│       moment       │ wal_bytes │ mx_frame │ n_backfill │        read_marks         │ reader_rows │ writer_rows │
+├────────────────────┼───────────┼──────────┼────────────┼───────────────────────────┼─────────────┼─────────────┤
+│ after step 6       │ 90672     │ 22       │ 0          │ 0,0,unused,unused,unused  │             │             │
+│ reader began       │ 90672     │ 22       │ 0          │ 0,22,unused,unused,unused │ 251         │ 251         │
+│ step 7 committed   │ 156592    │ 38       │ 0          │ 0,22,38,unused,unused     │ 251         │ 287         │
+│ step 8 committed   │ 251352    │ 61       │ 0          │ 0,22,61,unused,unused     │ 251         │ 336         │
+│ step 9 committed   │ 346112    │ 84       │ 0          │ 0,22,84,unused,unused     │ 251         │ 372         │
+│ step 10 committed  │ 416152    │ 101      │ 0          │ 0,22,101,unused,unused    │ 251         │ 418         │
+│ step 11 committed  │ 477952    │ 116      │ 0          │ 0,22,116,unused,unused    │ 251         │ 458         │
+│ step 12 committed  │ 597432    │ 145      │ 0          │ 0,22,145,unused,unused    │ 251         │ 482         │
+│ step 13 committed  │ 688072    │ 167      │ 0          │ 0,22,167,unused,unused    │ 251         │ 524         │
+│ step 14 committed  │ 762232    │ 185      │ 0          │ 0,22,185,unused,unused    │ 251         │ 570         │
+│ step 15 committed  │ 861112    │ 209      │ 22         │ 0,22,209,unused,unused    │ 251         │ 600         │
+│ step 16 committed  │ 992952    │ 241      │ 22         │ 0,22,241,unused,unused    │ 251         │ 635         │
+│ step 17 committed  │ 1046512   │ 254      │ 22         │ 0,22,254,unused,unused    │ 251         │ 695         │
+│ step 18 committed  │ 1149512   │ 279      │ 22         │ 0,22,279,unused,unused    │ 251         │ 725         │
+│ step 19 committed  │ 1190712   │ 289      │ 22         │ 0,22,289,unused,unused    │ 251         │ 770         │
+│ step 20 committed  │ 1297832   │ 315      │ 22         │ 0,22,315,unused,unused    │ 251         │ 802         │
+│ step 21 committed  │ 1417312   │ 344      │ 22         │ 0,22,344,unused,unused    │ 251         │ 831         │
+│ step 22 committed  │ 1503832   │ 365      │ 22         │ 0,22,365,unused,unused    │ 251         │ 871         │
+│ step 23 committed  │ 1586232   │ 385      │ 22         │ 0,22,385,unused,unused    │ 251         │ 915         │
+│ step 24 committed  │ 1705712   │ 414      │ 22         │ 0,22,414,unused,unused    │ 251         │ 942         │
+│ step 25 committed  │ 1788112   │ 434      │ 22         │ 0,22,434,unused,unused    │ 251         │ 980         │
+│ step 26 committed  │ 1899352   │ 461      │ 22         │ 0,22,461,unused,unused    │ 251         │ 1024        │
+│ step 27 committed  │ 2006472   │ 487      │ 22         │ 0,22,487,unused,unused    │ 251         │ 1047        │
+│ step 28 committed  │ 2088872   │ 507      │ 22         │ 0,22,507,unused,unused    │ 251         │ 1095        │
+│ step 29 committed  │ 2163032   │ 525      │ 22         │ 0,22,525,unused,unused    │ 251         │ 1130        │
+│ step 30 committed  │ 2286632   │ 555      │ 22         │ 0,22,555,unused,unused    │ 251         │ 1177        │
+│ reader ended       │ 2286632   │ 555      │ 22         │ 0,22,555,unused,unused    │             │ 1177        │
+│ PASSIVE checkpoint │ 2286632   │ 555      │ 555        │ 0,555,555,unused,unused   │             │ 1177        │
+│ step 31 committed  │ 2286632   │ 18       │ 0          │ 0,18,unused,unused,unused │             │ 1214        │
+└────────────────────┴───────────┴──────────┴────────────┴───────────────────────────┴─────────────┴─────────────┘
+
+A2. Summary of the loop (steps 7-30):
+┌─────────────┬──────────────────────┬────────────────┬─────────────────────────┬───────────────────┬───────────────┐
+│ reader_mark │ mark_reached_at_step │ final_mx_frame │ frames_not_checkpointed │ reader_row_counts │ salt1_advance │
+├─────────────┼──────────────────────┼────────────────┼─────────────────────────┼───────────────────┼───────────────┤
+│ 22          │ 15                   │ 555            │ 533                     │ 1                 │ 0..0          │
+└─────────────┴──────────────────────┴────────────────┴─────────────────────────┴───────────────────┴───────────────┘
+
+A3. The reader ends. Its read mark stays written in slot 1 until a
+    checkpoint, so n_backfill is still 22 (row "reader ended"). One PASSIVE
+    checkpoint now brings n_backfill to mxFrame; the WAL file keeps its size.
+┌────────────────────┬───────────┬──────────┬────────────┬─────────────────────────┐
+│       moment       │ wal_bytes │ mx_frame │ n_backfill │       read_marks        │
+├────────────────────┼───────────┼──────────┼────────────┼─────────────────────────┤
+│ reader ended       │ 2286632   │ 555      │ 22         │ 0,22,555,unused,unused  │
+│ PASSIVE checkpoint │ 2286632   │ 555      │ 555        │ 0,555,555,unused,unused │
+└────────────────────┴───────────┴──────────┴────────────┴─────────────────────────┘
+┌────────────────────┬───────┬────────────┬──────────────┐
+│       moment       │ busy  │ log_frames │ checkpointed │
+├────────────────────┼───────┼────────────┼──────────────┤
+│ PASSIVE checkpoint │ false │ 555        │ 555          │
+└────────────────────┴───────┴────────────┴──────────────┘
+
+A4. The next write (step 31) restarts the WAL at frame 1: salt-1 advances
+    by 1 and the checkpoint sequence by 1. The file is reused, not shrunk;
+    only valid_frames of the frames_in_file belong to the new generation.
+┌────────────────────┬───────────┬──────────┬────────────────┬───────────────┬──────────────┬────────────────┐
+│       moment       │ wal_bytes │ mx_frame │ checkpoint_seq │ salt1_advance │ valid_frames │ frames_in_file │
+├────────────────────┼───────────┼──────────┼────────────────┼───────────────┼──────────────┼────────────────┤
+│ reader began       │ 90672     │ 22       │ 0              │ 0             │ 22           │ 22             │
+│ PASSIVE checkpoint │ 2286632   │ 555      │ 0              │ 0             │ 555          │ 555            │
+│ step 31 committed  │ 2286632   │ 18       │ 1              │ 1             │ 18           │ 555            │
+└────────────────────┴───────────┴──────────┴────────────────┴───────────────┴──────────────┴────────────────┘
+
+── B. A reader on read lock 0 ─────────────────────────────────────────
+
+A PASSIVE checkpoint after step 6 copies every frame, so the reader that
+begins next finds n_backfill = mxFrame and takes read lock 0: it reads the
+database file and ignores the WAL.
+
+B1. The checkpoint, and the reader that follows it. The read marks do not
+    change: the reader took no mark in slots 1..4.
+┌───────────────────────────────────────────┬───────┬────────────┬──────────────┐
+│                  moment                   │ busy  │ log_frames │ checkpointed │
+├───────────────────────────────────────────┼───────┼────────────┼──────────────┤
+│ PASSIVE checkpoint after step 6           │ false │ 22         │ 22           │
+│ PASSIVE checkpoint after the reader ended │ false │ 533        │ 533          │
+└───────────────────────────────────────────┴───────┴────────────┴──────────────┘
+┌──────────────┬───────────┬──────────┬────────────┬───────────────────────────┬─────────────┬─────────────┐
+│    moment    │ wal_bytes │ mx_frame │ n_backfill │        read_marks         │ reader_rows │ writer_rows │
+├──────────────┼───────────┼──────────┼────────────┼───────────────────────────┼─────────────┼─────────────┤
+│ checkpointed │ 90672     │ 22       │ 22         │ 0,22,unused,unused,unused │             │             │
+│ reader began │ 90672     │ 22       │ 22         │ 0,22,unused,unused,unused │ 251         │ 251         │
+└──────────────┴───────────┴──────────┴────────────┴───────────────────────────┴─────────────┴─────────────┘
+
+B2. The writer is free to restart the WAL (salt-1 advances by 1 and mxFrame
+    falls back to 16 on step 7), but no checkpoint can copy one frame while
+    the reader is open: n_backfill stays 0 although autocheckpoint ran on
+    every commit past 200 frames.
+┌───────────────────┬───────────┬──────────┬────────────┬────────────────────────────┬─────────────┬─────────────┐
+│      moment       │ wal_bytes │ mx_frame │ n_backfill │         read_marks         │ reader_rows │ writer_rows │
+├───────────────────┼───────────┼──────────┼────────────┼────────────────────────────┼─────────────┼─────────────┤
+│ step 7 committed  │ 90672     │ 16       │ 0          │ 0,16,unused,unused,unused  │ 251         │ 287         │
+│ step 8 committed  │ 160712    │ 39       │ 0          │ 0,39,unused,unused,unused  │ 251         │ 336         │
+│ step 9 committed  │ 255472    │ 62       │ 0          │ 0,62,unused,unused,unused  │ 251         │ 372         │
+│ step 10 committed │ 325512    │ 79       │ 0          │ 0,79,unused,unused,unused  │ 251         │ 418         │
+│ step 11 committed │ 387312    │ 94       │ 0          │ 0,94,unused,unused,unused  │ 251         │ 458         │
+│ step 12 committed │ 506792    │ 123      │ 0          │ 0,123,unused,unused,unused │ 251         │ 482         │
+│ step 13 committed │ 597432    │ 145      │ 0          │ 0,145,unused,unused,unused │ 251         │ 524         │
+│ step 14 committed │ 671592    │ 163      │ 0          │ 0,163,unused,unused,unused │ 251         │ 570         │
+│ step 15 committed │ 770472    │ 187      │ 0          │ 0,187,unused,unused,unused │ 251         │ 600         │
+│ step 16 committed │ 902312    │ 219      │ 0          │ 0,219,unused,unused,unused │ 251         │ 635         │
+│ step 17 committed │ 955872    │ 232      │ 0          │ 0,232,unused,unused,unused │ 251         │ 695         │
+│ step 18 committed │ 1058872   │ 257      │ 0          │ 0,257,unused,unused,unused │ 251         │ 725         │
+│ step 19 committed │ 1100072   │ 267      │ 0          │ 0,267,unused,unused,unused │ 251         │ 770         │
+│ step 20 committed │ 1207192   │ 293      │ 0          │ 0,293,unused,unused,unused │ 251         │ 802         │
+│ step 21 committed │ 1326672   │ 322      │ 0          │ 0,322,unused,unused,unused │ 251         │ 831         │
+│ step 22 committed │ 1413192   │ 343      │ 0          │ 0,343,unused,unused,unused │ 251         │ 871         │
+│ step 23 committed │ 1495592   │ 363      │ 0          │ 0,363,unused,unused,unused │ 251         │ 915         │
+│ step 24 committed │ 1615072   │ 392      │ 0          │ 0,392,unused,unused,unused │ 251         │ 942         │
+│ step 25 committed │ 1697472   │ 412      │ 0          │ 0,412,unused,unused,unused │ 251         │ 980         │
+│ step 26 committed │ 1808712   │ 439      │ 0          │ 0,439,unused,unused,unused │ 251         │ 1024        │
+│ step 27 committed │ 1915832   │ 465      │ 0          │ 0,465,unused,unused,unused │ 251         │ 1047        │
+│ step 28 committed │ 1998232   │ 485      │ 0          │ 0,485,unused,unused,unused │ 251         │ 1095        │
+│ step 29 committed │ 2072392   │ 503      │ 0          │ 0,503,unused,unused,unused │ 251         │ 1130        │
+│ step 30 committed │ 2195992   │ 533      │ 0          │ 0,533,unused,unused,unused │ 251         │ 1177        │
+└───────────────────┴───────────┴──────────┴────────────┴────────────────────────────┴─────────────┴─────────────┘
+
+B3. Summary of the loop (steps 7-30):
+┌─────────────────────────┬────────────────────┬────────────────┬──────────────────┬───────────────────┐
+│ salt1_advance_at_step_7 │ mx_frame_at_step_7 │ final_mx_frame │ final_n_backfill │ reader_row_counts │
+├─────────────────────────┼────────────────────┼────────────────┼──────────────────┼───────────────────┤
+│ 1                       │ 16                 │ 533            │ 0                │ 1                 │
+└─────────────────────────┴────────────────────┴────────────────┴──────────────────┴───────────────────┘
+
+B4. The reader ends and one PASSIVE checkpoint copies everything.
+┌───────────────────────────────────────────┬───────┬────────────┬──────────────┐
+│                  moment                   │ busy  │ log_frames │ checkpointed │
+├───────────────────────────────────────────┼───────┼────────────┼──────────────┤
+│ PASSIVE checkpoint after the reader ended │ false │ 533        │ 533          │
+└───────────────────────────────────────────┴───────┴────────────┴──────────────┘
+┌────────────────────────┬───────────┬──────────┬────────────┬────────────────────────────┐
+│         moment         │ wal_bytes │ mx_frame │ n_backfill │         read_marks         │
+├────────────────────────┼───────────┼──────────┼────────────┼────────────────────────────┤
+│ reader ended + PASSIVE │ 2195992   │ 533      │ 533        │ 0,533,unused,unused,unused │
+└────────────────────────┴───────────┴──────────┴────────────┴────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the reader's snapshot is a read mark equal to mxFrame when it began, and that WAL content was not yet checkpointed
+A  ✓  the reader's row count never changed while the writer committed
+A  ✓  the WAL grew on every commit and never restarted while the reader stayed open
+A  ✓  checkpoints ran (autocheckpoint) but nBackfill stopped at the reader's mark and stayed there
+A  ✓  with the reader gone one checkpoint brings nBackfill to mxFrame; the WAL file keeps its size
+A  ✓  the next write restarted the WAL at frame 1 (salt-1 + 1, checkpoint sequence + 1); the file is reused, not shrunk
+B  ✓  the WAL was fully checkpointed, so the reader took no read mark in 1..4 (it holds read lock 0 and ignores the WAL)
+B  ✓  a reader on read lock 0 does not stop the writer from restarting the WAL
+B  ✓  the reader's row count never changed
+B  ✓  but no checkpoint can copy a single frame while it is open: nBackfill stays 0 although autocheckpoint ran on every commit past the threshold
+B  ✓  once the reader ends, a checkpoint copies everything
+
+11 of 11 claims hold
+
+Experiment verdict: READER PINS THE WAL OK
 ```
 
 **Reading the evidence:**
 
-- **Part A — Read mark in slot 1 (lines 4–43):**
+- **Part A — Read mark in slot 1 (A1–A4):**
   - `after step 6` shows `WAL bytes = 90672`, `mxFrame = 22`, `nBackfill = 0`, and `read marks = 0,0,unused,unused,unused` (the writer did not run a `SELECT` before `openReader`, so slot 1 is still `0`).
   - `reader began` updates slot 1 to `22` (`0,22,unused,unused,unused`) and reads `251` rows.
   - Across steps 7–30, the writer's own `SELECT count(*)` after each commit updates slot 2 (`38, 61, ..., 555`) while slot 1 stays pinned at `22` and the reader sees `251` rows as the writer climbs to `1177`.
   - At step 15 (`mxFrame = 209 >= 200`), autocheckpoint fires for the first time and advances `nBackfill` from `0` to `22`. On every step from 16 through 30, autocheckpoint fires again and cannot move `nBackfill` past `22`; `533` of `555` frames remain uncheckpointed and the WAL reaches `2,286,632` bytes.
   - `reader ended` prints the exact same `-shm` row (`0,22,555,unused,unused`) as `step 30 committed`, confirming that read marks outlive their readers—only the POSIX lock on `-shm` tells SQLite the slot is now free.
-  - One `PASSIVE` checkpoint then returns `busy=0 log=555 checkpointed=555`, advancing `nBackfill` to `555` and moving mark 1 to `555` while leaving the file at `2,286,632` bytes.
+  - One `PASSIVE` checkpoint then returns busy `false`, log `555`, checkpointed `555` (A3), advancing `nBackfill` to `555` and moving mark 1 to `555` while leaving the file at `2,286,632` bytes.
   - `step 31 committed` restarts the WAL at frame 1 (`mxFrame = 18`, `nBackfill = 0`, `checkpoint-seq 0 -> 1`, `salt-1 + 1`, `18` valid frames of `555` in the file, with the remaining `537` frames belonging to the old generation), still at `2,286,632` bytes.
-- **Part B — Database-only reader on `WAL_READ_LOCK(0)` (lines 45–81):**
+- **Part B — Database-only reader on `WAL_READ_LOCK(0)` (B1–B4):**
   - After step 6, `PASSIVE` brings `nBackfill = 22 == mxFrame`. When the reader begins, `read marks` stay `0,22,unused,unused,unused`: the reader took `WAL_READ_LOCK(0)` and reads only `.db`.
   - On step 7, the writer immediately restarts the WAL (`salt-1 + 1`, `mxFrame = 16`, `WAL bytes = 90672`) because `walRestartLog` only needs exclusive locks `1..4`.
   - Yet from step 7 through step 30 (`mxFrame = 533`, `2,195,992` bytes), `nBackfill` remains `0` on every single row even though autocheckpoint ran on every commit past frame 200 (`walCheckpoint` cannot take `WAL_READ_LOCK(0)` exclusively). Once the reader closes, one `PASSIVE` checkpoint copies all `533` frames.
@@ -2704,10 +3119,10 @@ func ReadLiveState(ctx context.Context, database, scratchDirectory string) (Live
 ### 5.2 Experiment 5.2 — WAL replay, rung R3 (`5.2-wal-replay`)
 
 - **Claim:** A base database file plus the committed frames of its WAL is the complete database state. Applying committed frames in order in plain Go (`internal/walfile`), stopping at `LastCommitFrame`, and truncating to that commit's database size produces a file equal at **E1 bytes** to SQLite's own `wal_checkpoint(TRUNCATE)`—at a quiet moment (Part A), mid-transaction with valid spilled uncommitted frames at the tail (Part B), and after a `ROLLBACK` that leaves those frames in `-wal` (Part C). Furthermore, `-shm` is disposable: SQLite recovers the exact same bytes whether `-shm` is absent or replaced by a stale `-shm` copied from another database. *(Scope boundary: raw `base + WAL` files alone cannot detect a base from an earlier WAL generation because the `.db` header stores no WAL salt or generation; that check requires capture metadata recorded at capture time in Chapter 9's `internal/walship`.)*
-- **Evidence form:** `EXACT` (all lines except `INFO:` lines).
-- **Run command:**
+- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./ch05-wal-transactions-checkpoints/experiments/5.2-wal-replay
+  go run ./cmd/course run 5.2
   ```
 
 <!-- include: experiments/5.2-wal-replay/main.go -->
@@ -2718,6 +3133,9 @@ func ReadLiveState(ctx context.Context, database, scratchDirectory string) (Live
 // and after a rollback in plain Go (no SQLite), and proves E1 byte equality
 // against SQLite's own TRUNCATE checkpoint and recovery (both without -shm and
 // with a stale -shm from another database).
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 5.2
 package main
 
 import (
@@ -2729,6 +3147,7 @@ import (
 
 	"github.com/nickstrad/walfleet/internal/equal"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walfile"
 
@@ -2747,15 +3166,35 @@ const (
 	quietTotalFrames  = 155
 )
 
-var failures []string
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 5.2" runs both.
+// part labels the rows written while a part runs; seq orders rows across tables.
+var (
+	set    *results.Set
+	part   string
+	seq    int
+	tables struct {
+		captures, replays, sqliteRuns, comparisons, recipeMatches, walStates, staleShm *results.Table
+	}
+)
+
+func openTables() {
+	tables.captures = set.Table("captures", "seq", "part", "capture", "db_bytes", "wal_bytes")
+	tables.replays = set.Table("replays", "seq", "part", "capture", "frames_in_file", "valid_frames", "transactions", "last_commit_frame", "database_pages", "applied_frames", "distinct_pages", "skipped_beyond_size", "base_bytes", "output_bytes", "ignored_frames", "ignored", "partial_bytes", "wal_ignored_reason")
+	tables.sqliteRuns = set.Table("sqlite_runs", "seq", "part", "run", "shm", "user_version", "busy", "log_frames", "checkpointed")
+	tables.comparisons = set.Table("comparisons", "seq", "part", "against", "level", "equal", "sha256", "user_version", "integrity_check", "unchanged_by_open")
+	tables.recipeMatches = set.Table("recipe_matches", "seq", "part", "subject", "step", "exact")
+	tables.walStates = set.Table("wal_states", "seq", "part", "moment", "wal_bytes", "frames", "valid_frames", "last_commit_frame", "mx_frame")
+	tables.staleShm = set.Table("stale_shm", "mx_frame", "n_page")
+}
+
+func nextSeq() int {
+	seq++
+	return seq
+}
 
 func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -2779,7 +3218,7 @@ func mkdir(path string) string {
 	return path
 }
 
-func liveCopy(ctx context.Context, path, directory string) {
+func liveCopy(ctx context.Context, path, directory, capture string) {
 	mkdir(directory)
 	results := must(walfile.CopyLiveFiles(ctx, []walfile.CopyPair{
 		{From: path, To: filepath.Join(directory, databaseName)},
@@ -2790,16 +3229,19 @@ func liveCopy(ctx context.Context, path, directory string) {
 			fatal("live copy", fmt.Errorf("%s missing", filepath.Base(r.From)))
 		}
 	}
-	fmt.Printf("a child process copied the database (%d bytes) and its -wal (%d bytes) while the writer's connection was open\n", results[0].Bytes, results[1].Bytes)
+	tables.captures.Row(nextSeq(), part, capture, results[0].Bytes, results[1].Bytes)
 }
 
-func replayCopy(directory string) (string, walfile.ReplayReport) {
+func replayCopy(directory, capture string) (string, walfile.ReplayReport) {
 	output := filepath.Join(directory, replayOutputName)
 	report := must(walfile.ReplayFiles(filepath.Join(directory, databaseName), filepath.Join(directory, databaseName+"-wal"), output))("replay")
-	fmt.Println("walfile replay (plain Go, no SQLite) of the copy:")
-	for _, line := range report.Lines() {
-		fmt.Printf("  %s\n", line)
+	ignored := make([]string, len(report.Ignored))
+	for i, g := range report.Ignored {
+		ignored[i] = g.String()
 	}
+	tables.replays.Row(nextSeq(), part, capture, report.FramesInFile, report.ValidFrames, report.Transactions, report.LastCommitFrame, report.DatabasePages,
+		report.AppliedFrames, report.DistinctPages, report.SkippedBeyondSize, report.BaseBytes, report.OutputBytes, report.IgnoredFrameCount(), strings.Join(ignored, "; "),
+		report.PartialFrameBytes, report.WALIgnoredReason)
 	return output, report
 }
 
@@ -2829,11 +3271,11 @@ func sqliteRecoveryOfCopy(ctx context.Context, directory, name, staleIndex strin
 	if err := db.Close(); err != nil {
 		fatal("close", err)
 	}
-	what := "no -shm"
+	shm := "none"
 	if staleIndex != "" {
-		what = "a stale -shm taken from the part A database (another file, other salts, mxFrame 155)"
+		shm = "stale, from part A"
 	}
-	fmt.Printf("SQLite opened another copy of the same two files plus %s: user_version %d; wal_checkpoint(TRUNCATE) -> %s; closed\n", what, version, result)
+	tables.sqliteRuns.Row(nextSeq(), part, "opened a copy, then TRUNCATE checkpoint", shm, version, result.Busy, result.LogFrames, result.Checkpointed)
 	return path
 }
 
@@ -2855,12 +3297,11 @@ func userVersion(ctx context.Context, path string) (int, string) {
 
 func compareAndInspect(ctx context.Context, label, ours, theirs string, wantStep int) {
 	result := must(equal.CompareFiles(ours, theirs, 4096))("compare")
-	fmt.Printf("our replay vs %s: %s\n", label, result)
 	check(result.Equal, fmt.Sprintf("sha256 of our replay equals sha256 of %s", label))
 	before := must(equal.FileSHA256(ours))("hash")
 	version, integrity := userVersion(ctx, ours)
 	after := must(equal.FileSHA256(ours))("hash")
-	fmt.Printf("our replay opened by SQLite: user_version %d (the last committed recipe step), integrity_check %s, file unchanged by the open: %v\n", version, integrity, before == after)
+	tables.comparisons.Row(nextSeq(), part, label, result.Level, result.Equal, result.SHA256A, version, integrity, before == after)
 	check(version == wantStep && integrity == "ok" && before == after, fmt.Sprintf("the replay is a valid database at recipe step %d", wantStep))
 }
 
@@ -2870,8 +3311,7 @@ func onlyUncommittedIgnored(report walfile.ReplayReport) bool {
 }
 
 func partA(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Printf("== A. a quiet moment: steps 1-%d committed on one connection (wal_autocheckpoint=0), nothing in flight\n", quietSteps)
+	part = "A"
 	r := recipe.Default()
 	path := filepath.Join(mkdir(filepath.Join(dir, "a-quiet")), databaseName)
 	if err := r.Build(ctx, path, 0); err != nil {
@@ -2886,7 +3326,7 @@ func partA(ctx context.Context, dir string) {
 		}
 	}
 	copyDir := filepath.Join(dir, "a-quiet", "capture")
-	liveCopy(ctx, path, copyDir)
+	liveCopy(ctx, path, copyDir, "quiet moment")
 	shmDir := mkdir(filepath.Join(dir, "a-quiet", "shm-from-a"))
 	shm := must(walfile.CopyLiveFiles(ctx, []walfile.CopyPair{{From: path + "-shm", To: filepath.Join(shmDir, databaseName+"-shm")}}))("copy -shm")
 	if !shm[0].Present {
@@ -2894,25 +3334,23 @@ func partA(ctx context.Context, dir string) {
 	}
 	hashes := must(r.StepHashes(ctx))("step hashes")
 	baseMatch := recipe.MatchHashes(hashes, must(recipe.HashFile(filepath.Join(copyDir, databaseName)))("hash base"))
-	fmt.Printf("the captured database file alone: %s\n", baseMatch)
+	tables.recipeMatches.Row(nextSeq(), part, "captured database file alone", baseMatch.Step, baseMatch.Exact)
 	check(baseMatch.Found() && baseMatch.Exact && baseMatch.Step == 0, "the captured database file alone is byte for byte recipe step 0: every change committed since is only in the -wal")
-	ours, report := replayCopy(copyDir)
+	ours, report := replayCopy(copyDir, "quiet moment")
 	check(report.IgnoredFrameCount() == 0 && report.Transactions == quietSteps, "at a quiet moment every frame is committed and nothing is ignored")
 	result := must(sqlitex.Checkpoint(ctx, db, "", sqlitex.CheckpointTruncate))("checkpoint")
 	if err := db.Close(); err != nil {
 		fatal("close", err)
 	}
-	fmt.Printf("SQLite on the original: wal_checkpoint(TRUNCATE) -> %s, then close\n", result)
+	tables.sqliteRuns.Row(nextSeq(), part, "TRUNCATE checkpoint of the original, then close", nil, nil, result.Busy, result.LogFrames, result.Checkpointed)
 	compareAndInspect(ctx, "SQLite's own checkpoint of the original", ours, path, quietSteps)
 	match := must(r.MatchStep(ctx, ours))("match replay")
-	fmt.Printf("recipe lookup of our replay: %s\n", match)
+	tables.recipeMatches.Row(nextSeq(), part, "our replay", match.Step, match.Exact)
 	check(match.Found() && match.Step == quietSteps, fmt.Sprintf("the replay is the recipe's state after step %d (exact, or equal except the WAL change counter of one long-lived connection)", quietSteps))
 }
 
 func partBC(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Printf("== B. mid-transaction: steps %d-%d committed, then %q left open with cache_size=%d so dirty pages spill into the -wal before any commit\n",
-		spillBaseStep+1, spillCommitted, spillExtraUpdate, spillCacheSize)
+	part = "B"
 	r := recipe.Default()
 	root := mkdir(filepath.Join(dir, "b-mid-transaction"))
 	path := filepath.Join(root, databaseName)
@@ -2935,21 +3373,20 @@ func partBC(ctx context.Context, dir string) {
 		}
 	}
 	committedOnly := must(walfile.ReadLiveState(ctx, path, root))("live state")
-	fmt.Printf("after the commits: -wal %d bytes, %d frames, last commit frame %d\n", committedOnly.WALSize, len(committedOnly.WAL.Frames), committedOnly.WAL.LastCommitFrame)
+	tables.walStates.Row(nextSeq(), part, "after the commits", committedOnly.WALSize, len(committedOnly.WAL.Frames), committedOnly.WAL.ValidFrames, committedOnly.WAL.LastCommitFrame, committedOnly.Index.Header().MaxFrame)
 	tx := must(db.BeginTx(ctx, nil))("begin")
 	if _, err := tx.ExecContext(ctx, spillExtraUpdate); err != nil {
 		fatal("update", err)
 	}
 	captureDir := filepath.Join(root, "capture-open-transaction")
-	liveCopy(ctx, path, captureDir)
+	liveCopy(ctx, path, captureDir, "open transaction")
 	captured := must(walfile.ParseFile(filepath.Join(captureDir, databaseName+"-wal")))("parse")
 	spilled := len(captured.Frames) - captured.LastCommitFrame
-	fmt.Printf("the captured -wal: %d frames; last commit frame %d; %d frames after it were written by the open transaction (spilled pages)\n",
-		len(captured.Frames), captured.LastCommitFrame, spilled)
+	tables.walStates.Row(nextSeq(), part, "captured while the transaction is open", captured.Size, len(captured.Frames), captured.ValidFrames, captured.LastCommitFrame, nil)
 	check(captured.LastCommitFrame == committedOnly.WAL.LastCommitFrame && spilled > 0, "the open transaction spilled frames into the -wal before committing, after the last commit frame")
 	check(captured.ValidFrames == len(captured.Frames) && captured.ValidFrames > captured.LastCommitFrame,
 		"every spilled frame passes the checksum and salt checks: the frames after the last commit frame are valid, only uncommitted")
-	ours, report := replayCopy(captureDir)
+	ours, report := replayCopy(captureDir, "open transaction")
 	check(report.IgnoredFrameCount() == spilled && report.LastCommitFrame == committedOnly.WAL.LastCommitFrame &&
 		report.AppliedFrames+report.SkippedBeyondSize == report.LastCommitFrame && onlyUncommittedIgnored(report),
 		"the replayer stops at the last commit frame: it applies frames up to it and ignores every valid spilled frame after it because no commit frame follows")
@@ -2961,34 +3398,32 @@ func partBC(ctx context.Context, dir string) {
 	// (src/os_unix.c:4850-4915, unixLockSharedMemory; src/wal.c:1390-1614).
 	staleIndex := filepath.Join(dir, "a-quiet", "shm-from-a", databaseName+"-shm")
 	staleState := must(walfile.ParseIndexFile(staleIndex))("parse stale -shm")
-	fmt.Printf("the stale -shm: mxFrame %d, nPage %d\n", staleState.Header().MaxFrame, staleState.Header().Pages)
+	tables.staleShm.Row(staleState.Header().MaxFrame, staleState.Header().Pages)
 	withStale := sqliteRecoveryOfCopy(ctx, captureDir, recoveryDirectory+"-stale-shm", staleIndex)
 	compareAndInspect(ctx, "SQLite's checkpoint of the same files opened with a stale -shm", ours, withStale, spillCommitted)
 	check(staleState.Header().MaxFrame == quietTotalFrames, "the -shm handed to SQLite described another WAL entirely, and SQLite rebuilt it from the -wal instead of trusting it")
 
-	fmt.Println()
-	fmt.Println("== C. after a rollback: the open transaction rolls back; its frames stay in the -wal file")
+	part = "C"
 	if err := tx.Rollback(); err != nil {
 		fatal("rollback", err)
 	}
 	afterRollback := must(walfile.ReadLiveState(ctx, path, root))("live state")
-	fmt.Printf("after ROLLBACK: -wal %d bytes (%d frames, unchanged: %v); wal-index mxFrame %d (back at the last commit)\n",
-		afterRollback.WALSize, len(afterRollback.WAL.Frames), afterRollback.WALSize == captured.Size, afterRollback.Index.Header().MaxFrame)
+	tables.walStates.Row(nextSeq(), part, "after ROLLBACK", afterRollback.WALSize, len(afterRollback.WAL.Frames), afterRollback.WAL.ValidFrames, afterRollback.WAL.LastCommitFrame, afterRollback.Index.Header().MaxFrame)
 	check(afterRollback.WALSize == captured.Size && int(afterRollback.Index.Header().MaxFrame) == captured.LastCommitFrame,
 		"a rollback leaves the spilled frames in the -wal file; only the wal-index forgets them")
 	rollbackDir := filepath.Join(root, "capture-after-rollback")
-	liveCopy(ctx, path, rollbackDir)
-	oursAfter, reportAfter := replayCopy(rollbackDir)
+	liveCopy(ctx, path, rollbackDir, "after rollback")
+	oursAfter, reportAfter := replayCopy(rollbackDir, "after rollback")
 	check(reportAfter.IgnoredFrameCount() > 0 && reportAfter.LastCommitFrame == captured.LastCommitFrame && onlyUncommittedIgnored(reportAfter),
 		"the replayer ignores the rolled-back frames because no commit frame follows them")
 	result := must(sqlitex.Checkpoint(ctx, db, "", sqlitex.CheckpointTruncate))("checkpoint")
 	if err := db.Close(); err != nil {
 		fatal("close", err)
 	}
-	fmt.Printf("SQLite on the original: wal_checkpoint(TRUNCATE) -> %s, then close\n", result)
+	tables.sqliteRuns.Row(nextSeq(), part, "TRUNCATE checkpoint of the original, then close", nil, nil, result.Busy, result.LogFrames, result.Checkpointed)
 	compareAndInspect(ctx, "SQLite's own checkpoint of the original after the rollback", oursAfter, path, spillCommitted)
 	same := must(equal.CompareFiles(ours, oursAfter, 4096))("compare")
-	fmt.Printf("replay of the mid-transaction capture vs replay of the after-rollback capture: %s\n", same)
+	tables.comparisons.Row(nextSeq(), part, "replay of the open-transaction capture vs replay of the after-rollback capture", same.Level, same.Equal, same.SHA256A, nil, nil, nil)
 	check(same.Equal, "both captures rebuild the same committed state")
 }
 
@@ -3001,17 +3436,11 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("5.2")
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
+	set = results.MustOpen(dir)
+	openTables()
 	partA(ctx, dir)
 	partBC(ctx, dir)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("WAL REPLAY FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("WAL REPLAY OK")
+	set.Finish("WAL REPLAY")
 }
 
 func displayPath(path string) string {
@@ -3030,79 +3459,431 @@ func displayPath(path string) string {
 }
 ```
 
-Captured output (`evidence/5.2-wal-replay.txt`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/5.2-wal-replay/report.sql -->
+```sql
+-- Walkthrough of experiment 5.2. Run it with:
+--   go run ./cmd/course run 5.2        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   captures        one row per live copy a child process took (database and -wal sizes)
+--   recipe_matches  one row per file looked up among the recipe step hashes
+--   replays         one row per replay of a captured -wal in plain Go (no SQLite)
+--   sqlite_runs     one row per time SQLite opened or checkpointed files
+--   comparisons     one row per byte comparison, with the replay opened by SQLite
+--   wal_states      one row per look at the live -wal of part B and C
+--   stale_shm       one row: the -shm of part A that part B hands to SQLite
+--   checks          every claim the experiment asserted (the runner lists it last)
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  5.2  Is a base database plus the committed WAL frames the whole state?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'A plain Go replayer applies the frames of a WAL to a base database file up'
+.print 'to the last commit frame, with no SQLite. Its output is compared byte for'
+.print 'byte (sha256) with what SQLite itself produces from the same files.'
+.print '(The tables show the first 16 hex digits of each sha256; the CSV keeps all.)'
+.print 'Every capture is taken by a child process while the writer connection is'
+.print 'still open, so the files are exactly what a crash would leave.'
+
+.print
+.print '── A. A quiet moment ──────────────────────────────────────────────────'
+.print
+.print 'Steps 1-8 are committed on one connection (wal_autocheckpoint=0); nothing'
+.print 'is in flight.'
+.print
+.print 'A1. The copy: a small database file and a large -wal.'
+
+SELECT capture, db_bytes, wal_bytes FROM captures WHERE part = 'A' ORDER BY seq;
+
+.print
+.print 'A2. The database file alone is byte for byte recipe step 0 (exact = true):'
+.print '    every change committed since lives only in the -wal.'
+
+SELECT subject, step, exact FROM recipe_matches WHERE part = 'A' AND subject = 'captured database file alone';
+
+.print
+.print 'A3. The replay: all frames are committed, nothing is ignored, and the output'
+.print '    is the size of the database at the last commit.'
+
+SELECT frames_in_file, valid_frames, transactions, last_commit_frame, database_pages,
+       applied_frames, distinct_pages
+FROM replays WHERE part = 'A' ORDER BY seq;
+
+SELECT skipped_beyond_size, base_bytes, output_bytes, ignored_frames, partial_bytes
+FROM replays WHERE part = 'A' ORDER BY seq;
+
+.print
+.print 'A4. SQLite on the original: a TRUNCATE checkpoint, then close. Then the'
+.print '    replay against that file, and the replay opened by SQLite.'
+
+SELECT run, busy, log_frames, checkpointed FROM sqlite_runs WHERE part = 'A' ORDER BY seq;
+
+SELECT against, level, equal, left(sha256, 16) AS sha256_16
+FROM comparisons WHERE part = 'A' ORDER BY seq;
+
+SELECT user_version, integrity_check, unchanged_by_open
+FROM comparisons WHERE part = 'A' ORDER BY seq;
+
+.print
+.print 'A5. The recipe lookup of the replay: step 8, equal except the change counter'
+.print '    (bytes 24-27 and 92-95) that one long-lived connection leaves behind;'
+.print '    exact = false means that masked match.'
+
+SELECT subject, step, exact FROM recipe_matches WHERE part = 'A' AND subject = 'our replay';
+
+.print
+.print '── B. Mid-transaction ─────────────────────────────────────────────────'
+.print
+.print 'Steps 9-10 are committed. Then UPDATE documents SET title = upper(title)'
+.print 'is left open with cache_size=10, so dirty pages spill into the -wal before'
+.print 'any commit.'
+.print
+.print 'B1. The -wal after the commits, and as captured while the transaction is'
+.print '    open. The frames after the last commit frame are spilled: valid'
+.print '    (checksums and salts pass) but uncommitted.'
+
+SELECT moment, wal_bytes, frames, valid_frames, last_commit_frame,
+       frames - last_commit_frame AS spilled_frames
+FROM wal_states WHERE part = 'B' ORDER BY seq;
+
+SELECT capture, db_bytes, wal_bytes FROM captures WHERE part = 'B' ORDER BY seq;
+
+.print
+.print 'B2. The replay applies frames up to the last commit frame and ignores every'
+.print '    valid spilled frame after it, because no commit frame follows.'
+
+SELECT frames_in_file, valid_frames, transactions, last_commit_frame, database_pages,
+       applied_frames, distinct_pages
+FROM replays WHERE part = 'B' ORDER BY seq;
+
+SELECT skipped_beyond_size, base_bytes, output_bytes, ignored_frames, partial_bytes
+FROM replays WHERE part = 'B' ORDER BY seq;
+
+SELECT capture, coalesce(ignored, 'none') AS ignored FROM replays WHERE part = 'B' ORDER BY seq;
+
+.print
+.print 'B3. SQLite opens a copy of the same captured files (no -shm), recovers,'
+.print '    and checkpoints with TRUNCATE. Our replay equals the result byte for'
+.print '    byte, and SQLite opens the replay as recipe step 10.'
+
+SELECT run, shm, user_version, busy, log_frames, checkpointed
+FROM sqlite_runs WHERE part = 'B' AND shm = 'none' ORDER BY seq;
+
+SELECT against, level, equal, left(sha256, 16) AS sha256_16
+FROM comparisons WHERE part = 'B' AND against LIKE '%recovery%' ORDER BY seq;
+
+SELECT user_version, integrity_check, unchanged_by_open
+FROM comparisons WHERE part = 'B' AND against LIKE '%recovery%' ORDER BY seq;
+
+.print
+.print 'B4. The same again, but the copy also gets a stale -shm taken from the part'
+.print '    A database: another file, other salts, mxFrame 155. SQLite does not trust'
+.print '    it; it rebuilds the wal-index from the -wal. The result is the same.'
+
+SELECT s.mx_frame AS stale_mx_frame, s.n_page AS stale_n_page,
+       (SELECT frames_in_file FROM replays WHERE part = 'A') AS part_a_frames
+FROM stale_shm s;
+
+SELECT run, shm, user_version, busy, log_frames, checkpointed
+FROM sqlite_runs WHERE part = 'B' AND shm <> 'none' ORDER BY seq;
+
+SELECT against, level, equal, left(sha256, 16) AS sha256_16
+FROM comparisons WHERE part = 'B' AND against LIKE '%stale%' ORDER BY seq;
+
+SELECT user_version, integrity_check, unchanged_by_open
+FROM comparisons WHERE part = 'B' AND against LIKE '%stale%' ORDER BY seq;
+
+.print
+.print '── C. After a rollback ────────────────────────────────────────────────'
+.print
+.print 'The open transaction rolls back. Its frames stay in the -wal file; only the'
+.print 'wal-index forgets them (mx_frame is back at the last commit frame).'
+.print
+.print 'C1. The -wal after ROLLBACK against the one captured in part B: the size is'
+.print '    unchanged.'
+
+SELECT moment, wal_bytes, frames, valid_frames, last_commit_frame, mx_frame
+FROM wal_states WHERE part IN ('B', 'C') AND moment <> 'after the commits' ORDER BY seq;
+
+.print
+.print 'C2. A new capture after the rollback, and its replay: the same frames are'
+.print '    ignored, because no commit frame follows them.'
+
+SELECT capture, db_bytes, wal_bytes FROM captures WHERE part = 'C' ORDER BY seq;
+
+SELECT frames_in_file, valid_frames, transactions, last_commit_frame, database_pages,
+       applied_frames, distinct_pages
+FROM replays WHERE part = 'C' ORDER BY seq;
+
+SELECT skipped_beyond_size, base_bytes, output_bytes, ignored_frames, partial_bytes
+FROM replays WHERE part = 'C' ORDER BY seq;
+
+SELECT capture, coalesce(ignored, 'none') AS ignored FROM replays WHERE part = 'C' ORDER BY seq;
+
+.print
+.print 'C3. SQLite on the original: TRUNCATE checkpoint, then close. Our replay'
+.print '    against it, and the two replays (open transaction, after rollback)'
+.print '    against each other.'
+
+SELECT run, busy, log_frames, checkpointed FROM sqlite_runs WHERE part = 'C' ORDER BY seq;
+
+SELECT against, level, equal, left(sha256, 16) AS sha256_16
+FROM comparisons WHERE part = 'C' ORDER BY seq;
+
+SELECT against, user_version, integrity_check, unchanged_by_open
+FROM comparisons WHERE part = 'C' AND user_version IS NOT NULL ORDER BY seq;
+```
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/5.2-wal-replay/`](evidence/5.2-wal-replay/), and `go run ./cmd/course check evidence ch05` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/5.2-wal-replay.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/5.2
 
-== A. a quiet moment: steps 1-8 committed on one connection (wal_autocheckpoint=0), nothing in flight
-a child process copied the database (16384 bytes) and its -wal (638632 bytes) while the writer's connection was open
-the captured database file alone: step 0 (exact bytes)
-check ok: the captured database file alone is byte for byte recipe step 0: every change committed since is only in the -wal
-walfile replay (plain Go, no SQLite) of the copy:
-  frames in file 155, valid 155, committed transactions 8, last commit frame 155 (database size 79 pages)
-  applied 155 frames (79 distinct pages, 0 skipped beyond the committed size); base 16384 bytes -> output 323584 bytes
-  ignored: none
-check ok: at a quiet moment every frame is committed and nothing is ignored
-SQLite on the original: wal_checkpoint(TRUNCATE) -> busy=0 log=0 checkpointed=0, then close
-our replay vs SQLite's own checkpoint of the original: E1 bytes: equal (sha256 00eac4cab1747d717e2cebf666b7c63ed0504b8f83e8a2f15d02155130989af6)
-check ok: sha256 of our replay equals sha256 of SQLite's own checkpoint of the original
-our replay opened by SQLite: user_version 8 (the last committed recipe step), integrity_check ok, file unchanged by the open: true
-check ok: the replay is a valid database at recipe step 8
-recipe lookup of our replay: step 8 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: the replay is the recipe's state after step 8 (exact, or equal except the WAL change counter of one long-lived connection)
+════════════════════════════════════════════════════════════════════════
+  5.2  Is a base database plus the committed WAL frames the whole state?
+════════════════════════════════════════════════════════════════════════
 
-== B. mid-transaction: steps 9-10 committed, then "UPDATE documents SET title = upper(title)" left open with cache_size=10 so dirty pages spill into the -wal before any commit
-after the commits: -wal 168952 bytes, 41 frames, last commit frame 41
-a child process copied the database (323584 bytes) and its -wal (247232 bytes) while the writer's connection was open
-the captured -wal: 60 frames; last commit frame 41; 19 frames after it were written by the open transaction (spilled pages)
-check ok: the open transaction spilled frames into the -wal before committing, after the last commit frame
-check ok: every spilled frame passes the checksum and salt checks: the frames after the last commit frame are valid, only uncommitted
-walfile replay (plain Go, no SQLite) of the copy:
-  frames in file 60, valid 60, committed transactions 2, last commit frame 41 (database size 100 pages)
-  applied 41 frames (34 distinct pages, 0 skipped beyond the committed size); base 323584 bytes -> output 409600 bytes
-  ignored frames 42-60 (19): valid but uncommitted: no commit frame follows
-check ok: the replayer stops at the last commit frame: it applies frames up to it and ignores every valid spilled frame after it because no commit frame follows
-SQLite opened another copy of the same two files plus no -shm: user_version 10; wal_checkpoint(TRUNCATE) -> busy=0 log=0 checkpointed=0; closed
-our replay vs SQLite's recovery and checkpoint of the same captured files: E1 bytes: equal (sha256 fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7)
-check ok: sha256 of our replay equals sha256 of SQLite's recovery and checkpoint of the same captured files
-our replay opened by SQLite: user_version 10 (the last committed recipe step), integrity_check ok, file unchanged by the open: true
-check ok: the replay is a valid database at recipe step 10
-the stale -shm: mxFrame 155, nPage 79
-SQLite opened another copy of the same two files plus a stale -shm taken from the part A database (another file, other salts, mxFrame 155): user_version 10; wal_checkpoint(TRUNCATE) -> busy=0 log=0 checkpointed=0; closed
-our replay vs SQLite's checkpoint of the same files opened with a stale -shm: E1 bytes: equal (sha256 fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7)
-check ok: sha256 of our replay equals sha256 of SQLite's checkpoint of the same files opened with a stale -shm
-our replay opened by SQLite: user_version 10 (the last committed recipe step), integrity_check ok, file unchanged by the open: true
-check ok: the replay is a valid database at recipe step 10
-check ok: the -shm handed to SQLite described another WAL entirely, and SQLite rebuilt it from the -wal instead of trusting it
+A plain Go replayer applies the frames of a WAL to a base database file up
+to the last commit frame, with no SQLite. Its output is compared byte for
+byte (sha256) with what SQLite itself produces from the same files.
+(The tables show the first 16 hex digits of each sha256; the CSV keeps all.)
+Every capture is taken by a child process while the writer connection is
+still open, so the files are exactly what a crash would leave.
 
-== C. after a rollback: the open transaction rolls back; its frames stay in the -wal file
-after ROLLBACK: -wal 247232 bytes (60 frames, unchanged: true); wal-index mxFrame 41 (back at the last commit)
-check ok: a rollback leaves the spilled frames in the -wal file; only the wal-index forgets them
-a child process copied the database (323584 bytes) and its -wal (247232 bytes) while the writer's connection was open
-walfile replay (plain Go, no SQLite) of the copy:
-  frames in file 60, valid 60, committed transactions 2, last commit frame 41 (database size 100 pages)
-  applied 41 frames (34 distinct pages, 0 skipped beyond the committed size); base 323584 bytes -> output 409600 bytes
-  ignored frames 42-60 (19): valid but uncommitted: no commit frame follows
-check ok: the replayer ignores the rolled-back frames because no commit frame follows them
-SQLite on the original: wal_checkpoint(TRUNCATE) -> busy=0 log=0 checkpointed=0, then close
-our replay vs SQLite's own checkpoint of the original after the rollback: E1 bytes: equal (sha256 fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7)
-check ok: sha256 of our replay equals sha256 of SQLite's own checkpoint of the original after the rollback
-our replay opened by SQLite: user_version 10 (the last committed recipe step), integrity_check ok, file unchanged by the open: true
-check ok: the replay is a valid database at recipe step 10
-replay of the mid-transaction capture vs replay of the after-rollback capture: E1 bytes: equal (sha256 fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7)
-check ok: both captures rebuild the same committed state
+── A. A quiet moment ──────────────────────────────────────────────────
 
-WAL REPLAY OK
+Steps 1-8 are committed on one connection (wal_autocheckpoint=0); nothing
+is in flight.
+
+A1. The copy: a small database file and a large -wal.
+┌──────────────┬──────────┬───────────┐
+│   capture    │ db_bytes │ wal_bytes │
+├──────────────┼──────────┼───────────┤
+│ quiet moment │ 16384    │ 638632    │
+└──────────────┴──────────┴───────────┘
+
+A2. The database file alone is byte for byte recipe step 0 (exact = true):
+    every change committed since lives only in the -wal.
+┌──────────────────────────────┬──────┬───────┐
+│           subject            │ step │ exact │
+├──────────────────────────────┼──────┼───────┤
+│ captured database file alone │ 0    │ true  │
+└──────────────────────────────┴──────┴───────┘
+
+A3. The replay: all frames are committed, nothing is ignored, and the output
+    is the size of the database at the last commit.
+┌────────────────┬──────────────┬──────────────┬───────────────────┬────────────────┬────────────────┬────────────────┐
+│ frames_in_file │ valid_frames │ transactions │ last_commit_frame │ database_pages │ applied_frames │ distinct_pages │
+├────────────────┼──────────────┼──────────────┼───────────────────┼────────────────┼────────────────┼────────────────┤
+│ 155            │ 155          │ 8            │ 155               │ 79             │ 155            │ 79             │
+└────────────────┴──────────────┴──────────────┴───────────────────┴────────────────┴────────────────┴────────────────┘
+┌─────────────────────┬────────────┬──────────────┬────────────────┬───────────────┐
+│ skipped_beyond_size │ base_bytes │ output_bytes │ ignored_frames │ partial_bytes │
+├─────────────────────┼────────────┼──────────────┼────────────────┼───────────────┤
+│ 0                   │ 16384      │ 323584       │ 0              │ 0             │
+└─────────────────────┴────────────┴──────────────┴────────────────┴───────────────┘
+
+A4. SQLite on the original: a TRUNCATE checkpoint, then close. Then the
+    replay against that file, and the replay opened by SQLite.
+┌─────────────────────────────────────────────────┬───────┬────────────┬──────────────┐
+│                       run                       │ busy  │ log_frames │ checkpointed │
+├─────────────────────────────────────────────────┼───────┼────────────┼──────────────┤
+│ TRUNCATE checkpoint of the original, then close │ false │ 0          │ 0            │
+└─────────────────────────────────────────────────┴───────┴────────────┴──────────────┘
+┌─────────────────────────────────────────┬──────────┬───────┬──────────────────┐
+│                 against                 │  level   │ equal │    sha256_16     │
+├─────────────────────────────────────────┼──────────┼───────┼──────────────────┤
+│ SQLite's own checkpoint of the original │ E1 bytes │ true  │ 00eac4cab1747d71 │
+└─────────────────────────────────────────┴──────────┴───────┴──────────────────┘
+┌──────────────┬─────────────────┬───────────────────┐
+│ user_version │ integrity_check │ unchanged_by_open │
+├──────────────┼─────────────────┼───────────────────┤
+│ 8            │ ok              │ true              │
+└──────────────┴─────────────────┴───────────────────┘
+
+A5. The recipe lookup of the replay: step 8, equal except the change counter
+    (bytes 24-27 and 92-95) that one long-lived connection leaves behind;
+    exact = false means that masked match.
+┌────────────┬──────┬───────┐
+│  subject   │ step │ exact │
+├────────────┼──────┼───────┤
+│ our replay │ 8    │ false │
+└────────────┴──────┴───────┘
+
+── B. Mid-transaction ─────────────────────────────────────────────────
+
+Steps 9-10 are committed. Then UPDATE documents SET title = upper(title)
+is left open with cache_size=10, so dirty pages spill into the -wal before
+any commit.
+
+B1. The -wal after the commits, and as captured while the transaction is
+    open. The frames after the last commit frame are spilled: valid
+    (checksums and salts pass) but uncommitted.
+┌────────────────────────────────────────┬───────────┬────────┬──────────────┬───────────────────┬────────────────┐
+│                 moment                 │ wal_bytes │ frames │ valid_frames │ last_commit_frame │ spilled_frames │
+├────────────────────────────────────────┼───────────┼────────┼──────────────┼───────────────────┼────────────────┤
+│ after the commits                      │ 168952    │ 41     │ 41           │ 41                │ 0              │
+│ captured while the transaction is open │ 247232    │ 60     │ 60           │ 41                │ 19             │
+└────────────────────────────────────────┴───────────┴────────┴──────────────┴───────────────────┴────────────────┘
+┌──────────────────┬──────────┬───────────┐
+│     capture      │ db_bytes │ wal_bytes │
+├──────────────────┼──────────┼───────────┤
+│ open transaction │ 323584   │ 247232    │
+└──────────────────┴──────────┴───────────┘
+
+B2. The replay applies frames up to the last commit frame and ignores every
+    valid spilled frame after it, because no commit frame follows.
+┌────────────────┬──────────────┬──────────────┬───────────────────┬────────────────┬────────────────┬────────────────┐
+│ frames_in_file │ valid_frames │ transactions │ last_commit_frame │ database_pages │ applied_frames │ distinct_pages │
+├────────────────┼──────────────┼──────────────┼───────────────────┼────────────────┼────────────────┼────────────────┤
+│ 60             │ 60           │ 2            │ 41                │ 100            │ 41             │ 34             │
+└────────────────┴──────────────┴──────────────┴───────────────────┴────────────────┴────────────────┴────────────────┘
+┌─────────────────────┬────────────┬──────────────┬────────────────┬───────────────┐
+│ skipped_beyond_size │ base_bytes │ output_bytes │ ignored_frames │ partial_bytes │
+├─────────────────────┼────────────┼──────────────┼────────────────┼───────────────┤
+│ 0                   │ 323584     │ 409600       │ 19             │ 0             │
+└─────────────────────┴────────────┴──────────────┴────────────────┴───────────────┘
+┌──────────────────┬───────────────────────────────────────────────────────────────────┐
+│     capture      │                              ignored                              │
+├──────────────────┼───────────────────────────────────────────────────────────────────┤
+│ open transaction │ frames 42-60 (19): valid but uncommitted: no commit frame follows │
+└──────────────────┴───────────────────────────────────────────────────────────────────┘
+
+B3. SQLite opens a copy of the same captured files (no -shm), recovers,
+    and checkpoints with TRUNCATE. Our replay equals the result byte for
+    byte, and SQLite opens the replay as recipe step 10.
+┌─────────────────────────────────────────┬──────┬──────────────┬───────┬────────────┬──────────────┐
+│                   run                   │ shm  │ user_version │ busy  │ log_frames │ checkpointed │
+├─────────────────────────────────────────┼──────┼──────────────┼───────┼────────────┼──────────────┤
+│ opened a copy, then TRUNCATE checkpoint │ none │ 10           │ false │ 0          │ 0            │
+└─────────────────────────────────────────┴──────┴──────────────┴───────┴────────────┴──────────────┘
+┌─────────────────────────────────────────────────────────────┬──────────┬───────┬──────────────────┐
+│                           against                           │  level   │ equal │    sha256_16     │
+├─────────────────────────────────────────────────────────────┼──────────┼───────┼──────────────────┤
+│ SQLite's recovery and checkpoint of the same captured files │ E1 bytes │ true  │ fb68a52159415857 │
+└─────────────────────────────────────────────────────────────┴──────────┴───────┴──────────────────┘
+┌──────────────┬─────────────────┬───────────────────┐
+│ user_version │ integrity_check │ unchanged_by_open │
+├──────────────┼─────────────────┼───────────────────┤
+│ 10           │ ok              │ true              │
+└──────────────┴─────────────────┴───────────────────┘
+
+B4. The same again, but the copy also gets a stale -shm taken from the part
+    A database: another file, other salts, mxFrame 155. SQLite does not trust
+    it; it rebuilds the wal-index from the -wal. The result is the same.
+┌────────────────┬──────────────┬───────────────┐
+│ stale_mx_frame │ stale_n_page │ part_a_frames │
+├────────────────┼──────────────┼───────────────┤
+│ 155            │ 79           │ 155           │
+└────────────────┴──────────────┴───────────────┘
+┌─────────────────────────────────────────┬────────────────────┬──────────────┬───────┬────────────┬──────────────┐
+│                   run                   │        shm         │ user_version │ busy  │ log_frames │ checkpointed │
+├─────────────────────────────────────────┼────────────────────┼──────────────┼───────┼────────────┼──────────────┤
+│ opened a copy, then TRUNCATE checkpoint │ stale, from part A │ 10           │ false │ 0          │ 0            │
+└─────────────────────────────────────────┴────────────────────┴──────────────┴───────┴────────────┴──────────────┘
+┌────────────────────────────────────────────────────────────────┬──────────┬───────┬──────────────────┐
+│                            against                             │  level   │ equal │    sha256_16     │
+├────────────────────────────────────────────────────────────────┼──────────┼───────┼──────────────────┤
+│ SQLite's checkpoint of the same files opened with a stale -shm │ E1 bytes │ true  │ fb68a52159415857 │
+└────────────────────────────────────────────────────────────────┴──────────┴───────┴──────────────────┘
+┌──────────────┬─────────────────┬───────────────────┐
+│ user_version │ integrity_check │ unchanged_by_open │
+├──────────────┼─────────────────┼───────────────────┤
+│ 10           │ ok              │ true              │
+└──────────────┴─────────────────┴───────────────────┘
+
+── C. After a rollback ────────────────────────────────────────────────
+
+The open transaction rolls back. Its frames stay in the -wal file; only the
+wal-index forgets them (mx_frame is back at the last commit frame).
+
+C1. The -wal after ROLLBACK against the one captured in part B: the size is
+    unchanged.
+┌────────────────────────────────────────┬───────────┬────────┬──────────────┬───────────────────┬──────────┐
+│                 moment                 │ wal_bytes │ frames │ valid_frames │ last_commit_frame │ mx_frame │
+├────────────────────────────────────────┼───────────┼────────┼──────────────┼───────────────────┼──────────┤
+│ captured while the transaction is open │ 247232    │ 60     │ 60           │ 41                │          │
+│ after ROLLBACK                         │ 247232    │ 60     │ 60           │ 41                │ 41       │
+└────────────────────────────────────────┴───────────┴────────┴──────────────┴───────────────────┴──────────┘
+
+C2. A new capture after the rollback, and its replay: the same frames are
+    ignored, because no commit frame follows them.
+┌────────────────┬──────────┬───────────┐
+│    capture     │ db_bytes │ wal_bytes │
+├────────────────┼──────────┼───────────┤
+│ after rollback │ 323584   │ 247232    │
+└────────────────┴──────────┴───────────┘
+┌────────────────┬──────────────┬──────────────┬───────────────────┬────────────────┬────────────────┬────────────────┐
+│ frames_in_file │ valid_frames │ transactions │ last_commit_frame │ database_pages │ applied_frames │ distinct_pages │
+├────────────────┼──────────────┼──────────────┼───────────────────┼────────────────┼────────────────┼────────────────┤
+│ 60             │ 60           │ 2            │ 41                │ 100            │ 41             │ 34             │
+└────────────────┴──────────────┴──────────────┴───────────────────┴────────────────┴────────────────┴────────────────┘
+┌─────────────────────┬────────────┬──────────────┬────────────────┬───────────────┐
+│ skipped_beyond_size │ base_bytes │ output_bytes │ ignored_frames │ partial_bytes │
+├─────────────────────┼────────────┼──────────────┼────────────────┼───────────────┤
+│ 0                   │ 323584     │ 409600       │ 19             │ 0             │
+└─────────────────────┴────────────┴──────────────┴────────────────┴───────────────┘
+┌────────────────┬───────────────────────────────────────────────────────────────────┐
+│    capture     │                              ignored                              │
+├────────────────┼───────────────────────────────────────────────────────────────────┤
+│ after rollback │ frames 42-60 (19): valid but uncommitted: no commit frame follows │
+└────────────────┴───────────────────────────────────────────────────────────────────┘
+
+C3. SQLite on the original: TRUNCATE checkpoint, then close. Our replay
+    against it, and the two replays (open transaction, after rollback)
+    against each other.
+┌─────────────────────────────────────────────────┬───────┬────────────┬──────────────┐
+│                       run                       │ busy  │ log_frames │ checkpointed │
+├─────────────────────────────────────────────────┼───────┼────────────┼──────────────┤
+│ TRUNCATE checkpoint of the original, then close │ false │ 0          │ 0            │
+└─────────────────────────────────────────────────┴───────┴────────────┴──────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┬──────────┬───────┬──────────────────┐
+│                                    against                                     │  level   │ equal │    sha256_16     │
+├────────────────────────────────────────────────────────────────────────────────┼──────────┼───────┼──────────────────┤
+│ SQLite's own checkpoint of the original after the rollback                     │ E1 bytes │ true  │ fb68a52159415857 │
+│ replay of the open-transaction capture vs replay of the after-rollback capture │ E1 bytes │ true  │ fb68a52159415857 │
+└────────────────────────────────────────────────────────────────────────────────┴──────────┴───────┴──────────────────┘
+┌────────────────────────────────────────────────────────────┬──────────────┬─────────────────┬───────────────────┐
+│                          against                           │ user_version │ integrity_check │ unchanged_by_open │
+├────────────────────────────────────────────────────────────┼──────────────┼─────────────────┼───────────────────┤
+│ SQLite's own checkpoint of the original after the rollback │ 10           │ ok              │ true              │
+└────────────────────────────────────────────────────────────┴──────────────┴─────────────────┴───────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the captured database file alone is byte for byte recipe step 0: every change committed since is only in the -wal
+A  ✓  at a quiet moment every frame is committed and nothing is ignored
+A  ✓  sha256 of our replay equals sha256 of SQLite's own checkpoint of the original
+A  ✓  the replay is a valid database at recipe step 8
+A  ✓  the replay is the recipe's state after step 8 (exact, or equal except the WAL change counter of one long-lived connection)
+B  ✓  the open transaction spilled frames into the -wal before committing, after the last commit frame
+B  ✓  every spilled frame passes the checksum and salt checks: the frames after the last commit frame are valid, only uncommitted
+B  ✓  the replayer stops at the last commit frame: it applies frames up to it and ignores every valid spilled frame after it because no commit frame follows
+B  ✓  sha256 of our replay equals sha256 of SQLite's recovery and checkpoint of the same captured files
+B  ✓  the replay is a valid database at recipe step 10
+B  ✓  sha256 of our replay equals sha256 of SQLite's checkpoint of the same files opened with a stale -shm
+B  ✓  the replay is a valid database at recipe step 10
+B  ✓  the -shm handed to SQLite described another WAL entirely, and SQLite rebuilt it from the -wal instead of trusting it
+C  ✓  a rollback leaves the spilled frames in the -wal file; only the wal-index forgets them
+C  ✓  the replayer ignores the rolled-back frames because no commit frame follows them
+C  ✓  sha256 of our replay equals sha256 of SQLite's own checkpoint of the original after the rollback
+C  ✓  the replay is a valid database at recipe step 10
+C  ✓  both captures rebuild the same committed state
+
+18 of 18 claims hold
+
+Experiment verdict: WAL REPLAY OK
 ```
 
 **Reading the evidence:**
 
-- **Part A — Quiet moment (lines 4–19):** After 8 commits with `wal_autocheckpoint=0`, the child copies `r.db` (`16,384` bytes) and `r.db-wal` (`638,632` bytes). Hashing `r.db` alone matches `step 0 (exact bytes)`: every single change from 8 committed transactions lives exclusively in `-wal`. `walfile.ReplayFiles` applies all `155` frames (`79` distinct pages, `8` transactions, `0` ignored), growing the output from `16,384` to `323,584` bytes (`79 * 4096`). SQLite then runs `wal_checkpoint(TRUNCATE)` on the original and closes; both files have identical SHA-256 `00eac4cab1747d717e2cebf666b7c63ed0504b8f83e8a2f15d02155130989af6`. Opening the replay with SQLite shows `user_version 8`, `integrity_check ok`, and leaves the file unchanged. Recipe lookup matches step 8 under the WAL change-counter mask (one long-lived connection, Chapter 2).
-- **Part B — Mid-transaction spill and disposable `-shm` (lines 21–43):** Starting from canonical step 8 (`323,584` bytes) with `cache_size=10`, the writer commits steps 9–10 (`41` frames, `168,952` bytes) and then executes `UPDATE documents SET title = upper(title)` without committing. That single update dirties each page at most once, so `19` pages spill into `-wal` (`247,232` bytes, `60` frames total) without overwriting any spilled frame in place: all `60` frames pass salt and checksum checks (`valid 60`, `last commit frame 41`). `walfile.ReplayFiles` applies frames `1–41` (`34` distinct pages, output `409,600` bytes = `100` pages) and reports `ignored frames 42-60 (19): valid but uncommitted: no commit frame follows`. Two separate SQLite recoveries of the same base + `-wal` copy—first with **no `-shm`**, then with a **stale `-shm` from Part A** (`mxFrame 155, nPage 79`, different salts)—both recover `user_version 10` and checkpoint to the exact same SHA-256 `fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7`.
-- **Part C — After rollback (lines 45–60):** Calling `tx.Rollback()` leaves `-wal` at `247,232` bytes (`60` frames, `unchanged: true`) while `-shm` keeps `mxFrame 41`. Replaying the post-rollback capture produces the exact same report (`ignored frames 42-60 (19): valid but uncommitted: no commit frame follows`) and the exact same SHA-256 `fb68a521…`, matching both SQLite's `TRUNCATE` checkpoint after rollback and Part B's replay byte for byte.
+- **Part A — Quiet moment (A1–A5):** After 8 commits with `wal_autocheckpoint=0`, the child copies `r.db` (`16,384` bytes) and `r.db-wal` (`638,632` bytes). Hashing `r.db` alone matches recipe step `0` with exact bytes (A2): every single change from 8 committed transactions lives exclusively in `-wal`. `walfile.ReplayFiles` applies all `155` frames (`79` distinct pages, `8` transactions, `0` ignored), growing the output from `16,384` to `323,584` bytes (`79 * 4096`). SQLite then runs `wal_checkpoint(TRUNCATE)` on the original and closes; both files have identical SHA-256 `00eac4cab1747d717e2cebf666b7c63ed0504b8f83e8a2f15d02155130989af6`. Opening the replay with SQLite shows `user_version` `8`, `integrity_check` `ok`, and leaves the file unchanged. Recipe lookup matches step 8 under the WAL change-counter mask (one long-lived connection, Chapter 2).
+- **Part B — Mid-transaction spill and disposable `-shm` (B1–B4):** Starting from canonical step 8 (`323,584` bytes) with `cache_size=10`, the writer commits steps 9–10 (`41` frames, `168,952` bytes) and then executes `UPDATE documents SET title = upper(title)` without committing. That single update dirties each page at most once, so `19` pages spill into `-wal` (`247,232` bytes, `60` frames total) without overwriting any spilled frame in place: all `60` frames pass salt and checksum checks (`60` valid frames, last commit frame `41`). `walfile.ReplayFiles` applies frames `1–41` (`34` distinct pages, output `409,600` bytes = `100` pages) and reports ignored `frames 42-60 (19): valid but uncommitted: no commit frame follows`. Two separate SQLite recoveries of the same base + `-wal` copy—first with **no `-shm`**, then with a **stale `-shm` from Part A** (`mxFrame` `155`, `nPage` `79`, different salts)—both recover `user_version` `10` and checkpoint to the exact same SHA-256 `fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7`.
+- **Part C — After rollback (C1–C3):** Calling `tx.Rollback()` leaves `-wal` at `247,232` bytes (`60` frames, unchanged) while `-shm` keeps `mxFrame 41`. Replaying the post-rollback capture produces the exact same report (ignored `frames 42-60 (19): valid but uncommitted: no commit frame follows`) and the exact same SHA-256 `fb68a521…`, matching both SQLite's `TRUNCATE` checkpoint after rollback and Part B's replay byte for byte.
 
 ---
 
@@ -3118,10 +3899,10 @@ WAL REPLAY OK
   - `RESTART` does not restart the WAL itself; after copying all frames it waits for read locks `1..4` so the next writer can restart, returning `busy=1` even for a `reader current` (whose snapshot is already at frame 38).
   - `TRUNCATE` behaves like `RESTART` and, when no reader blocks it, immediately restarts the wal-index (`shm salt-1 + 1`, `mxFrame = 0`), truncates `-wal` to `0` bytes, and returns `0/0/0`.
   - `PASSIVE`, `FULL`, and `RESTART` change neither the WAL size nor its salts; the WAL restarts at the **next write** whenever every frame was backfilled (or `TRUNCATE` emptied it). When the writer itself restarts the WAL (or wrote after its own `TRUNCATE`), the new WAL header has `salt-1 + 1` and `checkpoint-seq + 1`; when another connection ran `TRUNCATE`, the writer's per-connection `pWal->nCkpt` is still `0`, so its next WAL header carries **fresh random salts** and `checkpoint-seq = 0`.
-- **Evidence form:** `EXACT` (elapsed times appear on `INFO:` lines only and are not pass conditions).
-- **Run command:**
+- **Evidence form:** `EXACT` (elapsed times are in a run-dependent `info` table, printed by `course run`, not stored, and not pass conditions).
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./ch05-wal-transactions-checkpoints/experiments/5.4-checkpoint-modes
+  go run ./cmd/course run 5.4
   ```
 
 <!-- include: experiments/5.4-checkpoint-modes/main.go -->
@@ -3133,6 +3914,9 @@ WAL REPLAY OK
 // INFO lines only), and contrasts TRUNCATE run by a third connection against
 // TRUNCATE run by the writer itself (src/wal.c:2199-2395, 3875-3915,
 // 4088-4098, 4301-4432).
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 5.4
 package main
 
 import (
@@ -3145,6 +3929,7 @@ import (
 	"time"
 
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walfile"
 
@@ -3177,15 +3962,26 @@ func (p readerPosition) String() string {
 	return "no reader"
 }
 
-var failures []string
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 5.4" runs both.
+// part labels the claims: A is the mode and reader matrix, B the writer's own TRUNCATE.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		cases, nextWrites, ownTruncate, infoElapsed *results.Table
+	}
+)
+
+func openTables() {
+	tables.cases = set.Table("cases", "seq", "mode", "reader", "frames_before", "reader_frame", "busy", "log_frames", "checkpointed", "wal_bytes", "mx_frame", "n_backfill", "file_salt1", "shm_salt1")
+	tables.nextWrites = set.Table("next_writes", "seq", "mode", "reader", "restarted", "file_salt1", "checkpoint_seq", "wal_bytes", "mx_frame", "valid_frames", "frames_in_file")
+	tables.ownTruncate = set.Table("own_truncate", "seq", "moment", "busy", "log_frames", "checkpointed", "wal_bytes", "mx_frame", "shm_salt1", "file_salt1", "checkpoint_seq_before", "checkpoint_seq_after")
+	tables.infoElapsed = set.Table("info_elapsed", "seq", "mode", "reader", "elapsed_ms")
+}
 
 func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -3326,13 +4122,6 @@ func runCase(ctx context.Context, template, dir, mode string, reader readerPosit
 	return o
 }
 
-func yesNo(b bool) string {
-	if b {
-		return "yes"
-	}
-	return "no"
-}
-
 func delta(before, after uint32) string {
 	switch after {
 	case before:
@@ -3366,10 +4155,9 @@ func main() {
 	if err := recipe.Default().Build(ctx, template, templateStep); err != nil {
 		fatal("build", err)
 	}
-	fmt.Println()
-	fmt.Printf("== setup per case: recipe step %d (closed file); writer commits step %d and step %d with wal_autocheckpoint=0;\n", templateStep, firstCommit, secondCommit)
-	fmt.Printf("   \"reader behind\" began its read transaction between the two commits, \"reader current\" after both;\n")
-	fmt.Printf("   a third connection (busy_timeout=%dms) runs the checkpoint; then the reader ends and the writer commits step %d\n", checkpointerBusyMs, nextWrite)
+	part = "A"
+	set = results.MustOpen(dir)
+	openTables()
 	modes := []string{sqlitex.CheckpointPassive, sqlitex.CheckpointFull, sqlitex.CheckpointRestart, sqlitex.CheckpointTruncate}
 	readers := []readerPosition{noReader, readerBehind, readerCurrent}
 	var outcomes []outcome
@@ -3378,26 +4166,19 @@ func main() {
 			outcomes = append(outcomes, runCase(ctx, template, dir, mode, reader))
 		}
 	}
-	fmt.Println()
-	fmt.Println("checkpoint result and state right after it (WAL file header from a child's copy; wal-index from the -shm):")
-	fmt.Printf("%-9s %-15s %-30s %9s %8s %9s %12s %12s\n", "mode", "reader", "busy/log/checkpointed", "WAL bytes", "mxFrame", "nBackfill", "file salt-1", "shm salt-1")
-	for _, o := range outcomes {
-		fmt.Printf("%-9s %-15s %-30s %9d %8d %9d %12s %12s\n", o.mode, o.reader, o.result, o.after.walSize, o.after.indexMaxFrame, o.after.indexBackfill,
-			saltDelta(o.before, o.after), delta(o.before.indexSalt1, o.after.indexSalt1))
-		fmt.Printf("INFO: %s %s elapsed %s\n", o.mode, o.reader, o.elapsed.Round(time.Millisecond))
-	}
-	fmt.Println()
-	fmt.Printf("after the reader ended and the writer committed step %d:\n", nextWrite)
-	fmt.Printf("%-9s %-15s %-10s %12s %14s %9s %8s %s\n", "mode", "reader", "restarted", "file salt-1", "checkpoint-seq", "WAL bytes", "mxFrame", "valid frames / frames in file")
-	for _, o := range outcomes {
-		restarted := o.next.indexMaxFrame < o.before.indexMaxFrame
-		fmt.Printf("%-9s %-15s %-10s %12s %14s %9d %8d %d / %d\n", o.mode, o.reader, yesNo(restarted), saltDelta(o.before, o.next),
+	for i, o := range outcomes {
+		var readerFrame any
+		if o.reader == readerBehind {
+			readerFrame = o.readerFrame
+		}
+		tables.cases.Row(i+1, o.mode, o.reader, o.before.indexMaxFrame, readerFrame, o.result.Busy, o.result.LogFrames, o.result.Checkpointed,
+			o.after.walSize, o.after.indexMaxFrame, o.after.indexBackfill, saltDelta(o.before, o.after), delta(o.before.indexSalt1, o.after.indexSalt1))
+		tables.nextWrites.Row(i+1, o.mode, o.reader, o.next.indexMaxFrame < o.before.indexMaxFrame, saltDelta(o.before, o.next),
 			delta(o.before.walSequence, o.next.walSequence), o.next.walSize, o.next.indexMaxFrame, o.next.walValid, o.next.walFrames)
+		tables.infoElapsed.Row(i+1, o.mode, o.reader, o.elapsed.Milliseconds())
 	}
-	fmt.Println()
 	n := outcomes[0].before.indexMaxFrame
 	behind := outcomes[1].readerFrame
-	fmt.Printf("frames before every checkpoint: %d; the \"reader behind\" snapshot is frame %d\n", n, behind)
 	byKey := map[string]outcome{}
 	for _, o := range outcomes {
 		byKey[o.mode+"/"+o.reader.String()] = o
@@ -3457,15 +4238,7 @@ func main() {
 	check(truncated.next.walSalt1 != truncated.before.walSalt1 && truncated.next.walSalt1 != truncated.before.walSalt1+1 && truncated.next.walSequence == truncated.before.walSequence,
 		"after another connection's TRUNCATE, the writer's next WAL header has new random salts and the writer's own checkpoint sequence (0): the sequence is per connection")
 	ownTruncate(ctx, template, dir)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("CHECKPOINT MODES FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("CHECKPOINT MODES OK")
+	set.Finish("CHECKPOINT MODES")
 }
 
 // ownTruncate repeats TRUNCATE/no-reader on the writer connection itself: its
@@ -3473,8 +4246,7 @@ func main() {
 // commit preserves salt-1 + 1 and writes checkpoint sequence 1 instead of
 // re-randomizing salts.
 func ownTruncate(ctx context.Context, template, dir string) {
-	fmt.Println()
-	fmt.Printf("== the writer runs TRUNCATE itself (no reader), then commits step %d\n", nextWrite)
+	part = "B"
 	root := filepath.Join(dir, "truncate-by-writer")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		fatal("mkdir", err)
@@ -3500,9 +4272,10 @@ func ownTruncate(ctx context.Context, template, dir string) {
 	if err := writer.Close(); err != nil {
 		fatal("close", err)
 	}
-	fmt.Printf("wal_checkpoint(TRUNCATE) -> %s; WAL bytes %d; shm salt-1 %s\n", result, after.walSize, delta(before.indexSalt1, after.indexSalt1))
-	fmt.Printf("next write: WAL bytes %d, mxFrame %d, file salt-1 %s, checkpoint-seq %s (%d -> %d)\n", next.walSize, next.indexMaxFrame,
-		saltDelta(before, next), delta(before.walSequence, next.walSequence), before.walSequence, next.walSequence)
+	tables.ownTruncate.Row(1, "right after wal_checkpoint(TRUNCATE)", result.Busy, result.LogFrames, result.Checkpointed, after.walSize, after.indexMaxFrame,
+		delta(before.indexSalt1, after.indexSalt1), nil, nil, nil)
+	tables.ownTruncate.Row(2, fmt.Sprintf("after the next write (step %d)", nextWrite), nil, nil, nil, next.walSize, next.indexMaxFrame,
+		nil, saltDelta(before, next), before.walSequence, next.walSequence)
 	check(next.walSalt1 == before.walSalt1+1 && next.walSequence == before.walSequence+1,
 		"when the connection that ran TRUNCATE writes next, the new WAL header has salt-1 + 1 and checkpoint sequence + 1")
 }
@@ -3523,91 +4296,199 @@ func displayPath(path string) string {
 }
 ```
 
-Captured output (`evidence/5.4-checkpoint-modes.txt`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/5.4-checkpoint-modes/report.sql -->
+```sql
+-- Walkthrough of experiment 5.4. Run it with:
+--   go run ./cmd/course run 5.4        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   cases         one row per (mode, reader) case: the checkpoint result and the state right after it
+--   next_writes   the same cases after the reader ended and the writer committed step 8
+--   own_truncate  two rows: the writer runs TRUNCATE itself, then commits step 8
+--   checks        every claim the experiment asserted (the runner lists it last)
+-- file_salt1, shm_salt1 and checkpoint_seq are changes against the state before
+-- the checkpoint: same, +1, new value, or (no header) for an empty -wal.
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  5.4  What do PASSIVE, FULL, RESTART and TRUNCATE do with readers around?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'Each of the 12 cases starts from a fresh copy of recipe step 5 (a closed'
+.print 'file). A writer commits step 6 and step 7 with wal_autocheckpoint=0.'
+.print '"reader behind" begins its read transaction between the two commits,'
+.print '"reader current" after both. A third connection (busy_timeout=300ms) runs'
+.print 'the checkpoint; then the reader ends and the writer commits step 8.'
+.print 'The WAL file header is read from a child process copy, the wal-index from'
+.print 'the -shm.'
+
+.print
+.print '── A. Four modes against three reader states ──────────────────────────'
+.print
+.print 'A1. Frames before every checkpoint, and the snapshot of the reader behind:'
+
+SELECT min(frames_before)         AS frames_before_every_checkpoint,
+       count(DISTINCT frames_before) AS distinct_values,
+       min(reader_frame)             AS reader_behind_snapshot_frame
+FROM cases;
+
+.print
+.print 'A2. The result (busy, log, checkpointed) and the state right after it.'
+.print '    Without a reader every mode copies all 38 frames; a reader behind caps'
+.print '    the copy at its frame (22); busy=1 reports a checkpoint that could not'
+.print '    finish its mode. TRUNCATE with no reader empties the -wal and restarts'
+.print '    the wal-index at once (shm salt-1 +1, mxFrame 0); the other modes leave'
+.print '    salts and size alone, so the restart waits for the next write.'
+
+SELECT mode, reader, busy, log_frames AS log, checkpointed, wal_bytes, mx_frame, n_backfill, file_salt1, shm_salt1
+FROM cases ORDER BY seq;
+
+.print
+.print 'A3. After the reader ended and the writer committed step 8. The WAL'
+.print '    restarted exactly when the checkpoint had copied every frame (or TRUNCATE'
+.print '    emptied it): salt-1 and the checkpoint sequence advance by 1 and the file'
+.print '    is reused. Otherwise the writer appends with the same salts (valid frames'
+.print '    = frames in file). After the TRUNCATE of another connection the writer starts'
+.print '    with new random salts and its own checkpoint sequence, which is per'
+.print '    connection (row TRUNCATE / no reader).'
+
+SELECT mode, reader, restarted, file_salt1, checkpoint_seq, wal_bytes, mx_frame,
+       valid_frames || ' / ' || frames_in_file AS valid_frames_of_file
+FROM next_writes ORDER BY seq;
+
+.print
+.print '── B. The writer runs TRUNCATE itself ─────────────────────────────────'
+.print
+.print 'B1. The same TRUNCATE with no reader, but on the writer connection. Its'
+.print '    own checkpoint bumps its counter, so its next commit keeps salt-1 +1'
+.print '    and writes checkpoint sequence 1 instead of new random salts.'
+
+SELECT moment, busy, log_frames AS log, checkpointed, wal_bytes, mx_frame, shm_salt1, file_salt1,
+       checkpoint_seq_before || ' -> ' || checkpoint_seq_after AS checkpoint_seq
+FROM own_truncate ORDER BY seq;
+```
+
+`course run` also prints the run-dependent values, which are not part of the stored evidence: how long each checkpoint took (the ones near 300 ms waited out the checkpointer's `busy_timeout`).
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/5.4-checkpoint-modes/`](evidence/5.4-checkpoint-modes/), and `go run ./cmd/course check evidence ch05` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/5.4-checkpoint-modes.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/5.4
 
-== setup per case: recipe step 5 (closed file); writer commits step 6 and step 7 with wal_autocheckpoint=0;
-   "reader behind" began its read transaction between the two commits, "reader current" after both;
-   a third connection (busy_timeout=300ms) runs the checkpoint; then the reader ends and the writer commits step 8
+════════════════════════════════════════════════════════════════════════
+  5.4  What do PASSIVE, FULL, RESTART and TRUNCATE do with readers around?
+════════════════════════════════════════════════════════════════════════
 
-checkpoint result and state right after it (WAL file header from a child's copy; wal-index from the -shm):
-mode      reader          busy/log/checkpointed          WAL bytes  mxFrame nBackfill  file salt-1   shm salt-1
-PASSIVE   no reader       busy=0 log=38 checkpointed=38     156592       38        38         same         same
-INFO: PASSIVE no reader elapsed 15ms
-PASSIVE   reader behind   busy=0 log=38 checkpointed=22     156592       38        22         same         same
-INFO: PASSIVE reader behind elapsed 9ms
-PASSIVE   reader current  busy=0 log=38 checkpointed=38     156592       38        38         same         same
-INFO: PASSIVE reader current elapsed 18ms
-FULL      no reader       busy=0 log=38 checkpointed=38     156592       38        38         same         same
-INFO: FULL no reader elapsed 9ms
-FULL      reader behind   busy=1 log=38 checkpointed=22     156592       38        22         same         same
-INFO: FULL reader behind elapsed 307ms
-FULL      reader current  busy=0 log=38 checkpointed=38     156592       38        38         same         same
-INFO: FULL reader current elapsed 10ms
-RESTART   no reader       busy=0 log=38 checkpointed=38     156592       38        38         same         same
-INFO: RESTART no reader elapsed 11ms
-RESTART   reader behind   busy=1 log=38 checkpointed=22     156592       38        22         same         same
-INFO: RESTART reader behind elapsed 314ms
-RESTART   reader current  busy=1 log=38 checkpointed=38     156592       38        38         same         same
-INFO: RESTART reader current elapsed 312ms
-TRUNCATE  no reader       busy=0 log=0 checkpointed=0            0        0         0  (no header)           +1
-INFO: TRUNCATE no reader elapsed 19ms
-TRUNCATE  reader behind   busy=1 log=38 checkpointed=22     156592       38        22         same         same
-INFO: TRUNCATE reader behind elapsed 302ms
-TRUNCATE  reader current  busy=1 log=38 checkpointed=38     156592       38        38         same         same
-INFO: TRUNCATE reader current elapsed 322ms
+Each of the 12 cases starts from a fresh copy of recipe step 5 (a closed
+file). A writer commits step 6 and step 7 with wal_autocheckpoint=0.
+"reader behind" begins its read transaction between the two commits,
+"reader current" after both. A third connection (busy_timeout=300ms) runs
+the checkpoint; then the reader ends and the writer commits step 8.
+The WAL file header is read from a child process copy, the wal-index from
+the -shm.
 
-after the reader ended and the writer committed step 8:
-mode      reader          restarted   file salt-1 checkpoint-seq WAL bytes  mxFrame valid frames / frames in file
-PASSIVE   no reader       yes                  +1             +1    156592       23 23 / 38
-PASSIVE   reader behind   no                 same           same    251352       61 61 / 61
-PASSIVE   reader current  yes                  +1             +1    156592       23 23 / 38
-FULL      no reader       yes                  +1             +1    156592       23 23 / 38
-FULL      reader behind   no                 same           same    251352       61 61 / 61
-FULL      reader current  yes                  +1             +1    156592       23 23 / 38
-RESTART   no reader       yes                  +1             +1    156592       23 23 / 38
-RESTART   reader behind   no                 same           same    251352       61 61 / 61
-RESTART   reader current  yes                  +1             +1    156592       23 23 / 38
-TRUNCATE  no reader       yes           new value           same     94792       23 23 / 23
-TRUNCATE  reader behind   no                 same           same    251352       61 61 / 61
-TRUNCATE  reader current  yes                  +1             +1    156592       23 23 / 38
+── A. Four modes against three reader states ──────────────────────────
 
-frames before every checkpoint: 38; the "reader behind" snapshot is frame 22
-check ok: with no reader, PASSIVE, FULL and RESTART all copy every frame and report busy=0
-check ok: TRUNCATE with no reader reports 0/0/0 and leaves a zero-length -wal
-check ok: PASSIVE with a reader behind copies up to the reader's frame and still reports busy=0
-check ok: FULL, RESTART and TRUNCATE with a reader behind copy the same frames, then report busy=1
-check ok: a reader whose snapshot is the end of the WAL does not limit PASSIVE or FULL
-check ok: RESTART and TRUNCATE copy everything but report busy=1 while any reader is still using the WAL
-check ok: TRUNCATE restarts the wal-index at once: shm salt-1 + 1, mxFrame 0
-check ok: PASSIVE, FULL and RESTART change neither salt nor the WAL size: the restart happens at the next write
-check ok: the next write restarts the WAL exactly when the checkpoint had copied every frame (or TRUNCATE emptied it); otherwise it appends with the same salts
-check ok: when the writer itself restarts the WAL at its next write, the new header has salt-1 + 1 and checkpoint sequence + 1
-check ok: after another connection's TRUNCATE, the writer's next WAL header has new random salts and the writer's own checkpoint sequence (0): the sequence is per connection
+A1. Frames before every checkpoint, and the snapshot of the reader behind:
+┌────────────────────────────────┬─────────────────┬──────────────────────────────┐
+│ frames_before_every_checkpoint │ distinct_values │ reader_behind_snapshot_frame │
+├────────────────────────────────┼─────────────────┼──────────────────────────────┤
+│ 38                             │ 1               │ 22                           │
+└────────────────────────────────┴─────────────────┴──────────────────────────────┘
 
-== the writer runs TRUNCATE itself (no reader), then commits step 8
-wal_checkpoint(TRUNCATE) -> busy=0 log=0 checkpointed=0; WAL bytes 0; shm salt-1 +1
-next write: WAL bytes 94792, mxFrame 23, file salt-1 +1, checkpoint-seq +1 (0 -> 1)
-check ok: when the connection that ran TRUNCATE writes next, the new WAL header has salt-1 + 1 and checkpoint sequence + 1
+A2. The result (busy, log, checkpointed) and the state right after it.
+    Without a reader every mode copies all 38 frames; a reader behind caps
+    the copy at its frame (22); busy=1 reports a checkpoint that could not
+    finish its mode. TRUNCATE with no reader empties the -wal and restarts
+    the wal-index at once (shm salt-1 +1, mxFrame 0); the other modes leave
+    salts and size alone, so the restart waits for the next write.
+┌──────────┬────────────────┬───────┬─────┬──────────────┬───────────┬──────────┬────────────┬─────────────┬───────────┐
+│   mode   │     reader     │ busy  │ log │ checkpointed │ wal_bytes │ mx_frame │ n_backfill │ file_salt1  │ shm_salt1 │
+├──────────┼────────────────┼───────┼─────┼──────────────┼───────────┼──────────┼────────────┼─────────────┼───────────┤
+│ PASSIVE  │ no reader      │ false │ 38  │ 38           │ 156592    │ 38       │ 38         │ same        │ same      │
+│ PASSIVE  │ reader behind  │ false │ 38  │ 22           │ 156592    │ 38       │ 22         │ same        │ same      │
+│ PASSIVE  │ reader current │ false │ 38  │ 38           │ 156592    │ 38       │ 38         │ same        │ same      │
+│ FULL     │ no reader      │ false │ 38  │ 38           │ 156592    │ 38       │ 38         │ same        │ same      │
+│ FULL     │ reader behind  │ true  │ 38  │ 22           │ 156592    │ 38       │ 22         │ same        │ same      │
+│ FULL     │ reader current │ false │ 38  │ 38           │ 156592    │ 38       │ 38         │ same        │ same      │
+│ RESTART  │ no reader      │ false │ 38  │ 38           │ 156592    │ 38       │ 38         │ same        │ same      │
+│ RESTART  │ reader behind  │ true  │ 38  │ 22           │ 156592    │ 38       │ 22         │ same        │ same      │
+│ RESTART  │ reader current │ true  │ 38  │ 38           │ 156592    │ 38       │ 38         │ same        │ same      │
+│ TRUNCATE │ no reader      │ false │ 0   │ 0            │ 0         │ 0        │ 0          │ (no header) │ +1        │
+│ TRUNCATE │ reader behind  │ true  │ 38  │ 22           │ 156592    │ 38       │ 22         │ same        │ same      │
+│ TRUNCATE │ reader current │ true  │ 38  │ 38           │ 156592    │ 38       │ 38         │ same        │ same      │
+└──────────┴────────────────┴───────┴─────┴──────────────┴───────────┴──────────┴────────────┴─────────────┴───────────┘
 
-CHECKPOINT MODES OK
+A3. After the reader ended and the writer committed step 8. The WAL
+    restarted exactly when the checkpoint had copied every frame (or TRUNCATE
+    emptied it): salt-1 and the checkpoint sequence advance by 1 and the file
+    is reused. Otherwise the writer appends with the same salts (valid frames
+    = frames in file). After the TRUNCATE of another connection the writer starts
+    with new random salts and its own checkpoint sequence, which is per
+    connection (row TRUNCATE / no reader).
+┌──────────┬────────────────┬───────────┬────────────┬────────────────┬───────────┬──────────┬──────────────────────┐
+│   mode   │     reader     │ restarted │ file_salt1 │ checkpoint_seq │ wal_bytes │ mx_frame │ valid_frames_of_file │
+├──────────┼────────────────┼───────────┼────────────┼────────────────┼───────────┼──────────┼──────────────────────┤
+│ PASSIVE  │ no reader      │ true      │ +1         │ +1             │ 156592    │ 23       │ 23 / 38              │
+│ PASSIVE  │ reader behind  │ false     │ same       │ same           │ 251352    │ 61       │ 61 / 61              │
+│ PASSIVE  │ reader current │ true      │ +1         │ +1             │ 156592    │ 23       │ 23 / 38              │
+│ FULL     │ no reader      │ true      │ +1         │ +1             │ 156592    │ 23       │ 23 / 38              │
+│ FULL     │ reader behind  │ false     │ same       │ same           │ 251352    │ 61       │ 61 / 61              │
+│ FULL     │ reader current │ true      │ +1         │ +1             │ 156592    │ 23       │ 23 / 38              │
+│ RESTART  │ no reader      │ true      │ +1         │ +1             │ 156592    │ 23       │ 23 / 38              │
+│ RESTART  │ reader behind  │ false     │ same       │ same           │ 251352    │ 61       │ 61 / 61              │
+│ RESTART  │ reader current │ true      │ +1         │ +1             │ 156592    │ 23       │ 23 / 38              │
+│ TRUNCATE │ no reader      │ true      │ new value  │ same           │ 94792     │ 23       │ 23 / 23              │
+│ TRUNCATE │ reader behind  │ false     │ same       │ same           │ 251352    │ 61       │ 61 / 61              │
+│ TRUNCATE │ reader current │ true      │ +1         │ +1             │ 156592    │ 23       │ 23 / 38              │
+└──────────┴────────────────┴───────────┴────────────┴────────────────┴───────────┴──────────┴──────────────────────┘
+
+── B. The writer runs TRUNCATE itself ─────────────────────────────────
+
+B1. The same TRUNCATE with no reader, but on the writer connection. Its
+    own checkpoint bumps its counter, so its next commit keeps salt-1 +1
+    and writes checkpoint sequence 1 instead of new random salts.
+┌──────────────────────────────────────┬───────┬─────┬──────────────┬───────────┬──────────┬───────────┬────────────┬────────────────┐
+│                moment                │ busy  │ log │ checkpointed │ wal_bytes │ mx_frame │ shm_salt1 │ file_salt1 │ checkpoint_seq │
+├──────────────────────────────────────┼───────┼─────┼──────────────┼───────────┼──────────┼───────────┼────────────┼────────────────┤
+│ right after wal_checkpoint(TRUNCATE) │ false │ 0   │ 0            │ 0         │ 0        │ +1        │            │                │
+│ after the next write (step 8)        │       │     │              │ 94792     │ 23       │           │ +1         │ 0 -> 1         │
+└──────────────────────────────────────┴───────┴─────┴──────────────┴───────────┴──────────┴───────────┴────────────┴────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  with no reader, PASSIVE, FULL and RESTART all copy every frame and report busy=0
+A  ✓  TRUNCATE with no reader reports 0/0/0 and leaves a zero-length -wal
+A  ✓  PASSIVE with a reader behind copies up to the reader's frame and still reports busy=0
+A  ✓  FULL, RESTART and TRUNCATE with a reader behind copy the same frames, then report busy=1
+A  ✓  a reader whose snapshot is the end of the WAL does not limit PASSIVE or FULL
+A  ✓  RESTART and TRUNCATE copy everything but report busy=1 while any reader is still using the WAL
+A  ✓  TRUNCATE restarts the wal-index at once: shm salt-1 + 1, mxFrame 0
+A  ✓  PASSIVE, FULL and RESTART change neither salt nor the WAL size: the restart happens at the next write
+A  ✓  the next write restarts the WAL exactly when the checkpoint had copied every frame (or TRUNCATE emptied it); otherwise it appends with the same salts
+A  ✓  when the writer itself restarts the WAL at its next write, the new header has salt-1 + 1 and checkpoint sequence + 1
+A  ✓  after another connection's TRUNCATE, the writer's next WAL header has new random salts and the writer's own checkpoint sequence (0): the sequence is per connection
+B  ✓  when the connection that ran TRUNCATE writes next, the new WAL header has salt-1 + 1 and checkpoint sequence + 1
+
+12 of 12 claims hold
+
+Experiment verdict: CHECKPOINT MODES OK
 ```
 
 **Reading the evidence:**
 
-- **First table — right after the checkpoint (lines 8–33):** Before every case, the WAL holds `38` frames (`156,592` bytes); `"reader behind"` holds frame `22` (between steps 6 and 7), and `"reader current"` holds frame `38`.
-  - With `no reader`, `PASSIVE`, `FULL`, and `RESTART` all return `busy=0 log=38 checkpointed=38`, leave `WAL bytes = 156592`, and leave both `file salt-1` and `shm salt-1` `same`. Only `TRUNCATE` returns `busy=0 log=0 checkpointed=0`, shrinks `-wal` to `0` bytes (`(no header)`), and advances `shm salt-1` by `+1`.
-  - With `reader behind`, all four modes copy the exact same `22` frames (`nBackfill = 22`). `PASSIVE` returns `busy=0`; `FULL`, `RESTART`, and `TRUNCATE` wait on the `300ms` busy timeout (`INFO:` lines: `307ms`, `314ms`, `302ms`) and return `busy=1`.
-  - With `reader current`, `PASSIVE` and `FULL` copy all `38` frames and return `busy=0` because copying does not overwrite any page the reader needs. `RESTART` and `TRUNCATE` copy all `38` frames too, then wait (`INFO:` lines: `312ms`, `322ms`) for the reader to leave `WAL_READ_LOCK(1)` and return `busy=1`.
-- **Second table — after the reader ends and the writer commits step 8 (lines 35–48):**
+- **First table — right after the checkpoint (A1–A2):** Before every case, the WAL holds `38` frames (`156,592` bytes); `"reader behind"` holds frame `22` (between steps 6 and 7), and `"reader current"` holds frame `38`.
+  - With `no reader`, `PASSIVE`, `FULL`, and `RESTART` all return busy `false`, log `38`, checkpointed `38`, leave `WAL bytes = 156592`, and leave both `file salt-1` and `shm salt-1` `same`. Only `TRUNCATE` returns busy `false`, log `0`, checkpointed `0`, shrinks `-wal` to `0` bytes (`(no header)`), and advances `shm salt-1` by `+1`.
+  - With `reader behind`, all four modes copy the exact same `22` frames (`nBackfill = 22`). `PASSIVE` returns busy `false`; `FULL`, `RESTART`, and `TRUNCATE` wait on the `300ms` busy timeout (run-dependent elapsed times printed by `course run`, not stored: `307ms`, `314ms`, `302ms` in the earlier capture) and return busy `true`.
+  - With `reader current`, `PASSIVE` and `FULL` copy all `38` frames and return busy `false` because copying does not overwrite any page the reader needs. `RESTART` and `TRUNCATE` copy all `38` frames too, then wait (run-dependent elapsed times: `312ms` and `322ms` in the earlier capture) for the reader to leave `WAL_READ_LOCK(1)` and return busy `true`.
+- **Second table — after the reader ends and the writer commits step 8 (A3):**
   - Every `reader behind` case (`nBackfill = 22 < 38`) does **not** restart: step 8 appends `23` frames to frame `38`, growing `-wal` to `251,352` bytes (`61 / 61` valid frames) with `file salt-1 = same` and `checkpoint-seq = same`.
-  - Every `no reader` and `reader current` case for `PASSIVE`, `FULL`, and `RESTART`—plus `TRUNCATE / reader current`, where `TRUNCATE` had copied all `38` frames before returning `busy=1`—restarts at frame 1 when the writer commits step 8: `WAL bytes = 156592` (file reused, not shrunk), `mxFrame = 23`, `23 / 38` valid frames (frames 24–38 are old-generation frames), `file salt-1 = +1`, and `checkpoint-seq = +1`.
-  - **`TRUNCATE / no reader` (line 46) is the surprise that corrected the outline:** the checkpointer connection C had already called `walRestartHdr` and truncated `-wal` to `0` bytes. When writer W—whose own `pWal->nCkpt` is still `0`—writes the new WAL header, `-wal` grows to `94,792` bytes (`32 + 23 * 4120`), `file salt-1` is a **`new value`** (fresh random bytes, not `before + 1`), and `checkpoint-seq` stays `same` (`0`).
-- **Same-connection `TRUNCATE` contrast (lines 63–66):** When the writer itself runs `TRUNCATE` (advancing its own `pWal->nCkpt` from `0` to `1`) and then commits step 8, the new WAL header has `file salt-1 = +1` and `checkpoint-seq = +1 (0 -> 1)`. Because a platform cannot assume which connection ran `TRUNCATE`, WAL generation detection must treat **any change in `(salt-1, salt-2)`** as a new generation, never `salt-1 + 1` or `checkpoint-seq`.
+  - Every `no reader` and `reader current` case for `PASSIVE`, `FULL`, and `RESTART`—plus `TRUNCATE / reader current`, where `TRUNCATE` had copied all `38` frames before returning busy `true`—restarts at frame 1 when the writer commits step 8: `WAL bytes = 156592` (file reused, not shrunk), `mxFrame = 23`, `23 / 38` valid frames (frames 24–38 are old-generation frames), `file salt-1 = +1`, and `checkpoint-seq = +1`.
+  - **`TRUNCATE / no reader` (that row of A3) is the surprise that corrected the outline:** the checkpointer connection C had already called `walRestartHdr` and truncated `-wal` to `0` bytes. When writer W—whose own `pWal->nCkpt` is still `0`—writes the new WAL header, `-wal` grows to `94,792` bytes (`32 + 23 * 4120`), `file salt-1` is a **`new value`** (fresh random bytes, not `before + 1`), and `checkpoint-seq` stays `same` (`0`).
+- **Same-connection `TRUNCATE` contrast (B1):** When the writer itself runs `TRUNCATE` (advancing its own `pWal->nCkpt` from `0` to `1`) and then commits step 8, the new WAL header has `file salt-1 = +1` and `checkpoint-seq = +1 (0 -> 1)`. Because a platform cannot assume which connection ran `TRUNCATE`, WAL generation detection must treat **any change in `(salt-1, salt-2)`** as a new generation, never `salt-1 + 1` or `checkpoint-seq`.
 
 ### 6.2 Failure cases and replay boundaries
 

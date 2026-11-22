@@ -4,10 +4,9 @@
 // connections to one file (Part C), N files visited through a K-connection LRU
 // pool (Part D), and memory-mapped reads via PRAGMA mmap_size (Part E).
 //
-// Run from the repo root (portable; the anonymous vs file-backed RSS split in
-// Part E uses /proc/self/status on Linux):
-//
-//	go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 4.2 (portable; the anonymous vs
+// file-backed RSS split in Part E uses /proc/self/status on Linux).
 package main
 
 import (
@@ -29,6 +28,7 @@ import (
 	"time"
 
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -39,7 +39,6 @@ const (
 )
 
 var (
-	failures      []string
 	connectionsN  = flag.Int("n", 64, "connections opened in the unbounded runs")
 	boundK        = flag.Int("k", 8, "open connections allowed by the bounded LRU pool")
 	cacheSizeFlag = flag.Int("cache-size", -2000, "PRAGMA cache_size for every connection (negative = KiB, positive = pages)")
@@ -109,15 +108,6 @@ func (c checkpoint) cacheMinMax() (int, int) {
 		lo, hi = min(lo, s.CacheUsed), max(hi, s.CacheUsed)
 	}
 	return lo, hi
-}
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
 }
 
 func fatal(what string, err error) {
@@ -412,20 +402,6 @@ func runChild(args ...string) []checkpoint {
 	return points
 }
 
-func mib(b int64) string {
-	if b < 0 {
-		return "n/a"
-	}
-	return fmt.Sprintf("%.1f MiB", float64(b)/(1<<20))
-}
-
-func memoryInfo(m processMemory) string {
-	if m.Anon < 0 {
-		return "RSS " + mib(m.RSS)
-	}
-	return fmt.Sprintf("RSS %s (anon %s, file %s, shmem %s)", mib(m.RSS), mib(m.Anon), mib(m.File), mib(m.Shmem))
-}
-
 func find(points []checkpoint, label string) checkpoint {
 	for _, p := range points {
 		if p.Label == label {
@@ -433,26 +409,6 @@ func find(points []checkpoint, label string) checkpoint {
 		}
 	}
 	fatal("checkpoint", fmt.Errorf("no checkpoint %q", label))
-	return checkpoint{}
-}
-
-func printGrowth(points []checkpoint) {
-	start := points[0]
-	fmt.Printf("  %-12s %5s %18s %32s\n", "checkpoint", "open", "cached pages (sum)", "cached pages per connection min..max")
-	for _, p := range points[1:] {
-		lo, hi := p.pagesMinMax()
-		fmt.Printf("  %-12s %5d %18d %21d..%-10d\n", p.Label, p.Open, p.pagesTotal(), lo, hi)
-		fmt.Printf("INFO:   %-12s sum CACHE_USED %d bytes; %s, growth since start %s\n", p.Label, p.cacheTotal(), memoryInfo(p.Memory), mib(p.Memory.RSS-start.Memory.RSS))
-	}
-}
-
-func lastWithOpen(points []checkpoint) checkpoint {
-	for i := len(points) - 1; i >= 0; i-- {
-		if points[i].Open > 0 {
-			return points[i]
-		}
-	}
-	fatal("checkpoint", errors.New("no checkpoint with open connections"))
 	return checkpoint{}
 }
 
@@ -484,6 +440,62 @@ func growth(points []checkpoint, label string) int64 {
 	return find(points, label).Memory.RSS - points[0].Memory.RSS
 }
 
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 4.2" runs
+// both. Raw CACHE_USED bytes include the Pager allocation, which holds the
+// file names, and RSS varies by machine: both go to info tables.
+var (
+	set    *results.Set
+	tables struct {
+		parts, settings, calibration, scans, checkpoints, connections, info, infoMemory, infoCacheUsed *results.Table
+	}
+	settingSeq, infoSeq int
+)
+
+func openTables() {
+	tables.parts = set.Table("parts", "part", "what", "status")
+	tables.settings = set.Table("settings", "seq", "name", "value")
+	tables.calibration = set.Table("calibration", "cache_size", "cached_pages")
+	tables.scans = set.Table("scans", "cache_size", "budget_bytes", "scan", "cached_pages", "hits", "misses", "spills")
+	tables.checkpoints = set.Table("checkpoints", "scenario", "seq", "checkpoint", "open", "visited")
+	tables.connections = set.Table("connections", "scenario", "seq", "checkpoint", "conn", "cached_pages", "hits", "misses", "spills")
+	tables.info = set.Table("info", "seq", "name", "value")
+	tables.infoMemory = set.Table("info_memory", "scenario", "seq", "checkpoint", "rss", "rss_anon", "rss_file", "rss_shmem", "cache_used_sum")
+	tables.infoCacheUsed = set.Table("info_cache_used", "scenario", "seq", "checkpoint", "conn", "cache_used")
+}
+
+func setting(name string, value any) {
+	settingSeq++
+	tables.settings.Row(settingSeq, name, value)
+}
+
+func info(name string, value any) {
+	infoSeq++
+	tables.info.Row(infoSeq, name, value)
+}
+
+// writePoints writes the checkpoints of one child run: the open connections
+// and their cache counters, and the process memory as info.
+func writePoints(scenario string, points []checkpoint) {
+	for i, p := range points {
+		tables.checkpoints.Row(scenario, i+1, p.Label, p.Open, p.Visited)
+		for j, c := range p.Conns {
+			tables.connections.Row(scenario, i+1, p.Label, j+1, cachedPages(c.CacheUsed), c.Hits, c.Misses, c.Spills)
+			tables.infoCacheUsed.Row(scenario, i+1, p.Label, j+1, c.CacheUsed)
+		}
+		m := p.Memory
+		tables.infoMemory.Row(scenario, i+1, p.Label, m.RSS, known(m.Anon), known(m.File), known(m.Shmem), p.cacheTotal())
+	}
+}
+
+// known returns nil for a memory figure the platform does not report (-1).
+func known(b int64) any {
+	if b < 0 {
+		return nil
+	}
+	return b
+}
+
 func main() {
 	if len(os.Args) > 2 && os.Args[1] == "child" {
 		childMain(os.Args[2:])
@@ -503,11 +515,13 @@ func main() {
 		fatal("flags", fmt.Errorf("-cache-size %d is a budget of %d bytes; need at least %d so that cache memory dominates per-connection memory in the RSS checks", *cacheSizeFlag, budgetBytes(*cacheSizeFlag), minBudgetBytes))
 	}
 	work := sqlitex.MustWorkDir("4.2")
+	set = results.MustOpen(work)
+	openTables()
 	n, k, cacheSize := *connectionsN, *boundK, *cacheSizeFlag
 	budget := budgetBytes(cacheSize)
 	source := fileName(work, 0)
 	buildSource(ctx, source, *rowsFlag)
-	info, err := os.Stat(source)
+	stat, err := os.Stat(source)
 	if err != nil {
 		fatal("stat", err)
 	}
@@ -520,12 +534,6 @@ func main() {
 			fatal("copy", err)
 		}
 	}
-	fmt.Printf("\n== setup ==\n")
-	fmt.Printf("database files: %d copies of one WAL-mode file, table t with %d rows of %d bytes, %d pages (%d bytes)\n", n, *rowsFlag, bodyBytes, info.Size()/pageSize, info.Size())
-	fmt.Printf("every connection: sqlitex defaults (journal_mode=wal, synchronous=FULL) with cache_size=%d; budget %d bytes per connection\n", cacheSize, budget)
-	fmt.Printf("scan: %s (reads every leaf page)\n", scanSQL)
-	fmt.Printf("N=%d unbounded connections, K=%d in the bounded pool\n", n, k)
-	fmt.Printf("INFO: process memory read from %s; runs in child processes so every measurement starts from a fresh process\n", memorySource)
 	var compileMM int
 	db, err := sqlitex.OpenMemory(ctx)
 	if err != nil {
@@ -535,9 +543,19 @@ func main() {
 		fatal("compile option", err)
 	}
 	db.Close()
-	fmt.Printf("driver compiled with ENABLE_MEMORY_MANAGEMENT: %d (1 = every connection's page cache is one process-wide LRU group, pcache1.c:718-719)\n", compileMM)
+	setting("database files (copies of one WAL-mode file)", n)
+	setting("rows in table t", *rowsFlag)
+	setting("bytes per row (body BLOB)", bodyBytes)
+	setting("pages per file", stat.Size()/pageSize)
+	setting("bytes per file", stat.Size())
+	setting("cache_size of every connection", cacheSize)
+	setting("cache budget per connection, bytes", budget)
+	setting("scan", scanSQL)
+	setting("N: connections kept open (parts B, C)", n)
+	setting("K: connections in the bounded pool (part D)", k)
+	setting("driver compiled with ENABLE_MEMORY_MANAGEMENT", compileMM)
+	info("process memory read from", memorySource)
 
-	fmt.Printf("\n== A. one connection, the same scan twice ==\n")
 	// Measure exact bytes per cached page from sqlite3PagerMemUsed
 	// (src/pager.c:6881-6887) by comparing two full caches 100 pages apart.
 	// pcache1FetchStage2 recycles at nPage+1 >= nMax (src/pcache1.c:902), so
@@ -549,109 +567,102 @@ func main() {
 		fatal("per-page size", fmt.Errorf("CACHE_USED at cache_size=200 minus at 100 is %d, not a multiple of 100", large-small))
 	}
 	perPage = (large - small) / 100
-	fmt.Printf("CACHE_USED counts %d bytes per cached page (measured: cache_size=200 minus cache_size=100, both full, divided by 100); the %d-byte page plus %d bytes of headers (sqlite3PagerMemUsed, pager.c:6881)\n", perPage, pageSize, perPage-pageSize)
-	fmt.Printf("INFO: fixed part of CACHE_USED per connection %d bytes (the Pager allocation, which holds the file names, plus one page buffer)\n", small-cachedPages(small)*perPage)
-	fmt.Printf("cache_size=100 holds %d pages, cache_size=200 holds %d pages\n", cachedPages(small), cachedPages(large))
-	for _, size := range []int{cacheSize, -2 * int(info.Size()) / 1024} {
+	setting("CACHE_USED bytes per cached page", perPage)
+	setting("of which page header bytes", perPage-pageSize)
+	// The fixed part is the Pager allocation, which holds the file names, plus one page buffer.
+	info("fixed part of CACHE_USED per connection, bytes", small-cachedPages(small)*perPage)
+	tables.calibration.Row(100, cachedPages(small))
+	tables.calibration.Row(200, cachedPages(large))
+	for _, size := range []int{cacheSize, -2 * int(stat.Size()) / 1024} {
 		scans := runChild("scans", work, strconv.Itoa(size))[0]
-		fmt.Printf("cache_size=%d (budget %d bytes):\n", size, budgetBytes(size))
 		for i, s := range scans.Conns {
-			fmt.Printf("  after scan %d: cached pages=%d hit=%d miss=%d spill=%d\n", i+1, cachedPages(s.CacheUsed), s.Hits, s.Misses, s.Spills)
-			fmt.Printf("INFO:   after scan %d: CACHE_USED=%d bytes\n", i+1, s.CacheUsed)
+			tables.scans.Row(size, budgetBytes(size), i+1, cachedPages(s.CacheUsed), s.Hits, s.Misses, s.Spills)
+			info(fmt.Sprintf("part A, cache_size=%d, CACHE_USED after scan %d, bytes", size, i+1), s.CacheUsed)
 		}
 		first, second := scans.Conns[0], scans.Conns[1]
 		budgetClaim := fmt.Sprintf("cache_size=%d: CACHE_USED stays within the budget plus 5%% (%d pages x %d bytes against %d bytes)", size, cachedPages(first.CacheUsed), perPage, budgetBytes(size))
 		if size > 0 {
 			budgetClaim = fmt.Sprintf("cache_size=%d: the cache holds at most %d pages (it holds %d)", size, size, cachedPages(first.CacheUsed))
 		}
-		check(withinBudget(first.CacheUsed, size), budgetClaim)
+		set.Check("A", withinBudget(first.CacheUsed, size), budgetClaim)
 		if size == cacheSize {
-			check(second.Misses-first.Misses >= int(info.Size()/pageSize)*9/10, "a file larger than the cache misses again on the second scan (the LRU evicted the pages the scan needs next)")
+			set.Check("A", second.Misses-first.Misses >= int(stat.Size()/pageSize)*9/10, "a file larger than the cache misses again on the second scan (the LRU evicted the pages the scan needs next)")
 		} else {
-			check(second.Misses == first.Misses && second.Hits > first.Hits, "a cache larger than the file serves the second scan from memory: no new misses")
+			set.Check("A", second.Misses == first.Misses && second.Hits > first.Hits, "a cache larger than the file serves the second scan from memory: no new misses")
 		}
 	}
 
 	full := cachedPages(runChild("scans", work, strconv.Itoa(cacheSize))[0].Conns[0].CacheUsed)
 	nLabel, halfLabel := fmt.Sprintf("after %d", n), fmt.Sprintf("after %d", reportPoints(n)[len(reportPoints(n))-2])
 
-	fmt.Printf("\n== B. %d connections to %d files, all kept open ==\n", n, n)
 	files := runChild("files", work, strconv.Itoa(n), strconv.Itoa(cacheSize))
-	printGrowth(files)
-	last := lastWithOpen(files)
-	fmt.Printf("  at %s: connection 1 cached pages=%d hit=%d miss=%d; connection %d cached pages=%d hit=%d miss=%d\n", last.Label, cachedPages(last.Conns[0].CacheUsed), last.Conns[0].Hits, last.Conns[0].Misses, len(last.Conns), cachedPages(last.Conns[len(last.Conns)-1].CacheUsed), last.Conns[len(last.Conns)-1].Hits, last.Conns[len(last.Conns)-1].Misses)
-	lo, hi := last.pagesMinMax()
-	check(sumsMatch(files, full), fmt.Sprintf("the cached pages of all open connections add up to exactly (open connections) x %d, the pages one connection holds when it fills its budget", full))
+	writePoints("B", files)
+	lo, hi := find(files, nLabel).pagesMinMax()
+	set.Check("B", sumsMatch(files, full), fmt.Sprintf("the cached pages of all open connections add up to exactly (open connections) x %d, the pages one connection holds when it fills its budget", full))
 	// With ENABLE_MEMORY_MANAGEMENT, pcache1Init sets separateCache=0
 	// (src/pcache1.c:718-719), putting every open connection in one process-wide
 	// PGroup LRU. Active scanners recycle idle connections' pages
 	// (pcache1FetchStage2, src/pcache1.c:899-912) while the group total equals
 	// open * perConnBudget (pcache1Cachesize, src/pcache1.c:814-832).
 	if compileMM == 1 {
-		check(hi > full && lo < full, fmt.Sprintf("in this driver build cache_size is not a per-connection cap: the connection that scanned last holds %d pages (its own budget is %d) while the idle connections were left with %d", hi, full, lo))
+		set.Check("B", hi > full && lo < full, fmt.Sprintf("in this driver build cache_size is not a per-connection cap: the connection that scanned last holds %d pages (its own budget is %d) while the idle connections were left with %d", hi, full, lo))
 	} else {
-		check(hi <= full, "every connection stays within its own budget")
+		set.Check("B", hi <= full, "every connection stays within its own budget")
 	}
 	rssN, rssHalf, cacheN := growth(files, nLabel), growth(files, halfLabel), int64(find(files, nLabel).cacheTotal())
-	fmt.Printf("INFO: RSS growth at %s %s, at %s %s; RSS growth / summed CACHE_USED %.2f\n", nLabel, mib(rssN), halfLabel, mib(rssHalf), float64(rssN)/float64(cacheN))
-	check(rssN >= cacheN*9/10, "process memory grows by at least the summed CACHE_USED of the open connections")
+	info(fmt.Sprintf("part B, RSS growth / summed CACHE_USED at %s", nLabel), fmt.Sprintf("%.2f", float64(rssN)/float64(cacheN)))
+	set.Check("B", rssN >= cacheN*9/10, "process memory grows by at least the summed CACHE_USED of the open connections")
 	half := find(files, halfLabel).Open
 	perN, perHalf := float64(rssN)/float64(n), float64(rssHalf)/float64(half)
-	fmt.Printf("INFO: RSS growth per open connection: %s at %d, %s at %d\n", mib(int64(perN)), n, mib(int64(perHalf)), half)
-	check(perN >= perHalf*0.8 && perN <= perHalf*1.25, fmt.Sprintf("process memory grows linearly with open connections: growth per open connection at %d is within -20%%/+25%% of that at %d", n, half))
+	info(fmt.Sprintf("part B, RSS growth per open connection at %d, bytes", n), int64(perN))
+	info(fmt.Sprintf("part B, RSS growth per open connection at %d, bytes", half), int64(perHalf))
+	set.Check("B", perN >= perHalf*0.8 && perN <= perHalf*1.25, fmt.Sprintf("process memory grows linearly with open connections: growth per open connection at %d is within -20%%/+25%% of that at %d", n, half))
 
-	fmt.Printf("\n== C. %d connections to one file, all kept open ==\n", n)
 	oneFile := runChild("one-file", work, strconv.Itoa(n), strconv.Itoa(cacheSize))
-	printGrowth(oneFile)
-	check(sumsMatch(oneFile, full) && pagesMatch(oneFile, files), "connections to one file do not share a cache: the totals equal the N-files run at every checkpoint")
+	writePoints("C", oneFile)
+	set.Check("C", sumsMatch(oneFile, full) && pagesMatch(oneFile, files), "connections to one file do not share a cache: the totals equal the N-files run at every checkpoint")
 	oneN := growth(oneFile, nLabel)
-	check(oneN >= cacheN*9/10, "process memory grows by the summed CACHE_USED here too")
+	set.Check("C", oneN >= cacheN*9/10, "process memory grows by the summed CACHE_USED here too")
 
-	fmt.Printf("\n== D. %d files visited through a pool of at most %d open connections (LRU close) ==\n", n, k)
 	bounded := runChild("bounded", work, strconv.Itoa(n), strconv.Itoa(k), strconv.Itoa(cacheSize))
-	printGrowth(bounded)
+	writePoints("D", bounded)
 	kLabel := fmt.Sprintf("after %d", k)
 	atK, atN := growth(bounded, kLabel), growth(bounded, nLabel)
-	fmt.Printf("INFO: RSS growth at %s %s, at %s %s\n", kLabel, mib(atK), nLabel, mib(atN))
-	check(find(bounded, nLabel).Open == k && find(bounded, nLabel).pagesTotal() <= k*(full+1), fmt.Sprintf("with the pool, %d connections are open at the end and their cached pages stay within %d x (%d + 1), the sum of their cache sizes in pages", k, k, full))
-	check(atN-atK <= atK/4, fmt.Sprintf("with the pool, process memory stays flat after %d connections: growth from %s to %s is at most a quarter of the growth up to %s", k, kLabel, nLabel, kLabel))
-	check(float64(atN) <= float64(rssN)*float64(k)/float64(n)*1.5, fmt.Sprintf("the pooled run ends with about %d/%d of the unbounded run's memory growth (at most 1.5 x that fraction)", k, n))
+	set.Check("D", find(bounded, nLabel).Open == k && find(bounded, nLabel).pagesTotal() <= k*(full+1), fmt.Sprintf("with the pool, %d connections are open at the end and their cached pages stay within %d x (%d + 1), the sum of their cache sizes in pages", k, k, full))
+	set.Check("D", atN-atK <= atK/4, fmt.Sprintf("with the pool, process memory stays flat after %d connections: growth from %s to %s is at most a quarter of the growth up to %s", k, kLabel, nLabel, kLabel))
+	set.Check("D", float64(atN) <= float64(rssN)*float64(k)/float64(n)*1.5, fmt.Sprintf("the pooled run ends with about %d/%d of the unbounded run's memory growth (at most 1.5 x that fraction)", k, n))
 
 	// PRAGMA mmap_size activates getPageMMap (pagerFixMaplimit,
 	// src/pager.c:3579-3590; getPageMMap, src/pager.c:5687-5752), which serves
 	// pages directly from the kernel's mapped file cache via sqlite3OsFetch and
 	// pagerAcquireMapPage outside pcache1, so CACHE_USED stays near zero while
 	// RssFile grows by the file size.
-	fmt.Printf("\n== E. mmap ==\n")
-	mmapSize := 2 * info.Size()
-	fmt.Printf("connection 1: no mmap, scans f-000; connection 2: PRAGMA mmap_size=%d (twice the file), scans f-001\n", mmapSize)
+	mmapSize := 2 * stat.Size()
+	setting("part E: mmap_size of connection 2 (twice the file)", mmapSize)
 	mapped := runChild("mmap", work, strconv.Itoa(cacheSize), strconv.FormatInt(mmapSize, 10))
-	for _, p := range mapped[1:] {
-		for i, s := range p.Conns {
-			fmt.Printf("  %-7s connection %d: cached pages=%d hit=%d miss=%d\n", p.Label, i+1, cachedPages(s.CacheUsed), s.Hits, s.Misses)
-			fmt.Printf("INFO:   %-7s connection %d: CACHE_USED=%d bytes\n", p.Label, i+1, s.CacheUsed)
-		}
-		fmt.Printf("INFO:   %-7s %s\n", p.Label, memoryInfo(p.Memory))
-	}
+	writePoints("E", mapped)
 	plain, withMap := find(mapped, "plain"), find(mapped, "mapped")
 	mappedConn := withMap.Conns[1]
-	check(mappedConn.CacheUsed*20 < plain.Conns[0].CacheUsed, "with mmap covering the file, the scan leaves CACHE_USED near zero (under 5% of the unmapped connection's)")
+	set.Check("E", mappedConn.CacheUsed*20 < plain.Conns[0].CacheUsed, "with mmap covering the file, the scan leaves CACHE_USED near zero (under 5% of the unmapped connection's)")
 	rssDelta := withMap.Memory.RSS - plain.Memory.RSS
-	fmt.Printf("INFO: the mapped scan added %s RSS (file %s)\n", mib(rssDelta), mib(info.Size()))
-	check(rssDelta >= info.Size()*8/10, "the mapped scan still adds about the file's size to process RSS: the memory moved from SQLite's heap to mapped file pages")
+	info("part E, RSS added by the mapped scan, bytes", rssDelta)
+	set.Check("E", rssDelta >= stat.Size()*8/10, "the mapped scan still adds about the file's size to process RSS: the memory moved from SQLite's heap to mapped file pages")
+	tables.parts.Row("A", "one connection, the same scan twice", "ran")
+	tables.parts.Row("B", fmt.Sprintf("%d connections to %d files, all kept open", n, n), "ran")
+	tables.parts.Row("C", fmt.Sprintf("%d connections to one file, all kept open", n), "ran")
+	tables.parts.Row("D", fmt.Sprintf("%d files through a pool of at most %d open connections", n, k), "ran")
+	tables.parts.Row("E", "one connection without and one with mmap", "ran")
 	if withMap.Memory.File >= 0 {
 		fileDelta, anonDelta := withMap.Memory.File-plain.Memory.File, withMap.Memory.Anon-plain.Memory.Anon
-		fmt.Printf("INFO: file-backed RSS +%s, anonymous RSS +%s\n", mib(fileDelta), mib(anonDelta))
-		check(fileDelta >= info.Size()*8/10 && anonDelta < info.Size()/4, "the added memory is file-backed (RssFile), not anonymous heap")
+		info("part E, file-backed RSS added, bytes", fileDelta)
+		info("part E, anonymous RSS added, bytes", anonDelta)
+		set.Check("E", fileDelta >= stat.Size()*8/10 && anonDelta < stat.Size()/4, "the added memory is file-backed (RssFile), not anonymous heap")
+		tables.parts.Row("E", "split of the added RSS into file-backed and anonymous", "ran")
 	} else {
 		fmt.Println("LINUX-ONLY: the split of RSS into anonymous and file-backed memory (/proc/self/status) skipped on " + runtime.GOOS + "; run it with: docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget")
+		tables.parts.Row("E", "split of the added RSS into file-backed and anonymous", "skipped: needs /proc/self/status (Linux)")
 	}
 
-	fmt.Printf("INFO: runtime %s\n", time.Since(started).Round(100*time.Millisecond))
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("CACHE BUDGET FAILED: %d claim(s) do not hold: %s\n", len(failures), strings.Join(failures, "; "))
-		os.Exit(1)
-	}
-	fmt.Println("CACHE BUDGET OK")
+	info("runtime, seconds", time.Since(started).Round(100*time.Millisecond).Seconds())
+	set.Finish("CACHE BUDGET")
 }

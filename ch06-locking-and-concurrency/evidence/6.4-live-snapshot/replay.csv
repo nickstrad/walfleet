@@ -1,0 +1,2 @@
+wal_ignored_reason,frames_in_file,valid_frames,transactions,last_commit_frame,database_pages,applied_frames,distinct_pages,skipped_beyond_size,base_bytes,output_bytes,ignored
+,167,167,8,167,124,167,92,0,438272,507904,ignored: none

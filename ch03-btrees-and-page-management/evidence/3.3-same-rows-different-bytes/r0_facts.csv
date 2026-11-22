@@ -1,0 +1,11 @@
+name,value
+schema_rows,4
+page_size,4096
+encoding,UTF-8
+auto_vacuum,none
+user_version,30
+application_id,1397836120
+journal_mode,wal
+default_cache_size,-2000
+integrity_check,ok
+foreign_key_check_rows,0

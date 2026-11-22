@@ -1,83 +1,178 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/5.3
 
-== A. a reader holds one read transaction open while a writer commits recipe steps 7-30 (wal_autocheckpoint=200)
-moment                   WAL bytes  mxFrame nBackfill  read marks [0..4]      reader rows writer rows
-after step 6                 90672       22         0  0,0,unused,unused,unused           -           -
-reader began                 90672       22         0  0,22,unused,unused,unused         251         251
-check ok: the reader's snapshot is a read mark equal to mxFrame when it began, and that WAL content was not yet checkpointed
-step 7 committed            156592       38         0  0,22,38,unused,unused          251         287
-step 8 committed            251352       61         0  0,22,61,unused,unused          251         336
-step 9 committed            346112       84         0  0,22,84,unused,unused          251         372
-step 10 committed           416152      101         0  0,22,101,unused,unused         251         418
-step 11 committed           477952      116         0  0,22,116,unused,unused         251         458
-step 12 committed           597432      145         0  0,22,145,unused,unused         251         482
-step 13 committed           688072      167         0  0,22,167,unused,unused         251         524
-step 14 committed           762232      185         0  0,22,185,unused,unused         251         570
-step 15 committed           861112      209        22  0,22,209,unused,unused         251         600
-step 16 committed           992952      241        22  0,22,241,unused,unused         251         635
-step 17 committed          1046512      254        22  0,22,254,unused,unused         251         695
-step 18 committed          1149512      279        22  0,22,279,unused,unused         251         725
-step 19 committed          1190712      289        22  0,22,289,unused,unused         251         770
-step 20 committed          1297832      315        22  0,22,315,unused,unused         251         802
-step 21 committed          1417312      344        22  0,22,344,unused,unused         251         831
-step 22 committed          1503832      365        22  0,22,365,unused,unused         251         871
-step 23 committed          1586232      385        22  0,22,385,unused,unused         251         915
-step 24 committed          1705712      414        22  0,22,414,unused,unused         251         942
-step 25 committed          1788112      434        22  0,22,434,unused,unused         251         980
-step 26 committed          1899352      461        22  0,22,461,unused,unused         251        1024
-step 27 committed          2006472      487        22  0,22,487,unused,unused         251        1047
-step 28 committed          2088872      507        22  0,22,507,unused,unused         251        1095
-step 29 committed          2163032      525        22  0,22,525,unused,unused         251        1130
-step 30 committed          2286632      555        22  0,22,555,unused,unused         251        1177
-autocheckpoint first reached the reader's mark 22 at step 15; mxFrame at the end 555, so 533 frames could not be checkpointed
-check ok: the reader's row count never changed while the writer committed
-check ok: the WAL grew on every commit and never restarted while the reader stayed open
-check ok: checkpoints ran (autocheckpoint) but nBackfill stopped at the reader's mark and stayed there
-reader ended               2286632      555        22  0,22,555,unused,unused           -        1177
-PASSIVE checkpoint         2286632      555       555  0,555,555,unused,unused           -        1177
-wal_checkpoint(PASSIVE) -> busy=0 log=555 checkpointed=555
-check ok: with the reader gone one checkpoint brings nBackfill to mxFrame; the WAL file keeps its size
-step 31 committed          2286632       18         0  0,18,unused,unused,unused           -        1214
-after the next write: WAL header checkpoint-seq 0 -> 1, salt-1 advanced by 1; valid frames 18 of 555 in the file (the rest are the old generation)
-check ok: the next write restarted the WAL at frame 1 (salt-1 + 1, checkpoint sequence + 1); the file is reused, not shrunk
+════════════════════════════════════════════════════════════════════════
+  5.3  How does an open reader stop checkpoints and grow the WAL?
+════════════════════════════════════════════════════════════════════════
 
-== B. a reader that began right after a complete checkpoint reads the database file only (read mark 0)
-wal_checkpoint(PASSIVE) after step 6 -> busy=0 log=22 checkpointed=22
-moment                   WAL bytes  mxFrame nBackfill  read marks [0..4]      reader rows writer rows
-checkpointed                 90672       22        22  0,22,unused,unused,unused           -           -
-reader began                 90672       22        22  0,22,unused,unused,unused         251         251
-check ok: the WAL was fully checkpointed, so the reader took no read mark in 1..4 (it holds read lock 0 and ignores the WAL)
-step 7 committed             90672       16         0  0,16,unused,unused,unused         251         287
-step 8 committed            160712       39         0  0,39,unused,unused,unused         251         336
-step 9 committed            255472       62         0  0,62,unused,unused,unused         251         372
-step 10 committed           325512       79         0  0,79,unused,unused,unused         251         418
-step 11 committed           387312       94         0  0,94,unused,unused,unused         251         458
-step 12 committed           506792      123         0  0,123,unused,unused,unused         251         482
-step 13 committed           597432      145         0  0,145,unused,unused,unused         251         524
-step 14 committed           671592      163         0  0,163,unused,unused,unused         251         570
-step 15 committed           770472      187         0  0,187,unused,unused,unused         251         600
-step 16 committed           902312      219         0  0,219,unused,unused,unused         251         635
-step 17 committed           955872      232         0  0,232,unused,unused,unused         251         695
-step 18 committed          1058872      257         0  0,257,unused,unused,unused         251         725
-step 19 committed          1100072      267         0  0,267,unused,unused,unused         251         770
-step 20 committed          1207192      293         0  0,293,unused,unused,unused         251         802
-step 21 committed          1326672      322         0  0,322,unused,unused,unused         251         831
-step 22 committed          1413192      343         0  0,343,unused,unused,unused         251         871
-step 23 committed          1495592      363         0  0,363,unused,unused,unused         251         915
-step 24 committed          1615072      392         0  0,392,unused,unused,unused         251         942
-step 25 committed          1697472      412         0  0,412,unused,unused,unused         251         980
-step 26 committed          1808712      439         0  0,439,unused,unused,unused         251        1024
-step 27 committed          1915832      465         0  0,465,unused,unused,unused         251        1047
-step 28 committed          1998232      485         0  0,485,unused,unused,unused         251        1095
-step 29 committed          2072392      503         0  0,503,unused,unused,unused         251        1130
-step 30 committed          2195992      533         0  0,533,unused,unused,unused         251        1177
-first write after the reader began: salt-1 advanced by 1, mxFrame 16 (the WAL restarted); at the end mxFrame 533 with nBackfill 0
-check ok: a reader on read lock 0 does not stop the writer from restarting the WAL
-check ok: the reader's row count never changed
-check ok: but no checkpoint can copy a single frame while it is open: nBackfill stays 0 although autocheckpoint ran on every commit past the threshold
-reader ended + PASSIVE     2195992      533       533  0,533,unused,unused,unused           -        1177
-wal_checkpoint(PASSIVE) -> busy=0 log=533 checkpointed=533
-check ok: once the reader ends, a checkpoint copies everything
+A writer commits recipe steps with wal_autocheckpoint=200 while a reader
+holds a read transaction open. After every commit the experiment reads
+the live -wal and the wal-index (-shm) from a child process and counts
+the rows the reader and the writer see. The read marks column is the five
+wal-index read marks [0..4]; "unused" is a slot nobody holds.
 
-READER PINS THE WAL OK
+── A. A reader that holds a read mark in slot 1 ───────────────────────
+
+The reader begins after step 6 (mxFrame 22, nothing checkpointed yet).
+
+A1. The reader takes read mark 22 in slot 1 and sees 251 rows for the
+    whole run; the writer moves on to 1177 rows. The WAL grows on every
+    commit and never restarts. Autocheckpoint runs, but n_backfill stops
+    at the reader mark (22) and stays there.
+┌────────────────────┬───────────┬──────────┬────────────┬───────────────────────────┬─────────────┬─────────────┐
+│       moment       │ wal_bytes │ mx_frame │ n_backfill │        read_marks         │ reader_rows │ writer_rows │
+├────────────────────┼───────────┼──────────┼────────────┼───────────────────────────┼─────────────┼─────────────┤
+│ after step 6       │ 90672     │ 22       │ 0          │ 0,0,unused,unused,unused  │             │             │
+│ reader began       │ 90672     │ 22       │ 0          │ 0,22,unused,unused,unused │ 251         │ 251         │
+│ step 7 committed   │ 156592    │ 38       │ 0          │ 0,22,38,unused,unused     │ 251         │ 287         │
+│ step 8 committed   │ 251352    │ 61       │ 0          │ 0,22,61,unused,unused     │ 251         │ 336         │
+│ step 9 committed   │ 346112    │ 84       │ 0          │ 0,22,84,unused,unused     │ 251         │ 372         │
+│ step 10 committed  │ 416152    │ 101      │ 0          │ 0,22,101,unused,unused    │ 251         │ 418         │
+│ step 11 committed  │ 477952    │ 116      │ 0          │ 0,22,116,unused,unused    │ 251         │ 458         │
+│ step 12 committed  │ 597432    │ 145      │ 0          │ 0,22,145,unused,unused    │ 251         │ 482         │
+│ step 13 committed  │ 688072    │ 167      │ 0          │ 0,22,167,unused,unused    │ 251         │ 524         │
+│ step 14 committed  │ 762232    │ 185      │ 0          │ 0,22,185,unused,unused    │ 251         │ 570         │
+│ step 15 committed  │ 861112    │ 209      │ 22         │ 0,22,209,unused,unused    │ 251         │ 600         │
+│ step 16 committed  │ 992952    │ 241      │ 22         │ 0,22,241,unused,unused    │ 251         │ 635         │
+│ step 17 committed  │ 1046512   │ 254      │ 22         │ 0,22,254,unused,unused    │ 251         │ 695         │
+│ step 18 committed  │ 1149512   │ 279      │ 22         │ 0,22,279,unused,unused    │ 251         │ 725         │
+│ step 19 committed  │ 1190712   │ 289      │ 22         │ 0,22,289,unused,unused    │ 251         │ 770         │
+│ step 20 committed  │ 1297832   │ 315      │ 22         │ 0,22,315,unused,unused    │ 251         │ 802         │
+│ step 21 committed  │ 1417312   │ 344      │ 22         │ 0,22,344,unused,unused    │ 251         │ 831         │
+│ step 22 committed  │ 1503832   │ 365      │ 22         │ 0,22,365,unused,unused    │ 251         │ 871         │
+│ step 23 committed  │ 1586232   │ 385      │ 22         │ 0,22,385,unused,unused    │ 251         │ 915         │
+│ step 24 committed  │ 1705712   │ 414      │ 22         │ 0,22,414,unused,unused    │ 251         │ 942         │
+│ step 25 committed  │ 1788112   │ 434      │ 22         │ 0,22,434,unused,unused    │ 251         │ 980         │
+│ step 26 committed  │ 1899352   │ 461      │ 22         │ 0,22,461,unused,unused    │ 251         │ 1024        │
+│ step 27 committed  │ 2006472   │ 487      │ 22         │ 0,22,487,unused,unused    │ 251         │ 1047        │
+│ step 28 committed  │ 2088872   │ 507      │ 22         │ 0,22,507,unused,unused    │ 251         │ 1095        │
+│ step 29 committed  │ 2163032   │ 525      │ 22         │ 0,22,525,unused,unused    │ 251         │ 1130        │
+│ step 30 committed  │ 2286632   │ 555      │ 22         │ 0,22,555,unused,unused    │ 251         │ 1177        │
+│ reader ended       │ 2286632   │ 555      │ 22         │ 0,22,555,unused,unused    │             │ 1177        │
+│ PASSIVE checkpoint │ 2286632   │ 555      │ 555        │ 0,555,555,unused,unused   │             │ 1177        │
+│ step 31 committed  │ 2286632   │ 18       │ 0          │ 0,18,unused,unused,unused │             │ 1214        │
+└────────────────────┴───────────┴──────────┴────────────┴───────────────────────────┴─────────────┴─────────────┘
+
+A2. Summary of the loop (steps 7-30):
+┌─────────────┬──────────────────────┬────────────────┬─────────────────────────┬───────────────────┬───────────────┐
+│ reader_mark │ mark_reached_at_step │ final_mx_frame │ frames_not_checkpointed │ reader_row_counts │ salt1_advance │
+├─────────────┼──────────────────────┼────────────────┼─────────────────────────┼───────────────────┼───────────────┤
+│ 22          │ 15                   │ 555            │ 533                     │ 1                 │ 0..0          │
+└─────────────┴──────────────────────┴────────────────┴─────────────────────────┴───────────────────┴───────────────┘
+
+A3. The reader ends. Its read mark stays written in slot 1 until a
+    checkpoint, so n_backfill is still 22 (row "reader ended"). One PASSIVE
+    checkpoint now brings n_backfill to mxFrame; the WAL file keeps its size.
+┌────────────────────┬───────────┬──────────┬────────────┬─────────────────────────┐
+│       moment       │ wal_bytes │ mx_frame │ n_backfill │       read_marks        │
+├────────────────────┼───────────┼──────────┼────────────┼─────────────────────────┤
+│ reader ended       │ 2286632   │ 555      │ 22         │ 0,22,555,unused,unused  │
+│ PASSIVE checkpoint │ 2286632   │ 555      │ 555        │ 0,555,555,unused,unused │
+└────────────────────┴───────────┴──────────┴────────────┴─────────────────────────┘
+┌────────────────────┬───────┬────────────┬──────────────┐
+│       moment       │ busy  │ log_frames │ checkpointed │
+├────────────────────┼───────┼────────────┼──────────────┤
+│ PASSIVE checkpoint │ false │ 555        │ 555          │
+└────────────────────┴───────┴────────────┴──────────────┘
+
+A4. The next write (step 31) restarts the WAL at frame 1: salt-1 advances
+    by 1 and the checkpoint sequence by 1. The file is reused, not shrunk;
+    only valid_frames of the frames_in_file belong to the new generation.
+┌────────────────────┬───────────┬──────────┬────────────────┬───────────────┬──────────────┬────────────────┐
+│       moment       │ wal_bytes │ mx_frame │ checkpoint_seq │ salt1_advance │ valid_frames │ frames_in_file │
+├────────────────────┼───────────┼──────────┼────────────────┼───────────────┼──────────────┼────────────────┤
+│ reader began       │ 90672     │ 22       │ 0              │ 0             │ 22           │ 22             │
+│ PASSIVE checkpoint │ 2286632   │ 555      │ 0              │ 0             │ 555          │ 555            │
+│ step 31 committed  │ 2286632   │ 18       │ 1              │ 1             │ 18           │ 555            │
+└────────────────────┴───────────┴──────────┴────────────────┴───────────────┴──────────────┴────────────────┘
+
+── B. A reader on read lock 0 ─────────────────────────────────────────
+
+A PASSIVE checkpoint after step 6 copies every frame, so the reader that
+begins next finds n_backfill = mxFrame and takes read lock 0: it reads the
+database file and ignores the WAL.
+
+B1. The checkpoint, and the reader that follows it. The read marks do not
+    change: the reader took no mark in slots 1..4.
+┌───────────────────────────────────────────┬───────┬────────────┬──────────────┐
+│                  moment                   │ busy  │ log_frames │ checkpointed │
+├───────────────────────────────────────────┼───────┼────────────┼──────────────┤
+│ PASSIVE checkpoint after step 6           │ false │ 22         │ 22           │
+│ PASSIVE checkpoint after the reader ended │ false │ 533        │ 533          │
+└───────────────────────────────────────────┴───────┴────────────┴──────────────┘
+┌──────────────┬───────────┬──────────┬────────────┬───────────────────────────┬─────────────┬─────────────┐
+│    moment    │ wal_bytes │ mx_frame │ n_backfill │        read_marks         │ reader_rows │ writer_rows │
+├──────────────┼───────────┼──────────┼────────────┼───────────────────────────┼─────────────┼─────────────┤
+│ checkpointed │ 90672     │ 22       │ 22         │ 0,22,unused,unused,unused │             │             │
+│ reader began │ 90672     │ 22       │ 22         │ 0,22,unused,unused,unused │ 251         │ 251         │
+└──────────────┴───────────┴──────────┴────────────┴───────────────────────────┴─────────────┴─────────────┘
+
+B2. The writer is free to restart the WAL (salt-1 advances by 1 and mxFrame
+    falls back to 16 on step 7), but no checkpoint can copy one frame while
+    the reader is open: n_backfill stays 0 although autocheckpoint ran on
+    every commit past 200 frames.
+┌───────────────────┬───────────┬──────────┬────────────┬────────────────────────────┬─────────────┬─────────────┐
+│      moment       │ wal_bytes │ mx_frame │ n_backfill │         read_marks         │ reader_rows │ writer_rows │
+├───────────────────┼───────────┼──────────┼────────────┼────────────────────────────┼─────────────┼─────────────┤
+│ step 7 committed  │ 90672     │ 16       │ 0          │ 0,16,unused,unused,unused  │ 251         │ 287         │
+│ step 8 committed  │ 160712    │ 39       │ 0          │ 0,39,unused,unused,unused  │ 251         │ 336         │
+│ step 9 committed  │ 255472    │ 62       │ 0          │ 0,62,unused,unused,unused  │ 251         │ 372         │
+│ step 10 committed │ 325512    │ 79       │ 0          │ 0,79,unused,unused,unused  │ 251         │ 418         │
+│ step 11 committed │ 387312    │ 94       │ 0          │ 0,94,unused,unused,unused  │ 251         │ 458         │
+│ step 12 committed │ 506792    │ 123      │ 0          │ 0,123,unused,unused,unused │ 251         │ 482         │
+│ step 13 committed │ 597432    │ 145      │ 0          │ 0,145,unused,unused,unused │ 251         │ 524         │
+│ step 14 committed │ 671592    │ 163      │ 0          │ 0,163,unused,unused,unused │ 251         │ 570         │
+│ step 15 committed │ 770472    │ 187      │ 0          │ 0,187,unused,unused,unused │ 251         │ 600         │
+│ step 16 committed │ 902312    │ 219      │ 0          │ 0,219,unused,unused,unused │ 251         │ 635         │
+│ step 17 committed │ 955872    │ 232      │ 0          │ 0,232,unused,unused,unused │ 251         │ 695         │
+│ step 18 committed │ 1058872   │ 257      │ 0          │ 0,257,unused,unused,unused │ 251         │ 725         │
+│ step 19 committed │ 1100072   │ 267      │ 0          │ 0,267,unused,unused,unused │ 251         │ 770         │
+│ step 20 committed │ 1207192   │ 293      │ 0          │ 0,293,unused,unused,unused │ 251         │ 802         │
+│ step 21 committed │ 1326672   │ 322      │ 0          │ 0,322,unused,unused,unused │ 251         │ 831         │
+│ step 22 committed │ 1413192   │ 343      │ 0          │ 0,343,unused,unused,unused │ 251         │ 871         │
+│ step 23 committed │ 1495592   │ 363      │ 0          │ 0,363,unused,unused,unused │ 251         │ 915         │
+│ step 24 committed │ 1615072   │ 392      │ 0          │ 0,392,unused,unused,unused │ 251         │ 942         │
+│ step 25 committed │ 1697472   │ 412      │ 0          │ 0,412,unused,unused,unused │ 251         │ 980         │
+│ step 26 committed │ 1808712   │ 439      │ 0          │ 0,439,unused,unused,unused │ 251         │ 1024        │
+│ step 27 committed │ 1915832   │ 465      │ 0          │ 0,465,unused,unused,unused │ 251         │ 1047        │
+│ step 28 committed │ 1998232   │ 485      │ 0          │ 0,485,unused,unused,unused │ 251         │ 1095        │
+│ step 29 committed │ 2072392   │ 503      │ 0          │ 0,503,unused,unused,unused │ 251         │ 1130        │
+│ step 30 committed │ 2195992   │ 533      │ 0          │ 0,533,unused,unused,unused │ 251         │ 1177        │
+└───────────────────┴───────────┴──────────┴────────────┴────────────────────────────┴─────────────┴─────────────┘
+
+B3. Summary of the loop (steps 7-30):
+┌─────────────────────────┬────────────────────┬────────────────┬──────────────────┬───────────────────┐
+│ salt1_advance_at_step_7 │ mx_frame_at_step_7 │ final_mx_frame │ final_n_backfill │ reader_row_counts │
+├─────────────────────────┼────────────────────┼────────────────┼──────────────────┼───────────────────┤
+│ 1                       │ 16                 │ 533            │ 0                │ 1                 │
+└─────────────────────────┴────────────────────┴────────────────┴──────────────────┴───────────────────┘
+
+B4. The reader ends and one PASSIVE checkpoint copies everything.
+┌───────────────────────────────────────────┬───────┬────────────┬──────────────┐
+│                  moment                   │ busy  │ log_frames │ checkpointed │
+├───────────────────────────────────────────┼───────┼────────────┼──────────────┤
+│ PASSIVE checkpoint after the reader ended │ false │ 533        │ 533          │
+└───────────────────────────────────────────┴───────┴────────────┴──────────────┘
+┌────────────────────────┬───────────┬──────────┬────────────┬────────────────────────────┐
+│         moment         │ wal_bytes │ mx_frame │ n_backfill │         read_marks         │
+├────────────────────────┼───────────┼──────────┼────────────┼────────────────────────────┤
+│ reader ended + PASSIVE │ 2195992   │ 533      │ 533        │ 0,533,unused,unused,unused │
+└────────────────────────┴───────────┴──────────┴────────────┴────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the reader's snapshot is a read mark equal to mxFrame when it began, and that WAL content was not yet checkpointed
+A  ✓  the reader's row count never changed while the writer committed
+A  ✓  the WAL grew on every commit and never restarted while the reader stayed open
+A  ✓  checkpoints ran (autocheckpoint) but nBackfill stopped at the reader's mark and stayed there
+A  ✓  with the reader gone one checkpoint brings nBackfill to mxFrame; the WAL file keeps its size
+A  ✓  the next write restarted the WAL at frame 1 (salt-1 + 1, checkpoint sequence + 1); the file is reused, not shrunk
+B  ✓  the WAL was fully checkpointed, so the reader took no read mark in 1..4 (it holds read lock 0 and ignores the WAL)
+B  ✓  a reader on read lock 0 does not stop the writer from restarting the WAL
+B  ✓  the reader's row count never changed
+B  ✓  but no checkpoint can copy a single frame while it is open: nBackfill stays 0 although autocheckpoint ran on every commit past the threshold
+B  ✓  once the reader ends, a checkpoint copies everything
+
+11 of 11 claims hold
+
+Experiment verdict: READER PINS THE WAL OK

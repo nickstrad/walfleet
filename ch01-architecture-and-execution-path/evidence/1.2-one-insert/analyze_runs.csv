@@ -1,0 +1,5 @@
+stage,build,sha256,stat4_compiled,stat_tables
+base,go.db,cd808b1713871cd6,,
+base,cli.db,cd808b1713871cd6,,
+after ANALYZE,go.db,2f6ce76122bda45c,1,sqlite_stat1 sqlite_stat4
+after ANALYZE,cli.db,490d8405dea7402c,0,sqlite_stat1

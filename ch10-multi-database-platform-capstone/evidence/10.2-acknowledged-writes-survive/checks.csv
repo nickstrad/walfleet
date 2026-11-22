@@ -1,0 +1,16 @@
+seq,part,status,claim
+1,A,ok,local-durable: the uninterrupted run acknowledges all 12 writes and every fsync runs on the command thread
+2,A,ok,local-durable: strace killed the node at each of the 4 fsync kill points
+3,A,ok,"local-durable: after each kill at an fsync every database reopens (integrity ok, a recipe state) and holds at least every write acknowledged in this mode"
+4,A,ok,store-durable: the uninterrupted run acknowledges all 12 writes and every fsync runs on the command thread
+5,A,ok,store-durable: strace killed the node at each of the 4 fsync kill points
+6,A,ok,"store-durable: after each kill at an fsync every database reopens (integrity ok, a recipe state) and holds at least every write acknowledged in this mode"
+7,B,ok,local-durable: an interactive run that is not killed acknowledges all 12 writes
+8,B,ok,"local-durable: each of the 2 random kills landed while writes were in flight (a kill after the last reply is recovered and checked too, then redrawn, at most 5 draws per kill)"
+9,B,ok,"local-durable: after every kill at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write"
+10,B,ok,store-durable: an interactive run that is not killed acknowledges all 12 writes
+11,B,ok,"store-durable: each of the 2 random kills landed while writes were in flight (a kill after the last reply is recovered and checked too, then redrawn, at most 5 draws per kill)"
+12,B,ok,"store-durable: after every kill at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write"
+13,C,ok,self-test: the checker finds the store-durable acknowledgement the store never received
+14,D,ok,no node reported a problem
+15,D,ok,after every command of every node process the descriptors and memory stayed within the standing bounds

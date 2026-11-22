@@ -1,0 +1,31 @@
+seq,part,status,claim
+1,A,ok,the census sums to page_count 270
+2,A,ok,"every page has exactly one role: none counted twice (the census fails on a second claim), none missed"
+3,A,ok,PRAGMA page_count = 270
+4,A,ok,freelist length 3 = PRAGMA freelist_count 3
+5,A,ok,"all 267 b-tree and overflow pages match dbstat in tree, type, ncell, payload, unused and mx_payload; the 3 other pages are not in dbstat"
+6,A,ok,the chains followed from the documents rows hold every overflow page in the file
+7,A,ok,"table accounts: same rows and values, read from the bytes and through SQLite"
+8,A,ok,"table documents: same rows and values, read from the bytes and through SQLite"
+9,A,ok,"table events: same rows and values, read from the bytes and through SQLite"
+10,B,ok,"limit.db holds the three rows 1, 2 and 3"
+11,B,ok,row 1: payload 4061 (= maxLocal) stays entirely on the leaf
+12,B,ok,row 2: payload 4062 keeps only minLocal 489 bytes on the leaf and spills 3573 to one overflow page
+13,B,ok,row 3: payload 8153 keeps 4061 on the leaf so its overflow exactly fills one page (4092 bytes)
+14,B,ok,"local limit: census complete, page_count 7 and freelist_count 0 agree, 7 pages match dbstat"
+15,C,ok,the freelist spans more than one trunk page
+16,C,ok,"long freelist: census complete, page_count 676 and freelist_count 674 agree, 2 pages match dbstat"
+17,D,ok,pointer-map pages are pages 2 and 2 + usable/5 + 1 in this 408-page file
+18,D,ok,"auto_vacuum=FULL: census complete, page_count 408 and freelist_count 0 agree, 406 pages match dbstat"
+19,E,ok,"page 16385 is counted as the lock-byte page, not as lost"
+20,E,ok,"SQLite accepts the file: integrity_check ok, and page_count and freelist_count equal the census"
+21,F,ok,"F1: our parser returns an error, without panicking"
+22,F,ok,"F2: our parser returns an error, without panicking"
+23,F,ok,"F2: SQLite rounds a partial last page up and reads the missing bytes as zeros, so it reports ok; our parser is stricter and refuses the file"
+24,F,ok,"F3: our parser returns an error, without panicking"
+25,F,ok,"F4: our parser returns an error, without panicking"
+26,F,ok,"F5: our parser returns an error, without panicking"
+27,F,ok,"F6: our parser returns an error, without panicking"
+28,F,ok,"F7: our parser returns an error, without panicking"
+29,F,ok,"F8: our parser returns an error, without panicking"
+30,F,ok,"F9: our parser returns an error, without panicking"

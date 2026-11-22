@@ -1,150 +1,236 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/5.1
 
-== A. one WAL holding recipe steps 1-5: one connection, wal_autocheckpoint=0, synchronous=FULL
-base: recipe step 0 built and closed; then steps 1-5 committed on one connection; a child process copied the database, -wal and -shm while that connection was still open
-WAL header: magic=0x377f0682 (little-endian checksums) version=3007000 page-size=4096 checkpoint-seq=0
-INFO: salt-1=0x7e75e7fe salt-2=0x89908e91 header checksum d3ce7891 1d44e0bf
-WAL size 387312 bytes = 32 + 94 frames x (24 + 4096)
-check ok: the WAL is a 32-byte header plus whole frames of a 24-byte header and one 4096-byte page
-frames (number, page, commit size, sha256 of the page image, first 16 hex digits):
-  frame   1  page   1  commit-size   0  sha256 59ffcca063706e7c
-  frame   2  page   2  commit-size   0  sha256 1d3a999cc98c2840
-  frame   3  page   3  commit-size   0  sha256 976f28147cdb33d9
-  frame   4  page   4  commit-size   0  sha256 bc8e1a0a073d87cc
-  frame   5  page   5  commit-size   0  sha256 7aad2880eb458697
-  frame   6  page   6  commit-size   0  sha256 7e7afe23ae214297
-  frame   7  page   7  commit-size   0  sha256 a534c6fdb6abf78b
-  frame   8  page   8  commit-size   0  sha256 603d2dd28b5b9466
-  frame   9  page   9  commit-size   0  sha256 ad7facb2586fc6e9
-  frame  10  page  10  commit-size   0  sha256 5bb69638130cf638
-  frame  11  page  11  commit-size   0  sha256 249ae8d5abec517a
-  frame  12  page  12  commit-size   0  sha256 7f5502748230a361
-  frame  13  page  13  commit-size   0  sha256 12a4b4e75b3e86d3
-  frame  14  page  14  commit-size   0  sha256 34962cb641e4deba
-  frame  15  page  15  commit-size   0  sha256 4d3175e4b2c34d53
-  frame  16  page  16  commit-size   0  sha256 a0572382d4875333
-  frame  17  page  17  commit-size   0  sha256 15b724903840c0ad
-  frame  18  page  18  commit-size   0  sha256 383820231ab24d46
-  frame  19  page  19  commit-size   0  sha256 a70e2bb302c4b820
-  frame  20  page  20  commit-size   0  sha256 88dec991912d57cd
-  frame  21  page  21  commit-size   0  sha256 8ecf5f8db76665de
-  frame  22  page  22  commit-size  22  sha256 5957d75016820319  <- commit
-  frame  23  page   1  commit-size   0  sha256 bd8534c764397e90
-  frame  24  page   2  commit-size   0  sha256 a2bf415c8897e0ae
-  frame  25  page   3  commit-size   0  sha256 acdc5e1702a86558
-  frame  26  page   4  commit-size   0  sha256 e41a92c0d1702744
-  frame  27  page   8  commit-size   0  sha256 fba5521b93297c4b
-  frame  28  page   9  commit-size   0  sha256 ca9a4af9e802b51d
-  frame  29  page  15  commit-size   0  sha256 4d3175e4b2c34d53
-  frame  30  page  19  commit-size   0  sha256 e3bb3b6b00cacac6
-  frame  31  page  20  commit-size   0  sha256 d2e5bb020e2f27de
-  frame  32  page  21  commit-size   0  sha256 9f00211d84c42594
-  frame  33  page  22  commit-size   0  sha256 ad7facb2586fc6e9
-  frame  34  page  23  commit-size   0  sha256 59134759e86d787f
-  frame  35  page  24  commit-size   0  sha256 deb86ca0005d14f7
-  frame  36  page  25  commit-size   0  sha256 732423d9158389d0
-  frame  37  page  26  commit-size   0  sha256 f5bebfb50ea0bb49
-  frame  38  page  27  commit-size   0  sha256 933d83c368aa19b3
-  frame  39  page  28  commit-size   0  sha256 44f3ca488e79cc19
-  frame  40  page  29  commit-size  29  sha256 862623cb8534c4f3  <- commit
-  frame  41  page   1  commit-size   0  sha256 565a6b55fcd12fa2
-  frame  42  page   2  commit-size   0  sha256 9e832dbc8e6c0016
-  frame  43  page   3  commit-size   0  sha256 cfa94ac9e81bf655
-  frame  44  page   4  commit-size   0  sha256 5e46c8dea368b648
-  frame  45  page  20  commit-size   0  sha256 3b65dbee9941c10a
-  frame  46  page  22  commit-size   0  sha256 e245c6247cbcc8c2
-  frame  47  page  26  commit-size   0  sha256 f296abd436098c82
-  frame  48  page  27  commit-size   0  sha256 8270bcf463d86ed8
-  frame  49  page  30  commit-size   0  sha256 2d8423154a553dbc
-  frame  50  page  31  commit-size   0  sha256 f3da9777ca90fcf5
-  frame  51  page  32  commit-size   0  sha256 ec7d9f3bb6c90249
-  frame  52  page  33  commit-size   0  sha256 4552b82b526e55ab
-  frame  53  page  34  commit-size   0  sha256 ce92b5493316efc5
-  frame  54  page  35  commit-size   0  sha256 5f88ea1f5fec7bf1
-  frame  55  page  36  commit-size   0  sha256 9398967028b09df2
-  frame  56  page  37  commit-size   0  sha256 6f229b1b93dd19df
-  frame  57  page  38  commit-size   0  sha256 10a2d292bc654bde
-  frame  58  page  39  commit-size  39  sha256 677a49036ee0b9f0  <- commit
-  frame  59  page   1  commit-size   0  sha256 7050f12d532e2ba0
-  frame  60  page   2  commit-size   0  sha256 aa08648bd4375304
-  frame  61  page   3  commit-size   0  sha256 120e8112163f5fc3
-  frame  62  page  19  commit-size   0  sha256 e3bb3b6b00cacac6
-  frame  63  page  21  commit-size   0  sha256 deb86ca0005d14f7
-  frame  64  page  24  commit-size   0  sha256 ad7facb2586fc6e9
-  frame  65  page  28  commit-size   0  sha256 ad7facb2586fc6e9
-  frame  66  page  29  commit-size   0  sha256 ad7facb2586fc6e9
-  frame  67  page  35  commit-size   0  sha256 2749f192057baac9
-  frame  68  page  36  commit-size   0  sha256 ad7facb2586fc6e9
-  frame  69  page  37  commit-size   0  sha256 ad7facb2586fc6e9
-  frame  70  page  38  commit-size   0  sha256 c2fae8bcd1c019e2
-  frame  71  page  39  commit-size   0  sha256 15146137ff3a1e9d
-  frame  72  page  40  commit-size   0  sha256 91be9b798474f1b3
-  frame  73  page  41  commit-size   0  sha256 de1b5cde831492f3
-  frame  74  page  42  commit-size   0  sha256 3a30707ad61b3366
-  frame  75  page  43  commit-size   0  sha256 b221d22756aae42e
-  frame  76  page  44  commit-size   0  sha256 887b2f0e56135974
-  frame  77  page  45  commit-size   0  sha256 5c63bd72305ee430
-  frame  78  page  46  commit-size   0  sha256 c8bee6ed976fd2a7
-  frame  79  page  47  commit-size   0  sha256 ef1c66b7fa90afff
-  frame  80  page  48  commit-size   0  sha256 d06e873c2057fd6e
-  frame  81  page  49  commit-size   0  sha256 216aec892a242448
-  frame  82  page  50  commit-size   0  sha256 aeec3729f9e1bb5c
-  frame  83  page  51  commit-size  51  sha256 0c62745060da6ad7  <- commit
-  frame  84  page   1  commit-size   0  sha256 5dccc56df1a35487
-  frame  85  page   2  commit-size   0  sha256 cc7b92e235c499b1
-  frame  86  page   3  commit-size   0  sha256 f895c8931cdbd22e
-  frame  87  page  24  commit-size   0  sha256 111b43f641f5f7fb
-  frame  88  page  28  commit-size   0  sha256 2cb8d341b022297d
-  frame  89  page  29  commit-size   0  sha256 afc954957f9089e6
-  frame  90  page  35  commit-size   0  sha256 e325e2d37e43aa15
-  frame  91  page  36  commit-size   0  sha256 12109790903aad13
-  frame  92  page  37  commit-size   0  sha256 5ea79dd1cb030de3
-  frame  93  page  39  commit-size   0  sha256 caea83ecb054ea08
-  frame  94  page  50  commit-size  51  sha256 3e3710812142b9df  <- commit
-checksum chain: 94 of 94 frames verify, stop reason: valid
-check ok: every frame carries the header's salts and continues the running checksum chain
-transactions (a commit frame is the only frame with a non-zero commit size):
-  commit 1 = recipe step 1: frames 1-22 (22 frames), commit size 22 pages; PRAGMA page_count after the step: 22
-  commit 2 = recipe step 2: frames 23-40 (18 frames), commit size 29 pages; PRAGMA page_count after the step: 29
-  commit 3 = recipe step 3: frames 41-58 (18 frames), commit size 39 pages; PRAGMA page_count after the step: 39
-  commit 4 = recipe step 4: frames 59-83 (25 frames), commit size 51 pages; PRAGMA page_count after the step: 51
-  commit 5 = recipe step 5: frames 84-94 (11 frames), commit size 51 pages; PRAGMA page_count after the step: 51
-check ok: five recipe steps left exactly five commit frames
-check ok: each commit frame's size field equals the database's page count after that transaction
-PRAGMA wal_checkpoint(NOOP) on the open connection: busy=0 log=94 checkpointed=0
-check ok: the frame count equals the log column of wal_checkpoint(NOOP); nothing was checkpointed
-wal-index (-shm copy): 32768 bytes, little-endian, header copies agree: true, header checksum ok: true
-  mxFrame=94 nPage=51 page-size=4096 nBackfill=0 salts equal the WAL header: true
-  page-number array for frames 1-94 equals the WAL's frame pages: true
-check ok: the -shm header names the last commit frame (mxFrame), the database size and the WAL's salts, and its page array maps every frame to its page
-showwal (built from the pinned tree) lists 94 frames; disagreements with walfile: 0
-check ok: showwal and walfile agree on every frame's page, commit size, salts and stored checksums, and on which checksums verify
+════════════════════════════════════════════════════════════════════════
+  5.1  What is inside a live WAL, and what differs between two of them?
+════════════════════════════════════════════════════════════════════════
 
-== B. the same workload again: what differs between two WALs
-INFO: run 2 salt-1=0x0ae3cd0f salt-2=0xaefe9d9a
-byte comparison run 1 vs run 2: sizes 387312 and 387312
-  header magic:                            same
-  header version:                          same
-  header page size:                        same
-  header checkpoint sequence:              same
-  header salts:                            differs
-  header checksum:                         differs
-  frame page number:                       same
-  frame commit size:                       same
-  frame salts:                             differs
-  frame checksums:                         differs
-  page data:                               same
-  bytes beyond the end of the shorter file: same
-INFO: differing bytes per region: 1518 differing bytes: header salts 8, header checksum 8, frame salts 752, frame checksums 750
-check ok: the two WALs differ, and only inside the salt and checksum fields
-frame sequences as (page, page sha256, commit size): equal true (first difference at frame 0, 0 = none)
-check ok: the two runs wrote the same pages, with the same images, in the same order, with the same commit sizes
+Recipe steps 1-5 are committed on one connection with wal_autocheckpoint=0,
+synchronous=FULL. While that connection is still open, a child process
+copies the database, the -wal and the -shm. Plain Go parses both sidecar
+files and checks them against PRAGMA wal_checkpoint(NOOP) and showwal.
+Base: recipe step 0, built and closed before the five steps.
 
-== C. other synchronous levels write the same frames
-synchronous=NORMAL: 94 frames, 5 commits; frame sequence equal to synchronous=FULL: true (first difference at frame 0)
-check ok: synchronous=NORMAL changes when SQLite syncs, not which frames it writes
-synchronous=OFF: 94 frames, 5 commits; frame sequence equal to synchronous=FULL: true (first difference at frame 0)
-check ok: synchronous=OFF changes when SQLite syncs, not which frames it writes
+── A. One WAL holding recipe steps 1-5 ─────────────────────────────────
 
-WAL INSPECTOR OK
+A1. The header and the size. The file is a 32-byte header plus whole frames
+    of a 24-byte frame header and one page; the arithmetic must match.
+┌────────────┬────────────────┬─────────┬───────────┬────────────────┬───────────┬────────────────┬───────────────┐
+│   magic    │ checksum_order │ version │ page_size │ checkpoint_seq │ wal_bytes │ computed_bytes │ partial_bytes │
+├────────────┼────────────────┼─────────┼───────────┼────────────────┼───────────┼────────────────┼───────────────┤
+│ 0x377f0682 │ little-endian  │ 3007000 │ 4096      │ 0              │ 387312    │ 387312         │ 0             │
+└────────────┴────────────────┴─────────┴───────────┴────────────────┴───────────┴────────────────┴───────────────┘
+
+A2. The checksum chain: every frame carries the header salts and continues
+    the running checksum, so all frames verify.
+┌────────┬──────────────┬─────────────┐
+│ frames │ valid_frames │ stop_reason │
+├────────┼──────────────┼─────────────┤
+│ 94     │ 94           │ valid       │
+└────────┴──────────────┴─────────────┘
+
+A3. The frames in order, with the commit they belong to. Only the last frame
+    of a transaction has a non-zero commit size, and it equals the database
+    size in pages at that point. Later transactions rewrite early pages
+    such as 1 and 2; an identical sha256 means the same page image.
+┌──────────┬──────┬─────────────┬──────────────────┬───────────┬───────────┐
+│ frame_no │ page │ commit_size │    sha256_16     │ commit_no │  marker   │
+├──────────┼──────┼─────────────┼──────────────────┼───────────┼───────────┤
+│ 1        │ 1    │ 0           │ 59ffcca063706e7c │ 1         │           │
+│ 2        │ 2    │ 0           │ 1d3a999cc98c2840 │ 1         │           │
+│ 3        │ 3    │ 0           │ 976f28147cdb33d9 │ 1         │           │
+│ 4        │ 4    │ 0           │ bc8e1a0a073d87cc │ 1         │           │
+│ 5        │ 5    │ 0           │ 7aad2880eb458697 │ 1         │           │
+│ 6        │ 6    │ 0           │ 7e7afe23ae214297 │ 1         │           │
+│ 7        │ 7    │ 0           │ a534c6fdb6abf78b │ 1         │           │
+│ 8        │ 8    │ 0           │ 603d2dd28b5b9466 │ 1         │           │
+│ 9        │ 9    │ 0           │ ad7facb2586fc6e9 │ 1         │           │
+│ 10       │ 10   │ 0           │ 5bb69638130cf638 │ 1         │           │
+│ 11       │ 11   │ 0           │ 249ae8d5abec517a │ 1         │           │
+│ 12       │ 12   │ 0           │ 7f5502748230a361 │ 1         │           │
+│ 13       │ 13   │ 0           │ 12a4b4e75b3e86d3 │ 1         │           │
+│ 14       │ 14   │ 0           │ 34962cb641e4deba │ 1         │           │
+│ 15       │ 15   │ 0           │ 4d3175e4b2c34d53 │ 1         │           │
+│ 16       │ 16   │ 0           │ a0572382d4875333 │ 1         │           │
+│ 17       │ 17   │ 0           │ 15b724903840c0ad │ 1         │           │
+│ 18       │ 18   │ 0           │ 383820231ab24d46 │ 1         │           │
+│ 19       │ 19   │ 0           │ a70e2bb302c4b820 │ 1         │           │
+│ 20       │ 20   │ 0           │ 88dec991912d57cd │ 1         │           │
+│ 21       │ 21   │ 0           │ 8ecf5f8db76665de │ 1         │           │
+│ 22       │ 22   │ 22          │ 5957d75016820319 │ 1         │ <- commit │
+│ 23       │ 1    │ 0           │ bd8534c764397e90 │ 2         │           │
+│ 24       │ 2    │ 0           │ a2bf415c8897e0ae │ 2         │           │
+│ 25       │ 3    │ 0           │ acdc5e1702a86558 │ 2         │           │
+│ 26       │ 4    │ 0           │ e41a92c0d1702744 │ 2         │           │
+│ 27       │ 8    │ 0           │ fba5521b93297c4b │ 2         │           │
+│ 28       │ 9    │ 0           │ ca9a4af9e802b51d │ 2         │           │
+│ 29       │ 15   │ 0           │ 4d3175e4b2c34d53 │ 2         │           │
+│ 30       │ 19   │ 0           │ e3bb3b6b00cacac6 │ 2         │           │
+│ 31       │ 20   │ 0           │ d2e5bb020e2f27de │ 2         │           │
+│ 32       │ 21   │ 0           │ 9f00211d84c42594 │ 2         │           │
+│ 33       │ 22   │ 0           │ ad7facb2586fc6e9 │ 2         │           │
+│ 34       │ 23   │ 0           │ 59134759e86d787f │ 2         │           │
+│ 35       │ 24   │ 0           │ deb86ca0005d14f7 │ 2         │           │
+│ 36       │ 25   │ 0           │ 732423d9158389d0 │ 2         │           │
+│ 37       │ 26   │ 0           │ f5bebfb50ea0bb49 │ 2         │           │
+│ 38       │ 27   │ 0           │ 933d83c368aa19b3 │ 2         │           │
+│ 39       │ 28   │ 0           │ 44f3ca488e79cc19 │ 2         │           │
+│ 40       │ 29   │ 29          │ 862623cb8534c4f3 │ 2         │ <- commit │
+│ 41       │ 1    │ 0           │ 565a6b55fcd12fa2 │ 3         │           │
+│ 42       │ 2    │ 0           │ 9e832dbc8e6c0016 │ 3         │           │
+│ 43       │ 3    │ 0           │ cfa94ac9e81bf655 │ 3         │           │
+│ 44       │ 4    │ 0           │ 5e46c8dea368b648 │ 3         │           │
+│ 45       │ 20   │ 0           │ 3b65dbee9941c10a │ 3         │           │
+│ 46       │ 22   │ 0           │ e245c6247cbcc8c2 │ 3         │           │
+│ 47       │ 26   │ 0           │ f296abd436098c82 │ 3         │           │
+│ 48       │ 27   │ 0           │ 8270bcf463d86ed8 │ 3         │           │
+│ 49       │ 30   │ 0           │ 2d8423154a553dbc │ 3         │           │
+│ 50       │ 31   │ 0           │ f3da9777ca90fcf5 │ 3         │           │
+│ 51       │ 32   │ 0           │ ec7d9f3bb6c90249 │ 3         │           │
+│ 52       │ 33   │ 0           │ 4552b82b526e55ab │ 3         │           │
+│ 53       │ 34   │ 0           │ ce92b5493316efc5 │ 3         │           │
+│ 54       │ 35   │ 0           │ 5f88ea1f5fec7bf1 │ 3         │           │
+│ 55       │ 36   │ 0           │ 9398967028b09df2 │ 3         │           │
+│ 56       │ 37   │ 0           │ 6f229b1b93dd19df │ 3         │           │
+│ 57       │ 38   │ 0           │ 10a2d292bc654bde │ 3         │           │
+│ 58       │ 39   │ 39          │ 677a49036ee0b9f0 │ 3         │ <- commit │
+│ 59       │ 1    │ 0           │ 7050f12d532e2ba0 │ 4         │           │
+│ 60       │ 2    │ 0           │ aa08648bd4375304 │ 4         │           │
+│ 61       │ 3    │ 0           │ 120e8112163f5fc3 │ 4         │           │
+│ 62       │ 19   │ 0           │ e3bb3b6b00cacac6 │ 4         │           │
+│ 63       │ 21   │ 0           │ deb86ca0005d14f7 │ 4         │           │
+│ 64       │ 24   │ 0           │ ad7facb2586fc6e9 │ 4         │           │
+│ 65       │ 28   │ 0           │ ad7facb2586fc6e9 │ 4         │           │
+│ 66       │ 29   │ 0           │ ad7facb2586fc6e9 │ 4         │           │
+│ 67       │ 35   │ 0           │ 2749f192057baac9 │ 4         │           │
+│ 68       │ 36   │ 0           │ ad7facb2586fc6e9 │ 4         │           │
+│ 69       │ 37   │ 0           │ ad7facb2586fc6e9 │ 4         │           │
+│ 70       │ 38   │ 0           │ c2fae8bcd1c019e2 │ 4         │           │
+│ 71       │ 39   │ 0           │ 15146137ff3a1e9d │ 4         │           │
+│ 72       │ 40   │ 0           │ 91be9b798474f1b3 │ 4         │           │
+│ 73       │ 41   │ 0           │ de1b5cde831492f3 │ 4         │           │
+│ 74       │ 42   │ 0           │ 3a30707ad61b3366 │ 4         │           │
+│ 75       │ 43   │ 0           │ b221d22756aae42e │ 4         │           │
+│ 76       │ 44   │ 0           │ 887b2f0e56135974 │ 4         │           │
+│ 77       │ 45   │ 0           │ 5c63bd72305ee430 │ 4         │           │
+│ 78       │ 46   │ 0           │ c8bee6ed976fd2a7 │ 4         │           │
+│ 79       │ 47   │ 0           │ ef1c66b7fa90afff │ 4         │           │
+│ 80       │ 48   │ 0           │ d06e873c2057fd6e │ 4         │           │
+│ 81       │ 49   │ 0           │ 216aec892a242448 │ 4         │           │
+│ 82       │ 50   │ 0           │ aeec3729f9e1bb5c │ 4         │           │
+│ 83       │ 51   │ 51          │ 0c62745060da6ad7 │ 4         │ <- commit │
+│ 84       │ 1    │ 0           │ 5dccc56df1a35487 │ 5         │           │
+│ 85       │ 2    │ 0           │ cc7b92e235c499b1 │ 5         │           │
+│ 86       │ 3    │ 0           │ f895c8931cdbd22e │ 5         │           │
+│ 87       │ 24   │ 0           │ 111b43f641f5f7fb │ 5         │           │
+│ 88       │ 28   │ 0           │ 2cb8d341b022297d │ 5         │           │
+│ 89       │ 29   │ 0           │ afc954957f9089e6 │ 5         │           │
+│ 90       │ 35   │ 0           │ e325e2d37e43aa15 │ 5         │           │
+│ 91       │ 36   │ 0           │ 12109790903aad13 │ 5         │           │
+│ 92       │ 37   │ 0           │ 5ea79dd1cb030de3 │ 5         │           │
+│ 93       │ 39   │ 0           │ caea83ecb054ea08 │ 5         │           │
+│ 94       │ 50   │ 51          │ 3e3710812142b9df │ 5         │ <- commit │
+└──────────┴──────┴─────────────┴──────────────────┴───────────┴───────────┘
+
+A4. The transactions. The commit size equals PRAGMA page_count after the step.
+┌───────────┬─────────────┬─────────────┬────────────┬────────┬─────────────┬────────────┬─────────────┐
+│ commit_no │ recipe_step │ first_frame │ last_frame │ frames │ commit_size │ page_count │ sizes_match │
+├───────────┼─────────────┼─────────────┼────────────┼────────┼─────────────┼────────────┼─────────────┤
+│ 1         │ 1           │ 1           │ 22         │ 22     │ 22          │ 22         │ true        │
+│ 2         │ 2           │ 23          │ 40         │ 18     │ 29          │ 29         │ true        │
+│ 3         │ 3           │ 41          │ 58         │ 18     │ 39          │ 39         │ true        │
+│ 4         │ 4           │ 59          │ 83         │ 25     │ 51          │ 51         │ true        │
+│ 5         │ 5           │ 84          │ 94         │ 11     │ 51          │ 51         │ true        │
+└───────────┴─────────────┴─────────────┴────────────┴────────┴─────────────┴────────────┴─────────────┘
+
+A5. PRAGMA wal_checkpoint(NOOP) on the open connection takes no locks and
+    reports the wal-index counts: log is the frame count of the WAL, and nothing
+    is checkpointed.
+┌───────┬────────────┬──────────────┬───────────────┐
+│ busy  │ log_frames │ checkpointed │ frames_in_wal │
+├───────┼────────────┼──────────────┼───────────────┤
+│ false │ 94         │ 0            │ 94            │
+└───────┴────────────┴──────────────┴───────────────┘
+
+A6. The wal-index (the -shm copy): both header copies agree, the checksum
+    is good, mxFrame is the last commit frame, nPage the database size, and
+    its page-number array maps every frame to the page the WAL holds.
+┌───────┬───────────────┬───────────────┬─────────────┬───────────┐
+│ bytes │  byte_order   │ headers_agree │ checksum_ok │ page_size │
+├───────┼───────────────┼───────────────┼─────────────┼───────────┤
+│ 32768 │ little-endian │ true          │ true        │ 4096      │
+└───────┴───────────────┴───────────────┴─────────────┴───────────┘
+
+    What the header says, against the WAL itself:
+┌──────────┬────────┬────────────┬─────────────────┬────────────────────┬──────────────┐
+│ mx_frame │ n_page │ n_backfill │ salts_equal_wal │ page_array_matches │ array_frames │
+├──────────┼────────┼────────────┼─────────────────┼────────────────────┼──────────────┤
+│ 94       │ 51     │ 0          │ true            │ true               │ 94           │
+└──────────┴────────┴────────────┴─────────────────┴────────────────────┴──────────────┘
+
+A7. showwal (built from the pinned tree) against the Go parser: they agree on
+    every frame page, commit size, salts and checksum, so disagreements is 0.
+┌───────────────┬───────────────┬──────────┐
+│ frames_listed │ disagreements │ problems │
+├───────────────┼───────────────┼──────────┤
+│ 94            │ 0             │          │
+└───────────────┴───────────────┴──────────┘
+
+── B. The same workload again: what differs between two WALs ──────────
+
+B1. Where run 1 and run 2 differ, by region of the file. Only the salts
+    and the checksums that depend on them: the page data is the same.
+    (The salts themselves are random; see the info report.)
+┌──────────────────────────────────────────┬─────────┐
+│                  region                  │ result  │
+├──────────────────────────────────────────┼─────────┤
+│ header magic                             │ same    │
+│ header version                           │ same    │
+│ header page size                         │ same    │
+│ header checkpoint sequence               │ same    │
+│ header salts                             │ differs │
+│ header checksum                          │ differs │
+│ frame page number                        │ same    │
+│ frame commit size                        │ same    │
+│ frame salts                              │ differs │
+│ frame checksums                          │ differs │
+│ page data                                │ same    │
+│ bytes beyond the end of the shorter file │ same    │
+└──────────────────────────────────────────┴─────────┘
+
+B2. The two runs wrote the same frames: the sequence of (page, page sha256,
+    commit size) is equal.
+┌───────┬─────────────┬───────────┬────────┬─────────┬───────────────┬──────────────────┐
+│  run  │ synchronous │ wal_bytes │ frames │ commits │ same_sequence │ first_difference │
+├───────┼─────────────┼───────────┼────────┼─────────┼───────────────┼──────────────────┤
+│ run 2 │ FULL        │ 387312    │ 94     │ 5       │ true          │ 0                │
+└───────┴─────────────┴───────────┴────────┴─────────┴───────────────┴──────────────────┘
+
+── C. Other synchronous levels write the same frames ──────────────────
+
+C1. synchronous changes when SQLite syncs, not which frames it writes.
+    first_difference is the first frame that differs; 0 means none.
+┌─────────────┬─────────────┬───────────┬────────┬─────────┬───────────────┬──────────────────┐
+│     run     │ synchronous │ wal_bytes │ frames │ commits │ same_sequence │ first_difference │
+├─────────────┼─────────────┼───────────┼────────┼─────────┼───────────────┼──────────────────┤
+│ sync-normal │ NORMAL      │ 387312    │ 94     │ 5       │ true          │ 0                │
+│ sync-off    │ OFF         │ 387312    │ 94     │ 5       │ true          │ 0                │
+└─────────────┴─────────────┴───────────┴────────┴─────────┴───────────────┴──────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the WAL is a 32-byte header plus whole frames of a 24-byte header and one 4096-byte page
+A  ✓  every frame carries the header's salts and continues the running checksum chain
+A  ✓  five recipe steps left exactly five commit frames
+A  ✓  each commit frame's size field equals the database's page count after that transaction
+A  ✓  the frame count equals the log column of wal_checkpoint(NOOP); nothing was checkpointed
+A  ✓  the -shm header names the last commit frame (mxFrame), the database size and the WAL's salts, and its page array maps every frame to its page
+A  ✓  showwal and walfile agree on every frame's page, commit size, salts and stored checksums, and on which checksums verify
+B  ✓  the two WALs differ, and only inside the salt and checksum fields
+B  ✓  the two runs wrote the same pages, with the same images, in the same order, with the same commit sizes
+C  ✓  synchronous=NORMAL changes when SQLite syncs, not which frames it writes
+C  ✓  synchronous=OFF changes when SQLite syncs, not which frames it writes
+
+11 of 11 claims hold
+
+Experiment verdict: WAL INSPECTOR OK

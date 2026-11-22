@@ -1,100 +1,223 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/3.3
-INFO: dbhash _tools/bin/dbhash
-dbhash: found (built from the pinned tree; it prints a SHA1 of the schema and every row it reads)
 
-== A. the same final rows built four ways, then captured as an ordered logical dump and replayed (rung R2)
-content of R0 (recipe seed 1, 30 steps of inserts, updates and deletes): 4 schema statements, rows accounts=183 documents=96 events=1177, user_version 30
-capture: capture/r0.sql, 2005315 bytes, 1468 lines, sha256 92d3898538e25714f5943079b3b5046b31b4f637430abbc1aa5d642a2d95c687
-  PRAGMA page_size=4096;
-  PRAGMA auto_vacuum=NONE;
-  PRAGMA encoding='UTF-8';
-  PRAGMA journal_mode=WAL;
-  BEGIN;
-  CREATE TABLE accounts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, balance INTEGER NOT NULL);
-  CREATE TABLE documents(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, title TEXT NOT NULL, body BLOB NOT NULL);
-  CREATE TABLE events(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, kind TEXT NOT NULL, amount INTEGER NOT NULL, note TEXT NOT NULL);
-  INSERT INTO "accounts"(rowid, "id", "name", "balance") VALUES(1, 1, 'wxhyvco', 37188);
-  ... (1455 INSERT lines)
-  CREATE INDEX events_by_account ON events(account_id, id);
-  PRAGMA user_version=30;
-  PRAGMA application_id=1397836120;
-  COMMIT;
-builds:
-  r0               the recipe: 31 transactions with updates and deletes, index created at step 5; 1105920 bytes
-  one-transaction  schema and every row in one transaction, tables in order, ids ascending; 1089536 bytes
-  per-statement    the same order, one transaction per statement; 1089536 bytes
-  shuffled         one transaction per row, rows of all tables in a shuffled order (PCG seed 3); 1093632 bytes
-  replayed         the capture file replayed into an empty file (indexes created after the rows); 1089536 bytes
-  backup           sqlite3_backup of R0 (a page copy, for the E2 row); 1105920 bytes
-each build against R0 (E1 = file sha256, E2 = page diff ignoring header bytes 24-27, 40-43, 92-99, E3 = logical hash + integrity_check + foreign_key_check):
-  build            sha256           E1 vs r0                                     E2 vs r0                                     E3 vs r0
-  r0               24aa158fdf713808 equal                                        equal                                        equal
-  one-transaction  224810279caf4016 differ (268 pages differ, sizes differ)      differ (268 pages differ, sizes differ)      equal
-  per-statement    224810279caf4016 differ (268 pages differ, sizes differ)      differ (268 pages differ, sizes differ)      equal
-  shuffled         dc2b3bbb223253be differ (270 pages differ, sizes differ)      differ (270 pages differ, sizes differ)      equal
-  replayed         e3c97131367e136d differ (262 pages differ, sizes differ)      differ (262 pages differ, sizes differ)      equal
-  backup           a268f05a569a3c07 differ (1 of 270 pages)                      equal except header bytes [27 43 95]         equal
-check ok: the backup copy differs from R0 in bytes (E2 pages: equal ignoring header bytes 24-27, 40-43, 92-99 (bytes differ only at [27 43 95])) but is equal at E2: only declared header bytes differ
-the same builds, logically and canonically:
-  build            logical sha256   dump sha256      dbhash                                   VACUUM INTO sha256
-  r0               3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  one-transaction  3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  per-statement    3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  shuffled         3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  replayed         3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  backup           3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 9324d9446d407e55
-logical hash of R0: logical sha256 3de6a8870f70a57c3fe28ce66a186325180876f77a1358c1717dbc4bc26cf2f0; schema rows 4; table rows accounts=183 documents=96 events=1177; page_size=4096 encoding=UTF-8 auto_vacuum=none user_version=30 application_id=1397836120 journal_mode=wal default_cache_size=-2000; integrity_check ok; foreign_key_check 0 row(s)
-distinct file sha256 among r0, one-transaction, per-statement, shuffled, replayed: 4
-check ok: in WAL mode one transaction and one transaction per statement give byte-identical files: commit boundaries alone leave no trace when rows are only appended
-check ok: insert order (shuffled) and history (R0's updates and deletes) each give a different file
-check ok: every build has the same logical hash
-check ok: every build is equal to R0 at E3 (logical hash, integrity_check ok, foreign_key_check unchanged)
-check ok: the ordered logical capture is itself identical for every build: it depends on content and the schema's creation order, not on insert order, batching or updates
-check ok: after VACUUM INTO every build, the replayed copy included, has the same sha256 (E1 between canonical forms)
-canonical form of the backup vs of R0: E1 differ (1 of 266 pages); E2 equal except header bytes [43]; schema cookies 5 and 2
-check ok: except the backup copy: the backup API sets the copy's schema cookie to (old destination cookie + 1) = 1 (backup.c:448), VACUUM INTO carries the cookie + 1, so its canonical form differs at byte 43 only
-check ok: dbhash from the pinned tree also calls every build equal: it agrees with our logical hash on equality
-canonical form: 1089536 bytes, header bytes 18-19 = 1,1 (1 = rollback journal), change counter 1, schema cookie 5
-check ok: VACUUM INTO keeps every row, the schema and user_version/application_id, but writes a rollback-mode file: its logical hash differs from the source only in journal_mode
+════════════════════════════════════════════════════════════════════════
+  3.3  The same rows, different bytes: which equality holds?
+════════════════════════════════════════════════════════════════════════
 
-== A2. the same two batchings in rollback mode (journal_mode=DELETE)
-one transaction vs one per statement: E1 differ (1 of 266 pages); E2 equal except header bytes [26 27 94 95]; change counters 3 and 1463
-check ok: in rollback mode the batching shows, but only in the change counter (bytes 24-27 and 92-95 count commits): E2 equal
+Three levels of equality between two database files:
+  E1  the file sha256 is the same
+  E2  the pages are the same, ignoring header bytes 24-27, 40-43 and 92-99
+  E3  the logical hash is the same: schema, every row, the persistent pragmas,
+      integrity_check ok and foreign_key_check unchanged
+dbhash is the SQLite tool, built from the pinned tree: it prints a SHA1 of
+the schema and every row it reads. It is skipped, and its column is empty,
+when the tool is not built.
 
-== B. pairs that differ in content where a weaker logical hash says equal
-  pair                                     ours   dbhash our first difference
-  implicit rowids (1,2 vs 5,9)             differ equal  table t differs (2 vs 2 rows)
-  sqlite_sequence (1 vs 2)                 differ equal  table sqlite_sequence differs (1 vs 1 rows)
-  user_version (1 vs 2)                    differ equal  pragma user_version 1 vs 2
-  integer 1 vs real 1.0                    differ differ table t differs (1 vs 1 rows)
-  value boundary ('a3','b' vs 'a','3b')    differ equal  table t differs (1 vs 1 rows)
-  row moved between tables                 differ equal  table a differs (2 vs 1 rows)
-check ok: implicit rowids (1,2 vs 5,9): dbhash says equal
-check ok: implicit rowids (1,2 vs 5,9): our logical hash tells the two apart
-check ok: sqlite_sequence (1 vs 2): dbhash says equal
-check ok: sqlite_sequence (1 vs 2): our logical hash tells the two apart
-check ok: user_version (1 vs 2): dbhash says equal
-check ok: user_version (1 vs 2): our logical hash tells the two apart
-check ok: integer 1 vs real 1.0: dbhash says differ
-check ok: integer 1 vs real 1.0: our logical hash tells the two apart
-check ok: value boundary ('a3','b' vs 'a','3b'): dbhash says equal
-check ok: value boundary ('a3','b' vs 'a','3b'): our logical hash tells the two apart
-check ok: row moved between tables: dbhash says equal
-check ok: row moved between tables: our logical hash tells the two apart
-  sqldiff is not built by build-tools; the research probe found it reports integer 1 and real 1.0 as equal (docs/knowledge/determinism-and-rebuild.md, Q4)
+── A. The same rows built six ways ─────────────────────────────────────
 
-== C. where VACUUM INTO stops being a canonical form
-  tables created in another order: sources at E3: equal; VACUUM INTO outputs at E1: differ (3 of 3 pages); at E2: differ (3 of 3 pages); schema cookies 3 and 3
-    dbhash of the sources: equal
-check ok: same content, tables created in another order: logically equal, but VACUUM INTO copies tables in sqlite_schema order, so the canonical files differ beyond the header
-    captures of the two sources: differ; the second source's capture replayed and canonicalized vs the second source's canonical form at E1: equal
-check ok: the capture writes CREATE TABLE in sqlite_schema order, so it records the creation order too: the replay of a source canonicalizes to the source's own canonical bytes
-  a table created and dropped in the history: sources at E3: equal; VACUUM INTO outputs at E1: differ (1 of 2 pages); at E2: equal except header bytes [43]; schema cookies 2 and 4
-    dbhash of the sources: equal
-check ok: a schema change that left no trace in the content still raises the schema cookie, and VACUUM INTO carries the cookie (+1): the canonical files differ only at bytes 40-43
-  an index created before vs after the rows: sources at E3: equal; VACUUM INTO outputs at E1: equal; at E2: equal; schema cookies 3 and 3
-    dbhash of the sources: equal
-check ok: an index built before or after the rows canonicalizes to the same bytes: VACUUM INTO rebuilds every index
+A.1 R0 is the database of the recipe: seed 1, 30 steps of inserts, updates and
+deletes. Its content, as the logical hash saw it:
+┌────────────────────────┬────────────┐
+│          item          │   value    │
+├────────────────────────┼────────────┤
+│ accounts               │ 183        │
+│ application_id         │ 1397836120 │
+│ auto_vacuum            │ none       │
+│ default_cache_size     │ -2000      │
+│ documents              │ 96         │
+│ encoding               │ UTF-8      │
+│ events                 │ 1177       │
+│ foreign_key_check_rows │ 0          │
+│ integrity_check        │ ok         │
+│ journal_mode           │ wal        │
+│ page_size              │ 4096       │
+│ schema_rows            │ 4          │
+│ user_version           │ 30         │
+└────────────────────────┴────────────┘
 
-SAME ROWS OK
+A.2 The ordered logical capture of R0 (rung R2): a SQL script of the schema,
+the rows in a fixed order and the pragmas. Its size and hash:
+┌────────────────┬─────────┬───────┬──────────────────────────────────────────────────────────────────┐
+│      path      │  bytes  │ lines │                              sha256                              │
+├────────────────┼─────────┼───────┼──────────────────────────────────────────────────────────────────┤
+│ capture/r0.sql │ 2005315 │ 1468  │ 92d3898538e25714f5943079b3b5046b31b4f637430abbc1aa5d642a2d95c687 │
+└────────────────┴─────────┴───────┴──────────────────────────────────────────────────────────────────┘
+
+The first nine and the last four lines of the capture:
+line | text
+1 | PRAGMA page_size=4096;
+2 | PRAGMA auto_vacuum=NONE;
+3 | PRAGMA encoding='UTF-8';
+4 | PRAGMA journal_mode=WAL;
+5 | BEGIN;
+6 | CREATE TABLE accounts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, balance INTEGER NOT NULL);
+7 | CREATE TABLE documents(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, title TEXT NOT NULL, body BLOB NOT NULL);
+8 | CREATE TABLE events(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, kind TEXT NOT NULL, amount INTEGER NOT NULL, note TEXT NOT NULL);
+9 | INSERT INTO "accounts"(rowid, "id", "name", "balance") VALUES(1, 1, 'wxhyvco', 37188);
+... | (1455 INSERT lines not shown)
+1465 | CREATE INDEX events_by_account ON events(account_id, id);
+1466 | PRAGMA user_version=30;
+1467 | PRAGMA application_id=1397836120;
+1468 | COMMIT;
+
+A.3 The builds. All of them hold the same rows.
+┌─────┬─────────────────┬─────────┬───────────────────────────────────────────────────────────────────────────────┐
+│ seq │      name       │  bytes  │                                      how                                      │
+├─────┼─────────────────┼─────────┼───────────────────────────────────────────────────────────────────────────────┤
+│ 1   │ r0              │ 1105920 │ the recipe: 31 transactions with updates and deletes, index created at step 5 │
+│ 2   │ one-transaction │ 1089536 │ schema and every row in one transaction, tables in order, ids ascending       │
+│ 3   │ per-statement   │ 1089536 │ the same order, one transaction per statement                                 │
+│ 4   │ shuffled        │ 1093632 │ one transaction per row, rows of all tables in a shuffled order (PCG seed 3)  │
+│ 5   │ replayed        │ 1089536 │ the capture file replayed into an empty file (indexes created after the rows) │
+│ 6   │ backup          │ 1105920 │ sqlite3_backup of R0 (a page copy, for the E2 row)                            │
+└─────┴─────────────────┴─────────┴───────────────────────────────────────────────────────────────────────────────┘
+
+A.4 Each build against R0 at E1, E2 and E3. The files differ in size because
+the builds lay the rows out differently. The backup is a page copy: it differs
+from R0 only in header bytes.
+┌─────────────────┬─────────────────────────────────────────┬─────────────────────────────────────────┬───────┐
+│      build      │                   e1                    │                   e2                    │  e3   │
+├─────────────────┼─────────────────────────────────────────┼─────────────────────────────────────────┼───────┤
+│ r0              │ equal                                   │ equal                                   │ equal │
+│ one-transaction │ differ (268 pages differ, sizes differ) │ differ (268 pages differ, sizes differ) │ equal │
+│ per-statement   │ differ (268 pages differ, sizes differ) │ differ (268 pages differ, sizes differ) │ equal │
+│ shuffled        │ differ (270 pages differ, sizes differ) │ differ (270 pages differ, sizes differ) │ equal │
+│ replayed        │ differ (262 pages differ, sizes differ) │ differ (262 pages differ, sizes differ) │ equal │
+│ backup          │ differ (1 of 270 pages)                 │ equal except header bytes [27 43 95]    │ equal │
+└─────────────────┴─────────────────────────────────────────┴─────────────────────────────────────────┴───────┘
+
+A.5 The same builds by hash (first 16 hex digits of each). The file
+sha256 differs; the logical hash, the capture hash and dbhash agree for all of
+them. After VACUUM INTO, every build but the backup has one sha256.
+┌─────────────────┬──────────────────┬──────────────────┬──────────────────┬──────────────────┬────────────────────┐
+│      name       │   file_sha256    │  logical_sha256  │   dump_sha256    │      dbhash      │ vacuum_into_sha256 │
+├─────────────────┼──────────────────┼──────────────────┼──────────────────┼──────────────────┼────────────────────┤
+│ r0              │ 24aa158fdf713808 │ 3de6a8870f70a57c │ 92d3898538e25714 │ 9bee16896cb395b9 │ 927e39a45becbb84   │
+│ one-transaction │ 224810279caf4016 │ 3de6a8870f70a57c │ 92d3898538e25714 │ 9bee16896cb395b9 │ 927e39a45becbb84   │
+│ per-statement   │ 224810279caf4016 │ 3de6a8870f70a57c │ 92d3898538e25714 │ 9bee16896cb395b9 │ 927e39a45becbb84   │
+│ shuffled        │ dc2b3bbb223253be │ 3de6a8870f70a57c │ 92d3898538e25714 │ 9bee16896cb395b9 │ 927e39a45becbb84   │
+│ replayed        │ e3c97131367e136d │ 3de6a8870f70a57c │ 92d3898538e25714 │ 9bee16896cb395b9 │ 927e39a45becbb84   │
+│ backup          │ a268f05a569a3c07 │ 3de6a8870f70a57c │ 92d3898538e25714 │ 9bee16896cb395b9 │ 9324d9446d407e55   │
+└─────────────────┴──────────────────┴──────────────────┴──────────────────┴──────────────────┴────────────────────┘
+
+Distinct values among the builds:
+┌────────────────────────────┬─────────┬──────┬────────┬────────────────────────────┐
+│ file_sha256_without_backup │ logical │ dump │ dbhash │ vacuum_into_without_backup │
+├────────────────────────────┼─────────┼──────┼────────┼────────────────────────────┤
+│ 4                          │ 1       │ 1    │ 1      │ 1                          │
+└────────────────────────────┴─────────┴──────┴────────┴────────────────────────────┘
+
+A.6 The backup after VACUUM INTO, against R0 after VACUUM INTO: the files differ,
+but at E2 only in the schema cookie (byte 43).
+┌─────────────────────────┬────────────────────────────────┬───────────┬───────────────┐
+│           e1            │               e2               │ cookie_r0 │ cookie_backup │
+├─────────────────────────┼────────────────────────────────┼───────────┼───────────────┤
+│ differ (1 of 266 pages) │ equal except header bytes [43] │ 5         │ 2             │
+└─────────────────────────┴────────────────────────────────┴───────────┴───────────────┘
+
+A.7 The header of R0 after VACUUM INTO. Bytes 18-19 = 1,1 mean a rollback
+journal: VACUUM INTO writes a rollback-mode file, so its logical hash differs
+from the source only in journal_mode.
+┌─────────┬─────────┬─────────┬────────────────┬───────────────┐
+│  bytes  │ byte_18 │ byte_19 │ change_counter │ schema_cookie │
+├─────────┼─────────┼─────────┼────────────────┼───────────────┤
+│ 1089536 │ 1       │ 1       │ 1              │ 5             │
+└─────────┴─────────┴─────────┴────────────────┴───────────────┘
+
+── A2. The same two batchings in rollback mode (journal_mode=DELETE) ───
+
+A2.1 One transaction against one transaction per statement. The files differ at E1
+and at E2 only in header bytes: the change counter (bytes 24-27 and 92-95)
+counts commits.
+┌──────────────────────────┬───────────────────────────┬─────────────────────────┬─────────────────────────────────────────┐
+│         subject          │           what            │           e1            │                   e2                    │
+├──────────────────────────┼───────────────────────────┼─────────────────────────┼─────────────────────────────────────────┤
+│ rollback-one-transaction │ vs rollback-per-statement │ differ (1 of 266 pages) │ equal except header bytes [26 27 94 95] │
+└──────────────────────────┴───────────────────────────┴─────────────────────────┴─────────────────────────────────────────┘
+┌────────────────┬─────────────────┬───────────────────┐
+│     field      │ one_transaction │ one_per_statement │
+├────────────────┼─────────────────┼───────────────────┤
+│ change_counter │ 3               │ 1463              │
+└────────────────┴─────────────────┴───────────────────┘
+
+── B. Pairs that differ in content where a weaker hash says equal ──────
+
+B.1 Six pairs of databases that differ in content. Our logical hash tells every
+pair apart; dbhash misses all but integer 1 against real 1.0. (sqldiff is not
+built by build-tools; the research probe found it reports integer 1 and real
+1.0 as equal: docs/knowledge/determinism-and-rebuild.md, Q4.)
+┌───────────────────────────────────────┬────────┬────────┬─────────────────────────────────────────────┐
+│                 pair                  │  ours  │ dbhash │            our_first_difference             │
+├───────────────────────────────────────┼────────┼────────┼─────────────────────────────────────────────┤
+│ implicit rowids (1,2 vs 5,9)          │ differ │ equal  │ table t differs (2 vs 2 rows)               │
+│ sqlite_sequence (1 vs 2)              │ differ │ equal  │ table sqlite_sequence differs (1 vs 1 rows) │
+│ user_version (1 vs 2)                 │ differ │ equal  │ pragma user_version 1 vs 2                  │
+│ integer 1 vs real 1.0                 │ differ │ differ │ table t differs (1 vs 1 rows)               │
+│ value boundary ('a3','b' vs 'a','3b') │ differ │ equal  │ table t differs (1 vs 1 rows)               │
+│ row moved between tables              │ differ │ equal  │ table a differs (2 vs 1 rows)               │
+└───────────────────────────────────────┴────────┴────────┴─────────────────────────────────────────────┘
+
+── C. Where VACUUM INTO stops being a canonical form ───────────────────
+
+C.1 Three cases of two databases with the same content. The sources are compared
+at E3, their VACUUM INTO outputs at E1 and E2.
+┌────────────────────────────────────────────┬────────────┬───────────────────────┬────────────────────────────────┐
+│                 case_name                  │ sources_e3 │      outputs_e1       │           outputs_e2           │
+├────────────────────────────────────────────┼────────────┼───────────────────────┼────────────────────────────────┤
+│ tables created in another order            │ equal      │ differ (3 of 3 pages) │ differ (3 of 3 pages)          │
+│ a table created and dropped in the history │ equal      │ differ (1 of 2 pages) │ equal except header bytes [43] │
+│ an index created before vs after the rows  │ equal      │ equal                 │ equal                          │
+└────────────────────────────────────────────┴────────────┴───────────────────────┴────────────────────────────────┘
+
+C.2 The schema cookie of each output, and dbhash of the sources.
+┌────────────────────────────────────────────┬──────────┬──────────┬───────────────────┐
+│                 case_name                  │ cookie_a │ cookie_b │ dbhash_of_sources │
+├────────────────────────────────────────────┼──────────┼──────────┼───────────────────┤
+│ tables created in another order            │ 3        │ 3        │ equal             │
+│ a table created and dropped in the history │ 2        │ 4        │ equal             │
+│ an index created before vs after the rows  │ 3        │ 3        │ equal             │
+└────────────────────────────────────────────┴──────────┴──────────┴───────────────────┘
+
+C.3 For the first case, the capture records the creation order too: the two
+captures of the two sources differ, and replaying the second capture and
+canonicalizing it gives the canonical bytes of the second source.
+┌─────────────────────────────────┬─────────────────────────────┬─────────────────────────────┐
+│            case_name            │ captures_of_the_two_sources │ replay_vs_canonical_form_e1 │
+├─────────────────────────────────┼─────────────────────────────┼─────────────────────────────┤
+│ tables created in another order │ differ                      │ equal                       │
+└─────────────────────────────────┴─────────────────────────────┴─────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the backup copy differs from R0 in bytes (E2 pages: equal ignoring header bytes 24-27, 40-43, 92-99 (bytes differ only at [27 43 95])) but is equal at E2: only declared header bytes differ
+A  ✓  in WAL mode one transaction and one transaction per statement give byte-identical files: commit boundaries alone leave no trace when rows are only appended
+A  ✓  insert order (shuffled) and history (R0's updates and deletes) each give a different file
+A  ✓  every build has the same logical hash
+A  ✓  every build is equal to R0 at E3 (logical hash, integrity_check ok, foreign_key_check unchanged)
+A  ✓  the ordered logical capture is itself identical for every build: it depends on content and the schema's creation order, not on insert order, batching or updates
+A  ✓  after VACUUM INTO every build, the replayed copy included, has the same sha256 (E1 between canonical forms)
+A  ✓  except the backup copy: the backup API sets the copy's schema cookie to (old destination cookie + 1) = 1 (backup.c:448), VACUUM INTO carries the cookie + 1, so its canonical form differs at byte 43 only
+A  ✓  dbhash from the pinned tree also calls every build equal: it agrees with our logical hash on equality
+A  ✓  VACUUM INTO keeps every row, the schema and user_version/application_id, but writes a rollback-mode file: its logical hash differs from the source only in journal_mode
+A2  ✓  in rollback mode the batching shows, but only in the change counter (bytes 24-27 and 92-95 count commits): E2 equal
+B  ✓  implicit rowids (1,2 vs 5,9): dbhash says equal
+B  ✓  implicit rowids (1,2 vs 5,9): our logical hash tells the two apart
+B  ✓  sqlite_sequence (1 vs 2): dbhash says equal
+B  ✓  sqlite_sequence (1 vs 2): our logical hash tells the two apart
+B  ✓  user_version (1 vs 2): dbhash says equal
+B  ✓  user_version (1 vs 2): our logical hash tells the two apart
+B  ✓  integer 1 vs real 1.0: dbhash says differ
+B  ✓  integer 1 vs real 1.0: our logical hash tells the two apart
+B  ✓  value boundary ('a3','b' vs 'a','3b'): dbhash says equal
+B  ✓  value boundary ('a3','b' vs 'a','3b'): our logical hash tells the two apart
+B  ✓  row moved between tables: dbhash says equal
+B  ✓  row moved between tables: our logical hash tells the two apart
+C  ✓  same content, tables created in another order: logically equal, but VACUUM INTO copies tables in sqlite_schema order, so the canonical files differ beyond the header
+C  ✓  the capture writes CREATE TABLE in sqlite_schema order, so it records the creation order too: the replay of a source canonicalizes to the source's own canonical bytes
+C  ✓  a schema change that left no trace in the content still raises the schema cookie, and VACUUM INTO carries the cookie (+1): the canonical files differ only at bytes 40-43
+C  ✓  an index built before or after the rows canonicalizes to the same bytes: VACUUM INTO rebuilds every index
+
+27 of 27 claims hold
+
+Experiment verdict: SAME ROWS OK

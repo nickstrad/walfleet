@@ -1,0 +1,18 @@
+seq,case_id,moment,file,at_rest,bytes,sha256,recipe_step,exact,note
+1,B1,eviction by the manager,db-0000.db,false,,,,,
+2,B1,after the other process closed,db-0000.db,true,90112,6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924,,,
+3,B1,recipe step held by the file,db-0000.db,true,,,1,true,
+4,B2,eviction by the manager,db-0001.db,false,,,,,
+5,B2,after rows.Close,db-0001.db,true,90112,6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924,,,
+6,B2,recipe step held by the file,db-0001.db,true,,,1,true,
+7,B3,after the kill,db-0002.db,false,,,,,
+8,B3,recipe step held by the file,naive-copy.db,true,,,0,true,
+9,B3,after one clean open and close,db-0002.db,true,90112,6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924,,,
+10,B3,recipe step held by the file,db-0002.db,true,,,1,true,
+11,B4,eviction by the manager,db-0003.db,false,,,,,
+12,B4,recipe step held by the file,persist-wal-copy.db,true,,,1,true,
+13,B5,eviction by the manager,db-0004.db,false,,,,,
+14,B5,left at the old name,db-0004.db-wal,,90672,,,,
+15,B5,recipe step held by the file,moved.db,true,,,0,true,
+16,B6,eviction by the manager,db-0005.db,true,90112,6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924,,,
+17,B6,reopen refused: changed while closed,db-0005.db,true,118784,69490a2dc9c1980f70afed4f5830799677937b011bde64c3110f823273389a06,,,"connmgr: db-0005 changed while closed: recorded sha256 6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924, file now has sha256 69490a2dc9c1980f70afed4f5830799677937b011bde64c3110f823273389a06"

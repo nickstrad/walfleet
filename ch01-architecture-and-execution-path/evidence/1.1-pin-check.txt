@@ -1,97 +1,169 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-pin: release 3.53.4, tag version-3.53.4, git b09c88c14082339b66c7b7158d609a771e64ca69, fossil bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc
-driver module linked: modernc.org/sqlite v1.60.1
-libc module linked:   modernc.org/libc v1.77.1
-check ok: the linked driver is modernc.org/sqlite v1.60.1
-check ok: the linked libc is modernc.org/libc v1.77.1
-driver sqlite_version(): 3.53.4
-check ok: the driver reports release 3.53.4
-driver compile options (56):
-  ATOMIC_INTRINSICS=1
-  COMPILER=gcc-12.2.0
-  DEFAULT_AUTOVACUUM
-  DEFAULT_CACHE_SIZE=-2000
-  DEFAULT_FILE_FORMAT=4
-  DEFAULT_JOURNAL_SIZE_LIMIT=-1
-  DEFAULT_MEMSTATUS=0
-  DEFAULT_MMAP_SIZE=0
-  DEFAULT_PAGE_SIZE=4096
-  DEFAULT_PCACHE_INITSZ=20
-  DEFAULT_RECURSIVE_TRIGGERS
-  DEFAULT_SECTOR_SIZE=4096
-  DEFAULT_SYNCHRONOUS=2
-  DEFAULT_WAL_AUTOCHECKPOINT=1000
-  DEFAULT_WAL_SYNCHRONOUS=2
-  DEFAULT_WORKER_THREADS=0
-  DIRECT_OVERFLOW_READ
-  DISABLE_INTRINSIC
-  ENABLE_COLUMN_METADATA
-  ENABLE_DBPAGE_VTAB
-  ENABLE_DBSTAT_VTAB
-  ENABLE_FTS5
-  ENABLE_GEOPOLY
-  ENABLE_MATH_FUNCTIONS
-  ENABLE_MEMORY_MANAGEMENT
-  ENABLE_OFFSET_SQL_FUNC
-  ENABLE_PREUPDATE_HOOK
-  ENABLE_RBU
-  ENABLE_RTREE
-  ENABLE_SESSION
-  ENABLE_SNAPSHOT
-  ENABLE_STAT4
-  ENABLE_UNLOCK_NOTIFY
-  LIKE_DOESNT_MATCH_BLOBS
-  MALLOC_SOFT_LIMIT=1024
-  MAX_ATTACHED=10
-  MAX_COLUMN=2000
-  MAX_COMPOUND_SELECT=500
-  MAX_DEFAULT_PAGE_SIZE=8192
-  MAX_EXPR_DEPTH=1000
-  MAX_FUNCTION_ARG=1000
-  MAX_LENGTH=1000000000
-  MAX_LIKE_PATTERN_LENGTH=50000
-  MAX_MMAP_SIZE=0x7fff0000
-  MAX_PAGE_COUNT=0xfffffffe
-  MAX_PAGE_SIZE=65536
-  MAX_SQL_LENGTH=1000000000
-  MAX_TRIGGER_DEPTH=1000
-  MAX_VARIABLE_NUMBER=32766
-  MAX_VDBE_OP=250000000
-  MAX_WORKER_THREADS=8
-  MUTEX_PTHREADS
-  SOUNDEX
-  SYSTEM_MALLOC
-  TEMP_STORE=1
-  THREADSAFE=1
-check ok: the driver is compiled with ENABLE_DBPAGE_VTAB
-check ok: the driver is compiled with ENABLE_DBSTAT_VTAB
-check ok: the driver is compiled with DEFAULT_WAL_SYNCHRONOUS=2
-driver sqlite_dbpage rows: 2; dbstat rows: 2
-check ok: sqlite_dbpage and dbstat answer queries in the driver (2 pages: schema and table t)
-sqlite3 CLI sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: CLI /usr/local/bin/sqlite3 (PATH)
-CLI sqlite_version(): 3.53.4
-check ok: the CLI reports release 3.53.4
-check ok: the CLI is compiled with ENABLE_DBPAGE_VTAB
-check ok: the CLI is compiled with ENABLE_DBSTAT_VTAB
-check ok: the CLI is compiled with DEFAULT_WAL_SYNCHRONOUS=2
-file-format and I/O options, driver | CLI:
-  DEFAULT_AUTOVACUUM          DEFAULT_AUTOVACUUM               | DEFAULT_AUTOVACUUM               same
-  DEFAULT_CACHE_SIZE          DEFAULT_CACHE_SIZE=-2000         | DEFAULT_CACHE_SIZE=-2000         same
-  DEFAULT_FILE_FORMAT         DEFAULT_FILE_FORMAT=4            | DEFAULT_FILE_FORMAT=4            same
-  DEFAULT_JOURNAL_SIZE_LIMIT  DEFAULT_JOURNAL_SIZE_LIMIT=-1    | DEFAULT_JOURNAL_SIZE_LIMIT=-1    same
-  DEFAULT_MMAP_SIZE           DEFAULT_MMAP_SIZE=0              | DEFAULT_MMAP_SIZE=0              same
-  DEFAULT_PAGE_SIZE           DEFAULT_PAGE_SIZE=4096           | DEFAULT_PAGE_SIZE=4096           same
-  DEFAULT_PCACHE_INITSZ       DEFAULT_PCACHE_INITSZ=20         | DEFAULT_PCACHE_INITSZ=20         same
-  DEFAULT_SECTOR_SIZE         DEFAULT_SECTOR_SIZE=4096         | DEFAULT_SECTOR_SIZE=4096         same
-  DEFAULT_SYNCHRONOUS         DEFAULT_SYNCHRONOUS=2            | DEFAULT_SYNCHRONOUS=2            same
-  DEFAULT_WAL_AUTOCHECKPOINT  DEFAULT_WAL_AUTOCHECKPOINT=1000  | DEFAULT_WAL_AUTOCHECKPOINT=1000  same
-  DEFAULT_WAL_SYNCHRONOUS     DEFAULT_WAL_SYNCHRONOUS=2        | DEFAULT_WAL_SYNCHRONOUS=2        same
-  DIRECT_OVERFLOW_READ        DIRECT_OVERFLOW_READ             | DIRECT_OVERFLOW_READ             same
-  MAX_MMAP_SIZE               MAX_MMAP_SIZE=0x7fff0000         | MAX_MMAP_SIZE=0x7fff0000         same
-  MAX_PAGE_SIZE               MAX_PAGE_SIZE=65536              | MAX_PAGE_SIZE=65536              same
-  TEMP_STORE                  TEMP_STORE=1                     | TEMP_STORE=1                     same
-check ok: the driver and the CLI agree on every file-format and I/O compile option listed
-INFO: compile options only in the driver: COMPILER=gcc-12.2.0 DEFAULT_MEMSTATUS=0 DISABLE_INTRINSIC ENABLE_COLUMN_METADATA ENABLE_GEOPOLY ENABLE_MEMORY_MANAGEMENT ENABLE_PREUPDATE_HOOK ENABLE_RBU ENABLE_SESSION ENABLE_SNAPSHOT ENABLE_STAT4 ENABLE_UNLOCK_NOTIFY LIKE_DOESNT_MATCH_BLOBS SOUNDEX
-INFO: compile options only in this CLI: COMPILER=gcc-13.3.0 DQS=0 ENABLE_BYTECODE_VTAB ENABLE_EXPLAIN_COMMENTS ENABLE_FTS3 ENABLE_FTS4 ENABLE_PERCENTILE ENABLE_STMTVTAB ENABLE_UNKNOWN_SQL_FUNCTION STRICT_SUBTYPE
-PIN CHECK OK
+
+════════════════════════════════════════════════════════════════════════
+  1.1  Do the Go driver and the sqlite3 CLI run the pinned SQLite?
+════════════════════════════════════════════════════════════════════════
+
+The course uses two SQLite builds: the modernc.org/sqlite Go driver and a
+sqlite3 command-line shell. Both must be the pinned check-in and agree on
+the options that change the file format.
+
+── A. The pin and the driver ───────────────────────────────────────────
+
+A1. The pin (sqlite/PIN) that every experiment checks first:
+┌───────────┬──────────────────────────────────────────────────────────────────────────────────────┐
+│   field   │                                        value                                         │
+├───────────┼──────────────────────────────────────────────────────────────────────────────────────┤
+│ fossil    │ bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc                     │
+│ git       │ b09c88c14082339b66c7b7158d609a771e64ca69                                             │
+│ release   │ 3.53.4                                                                               │
+│ source_id │ 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc │
+│ tag       │ version-3.53.4                                                                       │
+└───────────┴──────────────────────────────────────────────────────────────────────────────────────┘
+
+A2. What is linked or reported, against what the pin says. Each row
+should show the same text in both columns (source ids are cut after 12 hex digits; A1 has them in full):
+┌──────────────────────────────────┬─────────────────────────────────────┬─────────────────────────────────────┬───────┐
+│               item               │                found                │               pinned                │ match │
+├──────────────────────────────────┼─────────────────────────────────────┼─────────────────────────────────────┼───────┤
+│ driver module modernc.org/sqlite │ v1.60.1                             │ v1.60.1                             │ true  │
+│ libc module modernc.org/libc     │ v1.77.1                             │ v1.77.1                             │ true  │
+│ driver sqlite_version()          │ 3.53.4                              │ 3.53.4                              │ true  │
+│ driver sqlite_source_id()        │ 2026-07-24 19:02:57 bf7c7f300318... │ 2026-07-24 19:02:57 bf7c7f300318... │ true  │
+│ CLI sqlite_version()             │ 3.53.4                              │ 3.53.4                              │ true  │
+│ CLI sqlite_source_id()           │ 2026-07-24 19:02:57 bf7c7f300318... │ 2026-07-24 19:02:57 bf7c7f300318... │ true  │
+└──────────────────────────────────┴─────────────────────────────────────┴─────────────────────────────────────┴───────┘
+
+A3. The compile options of the driver. The three that later labs need
+are sqlite_dbpage and dbstat (page inspection) and the FULL sync default in WAL mode:
+┌───────────────────────────┬─────────┐
+│          option           │ present │
+├───────────────────────────┼─────────┤
+│ DEFAULT_WAL_SYNCHRONOUS=2 │ true    │
+│ ENABLE_DBPAGE_VTAB        │ true    │
+│ ENABLE_DBSTAT_VTAB        │ true    │
+└───────────────────────────┴─────────┘
+
+A4. The full list of driver options (the last seq is the count):
+┌─────┬─────────────────────────────────┐
+│ seq │             option              │
+├─────┼─────────────────────────────────┤
+│ 1   │ ATOMIC_INTRINSICS=1             │
+│ 2   │ COMPILER=gcc-12.2.0             │
+│ 3   │ DEFAULT_AUTOVACUUM              │
+│ 4   │ DEFAULT_CACHE_SIZE=-2000        │
+│ 5   │ DEFAULT_FILE_FORMAT=4           │
+│ 6   │ DEFAULT_JOURNAL_SIZE_LIMIT=-1   │
+│ 7   │ DEFAULT_MEMSTATUS=0             │
+│ 8   │ DEFAULT_MMAP_SIZE=0             │
+│ 9   │ DEFAULT_PAGE_SIZE=4096          │
+│ 10  │ DEFAULT_PCACHE_INITSZ=20        │
+│ 11  │ DEFAULT_RECURSIVE_TRIGGERS      │
+│ 12  │ DEFAULT_SECTOR_SIZE=4096        │
+│ 13  │ DEFAULT_SYNCHRONOUS=2           │
+│ 14  │ DEFAULT_WAL_AUTOCHECKPOINT=1000 │
+│ 15  │ DEFAULT_WAL_SYNCHRONOUS=2       │
+│ 16  │ DEFAULT_WORKER_THREADS=0        │
+│ 17  │ DIRECT_OVERFLOW_READ            │
+│ 18  │ DISABLE_INTRINSIC               │
+│ 19  │ ENABLE_COLUMN_METADATA          │
+│ 20  │ ENABLE_DBPAGE_VTAB              │
+│ 21  │ ENABLE_DBSTAT_VTAB              │
+│ 22  │ ENABLE_FTS5                     │
+│ 23  │ ENABLE_GEOPOLY                  │
+│ 24  │ ENABLE_MATH_FUNCTIONS           │
+│ 25  │ ENABLE_MEMORY_MANAGEMENT        │
+│ 26  │ ENABLE_OFFSET_SQL_FUNC          │
+│ 27  │ ENABLE_PREUPDATE_HOOK           │
+│ 28  │ ENABLE_RBU                      │
+│ 29  │ ENABLE_RTREE                    │
+│ 30  │ ENABLE_SESSION                  │
+│ 31  │ ENABLE_SNAPSHOT                 │
+│ 32  │ ENABLE_STAT4                    │
+│ 33  │ ENABLE_UNLOCK_NOTIFY            │
+│ 34  │ LIKE_DOESNT_MATCH_BLOBS         │
+│ 35  │ MALLOC_SOFT_LIMIT=1024          │
+│ 36  │ MAX_ATTACHED=10                 │
+│ 37  │ MAX_COLUMN=2000                 │
+│ 38  │ MAX_COMPOUND_SELECT=500         │
+│ 39  │ MAX_DEFAULT_PAGE_SIZE=8192      │
+│ 40  │ MAX_EXPR_DEPTH=1000             │
+│ 41  │ MAX_FUNCTION_ARG=1000           │
+│ 42  │ MAX_LENGTH=1000000000           │
+│ 43  │ MAX_LIKE_PATTERN_LENGTH=50000   │
+│ 44  │ MAX_MMAP_SIZE=0x7fff0000        │
+│ 45  │ MAX_PAGE_COUNT=0xfffffffe       │
+│ 46  │ MAX_PAGE_SIZE=65536             │
+│ 47  │ MAX_SQL_LENGTH=1000000000       │
+│ 48  │ MAX_TRIGGER_DEPTH=1000          │
+│ 49  │ MAX_VARIABLE_NUMBER=32766       │
+│ 50  │ MAX_VDBE_OP=250000000           │
+│ 51  │ MAX_WORKER_THREADS=8            │
+│ 52  │ MUTEX_PTHREADS                  │
+│ 53  │ SOUNDEX                         │
+│ 54  │ SYSTEM_MALLOC                   │
+│ 55  │ TEMP_STORE=1                    │
+│ 56  │ THREADSAFE=1                    │
+└─────┴─────────────────────────────────┘
+
+A5. Both page-inspection virtual tables answer in the driver. The probe
+database has 2 pages: page 1 for sqlite_schema and page 2 for table t.
+┌───────────────┬──────┐
+│     vtab      │ rows │
+├───────────────┼──────┤
+│ dbstat        │ 2    │
+│ sqlite_dbpage │ 2    │
+└───────────────┴──────┘
+
+── B. The CLI against the driver ───────────────────────────────────────
+
+B1. The CLI has the same required options (in_cli should be true too):
+┌───────────────────────────┬───────────┬────────┐
+│          option           │ in_driver │ in_cli │
+├───────────────────────────┼───────────┼────────┤
+│ DEFAULT_WAL_SYNCHRONOUS=2 │ true      │ true   │
+│ ENABLE_DBPAGE_VTAB        │ true      │ true   │
+│ ENABLE_DBSTAT_VTAB        │ true      │ true   │
+└───────────────────────────┴───────────┴────────┘
+
+B2. The options that govern the file format, cache, mmap and sync defaults
+must be identical in both builds:
+┌────────────────────────────┬─────────────────────────────────┬─────────────────────────────────┬─────────┐
+│            name            │             driver              │               cli               │ verdict │
+├────────────────────────────┼─────────────────────────────────┼─────────────────────────────────┼─────────┤
+│ DEFAULT_AUTOVACUUM         │ DEFAULT_AUTOVACUUM              │ DEFAULT_AUTOVACUUM              │ same    │
+│ DEFAULT_CACHE_SIZE         │ DEFAULT_CACHE_SIZE=-2000        │ DEFAULT_CACHE_SIZE=-2000        │ same    │
+│ DEFAULT_FILE_FORMAT        │ DEFAULT_FILE_FORMAT=4           │ DEFAULT_FILE_FORMAT=4           │ same    │
+│ DEFAULT_JOURNAL_SIZE_LIMIT │ DEFAULT_JOURNAL_SIZE_LIMIT=-1   │ DEFAULT_JOURNAL_SIZE_LIMIT=-1   │ same    │
+│ DEFAULT_MMAP_SIZE          │ DEFAULT_MMAP_SIZE=0             │ DEFAULT_MMAP_SIZE=0             │ same    │
+│ DEFAULT_PAGE_SIZE          │ DEFAULT_PAGE_SIZE=4096          │ DEFAULT_PAGE_SIZE=4096          │ same    │
+│ DEFAULT_PCACHE_INITSZ      │ DEFAULT_PCACHE_INITSZ=20        │ DEFAULT_PCACHE_INITSZ=20        │ same    │
+│ DEFAULT_SECTOR_SIZE        │ DEFAULT_SECTOR_SIZE=4096        │ DEFAULT_SECTOR_SIZE=4096        │ same    │
+│ DEFAULT_SYNCHRONOUS        │ DEFAULT_SYNCHRONOUS=2           │ DEFAULT_SYNCHRONOUS=2           │ same    │
+│ DEFAULT_WAL_AUTOCHECKPOINT │ DEFAULT_WAL_AUTOCHECKPOINT=1000 │ DEFAULT_WAL_AUTOCHECKPOINT=1000 │ same    │
+│ DEFAULT_WAL_SYNCHRONOUS    │ DEFAULT_WAL_SYNCHRONOUS=2       │ DEFAULT_WAL_SYNCHRONOUS=2       │ same    │
+│ DIRECT_OVERFLOW_READ       │ DIRECT_OVERFLOW_READ            │ DIRECT_OVERFLOW_READ            │ same    │
+│ MAX_MMAP_SIZE              │ MAX_MMAP_SIZE=0x7fff0000        │ MAX_MMAP_SIZE=0x7fff0000        │ same    │
+│ MAX_PAGE_SIZE              │ MAX_PAGE_SIZE=65536             │ MAX_PAGE_SIZE=65536             │ same    │
+│ TEMP_STORE                 │ TEMP_STORE=1                    │ TEMP_STORE=1                    │ same    │
+└────────────────────────────┴─────────────────────────────────┴─────────────────────────────────┴─────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the linked driver is modernc.org/sqlite v1.60.1
+A  ✓  the linked libc is modernc.org/libc v1.77.1
+A  ✓  the driver reports release 3.53.4
+A  ✓  the driver is compiled with ENABLE_DBPAGE_VTAB
+A  ✓  the driver is compiled with ENABLE_DBSTAT_VTAB
+A  ✓  the driver is compiled with DEFAULT_WAL_SYNCHRONOUS=2
+A  ✓  sqlite_dbpage and dbstat answer queries in the driver (2 pages: schema and table t)
+B  ✓  the CLI reports release 3.53.4
+B  ✓  the CLI is compiled with ENABLE_DBPAGE_VTAB
+B  ✓  the CLI is compiled with ENABLE_DBSTAT_VTAB
+B  ✓  the CLI is compiled with DEFAULT_WAL_SYNCHRONOUS=2
+B  ✓  the driver and the CLI agree on every file-format and I/O compile option listed
+
+12 of 12 claims hold
+
+Experiment verdict: PIN CHECK OK

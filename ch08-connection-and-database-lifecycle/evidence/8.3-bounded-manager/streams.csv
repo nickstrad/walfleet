@@ -1,0 +1,3 @@
+mode,capacity,operations,reads,writes,distinct_dbs,hits,misses,evictions,evicted_at_rest,evicted_not_at_rest,verified_reopens,refused_reopens,first_opens,peak_open,fd_samples,peak_fds,fd_mismatches,fds_after_close,read_mismatches,files_exact,files_masked,files_wrong,warm_reads,cold_reads,memory_budget
+bounded,64,4000,3415,585,866,1198,2802,2802,2802,0,1936,0,866,64,401,192,0,0,0,970,30,0,1077,2338,83886080
+unbounded,1000,4000,3415,585,866,3134,866,866,866,0,0,0,866,866,401,2598,0,0,0,880,120,0,2725,690,819986432

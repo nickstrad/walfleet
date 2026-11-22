@@ -1,417 +1,398 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: store http://127.0.0.1:18333, work directory _work/10.3
-store: bucket course-ch10b, prefix exp-10-3/; nodes a (source) and b (destination) share the catalog; settings synchronous=FULL foreign_keys=ON secure_delete=ON cache_size=-256 wal_autocheckpoint=0 busy_timeout=5000ms
-relocation steps:
-  1 (fence the source: bump the epoch in the catalog)
-  2 (seal the source)
-  3 (ship the final segment and close the source at rest)
-  4 (rebuild at the destination from the store)
-  5 (verify the rebuilt hash against the source's)
-  6 (activate: put the destination's fence in the store)
-  7 (retire the source)
-each case: a claims db-0001 and writes steps 1-2 store-durable and step 3 local-durable; at every step boundary the client writes store-durable to the node the catalog names and local-durable to the other; one fault per case; then resume or roll back
 
-case 1: the coordinator crashes after step 1 (fence the source: bump the epoch in the catalog); recovery: resume
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 4 sha256 c75549790ef1, fence at position 5
-  after recovery: catalog owner b epoch 2; store ends at position 5 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 segment; 5-5 e2 snapshot; 6-6 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 4 acknowledged (3 store-durable), 1 refused; final user_version 4 (step 4 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 1: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+════════════════════════════════════════════════════════════════════════
+  10.3  Can an interrupted relocation leave two authoritative copies?
+════════════════════════════════════════════════════════════════════════
 
-case 2: the coordinator crashes after step 2 (seal the source); recovery: resume
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 2 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 2: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+Node a (the source) moves db-0001 to node b (the destination). Both share
+the catalog and the S3 store. In each case, a claims db-0001 and writes
+steps 1-2 store-durable and step 3 local-durable. At every step boundary
+the client writes store-durable to the node the catalog names and
+local-durable to the other. One fault per case; then a fresh coordinator
+resumes or rolls back from the relocations row and the store.
+┌────────────────────┬──────────────┐
+│        name        │    value     │
+├────────────────────┼──────────────┤
+│ bucket             │ course-ch10b │
+│ prefix             │ exp-10-3/    │
+│ synchronous        │ FULL         │
+│ foreign_keys       │ ON           │
+│ secure_delete      │ ON           │
+│ cache_size         │ -256         │
+│ wal_autocheckpoint │ 0            │
+│ busy_timeout       │ 5000ms       │
+└────────────────────┴──────────────┘
 
-case 3: the coordinator crashes after step 3 (ship the final segment and close the source at rest); recovery: resume
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 3: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+The seven steps of a relocation:
+┌──────┬─────────────────────────────────────────────────────┐
+│ step │                        name                         │
+├──────┼─────────────────────────────────────────────────────┤
+│ 1    │ fence the source: bump the epoch in the catalog     │
+│ 2    │ seal the source                                     │
+│ 3    │ ship the final segment and close the source at rest │
+│ 4    │ rebuild at the destination from the store           │
+│ 5    │ verify the rebuilt hash against the source's        │
+│ 6    │ activate: put the destination's fence in the store  │
+│ 7    │ retire the source                                   │
+└──────┴─────────────────────────────────────────────────────┘
 
-case 4: the coordinator crashes after step 4 (rebuild at the destination from the store); recovery: resume
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 6 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 4: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+── A. Thirty-two fault cases ───────────────────────────────────────────
 
-case 5: the coordinator crashes after step 5 (verify the rebuilt hash against the source's); recovery: resume
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 8 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 5: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A1. The faults. Cases 1-13 stop the coordinator after a step; 14-21 kill
+    a node after a step; 22-31 make one store put fail or crash the node
+    around it (log/000000000004 is the final segment of a, 000000000006
+    the fence of b); 32 rolls back while the destination stays down.
+┌──────┬───────────────────────────────────────────┬──────┬───────┬───────────────────────────────────┐
+│ case │                   fault                   │ node │ after │             recovery              │
+├──────┼───────────────────────────────────────────┼──────┼───────┼───────────────────────────────────┤
+│ 1    │ coordinator crash                         │      │ 1     │ resume                            │
+│ 2    │ coordinator crash                         │      │ 2     │ resume                            │
+│ 3    │ coordinator crash                         │      │ 3     │ resume                            │
+│ 4    │ coordinator crash                         │      │ 4     │ resume                            │
+│ 5    │ coordinator crash                         │      │ 5     │ resume                            │
+│ 6    │ coordinator crash                         │      │ 6     │ resume                            │
+│ 7    │ coordinator crash                         │      │ 7     │ resume                            │
+│ 8    │ coordinator crash                         │      │ 1     │ roll back                         │
+│ 9    │ coordinator crash                         │      │ 2     │ roll back                         │
+│ 10   │ coordinator crash                         │      │ 3     │ roll back                         │
+│ 11   │ coordinator crash                         │      │ 4     │ roll back                         │
+│ 12   │ coordinator crash                         │      │ 5     │ roll back                         │
+│ 13   │ coordinator crash                         │      │ 6     │ roll back                         │
+│ 14   │ SIGKILL                                   │ a    │ 1     │ resume                            │
+│ 15   │ SIGKILL                                   │ a    │ 2     │ resume                            │
+│ 16   │ SIGKILL                                   │ a    │ 3     │ resume                            │
+│ 17   │ SIGKILL                                   │ b    │ 4     │ resume                            │
+│ 18   │ SIGKILL                                   │ b    │ 6     │ resume                            │
+│ 19   │ SIGKILL                                   │ a    │ 6     │ resume                            │
+│ 20   │ SIGKILL                                   │ a    │ 2     │ roll back                         │
+│ 21   │ SIGKILL                                   │ b    │ 4     │ roll back                         │
+│ 22   │ store fail-before-put:log/000000000004:1  │ a    │       │ resume                            │
+│ 23   │ store fail-before-put:log/000000000006:1  │ b    │       │ resume                            │
+│ 24   │ store fail-after-put:log/000000000004:1   │ a    │       │ resume                            │
+│ 25   │ store fail-after-put:log/000000000006:1   │ b    │       │ resume                            │
+│ 26   │ store crash-before-put:log/000000000004:1 │ a    │       │ resume                            │
+│ 27   │ store crash-before-put:log/000000000006:1 │ b    │       │ resume                            │
+│ 28   │ store crash-after-put:log/000000000004:1  │ a    │       │ resume                            │
+│ 29   │ store crash-after-put:log/000000000006:1  │ b    │       │ resume                            │
+│ 30   │ store fail-before-put:log/000000000004:1  │ a    │       │ roll back                         │
+│ 31   │ store crash-before-put:log/000000000006:1 │ b    │       │ roll back                         │
+│ 32   │ SIGKILL                                   │ b    │ 4     │ roll back while node b stays down │
+└──────┴───────────────────────────────────────────┴──────┴───────┴───────────────────────────────────┘
 
-case 6: the coordinator crashes after step 6 (activate: put the destination's fence in the store); recovery: resume
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 6: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A2. How each run stopped and how the recovery ended. Killing b after step
+    6 (case 18) does not interrupt the run: step 7 talks only to a. A
+    roll back after step 6 rolls forward instead (case 13): the fence of b
+    is already in the store.
+┌──────┬────────────────────────────────────────┬───────────┬────────────────┬─────────────┬──────┐
+│ case │                  run                   │ restarted │    outcome     │    state    │ step │
+├──────┼────────────────────────────────────────┼───────────┼────────────────┼─────────────┼──────┤
+│ 1    │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 2    │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 3    │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 4    │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 5    │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 6    │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 7    │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 8    │ the coordinator stopped                │           │ rolled back    │ rolled-back │ 1    │
+│ 9    │ the coordinator stopped                │           │ rolled back    │ rolled-back │ 1    │
+│ 10   │ the coordinator stopped                │           │ rolled back    │ rolled-back │ 2    │
+│ 11   │ the coordinator stopped                │           │ rolled back    │ rolled-back │ 3    │
+│ 12   │ the coordinator stopped                │           │ rolled back    │ rolled-back │ 4    │
+│ 13   │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 14   │ step 2 failed: the node did not answer │ a         │ rolled forward │ done        │ 7    │
+│ 15   │ step 3 failed: the node did not answer │ a         │ rolled forward │ done        │ 7    │
+│ 16   │ step 7 failed: the node did not answer │ a         │ rolled forward │ done        │ 7    │
+│ 17   │ step 6 failed: the node did not answer │ b         │ rolled forward │ done        │ 7    │
+│ 18   │ finished without interruption (done)   │ b         │ done           │ done        │ 7    │
+│ 19   │ step 7 failed: the node did not answer │ a         │ rolled forward │ done        │ 7    │
+│ 20   │ step 3 failed: the node did not answer │ a         │ rolled back    │ rolled-back │ 2    │
+│ 21   │ step 6 failed: the node did not answer │ b         │ rolled back    │ rolled-back │ 5    │
+│ 22   │ step 3 failed: the node refused        │           │ rolled forward │ done        │ 7    │
+│ 23   │ step 6 failed: the node refused        │           │ rolled forward │ done        │ 7    │
+│ 24   │ step 3 failed: the node refused        │           │ rolled forward │ done        │ 7    │
+│ 25   │ step 6 failed: the node refused        │           │ rolled forward │ done        │ 7    │
+│ 26   │ step 3 failed: the node did not answer │ a         │ rolled forward │ done        │ 7    │
+│ 27   │ step 6 failed: the node did not answer │ b         │ rolled forward │ done        │ 7    │
+│ 28   │ step 3 failed: the node did not answer │ a         │ rolled forward │ done        │ 7    │
+│ 29   │ step 6 failed: the node did not answer │ b         │ rolled forward │ done        │ 7    │
+│ 30   │ step 3 failed: the node refused        │           │ rolled back    │ rolled-back │ 2    │
+│ 31   │ step 6 failed: the node did not answer │ b         │ rolled back    │ rolled-back │ 5    │
+│ 32   │ step 6 failed: the node did not answer │           │ rolled back    │ rolled-back │ 5    │
+└──────┴────────────────────────────────────────┴───────────┴────────────────┴─────────────┴──────┘
 
-case 7: the coordinator crashes after step 7 (retire the source); recovery: resume
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 6: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a owner at epoch 1, sealed; b owner at epoch 2, writable
-  after recovery: catalog owner b epoch 2; store ends at position 7 (epoch 2 segment); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment; 8-8 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 6 acknowledged (4 store-durable), 11 refused; final user_version 6 (step 6 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 7: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A3. Case 32: node b stays down during the roll back. The roll back still
+    finishes; b keeps a staged copy it could not be told to discard, and
+    is restarted after the recovery.
+┌──────┬─────────────┬───────────────────────────────────────────────────┐
+│ case │ stayed_down │                   discard_error                   │
+├──────┼─────────────┼───────────────────────────────────────────────────┤
+│ 32   │ b           │ node process for "discard db-0001" is not running │
+└──────┴─────────────┴───────────────────────────────────────────────────┘
 
-case 8: the coordinator crashes after step 1 (fence the source: bump the epoch in the catalog); recovery: roll back
-  run: the coordinator stopped
-  recovery: rolled back; relocation record: state rolled-back, step 1; fence point: position 4 sha256 c75549790ef1, fence at position 5
-  after recovery: catalog owner a epoch 3; store ends at position 5 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 segment; 5-5 e3 snapshot; 6-6 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 4 acknowledged (3 store-durable), 1 refused; final user_version 4 (step 4 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 8: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A4. The fence point is the last position of the source; the fence is the
+    snapshot the new owner puts right after it. The rebuilt copy equals the
+    source there (the same sha256). A roll back fences a again, at epoch 3.
+┌──────┬─────────────┬───────────────┬───────┬───────┬───────┬────────────┐
+│ case │ fence_point │ sha256_prefix │ fence │ owner │ epoch │ slot_epoch │
+├──────┼─────────────┼───────────────┼───────┼───────┼───────┼────────────┤
+│ 1    │ 4           │ c75549790ef1  │ 5     │ b     │ 2     │ 2          │
+│ 2    │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 3    │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 4    │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 5    │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 6    │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 7    │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 8    │ 4           │ c75549790ef1  │ 5     │ a     │ 3     │ 3          │
+│ 9    │ 5           │ d53fc07b1293  │ 6     │ a     │ 3     │ 3          │
+│ 10   │ 5           │ d53fc07b1293  │ 6     │ a     │ 3     │ 3          │
+│ 11   │ 5           │ d53fc07b1293  │ 6     │ a     │ 3     │ 3          │
+│ 12   │ 5           │ d53fc07b1293  │ 6     │ a     │ 3     │ 3          │
+│ 13   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 14   │ 4           │ d53fc07b1293  │ 5     │ b     │ 2     │ 2          │
+│ 15   │ 4           │ d53fc07b1293  │ 5     │ b     │ 2     │ 2          │
+│ 16   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 17   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 18   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 19   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 20   │ 4           │ d53fc07b1293  │ 5     │ a     │ 3     │ 3          │
+│ 21   │ 5           │ d53fc07b1293  │ 6     │ a     │ 3     │ 3          │
+│ 22   │ 4           │ d53fc07b1293  │ 5     │ b     │ 2     │ 2          │
+│ 23   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 24   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 25   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 26   │ 4           │ d53fc07b1293  │ 5     │ b     │ 2     │ 2          │
+│ 27   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 28   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 29   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 30   │ 4           │ d53fc07b1293  │ 5     │ a     │ 3     │ 3          │
+│ 31   │ 5           │ d53fc07b1293  │ 6     │ a     │ 3     │ 3          │
+│ 32   │ 5           │ d53fc07b1293  │ 6     │ a     │ 3     │ 3          │
+└──────┴─────────────┴───────────────┴───────┴───────┴───────┴────────────┘
 
-case 9: the coordinator crashes after step 2 (seal the source); recovery: roll back
-  run: the coordinator stopped
-  recovery: rolled back; relocation record: state rolled-back, step 1; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 2 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 9: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A5. Writes. Every acknowledged write is in the one lineage and no refused
+    write is: the final user_version equals the number acknowledged. The
+    final state is that recipe step; its bytes differ only in the change
+    counter (bytes 24-27 and 92-95).
+┌──────┬──────────────┬───────────────┬─────────┬──────────────┬────────┬─────────────────┬───────────────┬───────┐
+│ case │ acknowledged │ store_durable │ refused │ user_version │ recipe │ vs_recipe_file  │ most_writable │ holds │
+├──────┼──────────────┼───────────────┼─────────┼──────────────┼────────┼─────────────────┼───────────────┼───────┤
+│ 1    │ 4            │ 3             │ 1       │ 4            │ step 4 │ counter differs │ 1             │ true  │
+│ 2    │ 5            │ 3             │ 2       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 3    │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 4    │ 5            │ 3             │ 6       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 5    │ 5            │ 3             │ 8       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 6    │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 7    │ 6            │ 4             │ 11      │ 6            │ step 6 │ counter differs │ 1             │ true  │
+│ 8    │ 4            │ 3             │ 1       │ 4            │ step 4 │ counter differs │ 1             │ true  │
+│ 9    │ 5            │ 3             │ 2       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 10   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 11   │ 5            │ 3             │ 6       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 12   │ 5            │ 3             │ 8       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 13   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 14   │ 5            │ 3             │ 2       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 15   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 16   │ 6            │ 4             │ 11      │ 6            │ step 6 │ counter differs │ 1             │ true  │
+│ 17   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 18   │ 6            │ 4             │ 13      │ 6            │ step 6 │ counter differs │ 1             │ true  │
+│ 19   │ 6            │ 4             │ 11      │ 6            │ step 6 │ counter differs │ 1             │ true  │
+│ 20   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 21   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 22   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 23   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 24   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 25   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 26   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 27   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 28   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 29   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 30   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 31   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 32   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+└──────┴──────────────┴───────────────┴─────────┴──────────────┴────────┴─────────────────┴───────────────┴───────┘
 
-case 10: the coordinator crashes after step 3 (ship the final segment and close the source at rest); recovery: roll back
-  run: the coordinator stopped
-  recovery: rolled back; relocation record: state rolled-back, step 2; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 10: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A6. The step boundaries of four cases. In case 7 the coordinator stops
+    after the last step; in case 16, a is killed after step 3; in case 18,
+    b is killed after step 6; in case 32, b stays down. Before step 6 only
+    a is writable; from step 6 on only b is. store_end is the last slot.
+┌──────┬────────────────┬───────┬───────┬───────────────┬────────────────────────────┬────────────────────────────┐
+│ case │     label      │ owner │ epoch │   store_end   │           node_a           │           node_b           │
+├──────┼────────────────┼───────┼───────┼───────────────┼────────────────────────────┼────────────────────────────┤
+│ 7    │ after step 1   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, writable │ not owner                  │
+│ 7    │ after step 2   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 7    │ after step 3   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 7    │ after step 4   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 7    │ after step 5   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 7    │ after step 6   │ b     │ 2     │ 6 e2 snapshot │ owner at epoch 1, sealed   │ owner at epoch 2, writable │
+│ 7    │ after recovery │ b     │ 2     │ 7 e2 segment  │ not owner                  │ owner at epoch 2, writable │
+│ 16   │ after step 1   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, writable │ not owner                  │
+│ 16   │ after step 2   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 16   │ after step 3   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 16   │ after step 4   │ b     │ 2     │ 5 e1 segment  │ down                       │ not owner                  │
+│ 16   │ after step 5   │ b     │ 2     │ 5 e1 segment  │ down                       │ not owner                  │
+│ 16   │ after step 6   │ b     │ 2     │ 6 e2 snapshot │ down                       │ owner at epoch 2, writable │
+│ 16   │ after recovery │ b     │ 2     │ 7 e2 segment  │ not owner                  │ owner at epoch 2, writable │
+│ 18   │ after step 1   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, writable │ not owner                  │
+│ 18   │ after step 2   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 18   │ after step 3   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 18   │ after step 4   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 18   │ after step 5   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 18   │ after step 6   │ b     │ 2     │ 6 e2 snapshot │ owner at epoch 1, sealed   │ owner at epoch 2, writable │
+│ 18   │ after step 7   │ b     │ 2     │ 7 e2 segment  │ not owner                  │ down                       │
+│ 18   │ after recovery │ b     │ 2     │ 7 e2 segment  │ not owner                  │ owner at epoch 2, writable │
+│ 32   │ after step 1   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, writable │ not owner                  │
+│ 32   │ after step 2   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 32   │ after step 3   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 32   │ after step 4   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 32   │ after step 5   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ down                       │
+│ 32   │ after recovery │ a     │ 3     │ 6 e3 snapshot │ owner at epoch 3, writable │ not owner                  │
+└──────┴────────────────┴───────┴───────┴───────────────┴────────────────────────────┴────────────────────────────┘
 
-case 11: the coordinator crashes after step 4 (rebuild at the destination from the store); recovery: roll back
-  run: the coordinator stopped
-  recovery: rolled back; relocation record: state rolled-back, step 3; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 6 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 11: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A7. Every boundary of every case: how many nodes accepted writes. In the
+    fault cases never more than one, and none while a is sealed and b is
+    not yet active. The self-test (part B) reaches two.
+┌─────────────┬────────────────┬────────────┐
+│    cases    │ writable_nodes │ boundaries │
+├─────────────┼────────────────┼────────────┤
+│ fault cases │ 0              │ 76         │
+│ fault cases │ 1              │ 66         │
+│ self-test   │ 1              │ 5          │
+│ self-test   │ 2              │ 3          │
+└─────────────┴────────────────┴────────────┘
 
-case 12: the coordinator crashes after step 5 (verify the rebuilt hash against the source's); recovery: roll back
-  run: the coordinator stopped
-  recovery: rolled back; relocation record: state rolled-back, step 4; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 8 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 12: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A8. The store after each case: one lineage, epochs never decreasing, and
+    each new epoch opens with a fence snapshot. Each slot is shown as
+    positions, epoch, and snap (snapshot) or seg (segment).
+┌──────┬──────────────────────────────────────────────────────────────────────────────────────┐
+│ case │                                        store                                         │
+├──────┼──────────────────────────────────────────────────────────────────────────────────────┤
+│ 1    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 seg; 5-5 e2 snap; 6-6 e2 seg             │
+│ 2    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 3    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 4    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 5    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 6    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 7    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg; 8-8 e2 seg │
+│ 8    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 seg; 5-5 e3 snap; 6-6 e3 seg             │
+│ 9    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e3 snap; 7-7 e3 seg             │
+│ 10   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e3 snap; 7-7 e3 seg             │
+│ 11   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e3 snap; 7-7 e3 seg             │
+│ 12   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e3 snap; 7-7 e3 seg             │
+│ 13   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 14   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 snap; 5-5 e2 snap; 6-6 e2 seg            │
+│ 15   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 snap; 5-5 e2 snap; 6-6 e2 seg            │
+│ 16   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg; 8-8 e2 seg │
+│ 17   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 18   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg; 8-8 e2 seg │
+│ 19   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg; 8-8 e2 seg │
+│ 20   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 snap; 5-5 e3 snap; 6-6 e3 seg            │
+│ 21   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e3 snap; 7-7 e3 seg             │
+│ 22   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 snap; 5-5 e2 snap; 6-6 e2 seg            │
+│ 23   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 24   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 25   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 26   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 snap; 5-5 e2 snap; 6-6 e2 seg            │
+│ 27   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 28   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 29   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 30   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 snap; 5-5 e3 snap; 6-6 e3 seg            │
+│ 31   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e3 snap; 7-7 e3 seg             │
+│ 32   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e3 snap; 7-7 e3 seg             │
+└──────┴──────────────────────────────────────────────────────────────────────────────────────┘
 
-case 13: the coordinator crashes after step 6 (activate: put the destination's fence in the store); recovery: roll back
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 13: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+    In some cases the final segment never reached the store, and the close
+    of the source had already checkpointed its frames into the .db file. The
+    retried drain found no WAL and shipped a discontinuity snapshot at
+    position 4 instead of a segment, in these cases:
+┌───────────────────┬──────────┬───────┬──────────┐
+│       cases       │ position │ epoch │   kind   │
+├───────────────────┼──────────┼───────┼──────────┤
+│ 14 15 20 22 26 30 │ 4        │ 1     │ snapshot │
+└───────────────────┴──────────┴───────┴──────────┘
 
-case 14: node a is killed after step 1 (fence the source: bump the epoch in the catalog); recovery: resume
-  run: step 2 failed: the node did not answer
-  node a is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 4 sha256 d53fc07b1293, fence at position 5
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 5 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 snapshot; 5-5 e2 snapshot; 6-6 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 2 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 14: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A9. The cases that hold every invariant, and the invariants broken (none):
+┌───────────────────────────────┬───────────────────┐
+│ cases_holding_every_invariant │ broken_invariants │
+├───────────────────────────────┼───────────────────┤
+│ 32 of 32                      │ 0                 │
+└───────────────────────────────┴───────────────────┘
 
-case 15: node a is killed after step 2 (seal the source); recovery: resume
-  run: step 3 failed: the node did not answer
-  node a is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 4 sha256 d53fc07b1293, fence at position 5
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 5 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 snapshot; 5-5 e2 snapshot; 6-6 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 15: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+── B. Self-test: the same relocation without the seal and the fence ────
 
-case 16: node a is killed after step 3 (ship the final segment and close the source at rest); recovery: resume
-  run: step 7 failed: the node did not answer
-  node a is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a down; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a down; b not owner
-  after step 6: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a down; b owner at epoch 2, writable
-  after recovery: catalog owner b epoch 2; store ends at position 7 (epoch 2 segment); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment; 8-8 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 6 acknowledged (4 store-durable), 11 refused; final user_version 6 (step 6 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 16: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+B1. The skip-fence mutant does not seal a and does not put the fence of
+    b. From step 6 on, both nodes are writable, and the store is no longer
+    one lineage: epoch 2 starts with a segment, not a fence snapshot.
+┌──────────────────────────────────────┬─────────┬───────┬─────────────┬───────┬───────────────┐
+│                 run                  │ outcome │ state │ fence_point │ fence │ most_writable │
+├──────────────────────────────────────┼─────────┼───────┼─────────────┼───────┼───────────────┤
+│ finished without interruption (done) │ done    │ done  │ 3           │ 0     │ 2             │
+└──────────────────────────────────────┴─────────┴───────┴─────────────┴───────┴───────────────┘
+┌────────────────┬───────┬───────┬─────────────────┬────────────────────────────┬────────────────────────────┐
+│     label      │ owner │ epoch │    store_end    │           node_a           │           node_b           │
+├────────────────┼───────┼───────┼─────────────────┼────────────────────────────┼────────────────────────────┤
+│ after step 1   │ b     │ 2     │ 3 e1 segment    │ owner at epoch 1, writable │ not owner                  │
+│ after step 2   │ b     │ 2     │ 3 e1 segment    │ owner at epoch 1, writable │ not owner                  │
+│ after step 3   │ b     │ 2     │ 3 e1 segment    │ owner at epoch 1, writable │ not owner                  │
+│ after step 4   │ b     │ 2     │ 3 e1 segment    │ owner at epoch 1, writable │ not owner                  │
+│ after step 5   │ b     │ 2     │ 3 e1 segment    │ owner at epoch 1, writable │ not owner                  │
+│ after step 6   │ b     │ 2     │ 3 e1 segment    │ owner at epoch 1, writable │ owner at epoch 2, writable │
+│ after step 7   │ b     │ 2     │ not one lineage │ owner at epoch 1, writable │ owner at epoch 2, writable │
+│ after recovery │ b     │ 2     │ not one lineage │ owner at epoch 1, writable │ owner at epoch 2, writable │
+└────────────────┴───────┴───────┴─────────────────┴────────────────────────────┴────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                           audit_error                                            │
+├──────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ slot chain is not one lineage: epoch 2 starts at position 4 with a segment, not a fence snapshot │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
 
-case 17: node b is killed after step 4 (rebuild at the destination from the store); recovery: resume
-  run: step 6 failed: the node did not answer
-  node b is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b down
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 17: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+── C. Every node process ───────────────────────────────────────────────
 
-case 18: node b is killed after step 6 (activate: put the destination's fence in the store); recovery: resume
-  run: finished without interruption (done)
-  node b is down; restarted
-  recovery: done; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 6: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a owner at epoch 1, sealed; b owner at epoch 2, writable
-  after step 7: catalog owner b epoch 2; store ends at position 7 (epoch 2 segment); a not owner; b down
-  after recovery: catalog owner b epoch 2; store ends at position 7 (epoch 2 segment); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment; 8-8 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 6 acknowledged (4 store-durable), 13 refused; final user_version 6 (step 6 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 18: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+C1. Problems and over-bounds lines the nodes reported, across all cases.
+    Both counts are 0; any line would be listed in the table problems.
+┌──────────┬─────────────┐
+│ problems │ over_bounds │
+├──────────┼─────────────┤
+│ 0        │ 0           │
+└──────────┴─────────────┘
 
-case 19: node a is killed after step 6 (activate: put the destination's fence in the store); recovery: resume
-  run: step 7 failed: the node did not answer
-  node a is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 6: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a owner at epoch 1, sealed; b owner at epoch 2, writable
-  after recovery: catalog owner b epoch 2; store ends at position 7 (epoch 2 segment); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment; 8-8 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 6 acknowledged (4 store-durable), 11 refused; final user_version 6 (step 6 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 19: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+── Checks ─────────────────────────────────────────────────────────────
 
-case 20: node a is killed after step 2 (seal the source); recovery: roll back
-  run: step 3 failed: the node did not answer
-  node a is down; restarted
-  recovery: rolled back; relocation record: state rolled-back, step 2; fence point: position 4 sha256 d53fc07b1293, fence at position 5
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner a epoch 3; store ends at position 5 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 snapshot; 5-5 e3 snapshot; 6-6 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 20: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+Every claim the experiment asserted while it ran:
 
-case 21: node b is killed after step 4 (rebuild at the destination from the store); recovery: roll back
-  run: step 6 failed: the node did not answer
-  node b is down; restarted
-  recovery: rolled back; relocation record: state rolled-back, step 5; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b down
-  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 21: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 1: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 2: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 3: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 4: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 5: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 6: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 7: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 8: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 9: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 10: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 11: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 12: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 13: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 14: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 15: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 16: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 17: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 18: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 19: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 20: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 21: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 22: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 23: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 24: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 25: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 26: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 27: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 28: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 29: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 30: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 31: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 32: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+B  ✓  self-test: without the fence the boundary check finds two writable nodes
+C  ✓  after every command of every node process the descriptors and memory stayed within the standing bounds
+C  ✓  no node reported a problem
 
-case 22: store fault fail-before-put:log/000000000004:1 on node a; recovery: resume
-  run: step 3 failed: the node refused
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 4 sha256 d53fc07b1293, fence at position 5
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 5 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 snapshot; 5-5 e2 snapshot; 6-6 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 22: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+35 of 35 claims hold
 
-case 23: store fault fail-before-put:log/000000000006:1 on node b; recovery: resume
-  run: step 6 failed: the node refused
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 23: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 24: store fault fail-after-put:log/000000000004:1 on node a; recovery: resume
-  run: step 3 failed: the node refused
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 24: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 25: store fault fail-after-put:log/000000000006:1 on node b; recovery: resume
-  run: step 6 failed: the node refused
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 25: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 26: store fault crash-before-put:log/000000000004:1 on node a; recovery: resume
-  run: step 3 failed: the node did not answer
-  node a is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 4 sha256 d53fc07b1293, fence at position 5
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 5 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 snapshot; 5-5 e2 snapshot; 6-6 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 26: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 27: store fault crash-before-put:log/000000000006:1 on node b; recovery: resume
-  run: step 6 failed: the node did not answer
-  node b is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 27: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 28: store fault crash-after-put:log/000000000004:1 on node a; recovery: resume
-  run: step 3 failed: the node did not answer
-  node a is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 28: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 29: store fault crash-after-put:log/000000000006:1 on node b; recovery: resume
-  run: step 6 failed: the node did not answer
-  node b is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 29: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 30: store fault fail-before-put:log/000000000004:1 on node a; recovery: roll back
-  run: step 3 failed: the node refused
-  recovery: rolled back; relocation record: state rolled-back, step 2; fence point: position 4 sha256 d53fc07b1293, fence at position 5
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner a epoch 3; store ends at position 5 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 snapshot; 5-5 e3 snapshot; 6-6 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 30: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 31: store fault crash-before-put:log/000000000006:1 on node b; recovery: roll back
-  run: step 6 failed: the node did not answer
-  node b is down; restarted
-  recovery: rolled back; relocation record: state rolled-back, step 5; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 31: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 32: node b is killed after step 4 (rebuild at the destination from the store); recovery: roll back while node b stays down
-  run: step 6 failed: the node did not answer
-  node b is down and stays down during the recovery
-  recovery: the destination did not discard its staged copy: node process for "discard db-0001" is not running
-  node b restarted after the recovery
-  recovery: rolled back; relocation record: state rolled-back, step 5; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b down
-  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 32: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-32 of 32 fault cases hold every invariant
-
-== self-test: the same relocation without the seal and without the store fence ==
-
-case 0: no fault; recovery: resume
-  run: finished without interruption (done)
-  recovery: done; relocation record: state done, step 7; fence point: position 3 sha256 d092f1afdfd0, fence at position 0
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 6: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b owner at epoch 2, writable
-  after step 7: catalog owner b epoch 2; the store is not one lineage; a owner at epoch 1, writable; b owner at epoch 2, writable
-  after recovery: catalog owner b epoch 2; the store is not one lineage; a owner at epoch 1, writable; b owner at epoch 2, writable
-  the store does not hold one lineage: slot chain is not one lineage: epoch 2 starts at position 4 with a segment, not a fence snapshot
-check ok: self-test: without the fence the boundary check finds two writable nodes
-check ok: after every command of every node process the descriptors and memory stayed within the standing bounds
-check ok: no node reported a problem
-INFO: 1726 node replies carried a bounds check
-
-all checks passed
+Experiment verdict: INTERRUPTED RELOCATION OK

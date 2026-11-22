@@ -1,0 +1,3 @@
+run,database,capture_dir,steps,pages,page_size,pages_bin_bytes,manifest_format,manifest_sha256
+1,run-1/r0.db,run-1/capture,30,270,4096,1105920,sqlite-internals page manifest v1,8d9ad6e1251dfbbe513d57fa7dcd5e8159fa7c62d227d28008ebc1a9ed92f523
+2,run-2/r0.db,run-2/capture,30,270,4096,1105920,sqlite-internals page manifest v1,8d9ad6e1251dfbbe513d57fa7dcd5e8159fa7c62d227d28008ebc1a9ed92f523

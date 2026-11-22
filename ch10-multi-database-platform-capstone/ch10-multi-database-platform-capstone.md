@@ -13,34 +13,31 @@
 
 > **How to run the experiments**
 >
-> - **Prerequisites:** Go 1.26 (`go.mod` specifies `go 1.26.0`) and Docker for the local S3-compatible object store (`SeaweedFS 4.48`). On Linux, `strace` is required for Experiment 10.2 Part A. None of Chapter 10's four experiments invokes the C `sqlite3` CLI (`go run ./cmd/course build-tools` is not needed here).
-> - **Start SeaweedFS** from the repository root before running any S3-backed experiment (`10.1-one-writer -model-only` runs Part A without a store):
+> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to start the runner from the host. Build the `lab` image once, from the repository root:
+>   ```text
+>   docker compose build lab
+>   ```
+>   The image already contains the pinned SQLite `3.53.4` source tree (with the linked `src/os_unix.c`), the C tools (none of Chapter 10's four experiments invokes the C `sqlite3` CLI), `strace` (Experiment 10.2 Part A), and the DuckDB CLI that presents the results.
+> - **Start SeaweedFS** (the local S3-compatible object store, `SeaweedFS 4.48`) from the repository root before running any S3-backed experiment (`10.1-one-writer -model-only` runs Part A without a store):
 >   ```text
 >   docker compose up -d seaweedfs
 >   ```
->   Every S3-backed experiment exits `1` with `STORE UNREACHABLE:` if the endpoint does not answer within `10` seconds.
-> - **Fetch the pinned SQLite source tree** into `_src/sqlite-3.53.4` (or set `SQLITE_SRC` to an existing checkout of tag `version-3.53.4`) if you want to read the linked `src/os_unix.c` locally:
+>   Every S3-backed experiment exits `1` with `STORE UNREACHABLE:` if the endpoint does not answer within `10` seconds. The `lab` container reaches it at `COURSE_S3_ENDPOINT=http://seaweedfs:8333`.
+> - **Run the experiments** from the repository root. Each command starts the `lab` container, runs the experiment in it, and prints its walkthrough; add `-i` (`go run ./cmd/course run -i 10.4`) to stay in DuckDB afterwards with the tables loaded:
 >   ```text
->   go run ./cmd/course fetch-source
+>   go run ./cmd/course run 10.1
+>   go run ./cmd/course run 10.2
+>   go run ./cmd/course run 10.3
+>   go run ./cmd/course run 10.4
 >   ```
-> - **Run the experiments** from the repository root:
+>   Experiment 10.4 defaults to `500` databases (`-databases 500 -writers 8 -capacity 32`). `course run` cannot pass experiment flags, so run flag variants directly in the container; the full `2,000`-database run is:
 >   ```text
->   go run ./ch10-multi-database-platform-capstone/experiments/10.1-one-writer
->   go run ./ch10-multi-database-platform-capstone/experiments/10.2-acknowledged-writes-survive
->   go run ./ch10-multi-database-platform-capstone/experiments/10.3-interrupted-relocation
->   go run ./ch10-multi-database-platform-capstone/experiments/10.4-rebuild-the-fleet
+>   docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.4-rebuild-the-fleet -databases 2000 -prefix exp-10-4-2000
 >   ```
->   Experiment 10.4 defaults to `500` databases (`-databases 500 -writers 8 -capacity 32`); the full `2,000`-database run is:
->   ```text
->   go run ./ch10-multi-database-platform-capstone/experiments/10.4-rebuild-the-fleet -databases 2000 -prefix exp-10-4-2000
->   ```
->   Scratch files go under `_work/10.1/` through `_work/10.4/`, which are git-ignored and wiped at the start of each run. Each experiment uses its own S3 key prefix (`exp-10-1/` in bucket `course-ch10a`; `exp-10-2/`, `exp-10-3/`, `exp-10-4/` in bucket `course-ch10b`).
-> - **Linux-only parts and the macOS route:** Experiments 10.1, 10.3, and 10.4 are portable (S3 over HTTP, `SIGKILL`, and descriptor/RSS sampling through `internal/procstat`). **Linux only:** Experiment 10.2 Part A kills the node process on entry to a chosen `fsync`/`fdatasync` using `strace`. On macOS—or on Linux with `-portable`—Part A prints a `LINUX-ONLY:` notice while Parts B and C run natively and exit `0`. To run Experiment 10.2 Part A from macOS, use the repository's Linux `lab` container (which has `strace`, `SYS_PTRACE`, and `COURSE_S3_ENDPOINT=http://seaweedfs:8333`):
->   ```text
->   docker compose up -d seaweedfs
->   docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.2-acknowledged-writes-survive
->   ```
-> - **Measurement environment:** All evidence files, `strace` kill sweeps, SeaweedFS runs, and adversarial suites were measured on **Linux only** (`linux/amd64`, 4 shared cores, 7.7 GiB RAM, descriptor soft limit `1,048,576`, Go 1.26, ext4 under `_work/`, SeaweedFS 4.48). macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; nothing was run on macOS, and the Docker `lab` route for 10.2 Part A was not run.
+>   In the container, scratch files and tables go under `/work/10.1/` through `/work/10.4/` (the `lab-work` volume); run directly, under `_work/10.1/` through `_work/10.4/`, which are git-ignored. Both are wiped at the start of each run. Each experiment uses its own S3 key prefix (`exp-10-1/` in bucket `course-ch10a`; `exp-10-2/`, `exp-10-3/`, `exp-10-4/` in bucket `course-ch10b`).
+> - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch10-multi-database-platform-capstone/experiments/10.4-rebuild-the-fleet`). Run this way it prints only its verdict and leaves its tables under `_work/10.4/results/`.
+> - **Linux-only parts and macOS:** Experiments 10.1, 10.3, and 10.4 are portable (S3 over HTTP, `SIGKILL`, and descriptor/RSS sampling through `internal/procstat`). **Linux only:** Experiment 10.2 Part A kills the node process on entry to a chosen `fsync`/`fdatasync` using `strace`; `course run` runs it in the Linux `lab` container (which has `strace` and `SYS_PTRACE`). Run directly on macOS—or on Linux with `-portable`—Part A prints a `LINUX-ONLY:` notice while Parts B and C run natively and exit `0`.
+> - **Measurement environment:** The stored evidence in this chapter, including the `strace` kill sweeps and the SeaweedFS runs, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26, SeaweedFS 4.48). The checked values are identical to the earlier `linux/amd64` capture (4 shared cores, 7.7 GiB RAM, descriptor soft limit `1,048,576`), which also ran the adversarial suites. Timings, byte totals and memory readings are run-dependent; `course run` prints them, and the lab container is much faster than the earlier capture. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; nothing was run on macOS.
 
 ---
 
@@ -132,7 +129,7 @@ Can a small Go service own thousands of SQLite database files—bounded in memor
 | 2 | **No acknowledged durable write is lost under the stated durability model** | For every database, recovered `user_version >=` last `user_version` acknowledged in its mode. Local-durable: restart on local files. Store-durable: delete all local files and rebuild from S3. Relocation: every ack (either mode) is in the final lineage. Takeover: store-durable kept; unshipped local-durable may be lost. | Experiment 10.2 (`8` `strace` fsync kills + `4` in-flight random kills, `0` violations; `ack-before-put` self-test caught). Experiment 10.3 (`final user_version == acknowledged count` in `32/32` cases). Experiment 10.1 (takeover). |
 | 3 | **Every published snapshot is internally consistent** | Every published restore point (every position of every database in the store) rebuilds to a valid recipe state (SHA-256 matches the recipe's step file, exact or differing only at change counter bytes `24–27 == 92–95`). | Experiment 10.4 (concurrent checker passes while writers run + final pass: `3,248` restore points at `500` DBs and `13,000` at `2,000` DBs, `0` failures). Experiment 10.3 (every store-durable ack slot restores to its `user_version`). |
 | 4 | **A database can be reopened after process failure** | After `SIGKILL` at any chosen fsync or random time, every database opens cleanly, `PRAGMA integrity_check = ok`, and the file matches a recipe state. | Experiment 10.2 (`reopened 4 of 4` after every kill). Experiment 10.1 step 14 (reopen after killing node `b` with an open WAL). Experiment 10.3 (killed nodes restart and finish). |
-| 5 | **File descriptors and memory remain bounded** | After every command of every node process: descriptors above startup baseline `<= 3 * 3 * K + 32` and RSS growth `<= 3K * (2 * cache + 256 KiB) + 32 MiB` (Chapter 8's per-connection bounds for `3` connections per open database). | Standing assertion inside every experiment: 10.1 (`15` commands), 10.2 (`306` replies), 10.3 (`1,726` replies), 10.4 (`2,766` replies at `500` DBs; `11,025` at `2,000` DBs; plus rebuild workers and checker). |
+| 5 | **File descriptors and memory remain bounded** | After every command of every node process: descriptors above startup baseline `<= 3 * 3 * K + 32` and RSS growth `<= 3K * (2 * cache + 256 KiB) + 32 MiB` (Chapter 8's per-connection bounds for `3` connections per open database). | Standing assertion inside every experiment: 10.1 (`15` commands), 10.2 (`306` replies), 10.3 (`1,726` replies), 10.4 (`2,766` replies at `500` DBs; `11,025` at `2,000` DBs; plus rebuild workers and checker). Reply counts after 10.1 are run-dependent; these are from the earlier capture. |
 | 6 | **An interrupted migration cannot silently create two authoritative copies** | Under a crash or store fault at every relocation step, after `Resume` or `Rollback`: catalog owner, newest store slot epoch, and `relocations` record agree; `<= 1` writable node at every boundary; destination image equals drained source state at the fence point (SHA-256); every acknowledged write is present and no refused write is; owner's closed file equals the store's last state. | Experiment 10.3 (`32 of 32` fault cases hold every invariant; `skip-fence` self-test fails as designed). |
 
 ### Reused shared packages and new code in this chapter
@@ -4999,7 +4996,7 @@ func TruncateAndHash(ctx context.Context, path string) (Quiesced, error) {
 ### 5.11 Experiment 10.1 — `one-writer`
 
 - **Claim (invariant 1 — at most one authorized writer per database):** With write-once position slots (`If-None-Match: *`) in the store **and** writers that append only after their own last object and stop if a newer epoch is listed, once a newer epoch's object is accepted no older epoch gets an object accepted, no two epochs are accepted for overlapping positions, and no accepted slot is overwritten—across every interleaving of two nodes (`claim`, `fence`, `fence-with-stale-list`, `write`, `ship`, `crash`, `restart`, `restart-with-stale-list`) up to depth `16` (within bounds: `2` nodes, `<= 3` epochs, local commits up to stream position `5`) and `2,000` seeded random walks of `60` steps. Removing either half of the fencing rule (`store-accepts-every-put` or `resume-from-global-end`) causes the model checker to find concrete counterexamples. Two real service processes against SeaweedFS S3 agree with the model at every command step (`13/13`), including stale-list takeover retry, fencing an active stale owner, fencing a `SIGKILL`ed and restarted stale owner holding its `.owner` belief file, keeping store-durable acknowledgements, and losing an unshipped local-durable acknowledgement on takeover.
-- **Evidence form:** `EXACT`.
+- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
 
 <!-- include: experiments/10.1-one-writer/main.go -->
 ```go
@@ -5021,6 +5018,9 @@ func TruncateAndHash(ctx context.Context, path string) (Quiesced, error) {
 // store-durable acknowledgements (kept) and an unshipped local-durable
 // acknowledgement (lost on takeover). Every command step is cross-checked
 // against the model and against the standing descriptor and memory bounds.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 10.1
 package main
 
 import (
@@ -5040,12 +5040,12 @@ import (
 	"github.com/nickstrad/walfleet/internal/connmgr"
 	"github.com/nickstrad/walfleet/internal/rangefs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 var (
-	failures   []string
 	depth      = flag.Int("depth", 16, "exhaustive search depth of the model")
 	seed       = flag.Uint64("seed", 1, "seed of the scheduler's action order and random walks")
 	walks      = flag.Int("walks", 2000, "seeded random walks past the exhaustive depth")
@@ -5065,13 +5065,34 @@ func init() {
 	flag.IntVar(&process.Capacity, "capacity", 4, "databases a node keeps open")
 }
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 10.1" runs both.
+// part labels the claims made while a part runs.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		settings, modelRuns, modelTraces, steps, modelSteps, closes, problems, slots, catalog, acks, infoRun, infoBounds *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+)
+
+func openTables() {
+	tables.settings = set.Table("settings", "seq", "name", "value")
+	tables.modelRuns = set.Table("model_runs", "seq", "model", "role", "depth", "seed", "interleavings", "distinct_states", "violating", "walks", "walk_steps", "walk_violating", "violation")
+	tables.modelTraces = set.Table("model_traces", "model", "step_no", "action", "outcome")
+	tables.steps = set.Table("steps", "step", "node", "command", "reply", "descriptors", "model_agrees")
+	tables.modelSteps = set.Table("model_steps", "step", "database", "seq", "action", "outcome")
+	tables.closes = set.Table("closes", "node", "reply", "summary")
+	tables.problems = set.Table("problems", "seq", "kind", "line")
+	tables.slots = set.Table("slots", "database", "source", "first", "last", "epoch", "kind")
+	tables.catalog = set.Table("catalog", "database", "owner", "epoch", "last_shipped", "schema_version", "location", "restored_position", "restored_state", "file_equals_store")
+	tables.acks = set.Table("acks", "seq", "database", "mode", "epoch", "user_version", "position", "in_store")
+	tables.infoRun = set.Table("info_run", "name", "value")
+	tables.infoBounds = set.Table("info_bounds", "step", "node", "bounds")
+}
+
+func check(ok bool, claim string) {
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -5079,18 +5100,25 @@ func fatal(what string, err error) {
 	os.Exit(1)
 }
 
+func setting(name string, value any) {
+	settingSeq++
+	tables.settings.Row(settingSeq, name, value)
+}
+
+var settingSeq, modelSeq int
+
 func partA() {
-	fmt.Println("\n== A. the ownership model, every interleaving up to a bounded depth ==")
-	fmt.Printf("model: %d nodes, one database, the catalog's epoch counter, a store of position slots with put-if-absent; actions per node: claim, fence, fence-with-stale-list, write, ship, crash, restart, restart-with-stale-list; at most %d epochs, and a node's local commits stop at stream position %d (the bound counts positions across all epochs and fences, not commits per node)\n", model.Nodes, model.MaxEpoch, model.MaxLocal)
-	fmt.Println("invariants after every step: no two epochs accepted for overlapping positions; no epoch accepted after a newer one was; no accepted object overwritten")
+	part = "A"
+	setting("model_nodes", model.Nodes)
+	setting("model_max_epoch", model.MaxEpoch)
+	setting("model_max_local_position", model.MaxLocal)
+	setting("model_seed", *seed)
 	under, err := model.ParseMutant(*mutant)
 	if err != nil {
 		fatal("-mutant", err)
 	}
 	report := model.Explore(under, *depth, *seed, *walks, *walkLength)
-	fmt.Printf("%s, depth %d, seed %d: %d interleavings explored, %d distinct states, %d interleavings violate an invariant\n", report.Mutant, report.Depth, *seed, report.Interleavings, report.States, report.Violating)
-	fmt.Printf("seeded random walks: %d walks, %d steps, %d reached a violation\n", report.Walks, report.WalkSteps, report.WalkViolating)
-	printTrace(report)
+	recordModel(report, "under test")
 	check(report.Violating == 0 && report.WalkViolating == 0 && report.Shortest == nil, fmt.Sprintf("model %s: no interleaving up to depth %d and no random walk lets a fenced epoch get a commit accepted", report.Mutant, *depth))
 	// Self-tests: disable each half of the fencing rule in turn so the
 	// experiment proves the checker can fail when either guarantee is missing.
@@ -5099,19 +5127,23 @@ func partA() {
 			continue
 		}
 		self := model.Explore(m, *depth, *seed, 0, 0)
-		fmt.Printf("self-test %s: %d of %d interleavings violate an invariant\n", m, self.Violating, self.Interleavings)
-		printTrace(self)
+		recordModel(self, "self-test")
 		check(self.Violating > 0 && self.Shortest != nil, fmt.Sprintf("self-test: with %s the checker finds the violation", m))
 	}
 }
 
-func printTrace(report model.Report) {
-	if report.Shortest == nil {
-		return
+// recordModel writes one exploration and its shortest violating interleaving,
+// whose lines model.Explore formats as "%2d. %-28s %s" (step, action, outcome).
+func recordModel(report model.Report, role string) {
+	modelSeq++
+	var violation any
+	if report.Shortest != nil {
+		violation = report.Violation
 	}
-	fmt.Printf("  shortest violating interleaving (%d steps): %s\n", len(report.Shortest), report.Violation)
-	for _, line := range report.Shortest {
-		fmt.Println("    " + line)
+	tables.modelRuns.Row(modelSeq, report.Mutant, role, report.Depth, *seed, report.Interleavings, report.States, report.Violating, report.Walks, report.WalkSteps, report.WalkViolating, violation)
+	for i, line := range report.Shortest {
+		_, rest, _ := strings.Cut(line, ". ")
+		tables.modelTraces.Row(report.Mutant, i+1, strings.TrimSpace(rest[:min(28, len(rest))]), strings.TrimSpace(rest[min(28, len(rest)):]))
 	}
 }
 
@@ -5191,9 +5223,8 @@ func startNode(ctx context.Context, work, name, fault string) *node.Process {
 	return p
 }
 
-func partB(ctx context.Context, store *s3store.Store) {
-	fmt.Println("\n== B. the stale-owner scenario on two service processes against the S3 store ==")
-	work := sqlitex.MustWorkDir("10.1")
+func partB(ctx context.Context, store *s3store.Store, work string) {
+	part = "B"
 	if _, err := store.Wipe(ctx); err != nil {
 		fatal("wipe the store prefix", err)
 	}
@@ -5204,6 +5235,8 @@ func partB(ctx context.Context, store *s3store.Store) {
 		}
 	}
 	fmt.Printf("INFO: store %s, work directory %s\n", store.Endpoint, shown)
+	tables.infoRun.Row("store endpoint", store.Endpoint)
+	tables.infoRun.Row("work directory", shown)
 	cat, err := catalog.Open(ctx, filepath.Join(work, "catalog.db"))
 	if err != nil {
 		fatal("catalog", err)
@@ -5214,9 +5247,15 @@ func partB(ctx context.Context, store *s3store.Store) {
 			fatal("register", err)
 		}
 	}
-	fmt.Printf("store: bucket %s, prefix %s; catalog: %s registered with %s; nodes a and b share the catalog; each keeps at most %d databases open\n",
-		store.Bucket, store.Prefix, strings.Join(databases, ", "), node.PlatformSettings(), process.Capacity)
-	fmt.Println("node b's store wrapper hides the newest slot from its first listing (fault stale-list:/log/:1)")
+	setting("bucket", store.Bucket)
+	setting("prefix", store.Prefix)
+	setting("databases", strings.Join(databases, " "))
+	for _, pragma := range strings.Fields(node.PlatformSettings().String()) {
+		name, value, _ := strings.Cut(pragma, "=")
+		setting(name, value)
+	}
+	setting("open_databases_per_node", process.Capacity)
+	setting("fault_on_node_b", "stale-list:/log/:1")
 	nodes := map[string]*node.Process{"a": startNode(ctx, work, "a", ""), "b": startNode(ctx, work, "b", "stale-list:/log/:1")}
 	states := map[string]model.State{}
 	for _, id := range databases {
@@ -5226,8 +5265,8 @@ func partB(ctx context.Context, store *s3store.Store) {
 	var problems, overBounds []string
 	commands, agreed, sampled := 0, 0, 0
 	for i, s := range scenario {
-		fmt.Printf("step %d: node %s: %s\n", i+1, s.node, s.command)
 		var reply node.Reply
+		var descriptors any
 		switch s.command {
 		case "kill":
 			if err := nodes[s.node].Kill(); err != nil {
@@ -5239,14 +5278,18 @@ func partB(ctx context.Context, store *s3store.Store) {
 			if reply, err = nodes[s.node].Send(s.command); err != nil {
 				fatal("send", err)
 			}
-			fmt.Println("  " + reply.Line)
-			fmt.Printf("INFO: %s %s\n", s.node, reply.Bounds)
+			tables.infoBounds.Row(i+1, s.node, reply.Bounds)
+			var n int
+			if _, err := fmt.Sscanf(reply.Bounds, "bounds descriptors=%d", &n); err == nil {
+				descriptors = n
+			}
 			sampled++
 			problems = append(problems, reply.Problems...)
 			if !reply.WithinBounds() {
 				overBounds = append(overBounds, reply.Bounds)
 			}
 		}
+		var modelAgrees any
 		for _, id := range databases {
 			if _, ok := s.model[id]; !ok {
 				continue
@@ -5255,8 +5298,8 @@ func partB(ctx context.Context, store *s3store.Store) {
 			if err != nil {
 				fatal("script", err)
 			}
-			var outcomes, shown []string
-			for _, a := range actions {
+			var outcomes []string
+			for j, a := range actions {
 				next, outcome, enabled := model.Step(states[id], model.Correct, a)
 				if !enabled {
 					outcome = "refused: not enabled"
@@ -5264,18 +5307,22 @@ func partB(ctx context.Context, store *s3store.Store) {
 					states[id] = next
 				}
 				outcomes = append(outcomes, outcome)
-				shown = append(shown, a.String()+": "+outcome)
+				tables.modelSteps.Row(i+1, id, j+1, a.String(), outcome)
 			}
-			fmt.Printf("  model %s: %s\n", id, strings.Join(shown, "; "))
 			if reply.Line != "" {
 				commands++
-				if agrees(reply.Line, outcomes) {
+				ok := agrees(reply.Line, outcomes)
+				modelAgrees = ok
+				if ok {
 					agreed++
-				} else {
-					fmt.Println("  the model DISAGREES with this step")
 				}
 			}
 		}
+		var line any
+		if reply.Line != "" {
+			line = reply.Line
+		}
+		tables.steps.Row(i+1, s.node, s.command, line, descriptors, modelAgrees)
 		var a ack
 		if n, _ := fmt.Sscanf(reply.Line, "ok write %s %s acknowledged at epoch %d, user_version %d,", &a.database, &a.mode, &a.epoch, &a.userVersion); n == 4 {
 			a.mode = node.AckMode(strings.TrimSuffix(string(a.mode), ":"))
@@ -5293,30 +5340,39 @@ func partB(ctx context.Context, store *s3store.Store) {
 		if err != nil {
 			fatal("close node "+name, err)
 		}
-		fmt.Printf("node %s: %s; %s\n", name, reply.Line, reply.Summary)
+		tables.closes.Row(name, reply.Line, reply.Summary)
 		sampled++
 		problems = append(problems, reply.Problems...)
 		if !reply.WithinBounds() {
 			overBounds = append(overBounds, reply.Bounds)
 		}
 	}
-	for _, problem := range problems {
-		fmt.Println("problem: " + problem)
-	}
-	for _, line := range overBounds {
-		fmt.Println("over bounds: " + line)
-	}
+	recordProblems(problems, overBounds)
 	check(len(problems) == 0, "no node reported a problem (a failed final ship, an eviction that did not leave the shipped state at rest, an I/O error)")
 	check(len(overBounds) == 0, fmt.Sprintf("after each of the %d commands the node's descriptors and memory stayed within the standing bounds", sampled))
 	verify(ctx, store, cat, work, states, acks)
 }
 
+func recordProblems(problems, overBounds []string) {
+	seq := 0
+	for _, kind := range []struct {
+		name  string
+		lines []string
+	}{{"problem", problems}, {"over bounds", overBounds}} {
+		for _, line := range kind.lines {
+			seq++
+			tables.problems.Row(seq, kind.name, line)
+		}
+	}
+}
+
 func verify(ctx context.Context, store *s3store.Store, cat *catalog.Catalog, work string, states map[string]model.State, acks []ack) {
+	ackSeq := 0
 	hashes, err := recipe.Default().StepHashes(ctx)
 	if err != nil {
 		fatal("step hashes", err)
 	}
-	fmt.Println("\nthe store after the run (read back from S3), and the model's store after the same steps:")
+	part = "C"
 	for _, id := range databases {
 		chain, restorable, err := fence.Audit(ctx, store, id)
 		if err != nil {
@@ -5325,8 +5381,16 @@ func verify(ctx context.Context, store *s3store.Store, cat *catalog.Catalog, wor
 		var slots []string
 		for _, slot := range chain {
 			slots = append(slots, fmt.Sprintf("positions %d-%d epoch %d %s", slot.First, slot.Last, slot.Epoch, slot.Kind))
+			tables.slots.Row(id, "store", slot.First, slot.Last, slot.Epoch, slot.Kind)
 		}
-		fmt.Printf("%s store: %s\n%s model: %s\n", id, strings.Join(slots, "; "), id, strings.Join(states[id].ChainLines(), "; "))
+		for _, line := range states[id].ChainLines() {
+			var first, last, epoch int64
+			var kind string
+			if _, err := fmt.Sscanf(line, "positions %d-%d epoch %d %s", &first, &last, &epoch, &kind); err != nil {
+				fatal("model chain", err)
+			}
+			tables.slots.Row(id, "model", first, last, epoch, kind)
+		}
 		// Require len(restorable.Damaged) == 0 in addition to RestoreAt(last):
 		// a damaged segment before a newer snapshot would not affect restoring
 		// the latest position, but would break point-in-time auditability.
@@ -5345,14 +5409,13 @@ func verify(ctx context.Context, store *s3store.Store, cat *catalog.Catalog, wor
 		if err != nil {
 			fatal("catalog "+id, err)
 		}
-		fmt.Printf("%s catalog: owner %s, epoch %d, last shipped %d, schema version %d, location %s; restore of position %d: %s\n",
-			id, record.Owner, record.Epoch, record.LastShipped, record.SchemaVersion, record.Location, last.Last, match)
 		check(record.Epoch == last.Epoch && record.LastShipped == last.Last && record.SchemaVersion == match.Step && match.Found() && (match.Exact || recipe.ChangeCountersAgree(image)),
 			id+": the catalog names the newest epoch and the last stored position, and the restored state is a recipe state")
 		status, err := connmgr.CheckAtRest(filepath.Join(work, record.Owner, id+".db"))
 		if err != nil {
 			fatal("at rest", err)
 		}
+		tables.catalog.Row(id, record.Owner, record.Epoch, record.LastShipped, record.SchemaVersion, record.Location, last.Last, match, status.AtRest && status.SHA256 == walship.SHA256Hex(image))
 		check(status.AtRest && status.SHA256 == walship.SHA256Hex(image), id+": the owner's closed local file is byte-identical (E1) to the state rebuilt from the store")
 		for _, a := range acks {
 			if a.database != id {
@@ -5366,7 +5429,12 @@ func verify(ctx context.Context, store *s3store.Store, cat *catalog.Catalog, wor
 					}
 				}
 			}
-			fmt.Printf("%s %s acknowledgement at epoch %d of user_version %d: in the store %t\n", id, a.mode, a.epoch, a.userVersion, found)
+			ackSeq++
+			var position any
+			if a.mode == node.StoreDurable {
+				position = a.position
+			}
+			tables.acks.Row(ackSeq, id, a.mode, a.epoch, a.userVersion, position, found)
 			if a.mode == node.StoreDurable {
 				check(found, fmt.Sprintf("%s: the store-durable acknowledgement of user_version %d is stored at position %d by epoch %d", id, a.userVersion, a.position, a.epoch))
 			} else {
@@ -5396,162 +5464,500 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	work := sqlitex.MustWorkDir("10.1")
+	set = results.MustOpen(work)
+	openTables()
 	partA()
 	if !*modelOnly {
-		partB(ctx, store)
+		partB(ctx, store, work)
 	}
-	if len(failures) > 0 {
-		fmt.Printf("\n%d check(s) FAILED\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("\nall checks passed")
+	set.Finish("ONE WRITER")
 }
 ```
 
-Run from the repository root (with SeaweedFS running via `docker compose up -d seaweedfs`; add `-model-only` to run Part A without SeaweedFS, or `-mutant store-accepts-every-put` / `-mutant resume-from-global-end` to see the main check fail and exit `1`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
 
-```text
-go run ./ch10-multi-database-platform-capstone/experiments/10.1-one-writer
+<!-- include: experiments/10.1-one-writer/report.sql -->
+```sql
+-- Walkthrough of experiment 10.1. Run it with:
+--   go run ./cmd/course run 10.1        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   settings       one setting of the model or of the service run (name, value)
+--   model_runs     part A: one exploration of the ownership model (the model under test or a mutant)
+--   model_traces   part A: one step of the shortest violating interleaving a mutant has
+--   steps          part B: one step of the stale-owner scenario and the node's reply
+--   model_steps    part B: one model action the scenario step maps to, and its outcome
+--   closes         part B: one node's reply when it was closed, with its standing-bounds summary
+--   problems       part B: one problem or over-bounds line a node reported (none on a good run)
+--   slots          part C: one slot of a database's chain, read back from S3 or predicted by the model
+--   catalog        part C: one database's catalog row and the restore of its last position
+--   acks           part C: one acknowledged write and whether the store holds it
+--   checks         every claim the experiment asserted (the runner lists it last)
+-- info_run and info_bounds hold the store endpoint, the work directory and each
+-- reply's memory sample; info.sql shows them.
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  10.1  Can a fenced owner ever get a commit accepted?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'Part A checks the ownership rule on a model: every interleaving up to a'
+.print 'bounded depth, plus seeded random walks. Part B runs the same rule on two'
+.print 'real node processes that share a catalog and a SeaweedFS S3 store. Part C'
+.print 'reads the store back after part B and compares it with the model.'
+
+.print
+.print '── A. The ownership model, every interleaving up to a bounded depth ───'
+.print
+.print 'The model: nodes A and B, one database, the epoch counter of the catalog, a'
+.print 'store of position slots with put-if-absent. Actions per node: claim, fence,'
+.print 'fence-with-stale-list, write, ship, crash, restart, restart-with-stale-list.'
+.print 'The bound on local positions counts positions across all epochs and fences,'
+.print 'not commits per node.'
+
+SELECT name, value FROM settings WHERE name LIKE 'model_%' ORDER BY seq;
+
+.print
+.print 'Invariants after every step: no two epochs accepted for overlapping'
+.print 'positions; no epoch accepted after a newer one was; no accepted object'
+.print 'overwritten.'
+.print
+.print 'A1. The correct model has no violating interleaving and no violating walk.'
+.print '    Each mutant disables one half of the fencing rule, and the checker finds'
+.print '    the violation: the checker can fail.'
+
+SELECT model, depth, interleavings, distinct_states AS states, violating,
+       walks, walk_steps, walk_violating
+FROM model_runs ORDER BY seq;
+
+.print
+.print 'A2. The shortest violating interleaving of each mutant. With'
+.print '    store-accepts-every-put, the stale listing of A lets its fence overwrite'
+.print '    the accepted object of epoch 1. With resume-from-global-end, B restarts'
+.print '    at the end of the store and ships behind the fence of epoch 2.'
+
+SELECT r.model, r.violation, count(*) AS steps
+FROM model_runs r JOIN model_traces t USING (model)
+GROUP BY r.seq, r.model, r.violation ORDER BY r.seq;
+
+SELECT t.model, t.step_no, t.action, t.outcome
+FROM model_traces t JOIN model_runs r USING (model)
+ORDER BY r.seq, t.step_no;
+
+.print
+.print '── B. The stale-owner scenario on two service processes ───────────────'
+.print
+.print 'Nodes a and b share the catalog and the store. The store wrapper of node b'
+.print 'hides the newest slot from its first listing (fault_on_node_b). Every'
+.print 'database is opened with the SQLite settings listed after the store.'
+
+SELECT name, value FROM settings WHERE name NOT LIKE 'model_%' ORDER BY seq;
+
+.print
+.print 'B1. Fifteen steps and the replies. Steps 1-7 run on db-0001: b takes over'
+.print '    while a still runs, and a is fenced on its next write (steps 5 and 6).'
+.print '    Steps 8-15 run on db-0002: b is killed and restarts with its .owner'
+.print '    belief file, and is fenced again (step 13) while it keeps db-0001.'
+
+SELECT step, node, command, split_part(reply, ' ', 1) AS result
+FROM steps ORDER BY step;
+
+.print
+.print 'B2. What each reply says after the command. A claim names the new epoch'
+.print '    and how many fence attempts it took; a write names the epoch and'
+.print '    user_version it was acknowledged at, and the store position for a'
+.print '    store-durable write.'
+
+SELECT step, split_part(reply, ' ', 1) AS result, substr(reply, strpos(reply, ': ') + 2) AS detail
+FROM steps WHERE reply IS NOT NULL ORDER BY step;
+
+.print
+.print 'B3. The model actions each step maps to, and their outcomes. In step 4 the'
+.print '    stale listing makes the first fence of B retry, as it did for node b'
+.print '    (attempts 2).'
+
+SELECT step, database, seq, action, outcome FROM model_steps ORDER BY step, database, seq;
+
+.print
+.print 'B4. The model agrees with every command step. The descriptors column is the'
+.print '    open descriptors of the node above its baseline after the command: 7 per'
+.print '    open database (3 connections), 14 for two, 0 when it holds none open.'
+
+SELECT step, node, command, descriptors, model_agrees FROM steps
+WHERE reply IS NOT NULL ORDER BY step;
+
+SELECT count(*) AS command_steps,
+       count(*) FILTER (model_agrees) AS model_agrees
+FROM steps WHERE reply IS NOT NULL;
+
+.print
+.print 'B5. Closing each node. The standing assertion checked descriptors and memory'
+.print '    after every command against the bounds for at most 4 open databases.'
+
+SELECT node, reply,
+       regexp_extract(summary, 'standing assertion: (\d+) checks', 1)::INT AS bound_checks,
+       replace(replace(regexp_extract(summary, 'descriptors above baseline <= (\d+ \([^)]*\))', 1),
+                       ' (', ' = '), ')', '')                              AS max_descriptors,
+       regexp_extract(summary, 'memory growth <= (.*)$', 1)                AS max_memory_growth
+FROM closes ORDER BY node;
+
+.print
+.print 'B6. Problems and over-bounds lines the nodes reported. Both counts are 0;'
+.print '    any line would be listed in the table problems.'
+
+SELECT count(*) FILTER (kind = 'problem')     AS problems,
+       count(*) FILTER (kind = 'over bounds') AS over_bounds
+FROM problems;
+
+.print
+.print '── C. The store after the run, read back from S3 ───────────────────────'
+.print
+.print 'C1. The slots in the store and the slots the model predicts after the same'
+.print '    steps. They are the same: one lineage per database, epochs never'
+.print '    decreasing, each epoch opening with a fence snapshot.'
+
+SELECT s.database, s.first, s.last, s.epoch, s.kind AS store_kind, m.kind AS model_kind,
+       m.epoch = s.epoch AND m.last = s.last AND m.kind = s.kind AS same
+FROM slots s FULL JOIN slots m
+  ON m.source = 'model' AND s.database = m.database AND s.first = m.first
+WHERE s.source = 'store'
+ORDER BY s.database, s.first;
+
+.print
+.print 'C2. The catalog names the newest epoch and the last stored position. The'
+.print '    restore of that position is a recipe state, and the closed local file of'
+.print '    the owner is byte-identical (E1) to it.'
+
+SELECT database, owner, epoch, last_shipped, schema_version, location FROM catalog ORDER BY database;
+
+SELECT database, restored_position, restored_state, file_equals_store FROM catalog ORDER BY database;
+
+.print
+.print 'C3. Every acknowledgement. Each store-durable one is in the store at the'
+.print '    position its reply named. The local-durable acknowledgement of'
+.print '    db-0001 user_version 2 was never shipped, and the takeover lost it, as'
+.print '    that mode allows.'
+
+SELECT database, mode, epoch, user_version, position, in_store FROM acks ORDER BY seq;
 ```
 
-Captured evidence:
+Run from the repository root, with SeaweedFS running via `docker compose up -d seaweedfs` (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
+
+```text
+go run ./cmd/course run 10.1
+```
+
+Add `-i` (`go run ./cmd/course run -i 10.1`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries. To run Part A without SeaweedFS, or to see the main check fail and exit `1`, run a flag variant directly in the container: `docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.1-one-writer -model-only` (or `-mutant store-accepts-every-put` / `-mutant resume-from-global-end`).
+
+`course run` also prints the run-dependent values, which are not part of the stored evidence: where the store and the work directory were, and the bounds sample each node sent after a command, with its memory reading.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/10.1-one-writer/`](evidence/10.1-one-writer/), and `go run ./cmd/course check evidence ch10` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/10.1-one-writer.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
 
-== A. the ownership model, every interleaving up to a bounded depth ==
-model: 2 nodes, one database, the catalog's epoch counter, a store of position slots with put-if-absent; actions per node: claim, fence, fence-with-stale-list, write, ship, crash, restart, restart-with-stale-list; at most 3 epochs, and a node's local commits stop at stream position 5 (the bound counts positions across all epochs and fences, not commits per node)
-invariants after every step: no two epochs accepted for overlapping positions; no epoch accepted after a newer one was; no accepted object overwritten
-correct, depth 16, seed 1: 9595507962 interleavings explored, 44134 distinct states, 0 interleavings violate an invariant
-seeded random walks: 2000 walks, 120000 steps, 0 reached a violation
-check ok: model correct: no interleaving up to depth 16 and no random walk lets a fenced epoch get a commit accepted
-self-test store-accepts-every-put: 451413240 of 3536900716 interleavings violate an invariant
-  shortest violating interleaving (4 steps): the accepted object of epoch 1 at position 1 was overwritten
-     1. B claim                      ok: catalog epoch 1
-     2. B fence                      ok: fence at 1
-     3. A claim                      ok: catalog epoch 2
-     4. A fence-with-stale-list      ok: fence at 1
-check ok: self-test: with store-accepts-every-put the checker finds the violation
-self-test resume-from-global-end: 170698606 of 11458358774 interleavings violate an invariant
-  shortest violating interleaving (7 steps): epoch 1 was accepted at positions 3-3 after epoch 2 had been accepted
-     1. B claim                      ok: catalog epoch 1
-     2. B fence                      ok: fence at 1
-     3. A claim                      ok: catalog epoch 2
-     4. A fence                      ok: fence at 2
-     5. B crash                      ok: volatile state lost
-     6. B restart                    ok: resumed at the store's end 2
-     7. B ship                       ok: positions 3-3 accepted
-check ok: self-test: with resume-from-global-end the checker finds the violation
+════════════════════════════════════════════════════════════════════════
+  10.1  Can a fenced owner ever get a commit accepted?
+════════════════════════════════════════════════════════════════════════
 
-== B. the stale-owner scenario on two service processes against the S3 store ==
-INFO: store http://127.0.0.1:18333, work directory _work/10.1
-store: bucket course-ch10a, prefix exp-10-1/; catalog: db-0001, db-0002 registered with synchronous=FULL foreign_keys=ON secure_delete=ON cache_size=-256 wal_autocheckpoint=0 busy_timeout=5000ms; nodes a and b share the catalog; each keeps at most 4 databases open
-node b's store wrapper hides the newest slot from its first listing (fault stale-list:/log/:1)
-step 1: node a: claim db-0001
-  ok claim db-0001: epoch 1, restored position 0, fence at position 1, attempts 1
-INFO: a bounds descriptors=0 memory=1359872 ok
-  model db-0001: A claim: ok: catalog epoch 1; A fence: ok: fence at 1
-step 2: node a: write db-0001 store-durable
-  ok write db-0001 store-durable: acknowledged at epoch 1, user_version 1, stored through position 2
-INFO: a bounds descriptors=7 memory=3239936 ok
-  model db-0001: A write: ok: local commit 2; A ship: ok: positions 2-2 accepted
-step 3: node a: write db-0001 local-durable
-  ok write db-0001 local-durable: acknowledged at epoch 1, user_version 2, committed locally (not yet in the store)
-INFO: a bounds descriptors=7 memory=3579904 ok
-  model db-0001: A write: ok: local commit 3
-step 4: node b: claim db-0001
-  ok claim db-0001: epoch 2, restored position 2, fence at position 3, attempts 2
-INFO: b bounds descriptors=0 memory=3112960 ok
-  model db-0001: B claim: ok: catalog epoch 2; B fence-with-stale-list: refused: position 2 holds epoch 1, retry; B fence: ok: fence at 3
-step 5: node a: write db-0001 store-durable
-  refused write db-0001 store-durable: fenced: db-0001 position 3 is held by epoch 2, this writer has epoch 1
-INFO: a bounds descriptors=0 memory=5476352 ok
-  model db-0001: A write: ok: local commit 4; A ship: refused: position 3 holds epoch 2
-step 6: node a: write db-0001 local-durable
-  refused write db-0001 local-durable: fenced: db-0001 position 3 is held by epoch 2, this writer has epoch 1
-INFO: a bounds descriptors=0 memory=5488640 ok
-  model db-0001: A write: refused: not enabled
-step 7: node b: write db-0001 store-durable
-  ok write db-0001 store-durable: acknowledged at epoch 2, user_version 2, stored through position 4
-INFO: b bounds descriptors=7 memory=5500928 ok
-  model db-0001: B write: ok: local commit 4; B ship: ok: positions 4-4 accepted
-step 8: node b: claim db-0002
-  ok claim db-0002: epoch 1, restored position 0, fence at position 1, attempts 1
-INFO: b bounds descriptors=7 memory=5677056 ok
-  model db-0002: B claim: ok: catalog epoch 1; B fence: ok: fence at 1
-step 9: node b: write db-0002 store-durable
-  ok write db-0002 store-durable: acknowledged at epoch 1, user_version 1, stored through position 2
-INFO: b bounds descriptors=14 memory=6287360 ok
-  model db-0002: B write: ok: local commit 2; B ship: ok: positions 2-2 accepted
-step 10: node a: claim db-0002
-  ok claim db-0002: epoch 2, restored position 2, fence at position 3, attempts 1
-INFO: a bounds descriptors=0 memory=5730304 ok
-  model db-0002: A claim: ok: catalog epoch 2; A fence: ok: fence at 3
-step 11: node b: kill
-  model db-0001: B crash: ok: volatile state lost
-  model db-0002: B crash: ok: volatile state lost
-step 12: node b: restart
-  model db-0001: B restart: ok: resumed own chain at 4
-  model db-0002: B restart: ok: restarted, then refused: a newer epoch is in the store
-step 13: node b: write db-0002 store-durable
-  refused write db-0002 store-durable: fenced: db-0002 position 3 is held by epoch 2, this writer has epoch 1
-INFO: b bounds descriptors=0 memory=1953792 ok
-  model db-0002: B write: refused: not enabled; B ship: refused: not enabled
-step 14: node b: write db-0001 store-durable
-  ok write db-0001 store-durable: acknowledged at epoch 2, user_version 3, stored through position 5
-INFO: b bounds descriptors=7 memory=5304320 ok
-  model db-0001: B write: ok: local commit 5; B ship: ok: positions 5-5 accepted
-step 15: node a: write db-0002 store-durable
-  ok write db-0002 store-durable: acknowledged at epoch 2, user_version 2, stored through position 4
-INFO: a bounds descriptors=7 memory=6221824 ok
-  model db-0002: A write: ok: local commit 4; A ship: ok: positions 4-4 accepted
-check ok: the real processes and the model agree at every command step (13 of 13)
-node a: ok close; standing assertion: 8 checks, descriptors above baseline <= 68 (3 x 3 connections x 4 open databases + 32 reserve), memory growth <= 41 MiB
-node b: ok close; standing assertion: 3 checks, descriptors above baseline <= 68 (3 x 3 connections x 4 open databases + 32 reserve), memory growth <= 41 MiB
-check ok: no node reported a problem (a failed final ship, an eviction that did not leave the shipped state at rest, an I/O error)
-check ok: after each of the 15 commands the node's descriptors and memory stayed within the standing bounds
+Part A checks the ownership rule on a model: every interleaving up to a
+bounded depth, plus seeded random walks. Part B runs the same rule on two
+real node processes that share a catalog and a SeaweedFS S3 store. Part C
+reads the store back after part B and compares it with the model.
 
-the store after the run (read back from S3), and the model's store after the same steps:
-db-0001 store: positions 1-1 epoch 1 snapshot; positions 2-2 epoch 1 segment; positions 3-3 epoch 2 snapshot; positions 4-4 epoch 2 segment; positions 5-5 epoch 2 segment
-db-0001 model: positions 1-1 epoch 1 snapshot; positions 2-2 epoch 1 segment; positions 3-3 epoch 2 snapshot; positions 4-4 epoch 2 segment; positions 5-5 epoch 2 segment
-check ok: db-0001: the store holds exactly the slots the model predicts: one lineage, epochs never decreasing, no damaged object
-db-0001 catalog: owner b, epoch 2, last shipped 5, schema version 3, location b:db-0001.db; restore of position 5: step 3 (exact bytes)
-check ok: db-0001: the catalog names the newest epoch and the last stored position, and the restored state is a recipe state
-check ok: db-0001: the owner's closed local file is byte-identical (E1) to the state rebuilt from the store
-db-0001 store-durable acknowledgement at epoch 1 of user_version 1: in the store true
-check ok: db-0001: the store-durable acknowledgement of user_version 1 is stored at position 2 by epoch 1
-db-0001 local-durable acknowledgement at epoch 1 of user_version 2: in the store false
-check ok: db-0001: the local-durable acknowledgement of user_version 2 by epoch 1 was never shipped, and the takeover lost it, as that mode allows
-db-0001 store-durable acknowledgement at epoch 2 of user_version 2: in the store true
-check ok: db-0001: the store-durable acknowledgement of user_version 2 is stored at position 4 by epoch 2
-db-0001 store-durable acknowledgement at epoch 2 of user_version 3: in the store true
-check ok: db-0001: the store-durable acknowledgement of user_version 3 is stored at position 5 by epoch 2
-db-0002 store: positions 1-1 epoch 1 snapshot; positions 2-2 epoch 1 segment; positions 3-3 epoch 2 snapshot; positions 4-4 epoch 2 segment
-db-0002 model: positions 1-1 epoch 1 snapshot; positions 2-2 epoch 1 segment; positions 3-3 epoch 2 snapshot; positions 4-4 epoch 2 segment
-check ok: db-0002: the store holds exactly the slots the model predicts: one lineage, epochs never decreasing, no damaged object
-db-0002 catalog: owner a, epoch 2, last shipped 4, schema version 2, location a:db-0002.db; restore of position 4: step 2 (exact bytes)
-check ok: db-0002: the catalog names the newest epoch and the last stored position, and the restored state is a recipe state
-check ok: db-0002: the owner's closed local file is byte-identical (E1) to the state rebuilt from the store
-db-0002 store-durable acknowledgement at epoch 1 of user_version 1: in the store true
-check ok: db-0002: the store-durable acknowledgement of user_version 1 is stored at position 2 by epoch 1
-db-0002 store-durable acknowledgement at epoch 2 of user_version 2: in the store true
-check ok: db-0002: the store-durable acknowledgement of user_version 2 is stored at position 4 by epoch 2
+── A. The ownership model, every interleaving up to a bounded depth ───
 
-all checks passed
+The model: nodes A and B, one database, the epoch counter of the catalog, a
+store of position slots with put-if-absent. Actions per node: claim, fence,
+fence-with-stale-list, write, ship, crash, restart, restart-with-stale-list.
+The bound on local positions counts positions across all epochs and fences,
+not commits per node.
+┌──────────────────────────┬───────┐
+│           name           │ value │
+├──────────────────────────┼───────┤
+│ model_nodes              │ 2     │
+│ model_max_epoch          │ 3     │
+│ model_max_local_position │ 5     │
+│ model_seed               │ 1     │
+└──────────────────────────┴───────┘
+
+Invariants after every step: no two epochs accepted for overlapping
+positions; no epoch accepted after a newer one was; no accepted object
+overwritten.
+
+A1. The correct model has no violating interleaving and no violating walk.
+    Each mutant disables one half of the fencing rule, and the checker finds
+    the violation: the checker can fail.
+┌─────────────────────────┬───────┬───────────────┬────────┬───────────┬───────┬────────────┬────────────────┐
+│          model          │ depth │ interleavings │ states │ violating │ walks │ walk_steps │ walk_violating │
+├─────────────────────────┼───────┼───────────────┼────────┼───────────┼───────┼────────────┼────────────────┤
+│ correct                 │ 16    │ 9595507962    │ 44134  │ 0         │ 2000  │ 120000     │ 0              │
+│ store-accepts-every-put │ 16    │ 3536900716    │ 38     │ 451413240 │ 0     │ 0          │ 0              │
+│ resume-from-global-end  │ 16    │ 11458358774   │ 360    │ 170698606 │ 0     │ 0          │ 0              │
+└─────────────────────────┴───────┴───────────────┴────────┴───────────┴───────┴────────────┴────────────────┘
+
+A2. The shortest violating interleaving of each mutant. With
+    store-accepts-every-put, the stale listing of A lets its fence overwrite
+    the accepted object of epoch 1. With resume-from-global-end, B restarts
+    at the end of the store and ships behind the fence of epoch 2.
+┌─────────────────────────┬───────────────────────────────────────────────────────────────────────┬───────┐
+│          model          │                               violation                               │ steps │
+├─────────────────────────┼───────────────────────────────────────────────────────────────────────┼───────┤
+│ store-accepts-every-put │ the accepted object of epoch 1 at position 1 was overwritten          │ 4     │
+│ resume-from-global-end  │ epoch 1 was accepted at positions 3-3 after epoch 2 had been accepted │ 7     │
+└─────────────────────────┴───────────────────────────────────────────────────────────────────────┴───────┘
+┌─────────────────────────┬─────────┬─────────────────────────┬──────────────────────────────────┐
+│          model          │ step_no │         action          │             outcome              │
+├─────────────────────────┼─────────┼─────────────────────────┼──────────────────────────────────┤
+│ store-accepts-every-put │ 1       │ B claim                 │ ok: catalog epoch 1              │
+│ store-accepts-every-put │ 2       │ B fence                 │ ok: fence at 1                   │
+│ store-accepts-every-put │ 3       │ A claim                 │ ok: catalog epoch 2              │
+│ store-accepts-every-put │ 4       │ A fence-with-stale-list │ ok: fence at 1                   │
+│ resume-from-global-end  │ 1       │ B claim                 │ ok: catalog epoch 1              │
+│ resume-from-global-end  │ 2       │ B fence                 │ ok: fence at 1                   │
+│ resume-from-global-end  │ 3       │ A claim                 │ ok: catalog epoch 2              │
+│ resume-from-global-end  │ 4       │ A fence                 │ ok: fence at 2                   │
+│ resume-from-global-end  │ 5       │ B crash                 │ ok: volatile state lost          │
+│ resume-from-global-end  │ 6       │ B restart               │ ok: resumed at the store's end 2 │
+│ resume-from-global-end  │ 7       │ B ship                  │ ok: positions 3-3 accepted       │
+└─────────────────────────┴─────────┴─────────────────────────┴──────────────────────────────────┘
+
+── B. The stale-owner scenario on two service processes ───────────────
+
+Nodes a and b share the catalog and the store. The store wrapper of node b
+hides the newest slot from its first listing (fault_on_node_b). Every
+database is opened with the SQLite settings listed after the store.
+┌─────────────────────────┬────────────────────┐
+│          name           │       value        │
+├─────────────────────────┼────────────────────┤
+│ bucket                  │ course-ch10a       │
+│ prefix                  │ exp-10-1/          │
+│ databases               │ db-0001 db-0002    │
+│ synchronous             │ FULL               │
+│ foreign_keys            │ ON                 │
+│ secure_delete           │ ON                 │
+│ cache_size              │ -256               │
+│ wal_autocheckpoint      │ 0                  │
+│ busy_timeout            │ 5000ms             │
+│ open_databases_per_node │ 4                  │
+│ fault_on_node_b         │ stale-list:/log/:1 │
+└─────────────────────────┴────────────────────┘
+
+B1. Fifteen steps and the replies. Steps 1-7 run on db-0001: b takes over
+    while a still runs, and a is fenced on its next write (steps 5 and 6).
+    Steps 8-15 run on db-0002: b is killed and restarts with its .owner
+    belief file, and is fenced again (step 13) while it keeps db-0001.
+┌──────┬──────┬─────────────────────────────┬─────────┐
+│ step │ node │           command           │ result  │
+├──────┼──────┼─────────────────────────────┼─────────┤
+│ 1    │ a    │ claim db-0001               │ ok      │
+│ 2    │ a    │ write db-0001 store-durable │ ok      │
+│ 3    │ a    │ write db-0001 local-durable │ ok      │
+│ 4    │ b    │ claim db-0001               │ ok      │
+│ 5    │ a    │ write db-0001 store-durable │ refused │
+│ 6    │ a    │ write db-0001 local-durable │ refused │
+│ 7    │ b    │ write db-0001 store-durable │ ok      │
+│ 8    │ b    │ claim db-0002               │ ok      │
+│ 9    │ b    │ write db-0002 store-durable │ ok      │
+│ 10   │ a    │ claim db-0002               │ ok      │
+│ 11   │ b    │ kill                        │         │
+│ 12   │ b    │ restart                     │         │
+│ 13   │ b    │ write db-0002 store-durable │ refused │
+│ 14   │ b    │ write db-0001 store-durable │ ok      │
+│ 15   │ a    │ write db-0002 store-durable │ ok      │
+└──────┴──────┴─────────────────────────────┴─────────┘
+
+B2. What each reply says after the command. A claim names the new epoch
+    and how many fence attempts it took; a write names the epoch and
+    user_version it was acknowledged at, and the store position for a
+    store-durable write.
+┌──────┬─────────┬───────────────────────────────────────────────────────────────────────────────────┐
+│ step │ result  │                                      detail                                       │
+├──────┼─────────┼───────────────────────────────────────────────────────────────────────────────────┤
+│ 1    │ ok      │ epoch 1, restored position 0, fence at position 1, attempts 1                     │
+│ 2    │ ok      │ acknowledged at epoch 1, user_version 1, stored through position 2                │
+│ 3    │ ok      │ acknowledged at epoch 1, user_version 2, committed locally (not yet in the store) │
+│ 4    │ ok      │ epoch 2, restored position 2, fence at position 3, attempts 2                     │
+│ 5    │ refused │ fenced: db-0001 position 3 is held by epoch 2, this writer has epoch 1            │
+│ 6    │ refused │ fenced: db-0001 position 3 is held by epoch 2, this writer has epoch 1            │
+│ 7    │ ok      │ acknowledged at epoch 2, user_version 2, stored through position 4                │
+│ 8    │ ok      │ epoch 1, restored position 0, fence at position 1, attempts 1                     │
+│ 9    │ ok      │ acknowledged at epoch 1, user_version 1, stored through position 2                │
+│ 10   │ ok      │ epoch 2, restored position 2, fence at position 3, attempts 1                     │
+│ 13   │ refused │ fenced: db-0002 position 3 is held by epoch 2, this writer has epoch 1            │
+│ 14   │ ok      │ acknowledged at epoch 2, user_version 3, stored through position 5                │
+│ 15   │ ok      │ acknowledged at epoch 2, user_version 2, stored through position 4                │
+└──────┴─────────┴───────────────────────────────────────────────────────────────────────────────────┘
+
+B3. The model actions each step maps to, and their outcomes. In step 4 the
+    stale listing makes the first fence of B retry, as it did for node b
+    (attempts 2).
+┌──────┬──────────┬─────┬─────────────────────────┬────────────────────────────────────────────────────────────┐
+│ step │ database │ seq │         action          │                          outcome                           │
+├──────┼──────────┼─────┼─────────────────────────┼────────────────────────────────────────────────────────────┤
+│ 1    │ db-0001  │ 1   │ A claim                 │ ok: catalog epoch 1                                        │
+│ 1    │ db-0001  │ 2   │ A fence                 │ ok: fence at 1                                             │
+│ 2    │ db-0001  │ 1   │ A write                 │ ok: local commit 2                                         │
+│ 2    │ db-0001  │ 2   │ A ship                  │ ok: positions 2-2 accepted                                 │
+│ 3    │ db-0001  │ 1   │ A write                 │ ok: local commit 3                                         │
+│ 4    │ db-0001  │ 1   │ B claim                 │ ok: catalog epoch 2                                        │
+│ 4    │ db-0001  │ 2   │ B fence-with-stale-list │ refused: position 2 holds epoch 1, retry                   │
+│ 4    │ db-0001  │ 3   │ B fence                 │ ok: fence at 3                                             │
+│ 5    │ db-0001  │ 1   │ A write                 │ ok: local commit 4                                         │
+│ 5    │ db-0001  │ 2   │ A ship                  │ refused: position 3 holds epoch 2                          │
+│ 6    │ db-0001  │ 1   │ A write                 │ refused: not enabled                                       │
+│ 7    │ db-0001  │ 1   │ B write                 │ ok: local commit 4                                         │
+│ 7    │ db-0001  │ 2   │ B ship                  │ ok: positions 4-4 accepted                                 │
+│ 8    │ db-0002  │ 1   │ B claim                 │ ok: catalog epoch 1                                        │
+│ 8    │ db-0002  │ 2   │ B fence                 │ ok: fence at 1                                             │
+│ 9    │ db-0002  │ 1   │ B write                 │ ok: local commit 2                                         │
+│ 9    │ db-0002  │ 2   │ B ship                  │ ok: positions 2-2 accepted                                 │
+│ 10   │ db-0002  │ 1   │ A claim                 │ ok: catalog epoch 2                                        │
+│ 10   │ db-0002  │ 2   │ A fence                 │ ok: fence at 3                                             │
+│ 11   │ db-0001  │ 1   │ B crash                 │ ok: volatile state lost                                    │
+│ 11   │ db-0002  │ 1   │ B crash                 │ ok: volatile state lost                                    │
+│ 12   │ db-0001  │ 1   │ B restart               │ ok: resumed own chain at 4                                 │
+│ 12   │ db-0002  │ 1   │ B restart               │ ok: restarted, then refused: a newer epoch is in the store │
+│ 13   │ db-0002  │ 1   │ B write                 │ refused: not enabled                                       │
+│ 13   │ db-0002  │ 2   │ B ship                  │ refused: not enabled                                       │
+│ 14   │ db-0001  │ 1   │ B write                 │ ok: local commit 5                                         │
+│ 14   │ db-0001  │ 2   │ B ship                  │ ok: positions 5-5 accepted                                 │
+│ 15   │ db-0002  │ 1   │ A write                 │ ok: local commit 4                                         │
+│ 15   │ db-0002  │ 2   │ A ship                  │ ok: positions 4-4 accepted                                 │
+└──────┴──────────┴─────┴─────────────────────────┴────────────────────────────────────────────────────────────┘
+
+B4. The model agrees with every command step. The descriptors column is the
+    open descriptors of the node above its baseline after the command: 7 per
+    open database (3 connections), 14 for two, 0 when it holds none open.
+┌──────┬──────┬─────────────────────────────┬─────────────┬──────────────┐
+│ step │ node │           command           │ descriptors │ model_agrees │
+├──────┼──────┼─────────────────────────────┼─────────────┼──────────────┤
+│ 1    │ a    │ claim db-0001               │ 0           │ true         │
+│ 2    │ a    │ write db-0001 store-durable │ 7           │ true         │
+│ 3    │ a    │ write db-0001 local-durable │ 7           │ true         │
+│ 4    │ b    │ claim db-0001               │ 0           │ true         │
+│ 5    │ a    │ write db-0001 store-durable │ 0           │ true         │
+│ 6    │ a    │ write db-0001 local-durable │ 0           │ true         │
+│ 7    │ b    │ write db-0001 store-durable │ 7           │ true         │
+│ 8    │ b    │ claim db-0002               │ 7           │ true         │
+│ 9    │ b    │ write db-0002 store-durable │ 14          │ true         │
+│ 10   │ a    │ claim db-0002               │ 0           │ true         │
+│ 13   │ b    │ write db-0002 store-durable │ 0           │ true         │
+│ 14   │ b    │ write db-0001 store-durable │ 7           │ true         │
+│ 15   │ a    │ write db-0002 store-durable │ 7           │ true         │
+└──────┴──────┴─────────────────────────────┴─────────────┴──────────────┘
+┌───────────────┬──────────────┐
+│ command_steps │ model_agrees │
+├───────────────┼──────────────┤
+│ 13            │ 13           │
+└───────────────┴──────────────┘
+
+B5. Closing each node. The standing assertion checked descriptors and memory
+    after every command against the bounds for at most 4 open databases.
+┌──────┬──────────┬──────────────┬────────────────────────────────────────────────────────┬───────────────────┐
+│ node │  reply   │ bound_checks │                    max_descriptors                     │ max_memory_growth │
+├──────┼──────────┼──────────────┼────────────────────────────────────────────────────────┼───────────────────┤
+│ a    │ ok close │ 8            │ 68 = 3 x 3 connections x 4 open databases + 32 reserve │ 41 MiB            │
+│ b    │ ok close │ 3            │ 68 = 3 x 3 connections x 4 open databases + 32 reserve │ 41 MiB            │
+└──────┴──────────┴──────────────┴────────────────────────────────────────────────────────┴───────────────────┘
+
+B6. Problems and over-bounds lines the nodes reported. Both counts are 0;
+    any line would be listed in the table problems.
+┌──────────┬─────────────┐
+│ problems │ over_bounds │
+├──────────┼─────────────┤
+│ 0        │ 0           │
+└──────────┴─────────────┘
+
+── C. The store after the run, read back from S3 ───────────────────────
+
+C1. The slots in the store and the slots the model predicts after the same
+    steps. They are the same: one lineage per database, epochs never
+    decreasing, each epoch opening with a fence snapshot.
+┌──────────┬───────┬──────┬───────┬────────────┬────────────┬──────┐
+│ database │ first │ last │ epoch │ store_kind │ model_kind │ same │
+├──────────┼───────┼──────┼───────┼────────────┼────────────┼──────┤
+│ db-0001  │ 1     │ 1    │ 1     │ snapshot   │ snapshot   │ true │
+│ db-0001  │ 2     │ 2    │ 1     │ segment    │ segment    │ true │
+│ db-0001  │ 3     │ 3    │ 2     │ snapshot   │ snapshot   │ true │
+│ db-0001  │ 4     │ 4    │ 2     │ segment    │ segment    │ true │
+│ db-0001  │ 5     │ 5    │ 2     │ segment    │ segment    │ true │
+│ db-0002  │ 1     │ 1    │ 1     │ snapshot   │ snapshot   │ true │
+│ db-0002  │ 2     │ 2    │ 1     │ segment    │ segment    │ true │
+│ db-0002  │ 3     │ 3    │ 2     │ snapshot   │ snapshot   │ true │
+│ db-0002  │ 4     │ 4    │ 2     │ segment    │ segment    │ true │
+└──────────┴───────┴──────┴───────┴────────────┴────────────┴──────┘
+
+C2. The catalog names the newest epoch and the last stored position. The
+    restore of that position is a recipe state, and the closed local file of
+    the owner is byte-identical (E1) to it.
+┌──────────┬───────┬───────┬──────────────┬────────────────┬──────────────┐
+│ database │ owner │ epoch │ last_shipped │ schema_version │   location   │
+├──────────┼───────┼───────┼──────────────┼────────────────┼──────────────┤
+│ db-0001  │ b     │ 2     │ 5            │ 3              │ b:db-0001.db │
+│ db-0002  │ a     │ 2     │ 4            │ 2              │ a:db-0002.db │
+└──────────┴───────┴───────┴──────────────┴────────────────┴──────────────┘
+┌──────────┬───────────────────┬──────────────────────┬───────────────────┐
+│ database │ restored_position │    restored_state    │ file_equals_store │
+├──────────┼───────────────────┼──────────────────────┼───────────────────┤
+│ db-0001  │ 5                 │ step 3 (exact bytes) │ true              │
+│ db-0002  │ 4                 │ step 2 (exact bytes) │ true              │
+└──────────┴───────────────────┴──────────────────────┴───────────────────┘
+
+C3. Every acknowledgement. Each store-durable one is in the store at the
+    position its reply named. The local-durable acknowledgement of
+    db-0001 user_version 2 was never shipped, and the takeover lost it, as
+    that mode allows.
+┌──────────┬───────────────┬───────┬──────────────┬──────────┬──────────┐
+│ database │     mode      │ epoch │ user_version │ position │ in_store │
+├──────────┼───────────────┼───────┼──────────────┼──────────┼──────────┤
+│ db-0001  │ store-durable │ 1     │ 1            │ 2        │ true     │
+│ db-0001  │ local-durable │ 1     │ 2            │          │ false    │
+│ db-0001  │ store-durable │ 2     │ 2            │ 4        │ true     │
+│ db-0001  │ store-durable │ 2     │ 3            │ 5        │ true     │
+│ db-0002  │ store-durable │ 1     │ 1            │ 2        │ true     │
+│ db-0002  │ store-durable │ 2     │ 2            │ 4        │ true     │
+└──────────┴───────────────┴───────┴──────────────┴──────────┴──────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  model correct: no interleaving up to depth 16 and no random walk lets a fenced epoch get a commit accepted
+A  ✓  self-test: with store-accepts-every-put the checker finds the violation
+A  ✓  self-test: with resume-from-global-end the checker finds the violation
+B  ✓  the real processes and the model agree at every command step (13 of 13)
+B  ✓  no node reported a problem (a failed final ship, an eviction that did not leave the shipped state at rest, an I/O error)
+B  ✓  after each of the 15 commands the node's descriptors and memory stayed within the standing bounds
+C  ✓  db-0001: the store holds exactly the slots the model predicts: one lineage, epochs never decreasing, no damaged object
+C  ✓  db-0001: the catalog names the newest epoch and the last stored position, and the restored state is a recipe state
+C  ✓  db-0001: the owner's closed local file is byte-identical (E1) to the state rebuilt from the store
+C  ✓  db-0001: the store-durable acknowledgement of user_version 1 is stored at position 2 by epoch 1
+C  ✓  db-0001: the local-durable acknowledgement of user_version 2 by epoch 1 was never shipped, and the takeover lost it, as that mode allows
+C  ✓  db-0001: the store-durable acknowledgement of user_version 2 is stored at position 4 by epoch 2
+C  ✓  db-0001: the store-durable acknowledgement of user_version 3 is stored at position 5 by epoch 2
+C  ✓  db-0002: the store holds exactly the slots the model predicts: one lineage, epochs never decreasing, no damaged object
+C  ✓  db-0002: the catalog names the newest epoch and the last stored position, and the restored state is a recipe state
+C  ✓  db-0002: the owner's closed local file is byte-identical (E1) to the state rebuilt from the store
+C  ✓  db-0002: the store-durable acknowledgement of user_version 1 is stored at position 2 by epoch 1
+C  ✓  db-0002: the store-durable acknowledgement of user_version 2 is stored at position 4 by epoch 2
+
+18 of 18 claims hold
+
+Experiment verdict: ONE WRITER OK
 ```
 
 #### Reading the Experiment 10.1 evidence
 
-- **Line 1:** Pin check confirms `SQLite 3.53.4` check-in `bf7c7f30…59bcc`.
-- **Lines 3–8 (Part A — correct protocol):** Within the stated bounds (`2` nodes, `<= 3` epochs, local commits stopping at stream position `5` across all epochs and fences), `model.Explore` explores **`9,595,507,962` interleavings** across **`44,134` distinct states** up to depth `16` plus **`2,000` random walks (`120,000` steps)** and finds **`0` invariant violations**.
-- **Lines 9–15 (self-test 1 — removing store slot exclusivity):** With `store-accepts-every-put`, **`451,413,240` of `3,536,900,716` interleavings** violate an invariant. The shortest counterexample is `4` steps: `B` claims epoch `1` and fences at `1`; `A` claims epoch `2`, reads a stale listing, and overwrites `B`'s accepted fence at position `1`.
-- **Lines 16–25 (self-test 2 — removing the writer epoch check on restart):** With `resume-from-global-end` (matching unfenced `walship.Open`), **`170,698,606` of `11,458,358,774` interleavings** violate an invariant. The shortest counterexample is `7` steps: `B` fences at `1`, `A` fences at `2`, `B` crashes, restarts at global end `2`, and ships epoch `1` into free slot `3` after epoch `2` was already accepted—proving `If-None-Match: *` alone is insufficient without `fence.Adapter`.
-- **Lines 27–30 (Part B setup):** Connects to SeaweedFS (`course-ch10a`, prefix `exp-10-1/`), registers `db-0001` and `db-0002` with `synchronous=FULL`, `foreign_keys=ON`, `secure_delete=ON`, `cache_size=-256`, `wal_autocheckpoint=0`, `busy_timeout=5000ms`, capacity `4` open databases per node, and installs `stale-list:/log/:1` on node `b`.
-- **Lines 31–58 (`db-0001` stale-list retry and active stale-owner fencing):** `a` claims `db-0001` (epoch `1`, fence at `1`), commits step `1` store-durable (slot `2`), and commits step `2` local-durable (not in store). At step `4`, `b` claims epoch `2`: its first listing misses slot `2`, its fence attempt at slot `2` hits `e1` and retries, and attempt `2` restores position `2` (step `1`) and puts its fence at slot `3` (`attempts 2`). At step `5`, stale `a` commits step `3` locally and tries to ship at slot `3`, receives `fenced: db-0001 position 3 is held by epoch 2, this writer has epoch 1`, drops its belief, and refuses step `6` immediately. Node `b` then advances `db-0001` to position `4` (`user_version 2`).
-- **Lines 59–88 (`db-0002` crashed and restarted stale owner):** `b` owns `db-0002` (epoch `1`, slot `2`), `a` takes over (epoch `2`, fence at `3`), and `b` is `SIGKILL`ed (step `11`) and restarted (step `12`) with its persisted `.owner` belief files intact. At step `13`, `b`'s write to `db-0002` opens the shipper through `fence.Adapter`, lists slot `3` (`epoch 2`), and refuses before touching the local file. At step `14`, `b` reopens `db-0001` (whose `-wal`/`-shm` survived `SIGKILL`), recovers cleanly, and writes slot `5` (`user_version 3`). At step `15`, `a` writes `db-0002` slot `4`.
-- **Lines 89–93 (agreement and standing bounds):** Real processes and model agree **`13 of 13`** command steps; `0` node problems; descriptors stayed at `0`, `7`, or `14` above baseline (exactly `7` per open database, well under the `68` limit for `K = 4`) and memory growth stayed within `41 MiB` across all `15` commands.
-- **Lines 95–121 (store, catalog, E1, and durability checks):** For both `db-0001` (`5` slots) and `db-0002` (`4` slots), the S3 chain matches the model slot for slot with `0` damaged objects, the catalog matches the newest epoch/position/`user_version`, the owner's closed file is **E1 byte-identical** to `RestoreAt(last)`, every `store-durable` acknowledgement is stored at its exact epoch and position, and `db-0001`'s unshipped `local-durable` acknowledgement (`epoch 1, user_version 2`) reports `in the store false`, lost by the takeover as that mode allows.
+- **Pin check** (the experiment's own output, shown when it is run directly; not part of the walkthrough): confirms `SQLite 3.53.4` check-in `bf7c7f30…59bcc`.
+- **Section A settings and A1 (Part A — correct protocol):** Within the stated bounds (`2` nodes, `<= 3` epochs, local commits stopping at stream position `5` across all epochs and fences), `model.Explore` explores **`9,595,507,962` interleavings** across **`44,134` distinct states** up to depth `16` plus **`2,000` random walks (`120,000` steps)** and finds **`0` invariant violations**.
+- **A1–A2, `store-accepts-every-put` (self-test 1 — removing store slot exclusivity):** With `store-accepts-every-put`, **`451,413,240` of `3,536,900,716` interleavings** violate an invariant. The shortest counterexample is `4` steps: `B` claims epoch `1` and fences at `1`; `A` claims epoch `2`, reads a stale listing, and overwrites `B`'s accepted fence at position `1`.
+- **A1–A2, `resume-from-global-end` (self-test 2 — removing the writer epoch check on restart):** With `resume-from-global-end` (matching unfenced `walship.Open`), **`170,698,606` of `11,458,358,774` interleavings** violate an invariant. The shortest counterexample is `7` steps: `B` fences at `1`, `A` fences at `2`, `B` crashes, restarts at global end `2`, and ships epoch `1` into free slot `3` after epoch `2` was already accepted—proving `If-None-Match: *` alone is insufficient without `fence.Adapter`.
+- **Section B settings (Part B setup):** Connects to SeaweedFS (`course-ch10a`, prefix `exp-10-1/`), registers `db-0001` and `db-0002` with `synchronous=FULL`, `foreign_keys=ON`, `secure_delete=ON`, `cache_size=-256`, `wal_autocheckpoint=0`, `busy_timeout=5000ms`, capacity `4` open databases per node, and installs `stale-list:/log/:1` on node `b`.
+- **B1–B3, steps 1–7 (`db-0001` stale-list retry and active stale-owner fencing):** `a` claims `db-0001` (epoch `1`, fence at `1`), commits step `1` store-durable (slot `2`), and commits step `2` local-durable (not in store). At step `4`, `b` claims epoch `2`: its first listing misses slot `2`, its fence attempt at slot `2` hits `e1` and retries, and attempt `2` restores position `2` (step `1`) and puts its fence at slot `3` (`attempts 2`). At step `5`, stale `a` commits step `3` locally and tries to ship at slot `3`, receives `fenced: db-0001 position 3 is held by epoch 2, this writer has epoch 1`, drops its belief, and refuses step `6` immediately. Node `b` then advances `db-0001` to position `4` (`user_version 2`).
+- **B1–B3, steps 8–15 (`db-0002` crashed and restarted stale owner):** `b` owns `db-0002` (epoch `1`, slot `2`), `a` takes over (epoch `2`, fence at `3`), and `b` is `SIGKILL`ed (step `11`) and restarted (step `12`) with its persisted `.owner` belief files intact. At step `13`, `b`'s write to `db-0002` opens the shipper through `fence.Adapter`, lists slot `3` (`epoch 2`), and refuses before touching the local file. At step `14`, `b` reopens `db-0001` (whose `-wal`/`-shm` survived `SIGKILL`), recovers cleanly, and writes slot `5` (`user_version 3`). At step `15`, `a` writes `db-0002` slot `4`.
+- **B4–B6 (agreement and standing bounds):** Real processes and model agree **`13 of 13`** command steps; `0` node problems; descriptors stayed at `0`, `7`, or `14` above baseline (exactly `7` per open database, well under the `68` limit for `K = 4`) and memory growth stayed within the `41 MiB` bound across all `15` commands (B5; the memory readings themselves are run-dependent and printed by `course run`).
+- **C1–C3 (store, catalog, E1, and durability checks):** For both `db-0001` (`5` slots) and `db-0002` (`4` slots), the S3 chain matches the model slot for slot with `0` damaged objects, the catalog matches the newest epoch/position/`user_version`, the owner's closed file is **E1 byte-identical** to `RestoreAt(last)`, every `store-durable` acknowledgement is stored at its exact epoch and position, and `db-0001`'s unshipped `local-durable` acknowledgement (epoch `1`, `user_version` `2`) reports `in_store` `false`, lost by the takeover as that mode allows.
 
 **What Experiment 10.1 does and does not show.** Part A proves safety inside its finite bounds (`2` nodes, `3` epochs, stream position `<= 5`, depth `16`; adversarial attack `MOD-04` extends this to an independent `3`-node, `5`-epoch, multi-slot-stale model). Part B scripts one sequential interleaving on two real processes; truly concurrent S3 `PutIfAbsent` and `catalog.Claim` races are tested in the SeaweedFS probe and adversarial attack `FENCE-02`.
 
@@ -5564,8 +5970,8 @@ Experiments 10.2, 10.3, and 10.4 attack the service with process kills, interrup
 ### 6.1 Experiment 10.2 — `acknowledged-writes-survive`
 
 - **Claim (invariants 2 and 4 — durability under stated mode and reopen after process failure):** One node owns `4` databases while keeping at most `2` open (forcing LRU eviction on every write). After the node is killed—on entry to evenly spaced `fsync`/`fdatasync` calls via `strace` (**Linux only**, Part A) or by `SIGKILL` at seeded random delays inside the active write loop (portable, Part B)—every database reopens with `PRAGMA integrity_check = ok` as a valid recipe state and holds at least every acknowledged write (`recovered user_version >= acknowledged user_version`): on local files for `local-durable`, and after deleting the node's entire directory and rebuilding from SeaweedFS S3 for `store-durable`. A mutant node that acknowledges `store-durable` writes before putting the segment (`-mutant ack-before-put`, Part C) is caught as a violation.
-- **Evidence form:** `EXACT` (with `INFO:` lines for Part B's timings and random kill points, and an `EXACT` check requiring every random kill to land while writes are in flight).
-- **Linux only (Part A):** Killing on entry to `fsync`/`fdatasync` requires Linux `strace`. On macOS (or with `-portable` on Linux), Part A prints `LINUX-ONLY: killing the node at a chosen fsync with strace skipped on …` while Parts B and C run natively. From macOS, run Part A via `docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.2-acknowledged-writes-survive`.
+- **Evidence form:** `EXACT` (every stored table must match on every run, including the check requiring every random kill to land while writes are in flight; Part B's timings and random kill points are in the run-dependent `info` tables, which are excluded).
+- **Linux only (Part A):** Killing on entry to `fsync`/`fdatasync` requires Linux `strace`. Run directly on macOS (or with `-portable` on Linux), Part A prints `LINUX-ONLY: killing the node at a chosen fsync with strace skipped on …` while Parts B and C run natively. `course run` runs Part A in the Linux `lab` container.
 
 <!-- include: experiments/10.2-acknowledged-writes-survive/main.go -->
 ```go
@@ -5587,6 +5993,9 @@ Experiments 10.2, 10.3, and 10.4 attack the service with process kills, interrup
 // measured write-loop window (redrawing if a kill lands after the last reply).
 // Part C runs the ack-before-put mutant as a self-test to prove the checker
 // catches an unshipped store-durable acknowledgement.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 10.2
 package main
 
 import (
@@ -5602,6 +6011,7 @@ import (
 
 	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/lab"
 	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 )
@@ -5609,7 +6019,6 @@ import (
 const packagePath = "ch10-multi-database-platform-capstone/experiments/10.2-acknowledged-writes-survive"
 
 var (
-	failures     []string
 	databases    = flag.Int("databases", 4, "databases the node owns")
 	writes       = flag.Int("writes", 12, "writes in each killed run, round robin over the databases")
 	syscallKills = flag.Int("syscall-kills", 4, "kill points at fsync per mode (Linux, strace)")
@@ -5631,13 +6040,40 @@ func init() {
 	flag.BoolVar(&process.AckBeforePut, "ack-before-put", false, "internal: the mutant node")
 }
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 10.2" runs both.
+// part labels the rows and claims written while a part runs.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		settings, parts, uninterrupted, fsyncKills, randomKills, recovery, violations, selfTest, problems, infoRun, infoWriteLoops, infoRandomKills *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	settingSeq int
+)
+
+func openTables() {
+	tables.settings = set.Table("settings", "seq", "name", "value")
+	tables.parts = set.Table("parts", "part", "name", "ran", "note")
+	tables.uninterrupted = set.Table("uninterrupted", "part", "mode", "how", "commands", "acknowledged", "command_thread_fsyncs", "exit_code")
+	tables.fsyncKills = set.Table("fsync_kills", "mode", "kill_no", "at_fsync", "of_fsyncs", "file", "killed", "during_command_no", "during_command", "acknowledged", "reopened")
+	tables.randomKills = set.Table("random_kills", "mode", "kill_no", "in_flight", "violations")
+	tables.recovery = set.Table("recovery", "part", "mode", "kill_no", "database", "acknowledged_version", "reopened", "integrity", "recovered_version", "recovered_state")
+	tables.violations = set.Table("violations", "part", "mode", "kill_no", "line")
+	tables.selfTest = set.Table("self_test", "reply", "acknowledged")
+	tables.problems = set.Table("problems", "seq", "kind", "line")
+	tables.infoRun = set.Table("info_run", "name", "value")
+	tables.infoWriteLoops = set.Table("info_write_loops", "mode", "writes", "elapsed_ms", "acknowledged")
+	tables.infoRandomKills = set.Table("info_random_kills", "mode", "kill_no", "draw", "delay_ms", "acknowledged", "reopened", "recovered_versions", "acknowledged_versions")
+}
+
+func setting(name string, value any) {
+	settingSeq++
+	tables.settings.Row(settingSeq, name, value)
+}
+
+func check(ok bool, claim string) {
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -5810,7 +6246,27 @@ func (x *experiment) versions(o *outcome) (string, string) {
 		recovered = append(recovered, fmt.Sprint(o.recovered[id].UserVersion))
 		acked = append(acked, fmt.Sprint(o.acked[id]))
 	}
-	return strings.Join(recovered, ","), strings.Join(acked, ",")
+	return strings.Join(recovered, " "), strings.Join(acked, " ")
+}
+
+// recordRecovery writes what each database held after the recovery of one
+// killed run, and the violations the recovery found.
+func (x *experiment) recordRecovery(mode node.AckMode, kill int, o *outcome) {
+	for _, id := range x.ids {
+		integrity, reopened := o.integrity[id]
+		var state, version any
+		if recovered, ok := o.recovered[id]; ok {
+			state, version = recovered.Match, recovered.UserVersion
+		}
+		tables.recovery.Row(part, mode, kill, id, o.acked[id], reopened, integrity, version, state)
+	}
+	x.recordViolations(mode, kill, o)
+}
+
+func (x *experiment) recordViolations(mode node.AckMode, kill int, o *outcome) {
+	for _, v := range o.violations {
+		tables.violations.Row(part, mode, kill, v)
+	}
 }
 
 func killedFile(result *trace.Result) string {
@@ -5842,8 +6298,8 @@ func fsyncsByThread(result *trace.Result) (int, int, int) {
 func (x *experiment) syscallKills(mode node.AckMode) {
 	uninterrupted, base := x.traced(mode, nil)
 	_, syncs, elsewhere := fsyncsByThread(uninterrupted)
-	fmt.Printf("%s, uninterrupted: %d commands, %d acknowledged, %d fsync calls on the node's command thread (the process exits at the end of its input without closing)\n", mode, base.replies, base.acks, syncs)
-	fmt.Printf("INFO: fsync calls on other threads: %d\n", elsewhere)
+	tables.uninterrupted.Row(part, mode, "strace, not killed", base.replies, base.acks, syncs, uninterrupted.ExitCode)
+	tables.infoRun.Row(fmt.Sprintf("%s: fsync calls on other threads", mode), elsewhere)
 	check(uninterrupted.ExitCode == 0 && base.acks == *writes && elsewhere == 0, fmt.Sprintf("%s: the uninterrupted run acknowledges all %d writes and every fsync runs on the command thread", mode, *writes))
 	violations, killed := 0, 0
 	for i := range *syscallKills {
@@ -5853,16 +6309,12 @@ func (x *experiment) syscallKills(mode node.AckMode) {
 			killed++
 		}
 		x.recover(mode, o)
-		recovered, acked := x.versions(o)
-		during := "after the last command"
+		var duringNo, during any
 		if o.replies < *writes {
-			during = fmt.Sprintf("during command %d (%s)", o.replies+1, x.script(mode)[o.replies])
+			duringNo, during = o.replies+1, x.script(mode)[o.replies]
 		}
-		fmt.Printf("%s, kill at fsync %d of %d (of %s) %s: %d acknowledged; reopened %d of %d; recovered user_version %s; acknowledged %s\n",
-			mode, when, syncs, killedFile(result), during, o.acks, o.reopened, len(x.ids), recovered, acked)
-		for _, v := range o.violations {
-			fmt.Println("  violation: " + v)
-		}
+		tables.fsyncKills.Row(mode, i+1, when, syncs, killedFile(result), result.Killed, duringNo, during, o.acks, o.reopened)
+		x.recordRecovery(mode, i+1, o)
 		violations += len(o.violations)
 	}
 	check(killed == *syscallKills, fmt.Sprintf("%s: strace killed the node at each of the %d fsync kill points", mode, *syscallKills))
@@ -5873,25 +6325,30 @@ const drawsPerRandomKill = 5
 
 func (x *experiment) randomTimeKills(mode node.AckMode, rng *rand.Rand) {
 	full, elapsed := x.randomKill(mode, time.Hour)
-	fmt.Printf("INFO: %s, the write loop of an unkilled interactive run of %d writes took %s (%d acknowledged)\n", mode, *writes, elapsed.Round(time.Millisecond), full.acks)
+	tables.uninterrupted.Row(part, mode, "interactive, not killed", full.replies, full.acks, nil, nil)
+	tables.infoWriteLoops.Row(mode, *writes, elapsed.Milliseconds(), full.acks)
 	violations, inFlight := 0, 0
 	for i := range *randomKills {
+		killViolations, landed := 0, false
 		for draw := 1; draw <= drawsPerRandomKill; draw++ {
 			delay := time.Duration(rng.Int64N(int64(elapsed)))
 			o, _ := x.randomKill(mode, delay)
 			x.recover(mode, o)
 			recovered, acked := x.versions(o)
-			fmt.Printf("INFO: %s, random kill %d (draw %d) after %s: %d acknowledged; reopened %d; recovered %s; acknowledged %s\n", mode, i+1, draw, delay.Round(time.Millisecond), o.acks, o.reopened, recovered, acked)
-			for _, v := range o.violations {
-				fmt.Println("  violation: " + v)
-			}
-			violations += len(o.violations)
+			tables.infoRandomKills.Row(mode, i+1, draw, delay.Milliseconds(), o.acks, o.reopened, recovered, acked)
+			x.recordViolations(mode, i+1, o)
+			killViolations += len(o.violations)
 			// Every draw is recovered and checked; redraw up to drawsPerRandomKill
 			// if the timer fired after all writes had already replied.
 			if o.replies < *writes {
-				inFlight++
+				landed = true
 				break
 			}
+		}
+		tables.randomKills.Row(mode, i+1, landed, killViolations)
+		violations += killViolations
+		if landed {
+			inFlight++
 		}
 	}
 	check(full.acks == *writes, fmt.Sprintf("%s: an interactive run that is not killed acknowledges all %d writes", mode, *writes))
@@ -5900,7 +6357,8 @@ func (x *experiment) randomTimeKills(mode node.AckMode, rng *rand.Rand) {
 }
 
 func (x *experiment) selfTest() {
-	fmt.Println("\n== C. self-test: a node that acknowledges store-durable writes before the segment put ==")
+	part = "C"
+	tables.parts.Row(part, "self-test: a node that acknowledges store-durable writes before the segment put", true, nil)
 	x.setup()
 	config := x.env.Config("a", "")
 	config.AckBeforePut = true
@@ -5912,15 +6370,13 @@ func (x *experiment) selfTest() {
 	if err != nil {
 		fatal("mutant write", err)
 	}
-	fmt.Println("  " + reply.Line)
 	p.Signal()
 	p.Reap()
 	o := newOutcome()
 	x.record(o, []string{reply.Line})
 	x.recover(node.StoreDurable, o)
-	for _, v := range o.violations {
-		fmt.Println("  violation: " + v)
-	}
+	tables.selfTest.Row(reply.Line, o.acks)
+	x.recordRecovery(node.StoreDurable, 1, o)
 	check(o.acks == 1 && len(o.violations) == 1, "self-test: the checker finds the store-durable acknowledgement the store never received")
 }
 
@@ -5953,120 +6409,408 @@ func main() {
 		fatal("work directory", err)
 	}
 	defer env.Close()
+	set = results.MustOpen(env.Work)
+	openTables()
+	// env.Reset empties env.Work before every run, so the node works in a
+	// subdirectory and the tables in env.Work/results survive.
+	env.Work = filepath.Join(env.Work, "node")
+	env.Process.Work = env.Work
+	if err := os.MkdirAll(env.Work, 0o755); err != nil {
+		fatal("work directory", err)
+	}
 	x := &experiment{env: env, ids: lab.Ids("db", *databases)}
 	fmt.Printf("INFO: store %s, work directory %s\n", store.Endpoint, env.ShownWork())
-	fmt.Printf("store: bucket %s, prefix %s; one node owns %d databases and keeps at most %d open; each killed run sends %d writes round robin; settings %s\n",
-		store.Bucket, store.Prefix, *databases, process.Capacity, *writes, node.PlatformSettings())
-	fmt.Println("recovery: local-durable restarts the node on its own files; store-durable deletes the node's directory first and rebuilds every database from the store alone")
+	tables.infoRun.Row("store endpoint", store.Endpoint)
+	tables.infoRun.Row("work directory", env.ShownWork())
+	setting("bucket", store.Bucket)
+	setting("prefix", store.Prefix)
+	setting("databases", *databases)
+	setting("open_databases", process.Capacity)
+	setting("writes_per_run", *writes)
+	setting("fsync_kill_points_per_mode", *syscallKills)
+	setting("random_kills_per_mode", *randomKills)
+	setting("random_seed", *seed)
 	if *mutant != "" {
-		fmt.Printf("mutant: %s\n", *mutant)
+		setting("mutant", *mutant)
+	}
+	for _, pragma := range strings.Fields(node.PlatformSettings().String()) {
+		name, value, _ := strings.Cut(pragma, "=")
+		setting(name, value)
 	}
 	modes := []node.AckMode{node.LocalDurable, node.StoreDurable}
-	fmt.Println("\n== A. kills at a chosen fsync (strace) ==")
+	part = "A"
 	if trace.Supported && !*portable {
+		tables.parts.Row(part, "kills at a chosen fsync (strace)", true, nil)
 		for _, mode := range modes {
 			x.syscallKills(mode)
 		}
 	} else {
-		fmt.Println(trace.LinuxOnlyMessage("killing the node at a chosen fsync with strace", packagePath))
+		notice := trace.LinuxOnlyMessage("killing the node at a chosen fsync with strace", packagePath)
+		fmt.Println(notice)
+		tables.parts.Row(part, "kills at a chosen fsync (strace)", false, notice)
 	}
-	fmt.Println("\n== B. kills at a random time (portable) ==")
+	part = "B"
+	tables.parts.Row(part, "kills at a random time (portable)", true, nil)
 	rng := rand.New(rand.NewPCG(*seed, 102))
 	for _, mode := range modes {
 		x.randomTimeKills(mode, rng)
 	}
 	x.selfTest()
-	fmt.Println()
-	for _, problem := range env.Tracker.Problems {
-		fmt.Println("problem: " + problem)
-	}
-	for _, line := range env.Tracker.OverBounds {
-		fmt.Println("over bounds: " + line)
+	part = "D"
+	seq := 0
+	for _, kind := range []struct {
+		name  string
+		lines []string
+	}{{"problem", env.Tracker.Problems}, {"over bounds", env.Tracker.OverBounds}} {
+		for _, line := range kind.lines {
+			seq++
+			tables.problems.Row(seq, kind.name, line)
+		}
 	}
 	check(len(env.Tracker.Problems) == 0, "no node reported a problem")
 	check(len(env.Tracker.OverBounds) == 0 && env.Tracker.Replies > 0, "after every command of every node process the descriptors and memory stayed within the standing bounds")
-	fmt.Printf("INFO: %d node replies carried a bounds check\n", env.Tracker.Replies)
-	if len(failures) > 0 {
-		fmt.Printf("\n%d check(s) FAILED\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("\nall checks passed")
+	tables.infoRun.Row("node replies that carried a bounds check", env.Tracker.Replies)
+	set.Finish("ACKNOWLEDGED WRITES SURVIVE")
 }
 ```
 
-Run from the repository root (add `-mutant ack-before-put` to watch Parts A and B fail with `2 check(s) FAILED` and exit `1`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
 
-```text
-go run ./ch10-multi-database-platform-capstone/experiments/10.2-acknowledged-writes-survive
+<!-- include: experiments/10.2-acknowledged-writes-survive/report.sql -->
+```sql
+-- Walkthrough of experiment 10.2. Run it with:
+--   go run ./cmd/course run 10.2        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   settings        one setting of the run (name, value)
+--   parts           one part of the experiment, whether it ran, and why not
+--   uninterrupted   one run that was not killed: the baseline of parts A and B
+--   fsync_kills     part A: one run killed by strace on entry to a chosen fsync
+--   random_kills    part B: one kill at a random time, after its redraws
+--   recovery        parts A and C: one database after the recovery of one killed run
+--   violations      one database a recovery found broken or missing an acknowledged write
+--   self_test       part C: the reply of the mutant node
+--   problems        one problem or over-bounds line a node reported (none on a good run)
+--   checks          every claim the experiment asserted (the runner lists it last)
+-- info_run, info_write_loops and info_random_kills hold what depends on timing:
+-- the random kill delays and what each random kill left. info.sql shows them.
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  10.2  Does every acknowledged write survive a killed process?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'One node owns 4 databases and keeps at most 2 open, so every round-robin'
+.print 'write evicts one. Each killed run sends 12 writes in one mode:'
+.print
+.print '  local-durable   acknowledged after the local commit at synchronous=FULL.'
+.print '                  Recovery restarts the node on its own files.'
+.print '  store-durable   acknowledged after the segment put to the S3 store.'
+.print '                  Recovery deletes the directory of the node first and'
+.print '                  rebuilds every database from the store alone.'
+.print
+.print 'After each kill, every database must reopen with integrity ok, be a recipe'
+.print 'state, and hold at least the last user_version acknowledged for it.'
+
+SELECT name, value FROM settings ORDER BY seq;
+
+SELECT part, name, ran, note FROM parts ORDER BY part;
+
+.print
+.print '── A. Kills at a chosen fsync (strace) ─────────────────────────────────'
+.print
+.print 'A1. The uninterrupted run counts the fsync and fdatasync calls of the node.'
+.print '    All of them run on its command thread. The process exits at the end of'
+.print '    its input without closing, so no close-time sync is counted.'
+
+SELECT mode, how, commands, acknowledged, command_thread_fsyncs, exit_code
+FROM uninterrupted WHERE part = 'A' ORDER BY mode;
+
+.print
+.print 'A2. Four kill points per mode, evenly spaced over those calls: the first,'
+.print '    the last, and two between. The file is the one the killed fsync was'
+.print '    syncing; "a" is the directory of the node. during_command is the command'
+.print '    the node was running (empty if the kill came after the last reply).'
+
+SELECT mode, kill_no AS kill, at_fsync || ' of ' || of_fsyncs AS fsync, file,
+       during_command_no || ': ' || during_command AS during_command, acknowledged, reopened
+FROM fsync_kills ORDER BY mode, kill_no;
+
+SELECT killed, count(*) AS kills FROM fsync_kills GROUP BY killed ORDER BY killed;
+
+.print
+.print 'A3. What each database held after the recovery. recovered is never below'
+.print '    acknowledged; it can be above, when the kill hit after the commit but'
+.print '    before the reply.'
+
+SELECT mode, kill_no,
+       string_agg(recovered_version::VARCHAR, ' ' ORDER BY database)    AS recovered,
+       string_agg(acknowledged_version::VARCHAR, ' ' ORDER BY database) AS acknowledged,
+       count(*) FILTER (integrity = 'ok')                               AS integrity_ok,
+       count(*) FILTER (recovered_version >= acknowledged_version)      AS holds_acks
+FROM recovery WHERE part = 'A' GROUP BY mode, kill_no ORDER BY mode, kill_no;
+
+.print
+.print 'A4. Every recovered database matched a recipe step:'
+
+SELECT mode, recovered_state, count(*) AS databases
+FROM recovery WHERE part = 'A' GROUP BY mode, recovered_state ORDER BY mode, recovered_state;
+
+.print
+.print '── B. Kills at a random time (portable) ───────────────────────────────'
+.print
+.print 'B1. One interactive run per mode is not killed and times its write loop.'
+.print '    Each random kill then waits a random part of that time. A kill that'
+.print '    lands after the last reply is recovered and checked too, then redrawn,'
+.print '    at most 5 draws per kill. The delays and what each kill left depend on'
+.print '    timing; they are in info_random_kills.'
+
+SELECT mode, how, commands, acknowledged FROM uninterrupted WHERE part = 'B' ORDER BY mode;
+
+SELECT mode, kill_no, in_flight, violations FROM random_kills ORDER BY mode, kill_no;
+
+.print
+.print '── C. Self-test: acknowledge before the segment put ────────────────────'
+.print
+.print 'C1. A mutant node acknowledges one store-durable write before it puts the'
+.print '    segment, and is killed. Its reply says stored through position 0.'
+
+SELECT reply, acknowledged FROM self_test ORDER BY reply;
+
+.print
+.print 'C2. The rebuild from the store finds the acknowledged write missing, and'
+.print '    the checker reports it: the check can fail.'
+
+SELECT database, acknowledged_version, recovered_version, recovered_state
+FROM recovery WHERE part = 'C' ORDER BY database;
+
+SELECT part, mode, kill_no, line FROM violations ORDER BY part, mode, kill_no, line;
+
+.print
+.print '── D. Every node process ──────────────────────────────────────────────'
+.print
+.print 'D1. Problems and over-bounds lines the nodes reported, across all runs.'
+.print '    Both counts are 0; any line would be listed in the table problems.'
+
+SELECT count(*) FILTER (kind = 'problem')     AS problems,
+       count(*) FILTER (kind = 'over bounds') AS over_bounds
+FROM problems;
 ```
 
-Captured evidence:
+Run from the repository root, with SeaweedFS running (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
+
+```text
+go run ./cmd/course run 10.2
+```
+
+Add `-i` (`go run ./cmd/course run -i 10.2`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries. To watch Parts A and B fail with `2 check(s) FAILED` and exit `1`, run the mutant directly in the container: `docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.2-acknowledged-writes-survive -mutant ack-before-put`.
+
+`course run` also prints the run-dependent values, which are not part of the stored evidence: where the store and the work directory were, how long the write loop of each unkilled interactive run took, and each random kill draw with its delay and the `user_version`s acknowledged and recovered per database.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/10.2-acknowledged-writes-survive/`](evidence/10.2-acknowledged-writes-survive/), and `go run ./cmd/course check evidence ch10` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/10.2-acknowledged-writes-survive.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: store http://127.0.0.1:18333, work directory _work/10.2
-store: bucket course-ch10b, prefix exp-10-2/; one node owns 4 databases and keeps at most 2 open; each killed run sends 12 writes round robin; settings synchronous=FULL foreign_keys=ON secure_delete=ON cache_size=-256 wal_autocheckpoint=0 busy_timeout=5000ms
-recovery: local-durable restarts the node on its own files; store-durable deletes the node's directory first and rebuilds every database from the store alone
 
-== A. kills at a chosen fsync (strace) ==
-local-durable, uninterrupted: 12 commands, 12 acknowledged, 77 fsync calls on the node's command thread (the process exits at the end of its input without closing)
-INFO: fsync calls on other threads: 0
-check ok: local-durable: the uninterrupted run acknowledges all 12 writes and every fsync runs on the command thread
-local-durable, kill at fsync 1 of 77 (of db-0001.db-wal) during command 1 (write db-0001 local-durable): 0 acknowledged; reopened 4 of 4; recovered user_version 0,0,0,0; acknowledged 0,0,0,0
-local-durable, kill at fsync 26 of 77 (of db-0001.db-wal) during command 5 (write db-0001 local-durable): 4 acknowledged; reopened 4 of 4; recovered user_version 1,1,1,1; acknowledged 1,1,1,1
-local-durable, kill at fsync 51 of 77 (of a) during command 9 (write db-0001 local-durable): 8 acknowledged; reopened 4 of 4; recovered user_version 2,2,2,2; acknowledged 2,2,2,2
-local-durable, kill at fsync 77 of 77 (of db-0004.db-wal) during command 12 (write db-0004 local-durable): 11 acknowledged; reopened 4 of 4; recovered user_version 3,3,3,3; acknowledged 3,3,3,2
-check ok: local-durable: strace killed the node at each of the 4 fsync kill points
-check ok: local-durable: after each kill at an fsync every database reopens (integrity ok, a recipe state) and holds at least every write acknowledged in this mode
-store-durable, uninterrupted: 12 commands, 12 acknowledged, 85 fsync calls on the node's command thread (the process exits at the end of its input without closing)
-INFO: fsync calls on other threads: 0
-check ok: store-durable: the uninterrupted run acknowledges all 12 writes and every fsync runs on the command thread
-store-durable, kill at fsync 1 of 85 (of db-0001.db-wal) during command 1 (write db-0001 store-durable): 0 acknowledged; reopened 4 of 4; recovered user_version 0,0,0,0; acknowledged 0,0,0,0
-store-durable, kill at fsync 29 of 85 (of catalog.db-wal) during command 4 (write db-0004 store-durable): 3 acknowledged; reopened 4 of 4; recovered user_version 1,1,1,1; acknowledged 1,1,1,0
-store-durable, kill at fsync 57 of 85 (of catalog.db-wal) during command 8 (write db-0004 store-durable): 7 acknowledged; reopened 4 of 4; recovered user_version 2,2,2,2; acknowledged 2,2,2,1
-store-durable, kill at fsync 85 of 85 (of catalog.db-wal) during command 12 (write db-0004 store-durable): 11 acknowledged; reopened 4 of 4; recovered user_version 3,3,3,3; acknowledged 3,3,3,2
-check ok: store-durable: strace killed the node at each of the 4 fsync kill points
-check ok: store-durable: after each kill at an fsync every database reopens (integrity ok, a recipe state) and holds at least every write acknowledged in this mode
+════════════════════════════════════════════════════════════════════════
+  10.2  Does every acknowledged write survive a killed process?
+════════════════════════════════════════════════════════════════════════
 
-== B. kills at a random time (portable) ==
-INFO: local-durable, the write loop of an unkilled interactive run of 12 writes took 875ms (12 acknowledged)
-INFO: local-durable, random kill 1 (draw 1) after 544ms: 8 acknowledged; reopened 4; recovered 2,2,2,2; acknowledged 2,2,2,2
-INFO: local-durable, random kill 2 (draw 1) after 492ms: 9 acknowledged; reopened 4; recovered 3,2,2,2; acknowledged 3,2,2,2
-check ok: local-durable: an interactive run that is not killed acknowledges all 12 writes
-check ok: local-durable: each of the 2 random kills landed while writes were in flight (a kill after the last reply is recovered and checked too, then redrawn, at most 5 draws per kill)
-check ok: local-durable: after every kill at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write
-INFO: store-durable, the write loop of an unkilled interactive run of 12 writes took 826ms (12 acknowledged)
-INFO: store-durable, random kill 1 (draw 1) after 791ms: 9 acknowledged; reopened 4; recovered 3,3,2,2; acknowledged 3,2,2,2
-INFO: store-durable, random kill 2 (draw 1) after 773ms: 9 acknowledged; reopened 4; recovered 3,2,2,2; acknowledged 3,2,2,2
-check ok: store-durable: an interactive run that is not killed acknowledges all 12 writes
-check ok: store-durable: each of the 2 random kills landed while writes were in flight (a kill after the last reply is recovered and checked too, then redrawn, at most 5 draws per kill)
-check ok: store-durable: after every kill at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write
+One node owns 4 databases and keeps at most 2 open, so every round-robin
+write evicts one. Each killed run sends 12 writes in one mode:
 
-== C. self-test: a node that acknowledges store-durable writes before the segment put ==
-  ok write db-0001 store-durable: acknowledged at epoch 1, user_version 1, stored through position 0
-  violation: db-0001 recovered step 0, acknowledged step 1
-check ok: self-test: the checker finds the store-durable acknowledgement the store never received
+  local-durable   acknowledged after the local commit at synchronous=FULL.
+                  Recovery restarts the node on its own files.
+  store-durable   acknowledged after the segment put to the S3 store.
+                  Recovery deletes the directory of the node first and
+                  rebuilds every database from the store alone.
 
-check ok: no node reported a problem
-check ok: after every command of every node process the descriptors and memory stayed within the standing bounds
-INFO: 306 node replies carried a bounds check
+After each kill, every database must reopen with integrity ok, be a recipe
+state, and hold at least the last user_version acknowledged for it.
+┌────────────────────────────┬──────────────┐
+│            name            │    value     │
+├────────────────────────────┼──────────────┤
+│ bucket                     │ course-ch10b │
+│ prefix                     │ exp-10-2/    │
+│ databases                  │ 4            │
+│ open_databases             │ 2            │
+│ writes_per_run             │ 12           │
+│ fsync_kill_points_per_mode │ 4            │
+│ random_kills_per_mode      │ 2            │
+│ random_seed                │ 1            │
+│ synchronous                │ FULL         │
+│ foreign_keys               │ ON           │
+│ secure_delete              │ ON           │
+│ cache_size                 │ -256         │
+│ wal_autocheckpoint         │ 0            │
+│ busy_timeout               │ 5000ms       │
+└────────────────────────────┴──────────────┘
+┌──────┬─────────────────────────────────────────────────────────────────────────────────┬──────┬──────┐
+│ part │                                      name                                       │ ran  │ note │
+├──────┼─────────────────────────────────────────────────────────────────────────────────┼──────┼──────┤
+│ A    │ kills at a chosen fsync (strace)                                                │ true │      │
+│ B    │ kills at a random time (portable)                                               │ true │      │
+│ C    │ self-test: a node that acknowledges store-durable writes before the segment put │ true │      │
+└──────┴─────────────────────────────────────────────────────────────────────────────────┴──────┴──────┘
 
-all checks passed
+── A. Kills at a chosen fsync (strace) ─────────────────────────────────
+
+A1. The uninterrupted run counts the fsync and fdatasync calls of the node.
+    All of them run on its command thread. The process exits at the end of
+    its input without closing, so no close-time sync is counted.
+┌───────────────┬────────────────────┬──────────┬──────────────┬───────────────────────┬───────────┐
+│     mode      │        how         │ commands │ acknowledged │ command_thread_fsyncs │ exit_code │
+├───────────────┼────────────────────┼──────────┼──────────────┼───────────────────────┼───────────┤
+│ local-durable │ strace, not killed │ 12       │ 12           │ 77                    │ 0         │
+│ store-durable │ strace, not killed │ 12       │ 12           │ 85                    │ 0         │
+└───────────────┴────────────────────┴──────────┴──────────────┴───────────────────────┴───────────┘
+
+A2. Four kill points per mode, evenly spaced over those calls: the first,
+    the last, and two between. The file is the one the killed fsync was
+    syncing; "a" is the directory of the node. during_command is the command
+    the node was running (empty if the kill came after the last reply).
+┌───────────────┬──────┬──────────┬────────────────┬─────────────────────────────────┬──────────────┬──────────┐
+│     mode      │ kill │  fsync   │      file      │         during_command          │ acknowledged │ reopened │
+├───────────────┼──────┼──────────┼────────────────┼─────────────────────────────────┼──────────────┼──────────┤
+│ local-durable │ 1    │ 1 of 77  │ db-0001.db-wal │ 1: write db-0001 local-durable  │ 0            │ 4        │
+│ local-durable │ 2    │ 26 of 77 │ db-0001.db-wal │ 5: write db-0001 local-durable  │ 4            │ 4        │
+│ local-durable │ 3    │ 51 of 77 │ a              │ 9: write db-0001 local-durable  │ 8            │ 4        │
+│ local-durable │ 4    │ 77 of 77 │ db-0004.db-wal │ 12: write db-0004 local-durable │ 11           │ 4        │
+│ store-durable │ 1    │ 1 of 85  │ db-0001.db-wal │ 1: write db-0001 store-durable  │ 0            │ 4        │
+│ store-durable │ 2    │ 29 of 85 │ catalog.db-wal │ 4: write db-0004 store-durable  │ 3            │ 4        │
+│ store-durable │ 3    │ 57 of 85 │ catalog.db-wal │ 8: write db-0004 store-durable  │ 7            │ 4        │
+│ store-durable │ 4    │ 85 of 85 │ catalog.db-wal │ 12: write db-0004 store-durable │ 11           │ 4        │
+└───────────────┴──────┴──────────┴────────────────┴─────────────────────────────────┴──────────────┴──────────┘
+┌─────────┬───────┐
+│ killed  │ kills │
+├─────────┼───────┤
+│ SIGKILL │ 8     │
+└─────────┴───────┘
+
+A3. What each database held after the recovery. recovered is never below
+    acknowledged; it can be above, when the kill hit after the commit but
+    before the reply.
+┌───────────────┬─────────┬───────────┬──────────────┬──────────────┬────────────┐
+│     mode      │ kill_no │ recovered │ acknowledged │ integrity_ok │ holds_acks │
+├───────────────┼─────────┼───────────┼──────────────┼──────────────┼────────────┤
+│ local-durable │ 1       │ 0 0 0 0   │ 0 0 0 0      │ 4            │ 4          │
+│ local-durable │ 2       │ 1 1 1 1   │ 1 1 1 1      │ 4            │ 4          │
+│ local-durable │ 3       │ 2 2 2 2   │ 2 2 2 2      │ 4            │ 4          │
+│ local-durable │ 4       │ 3 3 3 3   │ 3 3 3 2      │ 4            │ 4          │
+│ store-durable │ 1       │ 0 0 0 0   │ 0 0 0 0      │ 4            │ 4          │
+│ store-durable │ 2       │ 1 1 1 1   │ 1 1 1 0      │ 4            │ 4          │
+│ store-durable │ 3       │ 2 2 2 2   │ 2 2 2 1      │ 4            │ 4          │
+│ store-durable │ 4       │ 3 3 3 3   │ 3 3 3 2      │ 4            │ 4          │
+└───────────────┴─────────┴───────────┴──────────────┴──────────────┴────────────┘
+
+A4. Every recovered database matched a recipe step:
+┌───────────────┬──────────────────────┬───────────┐
+│     mode      │   recovered_state    │ databases │
+├───────────────┼──────────────────────┼───────────┤
+│ local-durable │ step 0 (exact bytes) │ 4         │
+│ local-durable │ step 1 (exact bytes) │ 4         │
+│ local-durable │ step 2 (exact bytes) │ 4         │
+│ local-durable │ step 3 (exact bytes) │ 4         │
+│ store-durable │ step 0 (exact bytes) │ 4         │
+│ store-durable │ step 1 (exact bytes) │ 4         │
+│ store-durable │ step 2 (exact bytes) │ 4         │
+│ store-durable │ step 3 (exact bytes) │ 4         │
+└───────────────┴──────────────────────┴───────────┘
+
+── B. Kills at a random time (portable) ───────────────────────────────
+
+B1. One interactive run per mode is not killed and times its write loop.
+    Each random kill then waits a random part of that time. A kill that
+    lands after the last reply is recovered and checked too, then redrawn,
+    at most 5 draws per kill. The delays and what each kill left depend on
+    timing; they are in info_random_kills.
+┌───────────────┬─────────────────────────┬──────────┬──────────────┐
+│     mode      │           how           │ commands │ acknowledged │
+├───────────────┼─────────────────────────┼──────────┼──────────────┤
+│ local-durable │ interactive, not killed │ 12       │ 12           │
+│ store-durable │ interactive, not killed │ 12       │ 12           │
+└───────────────┴─────────────────────────┴──────────┴──────────────┘
+┌───────────────┬─────────┬───────────┬────────────┐
+│     mode      │ kill_no │ in_flight │ violations │
+├───────────────┼─────────┼───────────┼────────────┤
+│ local-durable │ 1       │ true      │ 0          │
+│ local-durable │ 2       │ true      │ 0          │
+│ store-durable │ 1       │ true      │ 0          │
+│ store-durable │ 2       │ true      │ 0          │
+└───────────────┴─────────┴───────────┴────────────┘
+
+── C. Self-test: acknowledge before the segment put ────────────────────
+
+C1. A mutant node acknowledges one store-durable write before it puts the
+    segment, and is killed. Its reply says stored through position 0.
+┌────────────────────────────────────────────────────────────────────────────────────────────────────┬──────────────┐
+│                                               reply                                                │ acknowledged │
+├────────────────────────────────────────────────────────────────────────────────────────────────────┼──────────────┤
+│ ok write db-0001 store-durable: acknowledged at epoch 1, user_version 1, stored through position 0 │ 1            │
+└────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────┘
+
+C2. The rebuild from the store finds the acknowledged write missing, and
+    the checker reports it: the check can fail.
+┌──────────┬──────────────────────┬───────────────────┬──────────────────────┐
+│ database │ acknowledged_version │ recovered_version │   recovered_state    │
+├──────────┼──────────────────────┼───────────────────┼──────────────────────┤
+│ db-0001  │ 1                    │ 0                 │ step 0 (exact bytes) │
+│ db-0002  │ 0                    │ 0                 │ step 0 (exact bytes) │
+│ db-0003  │ 0                    │ 0                 │ step 0 (exact bytes) │
+│ db-0004  │ 0                    │ 0                 │ step 0 (exact bytes) │
+└──────────┴──────────────────────┴───────────────────┴──────────────────────┘
+┌──────┬───────────────┬─────────┬───────────────────────────────────────────────┐
+│ part │     mode      │ kill_no │                     line                      │
+├──────┼───────────────┼─────────┼───────────────────────────────────────────────┤
+│ C    │ store-durable │ 1       │ db-0001 recovered step 0, acknowledged step 1 │
+└──────┴───────────────┴─────────┴───────────────────────────────────────────────┘
+
+── D. Every node process ──────────────────────────────────────────────
+
+D1. Problems and over-bounds lines the nodes reported, across all runs.
+    Both counts are 0; any line would be listed in the table problems.
+┌──────────┬─────────────┐
+│ problems │ over_bounds │
+├──────────┼─────────────┤
+│ 0        │ 0           │
+└──────────┴─────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  local-durable: the uninterrupted run acknowledges all 12 writes and every fsync runs on the command thread
+A  ✓  local-durable: strace killed the node at each of the 4 fsync kill points
+A  ✓  local-durable: after each kill at an fsync every database reopens (integrity ok, a recipe state) and holds at least every write acknowledged in this mode
+A  ✓  store-durable: the uninterrupted run acknowledges all 12 writes and every fsync runs on the command thread
+A  ✓  store-durable: strace killed the node at each of the 4 fsync kill points
+A  ✓  store-durable: after each kill at an fsync every database reopens (integrity ok, a recipe state) and holds at least every write acknowledged in this mode
+B  ✓  local-durable: an interactive run that is not killed acknowledges all 12 writes
+B  ✓  local-durable: each of the 2 random kills landed while writes were in flight (a kill after the last reply is recovered and checked too, then redrawn, at most 5 draws per kill)
+B  ✓  local-durable: after every kill at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write
+B  ✓  store-durable: an interactive run that is not killed acknowledges all 12 writes
+B  ✓  store-durable: each of the 2 random kills landed while writes were in flight (a kill after the last reply is recovered and checked too, then redrawn, at most 5 draws per kill)
+B  ✓  store-durable: after every kill at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write
+C  ✓  self-test: the checker finds the store-durable acknowledgement the store never received
+D  ✓  no node reported a problem
+D  ✓  after every command of every node process the descriptors and memory stayed within the standing bounds
+
+15 of 15 claims hold
+
+Experiment verdict: ACKNOWLEDGED WRITES SURVIVE OK
 ```
 
 #### Reading the Experiment 10.2 evidence
 
-- **Lines 1–4:** Pin check passes; `1` node owns `4` databases with capacity `2` (so every round-robin write evicts one open database and triggers `Node.evicted`'s final ship and at-rest check); `local-durable` restarts on `_work/10.2/a/`, while `store-durable` deletes `_work/10.2/a/` completely and rebuilds every database with `claim`.
-- **Lines 6–15 (Part A — `local-durable` fsync kills):** An uninterrupted `12`-write run executes **`77` `fsync`/`fdatasync` calls**, all `77` on the `runtime.LockOSThread()` command thread (`0` on other threads). `strace` kills the node at evenly spaced indices `1`, `26`, `51`, and `77`:
-  - `fsync 1` (`db-0001.db-wal`, command `1`): `0` acked, recovered `0,0,0,0`.
-  - `fsync 26` (`db-0001.db-wal`, command `5`): `4` acked, recovered `1,1,1,1`.
-  - `fsync 51` (directory `a`—SQLite's directory fsync after creating a `-wal` file—command `9`): `8` acked, recovered `2,2,2,2`.
-  - `fsync 77` (`db-0004.db-wal`, command `12`): `11` acked (`3,3,3,2`), recovered **`3,3,3,3`**—the twelfth commit's WAL frames had already been written to the kernel before `walFrames` entered its final `fsync`, so `walIndexRecover` kept it (`recovered >= acknowledged`).
-- **Lines 16–24 (Part A — `store-durable` fsync kills):** An uninterrupted `12`-write run executes **`85` `fsync`/`fdatasync` calls** (`8` more than `local-durable` because every write checkpoints immediately after shipping), all on the command thread. Kills land at `1` (`db-0001.db-wal`), `29`, `57`, and `85`—all three later kills land on **`catalog.db-wal`**, because updating the control-plane catalog is the final durable step after the S3 segment PUT already succeeded. Consequently, at `fsync 29`, `57`, and `85`, `db-0004`'s segment is already in SeaweedFS before the node replies, so store-only recovery rebuilds `1,1,1,1` vs acked `1,1,1,0`, `2,2,2,2` vs `2,2,2,1`, and `3,3,3,3` vs `3,3,3,2`. Every database reopens (`4 of 4`, `integrity_check ok`, valid recipe state) with `0` violations. Notice that store-only recovery costs one new epoch and one fence snapshot per database.
-- **Lines 26–38 (Part B — portable random-time kills):** Measures only the interactive write-loop duration (`875ms` for `local-durable`, `826ms` for `store-durable`), draws random delays inside that window, and redraws (up to `5` draws) if a kill ever lands after the last reply while still recovering and checking every draw. All `4` kills landed in flight on draw `1` (`8–9` of `12` writes acknowledged), every database reopened (`4 of 4`), and `recovered >= acknowledged` held in every run.
-- **Lines 40–43 (Part C — `ack-before-put` self-test):** The mutant node acknowledges `db-0001` `store-durable` with `stored through position 0` (nothing put to S3), is killed, and store-only recovery reports `violation: db-0001 recovered step 0, acknowledged step 1`, proving the checker catches broken store-durable implementations.
-- **Lines 45–49:** `0` node problems; standing bounds held across all **`306` node replies**; `all checks passed`.
+- **Opening settings:** Pin check passes (the experiment's own output, shown when it is run directly); `1` node owns `4` databases with capacity `2` (so every round-robin write evicts one open database and triggers `Node.evicted`'s final ship and at-rest check); `local-durable` restarts on the node directory `a` (`/work/10.2/node/a/` in the container, `_work/10.2/node/a/` when run directly), while `store-durable` deletes that directory completely and rebuilds every database with `claim`.
+- **A1–A4, `local-durable` (Part A — `local-durable` fsync kills):** An uninterrupted `12`-write run executes **`77` `fsync`/`fdatasync` calls**, all `77` on the `runtime.LockOSThread()` command thread (`0` on other threads). `strace` kills the node at evenly spaced indices `1`, `26`, `51`, and `77`:
+  - `fsync 1` (`db-0001.db-wal`, command `1`): `0` acked, recovered `0 0 0 0`.
+  - `fsync 26` (`db-0001.db-wal`, command `5`): `4` acked, recovered `1 1 1 1`.
+  - `fsync 51` (directory `a`—SQLite's directory fsync after creating a `-wal` file—command `9`): `8` acked, recovered `2 2 2 2`.
+  - `fsync 77` (`db-0004.db-wal`, command `12`): `11` acked (`3 3 3 2`), recovered **`3 3 3 3`**—the twelfth commit's WAL frames had already been written to the kernel before `walFrames` entered its final `fsync`, so `walIndexRecover` kept it (`recovered >= acknowledged`).
+- **A1–A4, `store-durable` (Part A — `store-durable` fsync kills):** An uninterrupted `12`-write run executes **`85` `fsync`/`fdatasync` calls** (`8` more than `local-durable` because every write checkpoints immediately after shipping), all on the command thread. Kills land at `1` (`db-0001.db-wal`), `29`, `57`, and `85`—all three later kills land on **`catalog.db-wal`**, because updating the control-plane catalog is the final durable step after the S3 segment PUT already succeeded. Consequently, at `fsync 29`, `57`, and `85`, `db-0004`'s segment is already in SeaweedFS before the node replies, so store-only recovery rebuilds `1 1 1 1` vs acked `1 1 1 0`, `2 2 2 2` vs `2 2 2 1`, and `3 3 3 3` vs `3 3 3 2`. Every database reopens (`4` of `4`, integrity ok, valid recipe state) with `0` violations. Notice that store-only recovery costs one new epoch and one fence snapshot per database.
+- **B1 (Part B — portable random-time kills):** Measures only the interactive write-loop duration (run-dependent: `875ms` for `local-durable` and `826ms` for `store-durable` in the earlier capture, about `100–160ms` in the lab), draws random delays inside that window, and redraws (up to `5` draws) if a kill ever lands after the last reply while still recovering and checking every draw. All `4` kills landed in flight (`in_flight` `true`) with `0` violations, so every database reopened and `recovered >= acknowledged` held in every run. Which draw landed in flight and how many writes each kill had acknowledged are run-dependent: in the earlier capture all `4` kills landed on draw `1` (`8–9` of `12` writes acknowledged); in one lab run two kills needed `2` and `3` draws. `course run` prints every draw.
+- **C1–C2 (Part C — `ack-before-put` self-test):** The mutant node acknowledges `db-0001` `store-durable` with `stored through position 0` (nothing put to S3), is killed, and store-only recovery reports the violation `db-0001 recovered step 0, acknowledged step 1`, proving the checker catches broken store-durable implementations.
+- **D1:** `0` node problems and `0` over-bounds lines; standing bounds held across every node reply (the reply count is run-dependent: **`306`** in the earlier capture, `309` or `365` in lab runs); verdict `ACKNOWLEDGED WRITES SURVIVE OK`.
 
 **What Experiment 10.2 does not show:** Power loss (Chapter 9.2's model applies: at `synchronous=FULL`, local-durable loses zero acknowledged commits if the disk honors `fsync`), kills during `Claim` or mid-`pwrite64` (covered by adversarial attacks `KILL-02a`–`KILL-05` below), or concurrent commands inside one node.
 
@@ -6075,7 +6819,7 @@ all checks passed
 ### 6.2 Experiment 10.3 — `interrupted-relocation`
 
 - **Claim (invariant 6 — migration safety, plus invariants 1, 2, 4, and 5):** Across `32` fault cases injecting coordinator crashes, node `SIGKILL`s, store faults (`fail-before-put`, `fail-after-put`, `crash-before-put`, `crash-after-put`) on both the final segment (`log/000000000004`) and the destination fence (`log/000000000006`), and a rollback while the destination stays down—with a client probing status and writing at every step boundary—a fresh coordinator recovering via `Resume` or `Rollback` always leaves one owner (catalog, newest store slot, and `relocations` row agree), at most `1` writable node at every boundary, destination SHA-256 equal to the drained source state at the fence point, every acknowledged write (both `store-durable` and `local-durable`) in the one lineage and no refused write present, and the owner's closed file equal to the store's last state. Running the same relocation without the seal and store fence (`skip-fence` self-test) leaves `2` nodes writable at once and breaks the store lineage.
-- **Evidence form:** `EXACT`.
+- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
 
 <!-- include: experiments/10.3-interrupted-relocation/main.go -->
 ```go
@@ -6095,6 +6839,9 @@ all checks passed
 // 3), and standing resource bounds. A final self-test runs the skip-fence
 // mutant (no seal and no store fence) to show two writable nodes appear and
 // the lineage audit catches it.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 10.3
 package main
 
 import (
@@ -6104,6 +6851,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/catalog"
@@ -6111,6 +6859,7 @@ import (
 	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/lab"
 	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
 	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/relocate"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walship"
 )
@@ -6118,11 +6867,10 @@ import (
 const id = "db-0001"
 
 var (
-	failures []string
-	mutant   = flag.String("mutant", "", "skip-fence: relocate without sealing the source and without the store fence")
-	only     = flag.Int("case", 0, "run only this case number (0 runs every case)")
-	role     = flag.String("role", "", "internal: run as a service node")
-	process  node.ProcessConfig
+	mutant  = flag.String("mutant", "", "skip-fence: relocate without sealing the source and without the store fence")
+	only    = flag.Int("case", 0, "run only this case number (0 runs every case)")
+	role    = flag.String("role", "", "internal: run as a service node")
+	process node.ProcessConfig
 )
 
 func init() {
@@ -6135,13 +6883,36 @@ func init() {
 	flag.BoolVar(&process.AckBeforePut, "ack-before-put", false, "internal: unused here")
 }
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 10.3" runs both.
+// part labels the claims made while a part runs.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		settings, steps, cases, boundaries, slots, failedInvariants, problems, infoRun *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	settingSeq int
+)
+
+func openTables() {
+	tables.settings = set.Table("settings", "seq", "name", "value")
+	tables.steps = set.Table("relocation_steps", "step", "name")
+	tables.cases = set.Table("cases", append([]string{"case_no"}, caseColumns...)...)
+	tables.boundaries = set.Table("boundaries", "case_no", "seq", "label", "owner", "epoch", "store_end", "store_end_epoch", "store_end_kind", "node_a", "node_b")
+	tables.slots = set.Table("slots", "case_no", "first", "last", "epoch", "kind")
+	tables.failedInvariants = set.Table("failed_invariants", "case_no", "invariant")
+	tables.problems = set.Table("problems", "seq", "kind", "line")
+	tables.infoRun = set.Table("info_run", "name", "value")
+}
+
+func setting(name string, value any) {
+	settingSeq++
+	tables.settings.Row(settingSeq, name, value)
+}
+
+func check(ok bool, claim string) {
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -6168,27 +6939,27 @@ func (c faultCase) interrupts() bool {
 	return !(c.kill == "b" && c.killAfter == relocate.Activate)
 }
 
-// String formats c's injected fault and recovery strategy for case headings.
-func (c faultCase) String() string {
-	var what string
+// describe returns c's injected fault, the node it hits, the step after which
+// it hits (0 for a store fault), and the recovery strategy.
+func (c faultCase) describe() (fault, faultNode string, after int, recovery string) {
 	switch {
 	case c.crashAfter != 0:
-		what = fmt.Sprintf("the coordinator crashes after step %s", c.crashAfter)
+		fault, after = "coordinator crash", int(c.crashAfter)
 	case c.kill != "":
-		what = fmt.Sprintf("node %s is killed after step %s", c.kill, c.killAfter)
+		fault, faultNode, after = "SIGKILL", c.kill, int(c.killAfter)
 	case c.fault != "":
-		what = fmt.Sprintf("store fault %s on node %s", c.fault, c.faultNode)
+		fault, faultNode = "store "+c.fault, c.faultNode
 	default:
-		what = "no fault"
+		fault = "no fault"
 	}
-	recovery := "resume"
+	recovery = "resume"
 	if c.rollback {
 		recovery = "roll back"
 	}
 	if c.staysDown {
 		recovery += fmt.Sprintf(" while node %s stays down", c.kill)
 	}
-	return what + "; recovery: " + recovery
+	return fault, faultNode, after, recovery
 }
 
 func cases() []faultCase {
@@ -6215,13 +6986,15 @@ func cases() []faultCase {
 }
 
 type run struct {
-	env           *lab.Env
-	skipFence     bool
-	nodes         map[string]*node.Process
-	acks          []node.Ack
-	refused       int
-	mostWritable  int
-	boundaryLines []string
+	env          *lab.Env
+	number       int
+	skipFence    bool
+	nodes        map[string]*node.Process
+	acks         []node.Ack
+	refused      int
+	mostWritable int
+	boundaries   int
+	row          map[string]any
 }
 
 func (r *run) remote(name string) node.Remote {
@@ -6296,19 +7069,20 @@ func (r *run) boundary(label string) {
 				writable++
 			}
 		}
-		states = append(states, name+" "+state)
+		states = append(states, state)
 	}
 	r.mostWritable = max(r.mostWritable, writable)
 	record, err := r.env.Catalog.Get(r.env.Ctx, id)
 	if err != nil {
 		fatal("catalog", err)
 	}
-	storeEnd := "the store is not one lineage"
+	var storeEnd, endEpoch, endKind any = "not one lineage", nil, nil
 	if chain, err := fence.Chain(r.env.Ctx, r.env.Store, id); err == nil && len(chain) > 0 {
 		end := chain[len(chain)-1]
-		storeEnd = fmt.Sprintf("store ends at position %d (epoch %d %s)", end.Last, end.Epoch, end.Kind)
+		storeEnd, endEpoch, endKind = end.Last, end.Epoch, end.Kind
 	}
-	r.boundaryLines = append(r.boundaryLines, fmt.Sprintf("%s: catalog owner %s epoch %d; %s; %s", label, record.Owner, record.Epoch, storeEnd, strings.Join(states, "; ")))
+	r.boundaries++
+	tables.boundaries.Row(r.number, r.boundaries, label, record.Owner, record.Epoch, storeEnd, endEpoch, endKind, states[0], states[1])
 	other := "a"
 	if record.Owner == "a" {
 		other = "b"
@@ -6343,12 +7117,32 @@ func describe(err error) string {
 	return "error: " + err.Error()
 }
 
+// caseColumns are the columns of the cases table after case_no.
+var caseColumns = []string{"fault", "fault_node", "after_step", "recovery", "run", "restarted", "stayed_down", "discard_error", "recovery_error", "outcome", "relocation_state", "relocation_step", "fence_point", "fence_point_sha256", "fence", "owner", "epoch", "audit_error", "newest_slot_epoch", "acknowledged", "store_durable", "refused", "final_user_version", "final_state", "most_writable", "holds"}
+
+// runCase runs one fault case and writes its row of the cases table; the
+// columns a case does not reach stay empty.
 func runCase(env *lab.Env, number int, c faultCase, skipFence bool) (bool, int) {
-	fmt.Printf("\ncase %d: %s\n", number, c)
 	if err := env.Reset([]string{id}); err != nil {
 		fatal("reset", err)
 	}
-	r := &run{env: env, nodes: map[string]*node.Process{}, skipFence: skipFence}
+	r := &run{env: env, number: number, nodes: map[string]*node.Process{}, skipFence: skipFence, row: map[string]any{}}
+	fault, faultNode, after, strategy := c.describe()
+	r.row["fault"], r.row["recovery"] = fault, strategy
+	if faultNode != "" {
+		r.row["fault_node"] = faultNode
+	}
+	if after != 0 {
+		r.row["after_step"] = after
+	}
+	defer func() {
+		r.row["most_writable"] = r.mostWritable
+		values := []any{number}
+		for _, column := range caseColumns {
+			values = append(values, r.row[column])
+		}
+		tables.cases.Row(values...)
+	}()
 	// Kill any remaining node process if recovery fails before verify stops them
 	// cleanly, so no child holds open files under _work/10.3/ across cases.
 	defer func() {
@@ -6382,20 +7176,24 @@ func runCase(env *lab.Env, number int, c faultCase, skipFence bool) (bool, int) 
 	result, err := coordinator.Run(env.Ctx, id, "a", "b")
 	interrupted := err != nil
 	if err != nil {
-		fmt.Printf("  run: %s\n", describe(err))
+		r.row["run"] = describe(err)
 	} else {
-		fmt.Printf("  run: finished without interruption (%s)\n", result.Outcome)
+		r.row["run"] = fmt.Sprintf("finished without interruption (%s)", result.Outcome)
 	}
+	var restarted []string
 	for _, name := range []string{"a", "b"} {
 		if c.staysDown && name == c.kill {
 			r.kill(name)
-			fmt.Printf("  node %s is down and stays down during the recovery\n", name)
+			r.row["stayed_down"] = name
 			continue
 		}
 		if !r.alive(name) {
-			fmt.Printf("  node %s is down; restarted\n", name)
+			restarted = append(restarted, name)
 			r.start(name, "")
 		}
+	}
+	if len(restarted) > 0 {
+		r.row["restarted"] = strings.Join(restarted, " ")
 	}
 	recovery := r.coordinator()
 	if interrupted && c.rollback {
@@ -6404,25 +7202,22 @@ func runCase(env *lab.Env, number int, c faultCase, skipFence bool) (bool, int) 
 		result, err = recovery.Resume(env.Ctx, id)
 	}
 	if err != nil && !errors.Is(err, relocate.ErrFenceInStore) {
-		fmt.Printf("  recovery: %v\n", err)
+		r.row["recovery_error"] = err.Error()
 		return false, r.mostWritable
 	}
 	if result.DiscardErr != nil {
-		fmt.Printf("  recovery: the destination did not discard its staged copy: %v\n", result.DiscardErr)
+		r.row["discard_error"] = result.DiscardErr.Error()
 	}
 	if c.staysDown {
-		fmt.Printf("  node %s restarted after the recovery\n", c.kill)
 		r.start(c.kill, "")
 	}
 	relocation, err := env.Catalog.GetRelocation(env.Ctx, id)
 	if err != nil {
 		fatal("relocation record", err)
 	}
-	fmt.Printf("  recovery: %s; relocation record: state %s, step %d; fence point: position %d sha256 %s, fence at position %d\n", result.Outcome, relocation.State, relocation.Step, result.Position, short(result.SHA256), result.Fence)
+	r.row["outcome"], r.row["relocation_state"], r.row["relocation_step"] = result.Outcome, relocation.State, relocation.Step
+	r.row["fence_point"], r.row["fence_point_sha256"], r.row["fence"] = result.Position, short(result.SHA256), result.Fence
 	r.boundary("after recovery")
-	for _, line := range r.boundaryLines {
-		fmt.Println("  " + line)
-	}
 	return r.verify(c, interrupted, result, relocation), r.mostWritable
 }
 
@@ -6438,16 +7233,15 @@ func (r *run) verify(c faultCase, interrupted bool, result relocate.Result, relo
 	if err != nil {
 		fatal("catalog", err)
 	}
+	r.row["owner"], r.row["epoch"] = record.Owner, record.Epoch
 	chain, restorable, err := fence.Audit(env.Ctx, env.Store, id)
 	if err != nil {
-		fmt.Printf("  the store does not hold one lineage: %v\n", err)
+		r.row["audit_error"] = err.Error()
 		return false
 	}
-	var slots []string
 	for _, slot := range chain {
-		slots = append(slots, fmt.Sprintf("%d-%d e%d %s", slot.First, slot.Last, slot.Epoch, slot.Kind))
+		tables.slots.Row(r.number, slot.First, slot.Last, slot.Epoch, slot.Kind)
 	}
-	fmt.Printf("  store: %s\n", strings.Join(slots, "; "))
 	last := chain[len(chain)-1]
 	restore := func(position int64) []byte {
 		image, err := fence.RestoreAt(restorable, position)
@@ -6471,7 +7265,7 @@ func (r *run) verify(c faultCase, interrupted bool, result relocate.Result, relo
 		fencePosition, fenceSHA = result.Position, result.SHA256
 	}
 	if fencePosition < 1 || result.Fence != fencePosition+1 {
-		fmt.Printf("  the recovery names fence point %d and fence %d\n", fencePosition, result.Fence)
+		tables.failedInvariants.Row(r.number, fmt.Sprintf("the recovery names fence point %d and fence %d", fencePosition, result.Fence))
 		return false
 	}
 	atFence, fenced := restore(fencePosition), restore(result.Fence)
@@ -6494,8 +7288,8 @@ func (r *run) verify(c faultCase, interrupted bool, result relocate.Result, relo
 	if err != nil {
 		fatal("owner file", err)
 	}
-	fmt.Printf("  final: catalog owner %s epoch %d, newest slot epoch %d; %d acknowledged (%d store-durable), %d refused; final user_version %d (%s); most writable nodes at any boundary %d\n",
-		record.Owner, record.Epoch, last.Epoch, len(r.acks), storeDurable, r.refused, finalState.UserVersion, finalState.Match, r.mostWritable)
+	r.row["newest_slot_epoch"], r.row["acknowledged"], r.row["store_durable"], r.row["refused"] = last.Epoch, len(r.acks), storeDurable, r.refused
+	r.row["final_user_version"], r.row["final_state"] = finalState.UserVersion, finalState.Match
 	parts := []struct {
 		ok   bool
 		what string
@@ -6511,10 +7305,11 @@ func (r *run) verify(c faultCase, interrupted bool, result relocate.Result, relo
 	ok := true
 	for _, part := range parts {
 		if !part.ok {
-			fmt.Println("  NOT: " + part.what)
+			tables.failedInvariants.Row(r.number, part.what)
 			ok = false
 		}
 	}
+	r.row["holds"] = ok
 	return ok
 }
 
@@ -6541,507 +7336,670 @@ func main() {
 		fatal("work directory", err)
 	}
 	defer env.Close()
+	set = results.MustOpen(env.Work)
+	openTables()
+	// env.Reset empties env.Work before every case, so the nodes work in a
+	// subdirectory and the tables in env.Work/results survive.
+	env.Work = filepath.Join(env.Work, "nodes")
+	env.Process.Work = env.Work
+	if err := os.MkdirAll(env.Work, 0o755); err != nil {
+		fatal("work directory", err)
+	}
 	fmt.Printf("INFO: store %s, work directory %s\n", store.Endpoint, env.ShownWork())
-	fmt.Printf("store: bucket %s, prefix %s; nodes a (source) and b (destination) share the catalog; settings %s\n", store.Bucket, store.Prefix, node.PlatformSettings())
-	fmt.Println("relocation steps:")
-	for _, step := range relocate.Steps() {
-		fmt.Printf("  %s\n", step)
-	}
-	fmt.Println("each case: a claims db-0001 and writes steps 1-2 store-durable and step 3 local-durable; at every step boundary the client writes store-durable to the node the catalog names and local-durable to the other; one fault per case; then resume or roll back")
+	tables.infoRun.Row("store endpoint", store.Endpoint)
+	tables.infoRun.Row("work directory", env.ShownWork())
+	setting("bucket", store.Bucket)
+	setting("prefix", store.Prefix)
 	if *mutant != "" {
-		fmt.Printf("mutant: %s\n", *mutant)
+		setting("mutant", *mutant)
 	}
-	passed, total := 0, 0
+	for _, pragma := range strings.Fields(node.PlatformSettings().String()) {
+		name, value, _ := strings.Cut(pragma, "=")
+		setting(name, value)
+	}
+	for _, step := range relocate.Steps() {
+		_, name, _ := strings.Cut(step.String(), " (")
+		tables.steps.Row(int(step), strings.TrimSuffix(name, ")"))
+	}
+	part = "A"
 	for i, c := range cases() {
 		if *only != 0 && *only != i+1 {
 			continue
 		}
-		total++
 		ok, _ := runCase(env, i+1, c, *mutant == "skip-fence")
 		check(ok, fmt.Sprintf("case %d: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present", i+1))
-		if ok {
-			passed++
-		}
 	}
-	fmt.Printf("\n%d of %d fault cases hold every invariant\n", passed, total)
 	if *mutant == "" && *only == 0 {
-		fmt.Println("\n== self-test: the same relocation without the seal and without the store fence ==")
+		part = "B"
 		_, writable := runCase(env, 0, faultCase{}, true)
 		check(writable >= 2, "self-test: without the fence the boundary check finds two writable nodes")
 	}
-	for _, problem := range env.Tracker.Problems {
-		fmt.Println("problem: " + problem)
-	}
-	for _, line := range env.Tracker.OverBounds {
-		fmt.Println("over bounds: " + line)
+	part = "C"
+	seq := 0
+	for _, kind := range []struct {
+		name  string
+		lines []string
+	}{{"problem", env.Tracker.Problems}, {"over bounds", env.Tracker.OverBounds}} {
+		for _, line := range kind.lines {
+			seq++
+			tables.problems.Row(seq, kind.name, line)
+		}
 	}
 	check(len(env.Tracker.OverBounds) == 0 && env.Tracker.Replies > 0, "after every command of every node process the descriptors and memory stayed within the standing bounds")
 	check(len(env.Tracker.Problems) == 0, "no node reported a problem")
-	fmt.Printf("INFO: %d node replies carried a bounds check\n", env.Tracker.Replies)
-	if len(failures) > 0 {
-		fmt.Printf("\n%d check(s) FAILED\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("\nall checks passed")
+	tables.infoRun.Row("node replies that carried a bounds check", env.Tracker.Replies)
+	set.Finish("INTERRUPTED RELOCATION")
 }
 ```
 
-Run from the repository root (pass `-case N` for one case, or `-mutant skip-fence -case 1` to see the invariant check fail and exit `1`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
 
-```text
-go run ./ch10-multi-database-platform-capstone/experiments/10.3-interrupted-relocation
+<!-- include: experiments/10.3-interrupted-relocation/report.sql -->
+```sql
+-- Walkthrough of experiment 10.3. Run it with:
+--   go run ./cmd/course run 10.3        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   settings            one setting of the run (name, value)
+--   relocation_steps    one of the seven steps of a relocation
+--   cases               one fault case: the fault, the recovery and the final state (case 0 is the self-test)
+--   boundaries          one step boundary of one case: the catalog, the end of the store, both nodes
+--   slots               one slot of the store chain after one case
+--   failed_invariants   one invariant a case broke (none on a good run)
+--   problems            one problem or over-bounds line a node reported (none on a good run)
+--   checks              every claim the experiment asserted (the runner lists it last)
+-- info_run holds the store endpoint, the work directory and the number of node
+-- replies that carried a bounds check; info.sql shows them.
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  10.3  Can an interrupted relocation leave two authoritative copies?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'Node a (the source) moves db-0001 to node b (the destination). Both share'
+.print 'the catalog and the S3 store. In each case, a claims db-0001 and writes'
+.print 'steps 1-2 store-durable and step 3 local-durable. At every step boundary'
+.print 'the client writes store-durable to the node the catalog names and'
+.print 'local-durable to the other. One fault per case; then a fresh coordinator'
+.print 'resumes or rolls back from the relocations row and the store.'
+
+SELECT name, value FROM settings ORDER BY seq;
+
+.print
+.print 'The seven steps of a relocation:'
+
+SELECT step, name FROM relocation_steps ORDER BY step;
+
+.print
+.print '── A. Thirty-two fault cases ───────────────────────────────────────────'
+.print
+.print 'A1. The faults. Cases 1-13 stop the coordinator after a step; 14-21 kill'
+.print '    a node after a step; 22-31 make one store put fail or crash the node'
+.print '    around it (log/000000000004 is the final segment of a, 000000000006'
+.print '    the fence of b); 32 rolls back while the destination stays down.'
+
+SELECT case_no AS "case", fault, fault_node AS node, after_step AS after, recovery
+FROM cases WHERE case_no > 0 ORDER BY case_no;
+
+.print
+.print 'A2. How each run stopped and how the recovery ended. Killing b after step'
+.print '    6 (case 18) does not interrupt the run: step 7 talks only to a. A'
+.print '    roll back after step 6 rolls forward instead (case 13): the fence of b'
+.print '    is already in the store.'
+
+SELECT case_no AS "case", run, restarted, outcome, relocation_state AS state,
+       relocation_step AS step
+FROM cases WHERE case_no > 0 ORDER BY case_no;
+
+.print
+.print 'A3. Case 32: node b stays down during the roll back. The roll back still'
+.print '    finishes; b keeps a staged copy it could not be told to discard, and'
+.print '    is restarted after the recovery.'
+
+SELECT case_no AS "case", stayed_down, discard_error
+FROM cases WHERE stayed_down IS NOT NULL OR discard_error IS NOT NULL ORDER BY case_no;
+
+.print
+.print 'A4. The fence point is the last position of the source; the fence is the'
+.print '    snapshot the new owner puts right after it. The rebuilt copy equals the'
+.print '    source there (the same sha256). A roll back fences a again, at epoch 3.'
+
+SELECT case_no AS "case", fence_point, fence_point_sha256 AS sha256_prefix, fence,
+       owner, epoch, newest_slot_epoch AS slot_epoch
+FROM cases WHERE case_no > 0 ORDER BY case_no;
+
+.print
+.print 'A5. Writes. Every acknowledged write is in the one lineage and no refused'
+.print '    write is: the final user_version equals the number acknowledged. The'
+.print '    final state is that recipe step; its bytes differ only in the change'
+.print '    counter (bytes 24-27 and 92-95).'
+
+SELECT case_no AS "case", acknowledged, store_durable, refused,
+       final_user_version AS user_version,
+       regexp_extract(final_state, '^step \d+')                               AS recipe,
+       CASE WHEN final_state LIKE '%exact%' THEN 'exact' ELSE 'counter differs' END AS vs_recipe_file,
+       most_writable, holds
+FROM cases WHERE case_no > 0 ORDER BY case_no;
+
+.print
+.print 'A6. The step boundaries of four cases. In case 7 the coordinator stops'
+.print '    after the last step; in case 16, a is killed after step 3; in case 18,'
+.print '    b is killed after step 6; in case 32, b stays down. Before step 6 only'
+.print '    a is writable; from step 6 on only b is. store_end is the last slot.'
+
+SELECT case_no AS "case", label, owner, epoch,
+       CASE WHEN store_end_epoch IS NULL THEN store_end
+            ELSE store_end || ' e' || store_end_epoch || ' ' || store_end_kind END AS store_end,
+       node_a, node_b
+FROM boundaries WHERE case_no IN (7, 16, 18, 32) ORDER BY case_no, seq;
+
+.print
+.print 'A7. Every boundary of every case: how many nodes accepted writes. In the'
+.print '    fault cases never more than one, and none while a is sealed and b is'
+.print '    not yet active. The self-test (part B) reaches two.'
+
+SELECT CASE WHEN case_no = 0 THEN 'self-test' ELSE 'fault cases' END AS cases,
+       (node_a LIKE '%writable')::INT + (node_b LIKE '%writable')::INT AS writable_nodes,
+       count(*) AS boundaries
+FROM boundaries GROUP BY ALL ORDER BY cases, writable_nodes;
+
+.print
+.print 'A8. The store after each case: one lineage, epochs never decreasing, and'
+.print '    each new epoch opens with a fence snapshot. Each slot is shown as'
+.print '    positions, epoch, and snap (snapshot) or seg (segment).'
+
+SELECT case_no AS "case",
+       string_agg(first || '-' || last || ' e' || epoch || ' ' ||
+                  CASE kind WHEN 'snapshot' THEN 'snap' WHEN 'segment' THEN 'seg' ELSE kind END,
+                  '; ' ORDER BY first) AS store
+FROM slots WHERE case_no > 0 GROUP BY case_no ORDER BY case_no;
+
+.print
+.print '    In some cases the final segment never reached the store, and the close'
+.print '    of the source had already checkpointed its frames into the .db file. The'
+.print '    retried drain found no WAL and shipped a discontinuity snapshot at'
+.print '    position 4 instead of a segment, in these cases:'
+
+SELECT string_agg(case_no::VARCHAR, ' ' ORDER BY case_no) AS cases, first AS position, epoch, kind
+FROM slots WHERE case_no > 0 AND kind = 'snapshot' AND epoch = 1 AND first > 1
+GROUP BY first, epoch, kind ORDER BY first;
+
+.print
+.print 'A9. The cases that hold every invariant, and the invariants broken (none):'
+
+SELECT count(*) FILTER (holds) || ' of ' || count(*) AS cases_holding_every_invariant,
+       (SELECT count(*) FROM failed_invariants) AS broken_invariants
+FROM cases WHERE case_no > 0;
+
+.print
+.print '── B. Self-test: the same relocation without the seal and the fence ────'
+.print
+.print 'B1. The skip-fence mutant does not seal a and does not put the fence of'
+.print '    b. From step 6 on, both nodes are writable, and the store is no longer'
+.print '    one lineage: epoch 2 starts with a segment, not a fence snapshot.'
+
+SELECT run, outcome, relocation_state AS state, fence_point, fence, most_writable
+FROM cases WHERE case_no = 0 ORDER BY case_no;
+
+SELECT label, owner, epoch,
+       CASE WHEN store_end_epoch IS NULL THEN store_end
+            ELSE store_end || ' e' || store_end_epoch || ' ' || store_end_kind END AS store_end,
+       node_a, node_b
+FROM boundaries WHERE case_no = 0 ORDER BY seq;
+
+SELECT audit_error FROM cases WHERE case_no = 0 ORDER BY case_no;
+
+.print
+.print '── C. Every node process ───────────────────────────────────────────────'
+.print
+.print 'C1. Problems and over-bounds lines the nodes reported, across all cases.'
+.print '    Both counts are 0; any line would be listed in the table problems.'
+
+SELECT count(*) FILTER (kind = 'problem')     AS problems,
+       count(*) FILTER (kind = 'over bounds') AS over_bounds
+FROM problems;
 ```
 
-Captured evidence:
+Run from the repository root, with SeaweedFS running (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
+
+```text
+go run ./cmd/course run 10.3
+```
+
+Add `-i` (`go run ./cmd/course run -i 10.3`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries. To run one case (`-case N`), or `-mutant skip-fence -case 1` to see the invariant check fail and exit `1`, run the experiment directly in the container: `docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.3-interrupted-relocation -case N`.
+
+`course run` also prints the run-dependent values, which are not part of the stored evidence: where the store and the work directory were (node directories under `nodes/`), and how many node replies carried a bounds check.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/10.3-interrupted-relocation/`](evidence/10.3-interrupted-relocation/), and `go run ./cmd/course check evidence ch10` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/10.3-interrupted-relocation.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: store http://127.0.0.1:18333, work directory _work/10.3
-store: bucket course-ch10b, prefix exp-10-3/; nodes a (source) and b (destination) share the catalog; settings synchronous=FULL foreign_keys=ON secure_delete=ON cache_size=-256 wal_autocheckpoint=0 busy_timeout=5000ms
-relocation steps:
-  1 (fence the source: bump the epoch in the catalog)
-  2 (seal the source)
-  3 (ship the final segment and close the source at rest)
-  4 (rebuild at the destination from the store)
-  5 (verify the rebuilt hash against the source's)
-  6 (activate: put the destination's fence in the store)
-  7 (retire the source)
-each case: a claims db-0001 and writes steps 1-2 store-durable and step 3 local-durable; at every step boundary the client writes store-durable to the node the catalog names and local-durable to the other; one fault per case; then resume or roll back
 
-case 1: the coordinator crashes after step 1 (fence the source: bump the epoch in the catalog); recovery: resume
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 4 sha256 c75549790ef1, fence at position 5
-  after recovery: catalog owner b epoch 2; store ends at position 5 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 segment; 5-5 e2 snapshot; 6-6 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 4 acknowledged (3 store-durable), 1 refused; final user_version 4 (step 4 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 1: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+════════════════════════════════════════════════════════════════════════
+  10.3  Can an interrupted relocation leave two authoritative copies?
+════════════════════════════════════════════════════════════════════════
 
-case 2: the coordinator crashes after step 2 (seal the source); recovery: resume
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 2 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 2: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+Node a (the source) moves db-0001 to node b (the destination). Both share
+the catalog and the S3 store. In each case, a claims db-0001 and writes
+steps 1-2 store-durable and step 3 local-durable. At every step boundary
+the client writes store-durable to the node the catalog names and
+local-durable to the other. One fault per case; then a fresh coordinator
+resumes or rolls back from the relocations row and the store.
+┌────────────────────┬──────────────┐
+│        name        │    value     │
+├────────────────────┼──────────────┤
+│ bucket             │ course-ch10b │
+│ prefix             │ exp-10-3/    │
+│ synchronous        │ FULL         │
+│ foreign_keys       │ ON           │
+│ secure_delete      │ ON           │
+│ cache_size         │ -256         │
+│ wal_autocheckpoint │ 0            │
+│ busy_timeout       │ 5000ms       │
+└────────────────────┴──────────────┘
 
-case 3: the coordinator crashes after step 3 (ship the final segment and close the source at rest); recovery: resume
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 3: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+The seven steps of a relocation:
+┌──────┬─────────────────────────────────────────────────────┐
+│ step │                        name                         │
+├──────┼─────────────────────────────────────────────────────┤
+│ 1    │ fence the source: bump the epoch in the catalog     │
+│ 2    │ seal the source                                     │
+│ 3    │ ship the final segment and close the source at rest │
+│ 4    │ rebuild at the destination from the store           │
+│ 5    │ verify the rebuilt hash against the source's        │
+│ 6    │ activate: put the destination's fence in the store  │
+│ 7    │ retire the source                                   │
+└──────┴─────────────────────────────────────────────────────┘
 
-case 4: the coordinator crashes after step 4 (rebuild at the destination from the store); recovery: resume
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 6 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 4: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+── A. Thirty-two fault cases ───────────────────────────────────────────
 
-case 5: the coordinator crashes after step 5 (verify the rebuilt hash against the source's); recovery: resume
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 8 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 5: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A1. The faults. Cases 1-13 stop the coordinator after a step; 14-21 kill
+    a node after a step; 22-31 make one store put fail or crash the node
+    around it (log/000000000004 is the final segment of a, 000000000006
+    the fence of b); 32 rolls back while the destination stays down.
+┌──────┬───────────────────────────────────────────┬──────┬───────┬───────────────────────────────────┐
+│ case │                   fault                   │ node │ after │             recovery              │
+├──────┼───────────────────────────────────────────┼──────┼───────┼───────────────────────────────────┤
+│ 1    │ coordinator crash                         │      │ 1     │ resume                            │
+│ 2    │ coordinator crash                         │      │ 2     │ resume                            │
+│ 3    │ coordinator crash                         │      │ 3     │ resume                            │
+│ 4    │ coordinator crash                         │      │ 4     │ resume                            │
+│ 5    │ coordinator crash                         │      │ 5     │ resume                            │
+│ 6    │ coordinator crash                         │      │ 6     │ resume                            │
+│ 7    │ coordinator crash                         │      │ 7     │ resume                            │
+│ 8    │ coordinator crash                         │      │ 1     │ roll back                         │
+│ 9    │ coordinator crash                         │      │ 2     │ roll back                         │
+│ 10   │ coordinator crash                         │      │ 3     │ roll back                         │
+│ 11   │ coordinator crash                         │      │ 4     │ roll back                         │
+│ 12   │ coordinator crash                         │      │ 5     │ roll back                         │
+│ 13   │ coordinator crash                         │      │ 6     │ roll back                         │
+│ 14   │ SIGKILL                                   │ a    │ 1     │ resume                            │
+│ 15   │ SIGKILL                                   │ a    │ 2     │ resume                            │
+│ 16   │ SIGKILL                                   │ a    │ 3     │ resume                            │
+│ 17   │ SIGKILL                                   │ b    │ 4     │ resume                            │
+│ 18   │ SIGKILL                                   │ b    │ 6     │ resume                            │
+│ 19   │ SIGKILL                                   │ a    │ 6     │ resume                            │
+│ 20   │ SIGKILL                                   │ a    │ 2     │ roll back                         │
+│ 21   │ SIGKILL                                   │ b    │ 4     │ roll back                         │
+│ 22   │ store fail-before-put:log/000000000004:1  │ a    │       │ resume                            │
+│ 23   │ store fail-before-put:log/000000000006:1  │ b    │       │ resume                            │
+│ 24   │ store fail-after-put:log/000000000004:1   │ a    │       │ resume                            │
+│ 25   │ store fail-after-put:log/000000000006:1   │ b    │       │ resume                            │
+│ 26   │ store crash-before-put:log/000000000004:1 │ a    │       │ resume                            │
+│ 27   │ store crash-before-put:log/000000000006:1 │ b    │       │ resume                            │
+│ 28   │ store crash-after-put:log/000000000004:1  │ a    │       │ resume                            │
+│ 29   │ store crash-after-put:log/000000000006:1  │ b    │       │ resume                            │
+│ 30   │ store fail-before-put:log/000000000004:1  │ a    │       │ roll back                         │
+│ 31   │ store crash-before-put:log/000000000006:1 │ b    │       │ roll back                         │
+│ 32   │ SIGKILL                                   │ b    │ 4     │ roll back while node b stays down │
+└──────┴───────────────────────────────────────────┴──────┴───────┴───────────────────────────────────┘
 
-case 6: the coordinator crashes after step 6 (activate: put the destination's fence in the store); recovery: resume
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 6: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A2. How each run stopped and how the recovery ended. Killing b after step
+    6 (case 18) does not interrupt the run: step 7 talks only to a. A
+    roll back after step 6 rolls forward instead (case 13): the fence of b
+    is already in the store.
+┌──────┬────────────────────────────────────────┬───────────┬────────────────┬─────────────┬──────┐
+│ case │                  run                   │ restarted │    outcome     │    state    │ step │
+├──────┼────────────────────────────────────────┼───────────┼────────────────┼─────────────┼──────┤
+│ 1    │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 2    │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 3    │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 4    │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 5    │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 6    │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 7    │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 8    │ the coordinator stopped                │           │ rolled back    │ rolled-back │ 1    │
+│ 9    │ the coordinator stopped                │           │ rolled back    │ rolled-back │ 1    │
+│ 10   │ the coordinator stopped                │           │ rolled back    │ rolled-back │ 2    │
+│ 11   │ the coordinator stopped                │           │ rolled back    │ rolled-back │ 3    │
+│ 12   │ the coordinator stopped                │           │ rolled back    │ rolled-back │ 4    │
+│ 13   │ the coordinator stopped                │           │ rolled forward │ done        │ 7    │
+│ 14   │ step 2 failed: the node did not answer │ a         │ rolled forward │ done        │ 7    │
+│ 15   │ step 3 failed: the node did not answer │ a         │ rolled forward │ done        │ 7    │
+│ 16   │ step 7 failed: the node did not answer │ a         │ rolled forward │ done        │ 7    │
+│ 17   │ step 6 failed: the node did not answer │ b         │ rolled forward │ done        │ 7    │
+│ 18   │ finished without interruption (done)   │ b         │ done           │ done        │ 7    │
+│ 19   │ step 7 failed: the node did not answer │ a         │ rolled forward │ done        │ 7    │
+│ 20   │ step 3 failed: the node did not answer │ a         │ rolled back    │ rolled-back │ 2    │
+│ 21   │ step 6 failed: the node did not answer │ b         │ rolled back    │ rolled-back │ 5    │
+│ 22   │ step 3 failed: the node refused        │           │ rolled forward │ done        │ 7    │
+│ 23   │ step 6 failed: the node refused        │           │ rolled forward │ done        │ 7    │
+│ 24   │ step 3 failed: the node refused        │           │ rolled forward │ done        │ 7    │
+│ 25   │ step 6 failed: the node refused        │           │ rolled forward │ done        │ 7    │
+│ 26   │ step 3 failed: the node did not answer │ a         │ rolled forward │ done        │ 7    │
+│ 27   │ step 6 failed: the node did not answer │ b         │ rolled forward │ done        │ 7    │
+│ 28   │ step 3 failed: the node did not answer │ a         │ rolled forward │ done        │ 7    │
+│ 29   │ step 6 failed: the node did not answer │ b         │ rolled forward │ done        │ 7    │
+│ 30   │ step 3 failed: the node refused        │           │ rolled back    │ rolled-back │ 2    │
+│ 31   │ step 6 failed: the node did not answer │ b         │ rolled back    │ rolled-back │ 5    │
+│ 32   │ step 6 failed: the node did not answer │           │ rolled back    │ rolled-back │ 5    │
+└──────┴────────────────────────────────────────┴───────────┴────────────────┴─────────────┴──────┘
 
-case 7: the coordinator crashes after step 7 (retire the source); recovery: resume
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 6: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a owner at epoch 1, sealed; b owner at epoch 2, writable
-  after recovery: catalog owner b epoch 2; store ends at position 7 (epoch 2 segment); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment; 8-8 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 6 acknowledged (4 store-durable), 11 refused; final user_version 6 (step 6 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 7: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A3. Case 32: node b stays down during the roll back. The roll back still
+    finishes; b keeps a staged copy it could not be told to discard, and
+    is restarted after the recovery.
+┌──────┬─────────────┬───────────────────────────────────────────────────┐
+│ case │ stayed_down │                   discard_error                   │
+├──────┼─────────────┼───────────────────────────────────────────────────┤
+│ 32   │ b           │ node process for "discard db-0001" is not running │
+└──────┴─────────────┴───────────────────────────────────────────────────┘
 
-case 8: the coordinator crashes after step 1 (fence the source: bump the epoch in the catalog); recovery: roll back
-  run: the coordinator stopped
-  recovery: rolled back; relocation record: state rolled-back, step 1; fence point: position 4 sha256 c75549790ef1, fence at position 5
-  after recovery: catalog owner a epoch 3; store ends at position 5 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 segment; 5-5 e3 snapshot; 6-6 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 4 acknowledged (3 store-durable), 1 refused; final user_version 4 (step 4 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 8: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A4. The fence point is the last position of the source; the fence is the
+    snapshot the new owner puts right after it. The rebuilt copy equals the
+    source there (the same sha256). A roll back fences a again, at epoch 3.
+┌──────┬─────────────┬───────────────┬───────┬───────┬───────┬────────────┐
+│ case │ fence_point │ sha256_prefix │ fence │ owner │ epoch │ slot_epoch │
+├──────┼─────────────┼───────────────┼───────┼───────┼───────┼────────────┤
+│ 1    │ 4           │ c75549790ef1  │ 5     │ b     │ 2     │ 2          │
+│ 2    │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 3    │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 4    │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 5    │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 6    │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 7    │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 8    │ 4           │ c75549790ef1  │ 5     │ a     │ 3     │ 3          │
+│ 9    │ 5           │ d53fc07b1293  │ 6     │ a     │ 3     │ 3          │
+│ 10   │ 5           │ d53fc07b1293  │ 6     │ a     │ 3     │ 3          │
+│ 11   │ 5           │ d53fc07b1293  │ 6     │ a     │ 3     │ 3          │
+│ 12   │ 5           │ d53fc07b1293  │ 6     │ a     │ 3     │ 3          │
+│ 13   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 14   │ 4           │ d53fc07b1293  │ 5     │ b     │ 2     │ 2          │
+│ 15   │ 4           │ d53fc07b1293  │ 5     │ b     │ 2     │ 2          │
+│ 16   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 17   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 18   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 19   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 20   │ 4           │ d53fc07b1293  │ 5     │ a     │ 3     │ 3          │
+│ 21   │ 5           │ d53fc07b1293  │ 6     │ a     │ 3     │ 3          │
+│ 22   │ 4           │ d53fc07b1293  │ 5     │ b     │ 2     │ 2          │
+│ 23   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 24   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 25   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 26   │ 4           │ d53fc07b1293  │ 5     │ b     │ 2     │ 2          │
+│ 27   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 28   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 29   │ 5           │ d53fc07b1293  │ 6     │ b     │ 2     │ 2          │
+│ 30   │ 4           │ d53fc07b1293  │ 5     │ a     │ 3     │ 3          │
+│ 31   │ 5           │ d53fc07b1293  │ 6     │ a     │ 3     │ 3          │
+│ 32   │ 5           │ d53fc07b1293  │ 6     │ a     │ 3     │ 3          │
+└──────┴─────────────┴───────────────┴───────┴───────┴───────┴────────────┘
 
-case 9: the coordinator crashes after step 2 (seal the source); recovery: roll back
-  run: the coordinator stopped
-  recovery: rolled back; relocation record: state rolled-back, step 1; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 2 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 9: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A5. Writes. Every acknowledged write is in the one lineage and no refused
+    write is: the final user_version equals the number acknowledged. The
+    final state is that recipe step; its bytes differ only in the change
+    counter (bytes 24-27 and 92-95).
+┌──────┬──────────────┬───────────────┬─────────┬──────────────┬────────┬─────────────────┬───────────────┬───────┐
+│ case │ acknowledged │ store_durable │ refused │ user_version │ recipe │ vs_recipe_file  │ most_writable │ holds │
+├──────┼──────────────┼───────────────┼─────────┼──────────────┼────────┼─────────────────┼───────────────┼───────┤
+│ 1    │ 4            │ 3             │ 1       │ 4            │ step 4 │ counter differs │ 1             │ true  │
+│ 2    │ 5            │ 3             │ 2       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 3    │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 4    │ 5            │ 3             │ 6       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 5    │ 5            │ 3             │ 8       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 6    │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 7    │ 6            │ 4             │ 11      │ 6            │ step 6 │ counter differs │ 1             │ true  │
+│ 8    │ 4            │ 3             │ 1       │ 4            │ step 4 │ counter differs │ 1             │ true  │
+│ 9    │ 5            │ 3             │ 2       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 10   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 11   │ 5            │ 3             │ 6       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 12   │ 5            │ 3             │ 8       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 13   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 14   │ 5            │ 3             │ 2       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 15   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 16   │ 6            │ 4             │ 11      │ 6            │ step 6 │ counter differs │ 1             │ true  │
+│ 17   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 18   │ 6            │ 4             │ 13      │ 6            │ step 6 │ counter differs │ 1             │ true  │
+│ 19   │ 6            │ 4             │ 11      │ 6            │ step 6 │ counter differs │ 1             │ true  │
+│ 20   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 21   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 22   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 23   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 24   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 25   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 26   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 27   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 28   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 29   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 30   │ 5            │ 3             │ 4       │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 31   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+│ 32   │ 5            │ 3             │ 10      │ 5            │ step 5 │ counter differs │ 1             │ true  │
+└──────┴──────────────┴───────────────┴─────────┴──────────────┴────────┴─────────────────┴───────────────┴───────┘
 
-case 10: the coordinator crashes after step 3 (ship the final segment and close the source at rest); recovery: roll back
-  run: the coordinator stopped
-  recovery: rolled back; relocation record: state rolled-back, step 2; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 10: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A6. The step boundaries of four cases. In case 7 the coordinator stops
+    after the last step; in case 16, a is killed after step 3; in case 18,
+    b is killed after step 6; in case 32, b stays down. Before step 6 only
+    a is writable; from step 6 on only b is. store_end is the last slot.
+┌──────┬────────────────┬───────┬───────┬───────────────┬────────────────────────────┬────────────────────────────┐
+│ case │     label      │ owner │ epoch │   store_end   │           node_a           │           node_b           │
+├──────┼────────────────┼───────┼───────┼───────────────┼────────────────────────────┼────────────────────────────┤
+│ 7    │ after step 1   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, writable │ not owner                  │
+│ 7    │ after step 2   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 7    │ after step 3   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 7    │ after step 4   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 7    │ after step 5   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 7    │ after step 6   │ b     │ 2     │ 6 e2 snapshot │ owner at epoch 1, sealed   │ owner at epoch 2, writable │
+│ 7    │ after recovery │ b     │ 2     │ 7 e2 segment  │ not owner                  │ owner at epoch 2, writable │
+│ 16   │ after step 1   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, writable │ not owner                  │
+│ 16   │ after step 2   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 16   │ after step 3   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 16   │ after step 4   │ b     │ 2     │ 5 e1 segment  │ down                       │ not owner                  │
+│ 16   │ after step 5   │ b     │ 2     │ 5 e1 segment  │ down                       │ not owner                  │
+│ 16   │ after step 6   │ b     │ 2     │ 6 e2 snapshot │ down                       │ owner at epoch 2, writable │
+│ 16   │ after recovery │ b     │ 2     │ 7 e2 segment  │ not owner                  │ owner at epoch 2, writable │
+│ 18   │ after step 1   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, writable │ not owner                  │
+│ 18   │ after step 2   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 18   │ after step 3   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 18   │ after step 4   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 18   │ after step 5   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 18   │ after step 6   │ b     │ 2     │ 6 e2 snapshot │ owner at epoch 1, sealed   │ owner at epoch 2, writable │
+│ 18   │ after step 7   │ b     │ 2     │ 7 e2 segment  │ not owner                  │ down                       │
+│ 18   │ after recovery │ b     │ 2     │ 7 e2 segment  │ not owner                  │ owner at epoch 2, writable │
+│ 32   │ after step 1   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, writable │ not owner                  │
+│ 32   │ after step 2   │ b     │ 2     │ 3 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 32   │ after step 3   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 32   │ after step 4   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ not owner                  │
+│ 32   │ after step 5   │ b     │ 2     │ 5 e1 segment  │ owner at epoch 1, sealed   │ down                       │
+│ 32   │ after recovery │ a     │ 3     │ 6 e3 snapshot │ owner at epoch 3, writable │ not owner                  │
+└──────┴────────────────┴───────┴───────┴───────────────┴────────────────────────────┴────────────────────────────┘
 
-case 11: the coordinator crashes after step 4 (rebuild at the destination from the store); recovery: roll back
-  run: the coordinator stopped
-  recovery: rolled back; relocation record: state rolled-back, step 3; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 6 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 11: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A7. Every boundary of every case: how many nodes accepted writes. In the
+    fault cases never more than one, and none while a is sealed and b is
+    not yet active. The self-test (part B) reaches two.
+┌─────────────┬────────────────┬────────────┐
+│    cases    │ writable_nodes │ boundaries │
+├─────────────┼────────────────┼────────────┤
+│ fault cases │ 0              │ 76         │
+│ fault cases │ 1              │ 66         │
+│ self-test   │ 1              │ 5          │
+│ self-test   │ 2              │ 3          │
+└─────────────┴────────────────┴────────────┘
 
-case 12: the coordinator crashes after step 5 (verify the rebuilt hash against the source's); recovery: roll back
-  run: the coordinator stopped
-  recovery: rolled back; relocation record: state rolled-back, step 4; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 8 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 12: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A8. The store after each case: one lineage, epochs never decreasing, and
+    each new epoch opens with a fence snapshot. Each slot is shown as
+    positions, epoch, and snap (snapshot) or seg (segment).
+┌──────┬──────────────────────────────────────────────────────────────────────────────────────┐
+│ case │                                        store                                         │
+├──────┼──────────────────────────────────────────────────────────────────────────────────────┤
+│ 1    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 seg; 5-5 e2 snap; 6-6 e2 seg             │
+│ 2    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 3    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 4    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 5    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 6    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 7    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg; 8-8 e2 seg │
+│ 8    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 seg; 5-5 e3 snap; 6-6 e3 seg             │
+│ 9    │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e3 snap; 7-7 e3 seg             │
+│ 10   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e3 snap; 7-7 e3 seg             │
+│ 11   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e3 snap; 7-7 e3 seg             │
+│ 12   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e3 snap; 7-7 e3 seg             │
+│ 13   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 14   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 snap; 5-5 e2 snap; 6-6 e2 seg            │
+│ 15   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 snap; 5-5 e2 snap; 6-6 e2 seg            │
+│ 16   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg; 8-8 e2 seg │
+│ 17   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 18   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg; 8-8 e2 seg │
+│ 19   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg; 8-8 e2 seg │
+│ 20   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 snap; 5-5 e3 snap; 6-6 e3 seg            │
+│ 21   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e3 snap; 7-7 e3 seg             │
+│ 22   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 snap; 5-5 e2 snap; 6-6 e2 seg            │
+│ 23   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 24   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 25   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 26   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 snap; 5-5 e2 snap; 6-6 e2 seg            │
+│ 27   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 28   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 29   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e2 snap; 7-7 e2 seg             │
+│ 30   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-4 e1 snap; 5-5 e3 snap; 6-6 e3 seg            │
+│ 31   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e3 snap; 7-7 e3 seg             │
+│ 32   │ 1-1 e1 snap; 2-2 e1 seg; 3-3 e1 seg; 4-5 e1 seg; 6-6 e3 snap; 7-7 e3 seg             │
+└──────┴──────────────────────────────────────────────────────────────────────────────────────┘
 
-case 13: the coordinator crashes after step 6 (activate: put the destination's fence in the store); recovery: roll back
-  run: the coordinator stopped
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 13: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+    In some cases the final segment never reached the store, and the close
+    of the source had already checkpointed its frames into the .db file. The
+    retried drain found no WAL and shipped a discontinuity snapshot at
+    position 4 instead of a segment, in these cases:
+┌───────────────────┬──────────┬───────┬──────────┐
+│       cases       │ position │ epoch │   kind   │
+├───────────────────┼──────────┼───────┼──────────┤
+│ 14 15 20 22 26 30 │ 4        │ 1     │ snapshot │
+└───────────────────┴──────────┴───────┴──────────┘
 
-case 14: node a is killed after step 1 (fence the source: bump the epoch in the catalog); recovery: resume
-  run: step 2 failed: the node did not answer
-  node a is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 4 sha256 d53fc07b1293, fence at position 5
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 5 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 snapshot; 5-5 e2 snapshot; 6-6 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 2 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 14: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A9. The cases that hold every invariant, and the invariants broken (none):
+┌───────────────────────────────┬───────────────────┐
+│ cases_holding_every_invariant │ broken_invariants │
+├───────────────────────────────┼───────────────────┤
+│ 32 of 32                      │ 0                 │
+└───────────────────────────────┴───────────────────┘
 
-case 15: node a is killed after step 2 (seal the source); recovery: resume
-  run: step 3 failed: the node did not answer
-  node a is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 4 sha256 d53fc07b1293, fence at position 5
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 5 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 snapshot; 5-5 e2 snapshot; 6-6 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 15: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+── B. Self-test: the same relocation without the seal and the fence ────
 
-case 16: node a is killed after step 3 (ship the final segment and close the source at rest); recovery: resume
-  run: step 7 failed: the node did not answer
-  node a is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a down; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a down; b not owner
-  after step 6: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a down; b owner at epoch 2, writable
-  after recovery: catalog owner b epoch 2; store ends at position 7 (epoch 2 segment); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment; 8-8 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 6 acknowledged (4 store-durable), 11 refused; final user_version 6 (step 6 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 16: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+B1. The skip-fence mutant does not seal a and does not put the fence of
+    b. From step 6 on, both nodes are writable, and the store is no longer
+    one lineage: epoch 2 starts with a segment, not a fence snapshot.
+┌──────────────────────────────────────┬─────────┬───────┬─────────────┬───────┬───────────────┐
+│                 run                  │ outcome │ state │ fence_point │ fence │ most_writable │
+├──────────────────────────────────────┼─────────┼───────┼─────────────┼───────┼───────────────┤
+│ finished without interruption (done) │ done    │ done  │ 3           │ 0     │ 2             │
+└──────────────────────────────────────┴─────────┴───────┴─────────────┴───────┴───────────────┘
+┌────────────────┬───────┬───────┬─────────────────┬────────────────────────────┬────────────────────────────┐
+│     label      │ owner │ epoch │    store_end    │           node_a           │           node_b           │
+├────────────────┼───────┼───────┼─────────────────┼────────────────────────────┼────────────────────────────┤
+│ after step 1   │ b     │ 2     │ 3 e1 segment    │ owner at epoch 1, writable │ not owner                  │
+│ after step 2   │ b     │ 2     │ 3 e1 segment    │ owner at epoch 1, writable │ not owner                  │
+│ after step 3   │ b     │ 2     │ 3 e1 segment    │ owner at epoch 1, writable │ not owner                  │
+│ after step 4   │ b     │ 2     │ 3 e1 segment    │ owner at epoch 1, writable │ not owner                  │
+│ after step 5   │ b     │ 2     │ 3 e1 segment    │ owner at epoch 1, writable │ not owner                  │
+│ after step 6   │ b     │ 2     │ 3 e1 segment    │ owner at epoch 1, writable │ owner at epoch 2, writable │
+│ after step 7   │ b     │ 2     │ not one lineage │ owner at epoch 1, writable │ owner at epoch 2, writable │
+│ after recovery │ b     │ 2     │ not one lineage │ owner at epoch 1, writable │ owner at epoch 2, writable │
+└────────────────┴───────┴───────┴─────────────────┴────────────────────────────┴────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                           audit_error                                            │
+├──────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ slot chain is not one lineage: epoch 2 starts at position 4 with a segment, not a fence snapshot │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
 
-case 17: node b is killed after step 4 (rebuild at the destination from the store); recovery: resume
-  run: step 6 failed: the node did not answer
-  node b is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b down
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 17: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+── C. Every node process ───────────────────────────────────────────────
 
-case 18: node b is killed after step 6 (activate: put the destination's fence in the store); recovery: resume
-  run: finished without interruption (done)
-  node b is down; restarted
-  recovery: done; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 6: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a owner at epoch 1, sealed; b owner at epoch 2, writable
-  after step 7: catalog owner b epoch 2; store ends at position 7 (epoch 2 segment); a not owner; b down
-  after recovery: catalog owner b epoch 2; store ends at position 7 (epoch 2 segment); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment; 8-8 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 6 acknowledged (4 store-durable), 13 refused; final user_version 6 (step 6 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 18: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+C1. Problems and over-bounds lines the nodes reported, across all cases.
+    Both counts are 0; any line would be listed in the table problems.
+┌──────────┬─────────────┐
+│ problems │ over_bounds │
+├──────────┼─────────────┤
+│ 0        │ 0           │
+└──────────┴─────────────┘
 
-case 19: node a is killed after step 6 (activate: put the destination's fence in the store); recovery: resume
-  run: step 7 failed: the node did not answer
-  node a is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 6: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a owner at epoch 1, sealed; b owner at epoch 2, writable
-  after recovery: catalog owner b epoch 2; store ends at position 7 (epoch 2 segment); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment; 8-8 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 6 acknowledged (4 store-durable), 11 refused; final user_version 6 (step 6 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 19: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+── Checks ─────────────────────────────────────────────────────────────
 
-case 20: node a is killed after step 2 (seal the source); recovery: roll back
-  run: step 3 failed: the node did not answer
-  node a is down; restarted
-  recovery: rolled back; relocation record: state rolled-back, step 2; fence point: position 4 sha256 d53fc07b1293, fence at position 5
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner a epoch 3; store ends at position 5 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 snapshot; 5-5 e3 snapshot; 6-6 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 20: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+Every claim the experiment asserted while it ran:
 
-case 21: node b is killed after step 4 (rebuild at the destination from the store); recovery: roll back
-  run: step 6 failed: the node did not answer
-  node b is down; restarted
-  recovery: rolled back; relocation record: state rolled-back, step 5; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b down
-  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 21: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 1: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 2: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 3: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 4: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 5: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 6: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 7: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 8: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 9: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 10: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 11: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 12: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 13: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 14: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 15: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 16: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 17: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 18: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 19: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 20: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 21: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 22: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 23: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 24: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 25: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 26: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 27: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 28: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 29: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 30: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 31: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+A  ✓  case 32: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+B  ✓  self-test: without the fence the boundary check finds two writable nodes
+C  ✓  after every command of every node process the descriptors and memory stayed within the standing bounds
+C  ✓  no node reported a problem
 
-case 22: store fault fail-before-put:log/000000000004:1 on node a; recovery: resume
-  run: step 3 failed: the node refused
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 4 sha256 d53fc07b1293, fence at position 5
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 5 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 snapshot; 5-5 e2 snapshot; 6-6 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 22: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+35 of 35 claims hold
 
-case 23: store fault fail-before-put:log/000000000006:1 on node b; recovery: resume
-  run: step 6 failed: the node refused
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 23: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 24: store fault fail-after-put:log/000000000004:1 on node a; recovery: resume
-  run: step 3 failed: the node refused
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 24: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 25: store fault fail-after-put:log/000000000006:1 on node b; recovery: resume
-  run: step 6 failed: the node refused
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 25: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 26: store fault crash-before-put:log/000000000004:1 on node a; recovery: resume
-  run: step 3 failed: the node did not answer
-  node a is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 4 sha256 d53fc07b1293, fence at position 5
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 5 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 snapshot; 5-5 e2 snapshot; 6-6 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 26: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 27: store fault crash-before-put:log/000000000006:1 on node b; recovery: resume
-  run: step 6 failed: the node did not answer
-  node b is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 27: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 28: store fault crash-after-put:log/000000000004:1 on node a; recovery: resume
-  run: step 3 failed: the node did not answer
-  node a is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 28: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 29: store fault crash-after-put:log/000000000006:1 on node b; recovery: resume
-  run: step 6 failed: the node did not answer
-  node b is down; restarted
-  recovery: rolled forward; relocation record: state done, step 7; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner b epoch 2; store ends at position 6 (epoch 2 snapshot); a not owner; b owner at epoch 2, writable
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e2 snapshot; 7-7 e2 segment
-  final: catalog owner b epoch 2, newest slot epoch 2; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 29: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 30: store fault fail-before-put:log/000000000004:1 on node a; recovery: roll back
-  run: step 3 failed: the node refused
-  recovery: rolled back; relocation record: state rolled-back, step 2; fence point: position 4 sha256 d53fc07b1293, fence at position 5
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner a epoch 3; store ends at position 5 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-4 e1 snapshot; 5-5 e3 snapshot; 6-6 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 4 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 30: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 31: store fault crash-before-put:log/000000000006:1 on node b; recovery: roll back
-  run: step 6 failed: the node did not answer
-  node b is down; restarted
-  recovery: rolled back; relocation record: state rolled-back, step 5; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 31: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-case 32: node b is killed after step 4 (rebuild at the destination from the store); recovery: roll back while node b stays down
-  run: step 6 failed: the node did not answer
-  node b is down and stays down during the recovery
-  recovery: the destination did not discard its staged copy: node process for "discard db-0001" is not running
-  node b restarted after the recovery
-  recovery: rolled back; relocation record: state rolled-back, step 5; fence point: position 5 sha256 d53fc07b1293, fence at position 6
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b down
-  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
-  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
-  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
-check ok: case 32: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
-
-32 of 32 fault cases hold every invariant
-
-== self-test: the same relocation without the seal and without the store fence ==
-
-case 0: no fault; recovery: resume
-  run: finished without interruption (done)
-  recovery: done; relocation record: state done, step 7; fence point: position 3 sha256 d092f1afdfd0, fence at position 0
-  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 3: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 4: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 5: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
-  after step 6: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b owner at epoch 2, writable
-  after step 7: catalog owner b epoch 2; the store is not one lineage; a owner at epoch 1, writable; b owner at epoch 2, writable
-  after recovery: catalog owner b epoch 2; the store is not one lineage; a owner at epoch 1, writable; b owner at epoch 2, writable
-  the store does not hold one lineage: slot chain is not one lineage: epoch 2 starts at position 4 with a segment, not a fence snapshot
-check ok: self-test: without the fence the boundary check finds two writable nodes
-check ok: after every command of every node process the descriptors and memory stayed within the standing bounds
-check ok: no node reported a problem
-INFO: 1726 node replies carried a bounds check
-
-all checks passed
+Experiment verdict: INTERRUPTED RELOCATION OK
 ```
 
 #### Reading the Experiment 10.3 evidence
 
-- **Lines 1–12 (setup and protocol):** Lists the seven numbered relocation steps and the per-case starting state: `a` claims `db-0001` (fence at `1`), commits steps `1–2` `store-durable` (positions `2`, `3`) and step `3` `local-durable` (unshipped). At every reached boundary, the client sends one `store-durable` write to the catalog owner and one `local-durable` write to the other node.
-- **Lines 14–89 (cases `1–7`, coordinator crash after each step, `Resume`):**
-  - **Case `1`** stops immediately after `FenceEpoch` (before `AfterStep(1)` runs), so the client's boundary-1 local write never happens; `Resume` drains step `3` into slot `4` (`sha256 c75549790ef1`), fences at `5`, and ends at `user_version 4` (`4` acknowledged, `1` refused).
-  - **Cases `2–6`** reach boundary `1`, where `a` accepts the client's `local-durable` step `4` (`after step 1: catalog owner b epoch 2; ... a owner at epoch 1, writable; b not owner`); step `2` seals `a`; step `3` drains steps `3` and `4` into segment `4-5` (`sha256 d53fc07b1293`); `Resume` rolls forward to fence slot `6` (`user_version 5`, `5` acknowledged).
-  - **Case `7`** reaches boundary `6` (`a owner at epoch 1, sealed; b owner at epoch 2, writable`), where `b` accepts a client write at slot `7` before the coordinator crashes after step `7`; `Resume` adopts and finishes cleanly at `user_version 6` (`6` acknowledged, `11` refused).
-- **Lines 91–152 (cases `8–13`, coordinator crash after steps `1–6`, `Rollback`):**
-  - **Cases `8–12`** crash before the destination's fence reaches S3: `Rollback` drains `a`, lets `a` re-claim at **epoch `3`** (fence at `5` in case `8`, `6` in cases `9–12`), marks `rolled-back`, discards `b`'s `.staged`, and preserves every acknowledged write (`user_version 4` in case `8`, `5` in cases `9–12`).
-  - **Case `13`** crashes after step `6` (`Activate`): the destination's epoch-2 fence is already at slot `6` in S3, so `Rollback` refuses to undo it, **rolls forward** (`state done, step 7`), and returns `ErrFenceInStore`.
-- **Lines 154–258 (cases `14–21`, node `SIGKILL`s, `Resume` and `Rollback`):**
-  - **Cases `14`, `15`, and `20`** kill source `a` before step `3` completes. When `a` restarts, `openDatabase` recovers its WAL and ships steps `3` and `4` as a **discontinuity snapshot** (`4-4 e1 snapshot`), leaving `fence point: position 4 sha256 d53fc07b1293`—the exact same bytes as segment `4-5`, at one position lower.
-  - **Case `18`** kills destination `b` after step `6`: `Run` still finishes without interruption (`done`) because step `7` (`RetireSource`) talks only to `a`; restarting `b` reloads its `.owner` belief file cleanly (`final user_version 6`).
-- **Lines 260–378 (cases `22–31`, store faults on final segment `log/000000000004` and fence `log/000000000006`):**
-  - **Cases `22`, `26`, and `30`** (`fail-before-put` and `crash-before-put` on `a`'s final segment): `a`'s close already checkpointed steps `3–4` into `.db`, so recovery ships them as discontinuity snapshot `4-4 e1 snapshot` (`sha256 d53fc07b1293`), fencing at `5`.
+- **Opening settings and step list (setup and protocol):** Lists the seven numbered relocation steps and the per-case starting state: `a` claims `db-0001` (fence at `1`), commits steps `1–2` `store-durable` (positions `2`, `3`) and step `3` `local-durable` (unshipped). At every reached boundary, the client sends one `store-durable` write to the catalog owner and one `local-durable` write to the other node.
+- **Section A, cases `1–7` (coordinator crash after each step, `Resume`):**
+  - **Case `1`** stops immediately after `FenceEpoch` (before `AfterStep(1)` runs), so the client's boundary-1 local write never happens; `Resume` drains step `3` into slot `4` (sha256 `c75549790ef1` in A4), fences at `5`, and ends at `user_version` `4` (`4` acknowledged, `1` refused, A5).
+  - **Cases `2–6`** reach boundary `1`, where `a` accepts the client's `local-durable` step `4` (A6, after step 1: catalog owner `b` at epoch `2`; `a` `owner at epoch 1, writable`; `b` `not owner`); step `2` seals `a`; step `3` drains steps `3` and `4` into segment `4-5` (sha256 `d53fc07b1293`); `Resume` rolls forward to fence slot `6` (`user_version` `5`, `5` acknowledged).
+  - **Case `7`** reaches boundary `6` (A6: `a` `owner at epoch 1, sealed`; `b` `owner at epoch 2, writable`), where `b` accepts a client write at slot `7` before the coordinator crashes after step `7`; `Resume` adopts and finishes cleanly at `user_version` `6` (`6` acknowledged, `11` refused).
+- **Cases `8–13` (coordinator crash after steps `1–6`, `Rollback`):**
+  - **Cases `8–12`** crash before the destination's fence reaches S3: `Rollback` drains `a`, lets `a` re-claim at **epoch `3`** (fence at `5` in case `8`, `6` in cases `9–12`), marks `rolled-back`, discards `b`'s `.staged`, and preserves every acknowledged write (`user_version` `4` in case `8`, `5` in cases `9–12`).
+  - **Case `13`** crashes after step `6` (`Activate`): the destination's epoch-2 fence is already at slot `6` in S3, so `Rollback` refuses to undo it, **rolls forward** (A2: state `done`, step `7`), and returns `ErrFenceInStore`.
+- **Cases `14–21` (node `SIGKILL`s, `Resume` and `Rollback`):**
+  - **Cases `14`, `15`, and `20`** kill source `a` before step `3` completes. When `a` restarts, `openDatabase` recovers its WAL and ships steps `3` and `4` as a **discontinuity snapshot** (A8: position `4`, epoch `1`, `snapshot`), leaving fence point `4` with sha256 `d53fc07b1293` (A4)—the exact same bytes as segment `4-5`, at one position lower.
+  - **Case `18`** kills destination `b` after step `6`: `Run` still finishes without interruption (`done`) because step `7` (`RetireSource`) talks only to `a`; restarting `b` reloads its `.owner` belief file cleanly (final `user_version` `6`).
+- **Cases `22–31` (store faults on final segment `log/000000000004` and fence `log/000000000006`):**
+  - **Cases `22`, `26`, and `30`** (`fail-before-put` and `crash-before-put` on `a`'s final segment): `a`'s close already checkpointed steps `3–4` into `.db`, so recovery ships them as a discontinuity snapshot at position `4`, epoch `1` (sha256 `d53fc07b1293`), fencing at `5`.
   - **Cases `24` and `28`** (`fail-after-put` and `crash-after-put` on `a`'s final segment): segment `4-5` already landed in S3; recovery sees it and puts the fence at `6`.
   - **Cases `25` and `29`** (`fail-after-put` and `crash-after-put` on `b`'s fence): `b`'s fence at slot `6` already landed although `b` got an error or died; `Resume` reads it from S3 and **adopts** it with no second fence.
   - **Case `31`** (`crash-before-put` on `b`'s fence, `Rollback`): `b` died before putting slot `6`; `a` re-claims at epoch `3`, placing its fence at slot `6`.
-- **Lines 380–396 (case `32` — rollback while destination `b` stays down):** Kills `b` after step `4` and keeps `b` stopped through `Rollback`. `Rollback` drains `a`, claims epoch `3` (fence at `6`), marks `rolled-back` in the catalog, and reports `recovery: the destination did not discard its staged copy: node process for "discard db-0001" is not running` without failing. When `b` restarts afterward, its leftover `.staged` cannot activate and `b` reports `not owner`. All **`32 of 32`** fault cases hold every invariant.
-- **Lines 398–417 (`skip-fence` self-test and standing bounds):** Without the seal and store fence (`case 0`), from step `6` onward both nodes report writable (`a owner at epoch 1, writable; b owner at epoch 2, writable`), and `fence.Audit` catches `epoch 2 starts at position 4 with a segment, not a fence snapshot`. Standing bounds held across all **`1,726` node replies** with `0` node problems.
+- **A3 and case `32` rows (rollback while destination `b` stays down):** Kills `b` after step `4` and keeps `b` stopped through `Rollback`. `Rollback` drains `a`, claims epoch `3` (fence at `6`), marks `rolled-back` in the catalog, and records the discard error `node process for "discard db-0001" is not running` (A3) without failing. When `b` restarts afterward, its leftover `.staged` cannot activate and `b` reports `not owner`. All **`32 of 32`** fault cases hold every invariant (A9).
+- **B1 and C1 (`skip-fence` self-test and standing bounds):** Without the seal and store fence, from step `6` onward both nodes report writable (`a` `owner at epoch 1, writable`; `b` `owner at epoch 2, writable`), and `fence.Audit` catches `epoch 2 starts at position 4 with a segment, not a fence snapshot`. Standing bounds held across every node reply (the reply count is run-dependent; **`1,726`** in the earlier capture) with `0` node problems.
 
 ---
 
 ### 6.3 Experiment 10.4 — `rebuild-the-fleet` (rung R7)
 
 - **Claim (invariant 3 — every published snapshot is internally consistent, plus rung R7 fleet rebuild and invariant 5):** SeaweedFS S3 plus the control-plane catalog is a complete saved state of a multi-database fleet. After `8` writer processes (each owning an equal share and keeping at most `32` databases open) claim every database, drive recipe steps `1–4` `store-durable`, and apply a schema rollout (recipe step `5`, `CREATE INDEX events_by_account ON events(account_id, id)`) to half of each writer's share and stop—while an independent checker subprocess continuously lists S3 and rebuilds every published restore point in memory—quiescing (`TRUNCATE` checkpoint finds `0` WAL frames), deleting **every** local file under the writers' directories, and rebuilding the entire fleet from S3 alone onto empty disks produces `100%` **E1 byte-identical** databases (`500/500` by default; `2,000/2,000` at full outline scale), each at the exact `schema_version` (`user_version`) recorded in the catalog (old step `4` or new step `5`), with `0` restore-point rebuild failures during or after the run, and every existing slot read **exactly twice** during the rebuild (`once to check the lineage, once to restore`).
-- **Evidence form:** `EXACT` for hashes, object/listing/fence counts, restore-point counts, and standing bounds; `SHAPE` (`INFO:` lines) for elapsed wall times and byte totals (byte totals vary by ~100 bytes run to run because WAL checksums and salts are serialized as variable-width decimal integers inside JSON metadata).
+- **Evidence form:** `EXACT` for hashes, object/listing/fence counts, restore-point counts, and standing bounds (every stored table must match on every run); `SHAPE` for elapsed wall times and byte totals, which are in the run-dependent `info` tables and excluded (byte totals vary by ~100 bytes run to run because WAL checksums and salts are serialized as variable-width decimal integers inside JSON metadata).
 
 <!-- include: experiments/10.4-rebuild-the-fleet/main.go -->
 ```go
@@ -7062,6 +8020,9 @@ all checks passed
 // file, 8 rebuild workers claim and restore the entire fleet from SeaweedFS S3
 // alone, verifying E1 byte equality, catalog schema versions, exact double-read
 // object counts, and standing descriptor and memory bounds throughout.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 10.4
 package main
 
 import (
@@ -7070,7 +8031,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -7081,13 +8041,13 @@ import (
 	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
 	"github.com/nickstrad/walfleet/internal/procstat"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 const stepsBeforeRollout = recipe.IndexStep - 1
 
 var (
-	failures  []string
 	databases = flag.Int("databases", 500, "databases in the fleet (the outline asks for 2000; see the notes for that run)")
 	writers   = flag.Int("writers", 8, "writer node processes; each owns an equal share of the fleet")
 	workers   = flag.Int("checker-workers", 4, "databases the checker inspects at once")
@@ -7106,13 +8066,45 @@ func init() {
 	flag.BoolVar(&process.AckBeforePut, "ack-before-put", false, "internal: unused here")
 }
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 10.4" runs both.
+// part labels the claims made while a part runs.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		settings, writers, databases, rebuild, checkerPasses, checkerFailures, problems, infoRun, infoTimings, infoWriters *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	settingSeq int
+)
+
+func openTables() {
+	tables.settings = set.Table("settings", "seq", "name", "value")
+	tables.writers = set.Table("writers", "writer", "databases", "rolled_out")
+	tables.databases = set.Table("databases", "database", "writer", "acknowledged_version", "catalog_schema_version", "last_shipped", "quiesce_wal_frames", "rebuilt_user_version", "rebuilt_state", "byte_identical")
+	tables.rebuild = set.Table("rebuild", "databases", "workers", "local_files_left", "objects_read", "listings", "fence_objects_written")
+	tables.checkerPasses = set.Table("checker_passes", "pass", "databases", "restore_points", "failed")
+	tables.checkerFailures = set.Table("checker_failures", "phase", "line")
+	tables.problems = set.Table("problems", "seq", "kind", "line")
+	tables.infoRun = set.Table("info_run", "name", "value")
+	tables.infoTimings = set.Table("info_timings", "seq", "phase", "ms")
+	tables.infoWriters = set.Table("info_writers", "writer", "reply", "summary")
+}
+
+func setting(name string, value any) {
+	settingSeq++
+	tables.settings.Row(settingSeq, name, value)
+}
+
+var timingSeq int
+
+func timing(phase string, elapsed time.Duration) {
+	timingSeq++
+	tables.infoTimings.Row(timingSeq, phase, elapsed.Milliseconds())
+}
+
+func check(ok bool, claim string) {
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -7178,17 +8170,12 @@ func (f *fleet) writeStream() {
 	})
 }
 
-func (f *fleet) rollout() int {
+func (f *fleet) rollout() {
 	f.eachWriter(func(_ int, p *node.Process, share []string) {
 		for _, id := range share[:len(share)/2] {
 			f.send(p, fmt.Sprintf("write %s %s", id, node.StoreDurable))
 		}
 	})
-	rolled := 0
-	for _, share := range f.shares {
-		rolled += len(share) / 2
-	}
-	return rolled
 }
 
 func (f *fleet) runChecker(checker *node.Process, stop <-chan struct{}) (passes, points int, failed []string) {
@@ -7219,6 +8206,7 @@ type recorded struct {
 	sha256        string
 	schemaVersion int
 	lastShipped   int64
+	frames        int
 }
 
 func (f *fleet) quiesce(cat *catalog.Catalog) map[string]recorded {
@@ -7227,7 +8215,7 @@ func (f *fleet) quiesce(cat *catalog.Catalog) map[string]recorded {
 		if err != nil {
 			fatal("close "+p.Name, err)
 		}
-		fmt.Printf("INFO: writer %s: %s; %s\n", p.Name, reply.Line, reply.Summary)
+		tables.infoWriters.Row(p.Name, reply.Line, reply.Summary)
 	}
 	records, err := cat.All(f.env.Ctx)
 	if err != nil {
@@ -7241,9 +8229,8 @@ func (f *fleet) quiesce(cat *catalog.Catalog) map[string]recorded {
 			fatal("quiesce "+record.ID, err)
 		}
 		frames += quiesced.Checkpoint.LogFrames
-		out[record.ID] = recorded{sha256: quiesced.SHA256, schemaVersion: record.SchemaVersion, lastShipped: record.LastShipped}
+		out[record.ID] = recorded{sha256: quiesced.SHA256, schemaVersion: record.SchemaVersion, lastShipped: record.LastShipped, frames: quiesced.Checkpoint.LogFrames}
 	}
-	fmt.Printf("quiesce: every writer closed; %d databases recorded after a TRUNCATE checkpoint (WAL frames found: %d)\n", len(out), frames)
 	check(len(out) == len(f.ids) && frames == 0, "every database was at rest when quiesced: the writers' close left no WAL frame for the TRUNCATE checkpoint")
 	return out
 }
@@ -7258,7 +8245,6 @@ func (f *fleet) rebuild(cat *catalog.Catalog, before map[string]recorded) {
 	if err != nil {
 		fatal("glob", err)
 	}
-	fmt.Printf("every local file deleted (%d files left under the writers' directories)\n", len(left))
 	check(len(left) == 0, "the new node starts with empty disks")
 	counting := &lab.CountingStore{Store: f.env.Store}
 	f.rebuildCounts = counting
@@ -7313,12 +8299,13 @@ func (f *fleet) rebuild(cat *catalog.Catalog, before map[string]recorded) {
 		overBounds = append(overBounds, err.Error())
 	}
 	gets, bytes, puts, lists := counting.Counts()
-	fmt.Printf("INFO: rebuild of %d databases by %d workers took %s; %s\n", len(f.ids), *writers, elapsed.Round(time.Millisecond), assertion.Summary())
-	fmt.Printf("rebuild read %d objects in %d listings and wrote %d fence objects\n", gets, lists, puts)
-	fmt.Printf("INFO: rebuild read %d bytes (%d per database)\n", bytes, bytes/int64(len(f.ids)))
+	timing("rebuild", elapsed)
+	tables.infoRun.Row("rebuild standing assertion", assertion.Summary())
+	tables.infoRun.Row("rebuild bytes read", bytes)
+	tables.infoRun.Row("rebuild bytes read per database", bytes/int64(len(f.ids)))
+	tables.rebuild.Row(len(f.ids), *writers, len(left), gets, lists, puts)
 	equal, steps, schemaAgrees := 0, map[int]int{}, 0
-	var mismatches []string
-	for _, id := range f.ids {
+	for i, id := range f.ids {
 		image, err := os.ReadFile(paths[id])
 		if err != nil {
 			fatal("read the rebuilt "+id, err)
@@ -7333,34 +8320,27 @@ func (f *fleet) rebuild(cat *catalog.Catalog, before map[string]recorded) {
 		}
 		if sha == before[id].sha256 {
 			equal++
-		} else if len(mismatches) < 5 {
-			mismatches = append(mismatches, id)
 		}
 		if state.RecipeState && state.UserVersion == before[id].schemaVersion && state.UserVersion == f.acks[id] {
 			schemaAgrees++
 		}
 		steps[state.UserVersion]++
-	}
-	var histogram []string
-	var keys []int
-	for step := range steps {
-		keys = append(keys, step)
-	}
-	sort.Ints(keys)
-	for _, step := range keys {
-		histogram = append(histogram, fmt.Sprintf("%d at recipe step %d", steps[step], step))
-	}
-	fmt.Printf("rebuilt: %d of %d byte-identical (E1) to the sha256 recorded after the TRUNCATE checkpoint; %s\n", equal, len(f.ids), strings.Join(histogram, ", "))
-	if len(mismatches) > 0 {
-		fmt.Printf("  first mismatches: %s\n", strings.Join(mismatches, ", "))
+		tables.databases.Row(id, fmt.Sprintf("w%d", i%*writers+1), f.acks[id], before[id].schemaVersion, before[id].lastShipped, before[id].frames, state.UserVersion, state.Match, sha == before[id].sha256)
 	}
 	check(equal == len(f.ids), fmt.Sprintf("%d of %d rebuilt databases are byte-identical to the quiesced originals", equal, len(f.ids)))
 	check(schemaAgrees == len(f.ids), "every rebuilt database is a recipe state whose schema version (user_version) is the one the catalog recorded and the last one acknowledged")
 	check(steps[recipe.IndexStep]+steps[stepsBeforeRollout] == len(f.ids) && steps[recipe.IndexStep] > 0 && steps[stepsBeforeRollout] > 0, fmt.Sprintf("the rollout stopped halfway: databases are on the old schema (step %d) or the new one (step %d with %s), nothing else", stepsBeforeRollout, recipe.IndexStep, strings.TrimPrefix(recipe.IndexSQL, "CREATE ")))
 	for _, line := range overBounds {
-		fmt.Println("over bounds: " + line)
+		problem("rebuild over bounds", line)
 	}
 	check(len(overBounds) == 0, "the rebuilding process stayed within the standing bounds")
+}
+
+var problemSeq int
+
+func problem(kind, line string) {
+	problemSeq++
+	tables.problems.Row(problemSeq, kind, line)
 }
 
 func main() {
@@ -7393,7 +8373,6 @@ func main() {
 		fatal("file limit", err)
 	}
 	perNode := bounds.DescriptorsPerConnection*node.ConnectionsPerDatabase*process.Capacity + node.ReserveDescriptors
-	fmt.Printf("INFO: descriptor soft limit %d; each writer's bound %d\n", soft, perNode)
 	if uint64(perNode) > soft {
 		fatal("descriptor limit", fmt.Errorf("-capacity %d needs up to %d descriptors per writer, the soft limit is %d", process.Capacity, perNode, soft))
 	}
@@ -7412,17 +8391,29 @@ func main() {
 	if err := env.Reset(f.ids); err != nil {
 		fatal("reset", err)
 	}
+	// Open the tables after env.Reset, which empties env.Work.
+	set = results.MustOpen(env.Work)
+	openTables()
+	tables.infoRun.Row("descriptor soft limit", soft)
+	tables.infoRun.Row("descriptor bound of each writer", perNode)
 	f.shares = make([][]string, *writers)
 	for i, id := range f.ids {
 		f.shares[i%*writers] = append(f.shares[i%*writers], id)
 	}
 	fmt.Printf("INFO: store %s, work directory %s\n", store.Endpoint, env.ShownWork())
-	owned := fmt.Sprint(len(f.shares[0]))
-	if fewest := len(f.shares[*writers-1]); fewest != len(f.shares[0]) {
-		owned = fmt.Sprintf("%d-%d", fewest, len(f.shares[0]))
+	tables.infoRun.Row("store endpoint", store.Endpoint)
+	tables.infoRun.Row("work directory", env.ShownWork())
+	setting("databases", *databases)
+	setting("writer_processes", *writers)
+	setting("open_databases_per_writer", process.Capacity)
+	setting("checker_processes", 1)
+	setting("checker_workers", *workers)
+	setting("checker_pause", *pause)
+	setting("bucket", store.Bucket)
+	setting("prefix", store.Prefix)
+	for w, share := range f.shares {
+		tables.writers.Row(fmt.Sprintf("w%d", w+1), len(share), len(share)/2)
 	}
-	fmt.Printf("fleet: %d databases, %d writer processes (each owns %s and keeps at most %d open), one checker process; store: bucket %s, prefix %s\n",
-		*databases, *writers, owned, process.Capacity, store.Bucket, store.Prefix)
 	for w := range *writers {
 		p, err := env.Start(env.Config(fmt.Sprintf("w%d", w+1), ""))
 		if err != nil {
@@ -7445,46 +8436,48 @@ func main() {
 		passes, points, failed := f.runChecker(checker, stop)
 		done <- checked{passes, points, failed}
 	}()
+	part = "A"
+	setting("steps_before_rollout", stepsBeforeRollout)
+	setting("rollout_step", recipe.IndexStep)
+	setting("rollout_sql", recipe.IndexSQL)
 	phase := time.Now()
 	f.writeStream()
-	fmt.Printf("INFO: write stream took %s\n", time.Since(phase).Round(time.Millisecond))
+	timing("write stream", time.Since(phase))
 	phase = time.Now()
-	fmt.Printf("write stream: every database claimed and given recipe steps 1-%d, each acknowledged store-durable\n", stepsBeforeRollout)
-	rolled := f.rollout()
-	fmt.Printf("schema rollout: recipe step %d (%s) applied to %d of %d databases, then stopped\n", recipe.IndexStep, recipe.IndexSQL, rolled, len(f.ids))
-	fmt.Printf("INFO: rollout took %s\n", time.Since(phase).Round(time.Millisecond))
+	f.rollout()
+	timing("rollout", time.Since(phase))
 	close(stop)
 	phase = time.Now()
 	concurrent := <-done
-	fmt.Printf("INFO: waiting for the checker's last concurrent pass took %s\n", time.Since(phase).Round(time.Millisecond))
-	fmt.Printf("INFO: the concurrent checker ran %d passes over the store and rebuilt %d restore points while the writers ran\n", concurrent.passes, concurrent.points)
-	for i, line := range concurrent.failed {
-		if i < 5 {
-			fmt.Println("  failed: " + line)
-		}
+	timing("waiting for the last concurrent checker pass", time.Since(phase))
+	tables.infoRun.Row("concurrent checker passes", concurrent.passes)
+	tables.infoRun.Row("restore points the concurrent checker rebuilt", concurrent.points)
+	for _, line := range concurrent.failed {
+		tables.checkerFailures.Row("concurrent", line)
 	}
 	check(concurrent.passes > 0 && len(concurrent.failed) == 0, "every restore point the checker found while the writers ran rebuilt to a recipe state")
+	part = "B"
 	phase = time.Now()
 	before := f.quiesce(env.Catalog)
-	fmt.Printf("INFO: quiesce took %s\n", time.Since(phase).Round(time.Millisecond))
+	timing("quiesce", time.Since(phase))
+	part = "C"
 	f.rebuild(env.Catalog, before)
+	part = "D"
 	phase = time.Now()
 	reply, err := checker.Send("pass")
 	if err != nil {
 		fatal("checker", err)
 	}
-	fmt.Printf("INFO: final checker pass took %s\n", time.Since(phase).Round(time.Millisecond))
+	timing("final checker pass", time.Since(phase))
 	env.Tracker.Note("checker", node.Reply{Line: reply.Line, Bounds: reply.Bounds})
 	final, err := lab.ParsePass(reply)
 	if err != nil {
 		fatal("checker pass", err)
 	}
-	fmt.Printf("final checker pass: %d databases, %d restore points, %d fail to rebuild\n", final.Databases, final.RestorePoints, final.Failed)
-	fmt.Printf("INFO: the final pass read %d bytes, the store's whole content\n", final.BytesRead)
-	for i, line := range final.FailedLines {
-		if i < 5 {
-			fmt.Println("  failed: " + line)
-		}
+	tables.checkerPasses.Row("final", final.Databases, final.RestorePoints, final.Failed)
+	tables.infoRun.Row("final checker pass bytes read (the whole store)", final.BytesRead)
+	for _, line := range final.FailedLines {
+		tables.checkerFailures.Row("final", line)
 	}
 	check(final.Databases == len(f.ids) && final.Failed == 0, "after the rebuild every published restore point of every database rebuilds to a recipe state")
 	// node.Claim reads every existing slot twice: once in adapter.Refresh to
@@ -7495,141 +8488,490 @@ func main() {
 	if err != nil {
 		fatal("close checker", err)
 	}
-	fmt.Printf("INFO: checker: %s\n", closing.Summary)
-	for _, problem := range env.Tracker.Problems {
-		fmt.Println("problem: " + problem)
+	tables.infoRun.Row("checker standing assertion", closing.Summary)
+	part = "E"
+	for _, line := range env.Tracker.Problems {
+		problem("problem", line)
 	}
 	for _, line := range env.Tracker.OverBounds {
-		fmt.Println("over bounds: " + line)
+		problem("over bounds", line)
 	}
 	check(len(env.Tracker.Problems) == 0, "no node reported a problem and every command was acknowledged")
 	check(len(env.Tracker.OverBounds) == 0 && env.Tracker.Replies > 0, "after every command of every writer and checker command the descriptors and memory stayed within the standing bounds")
-	fmt.Printf("INFO: %d replies carried a bounds check; total runtime %s\n", env.Tracker.Replies, time.Since(start).Round(time.Second))
-	if len(failures) > 0 {
-		fmt.Printf("\n%d check(s) FAILED\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("\nall checks passed")
+	tables.infoRun.Row("replies that carried a bounds check", env.Tracker.Replies)
+	timing("total", time.Since(start))
+	set.Finish("REBUILD THE FLEET")
 }
 ```
 
-Run from the repository root (`500` databases default, ~2.5 min; `-databases 2000 -prefix exp-10-4-2000` for the outline's `2,000`-database fleet, ~9 min):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
 
-```text
-go run ./ch10-multi-database-platform-capstone/experiments/10.4-rebuild-the-fleet
+<!-- include: experiments/10.4-rebuild-the-fleet/report.sql -->
+```sql
+-- Walkthrough of experiment 10.4. Run it with:
+--   go run ./cmd/course run 10.4        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   settings           one setting of the run (name, value)
+--   writers            one writer process: how many databases it owns and how many it rolled out
+--   databases          one database: what was acknowledged, quiesced and rebuilt
+--   rebuild            the rebuild from the store: objects read and written
+--   checker_passes     the final pass of the checker over every restore point in the store
+--   checker_failures   one restore point a checker pass could not rebuild (none on a good run)
+--   problems           one problem or over-bounds line (none on a good run)
+--   checks             every claim the experiment asserted (the runner lists it last)
+-- info_run, info_timings and info_writers hold timings, byte counts, the passes
+-- of the concurrent checker and the standing-bounds summaries; info.sql shows them.
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  10.4  Can the whole fleet be rebuilt from the store and the catalog?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'Writer processes own equal shares of the fleet and keep a bounded number'
+.print 'of databases open. A separate checker process lists the store and rebuilds'
+.print 'every published restore point in memory while the writers run. Then every'
+.print 'writer closes, every local file is deleted, and fresh nodes rebuild the'
+.print 'whole fleet from the S3 store and the catalog alone.'
+
+SELECT name, value FROM settings ORDER BY seq;
+
+.print
+.print '── A. Write stream and a schema rollout stopped halfway ────────────────'
+.print
+.print 'A1. Every database is claimed and given recipe steps 1-4, each write'
+.print '    acknowledged store-durable. Then recipe step 5 (the CREATE INDEX in'
+.print '    rollout_sql) is applied to the first half of the share of each writer,'
+.print '    and the rollout stops.'
+
+SELECT writer, databases, rolled_out FROM writers ORDER BY writer;
+
+SELECT sum(databases) AS databases, sum(rolled_out) AS rolled_out,
+       min(databases) || '-' || max(databases) AS per_writer
+FROM writers;
+
+.print
+.print 'A2. Every restore point the checker found while the writers ran rebuilt to'
+.print '    a recipe state: no checker failure. How many passes it made depends on'
+.print '    timing; info_run has the count.'
+
+SELECT count(*) FILTER (phase = 'concurrent') AS concurrent_failures FROM checker_failures;
+
+.print
+.print '── B. Quiesce ──────────────────────────────────────────────────────────'
+.print
+.print 'B1. Every writer closes. Each database is recorded (sha256, catalog row)'
+.print '    after a TRUNCATE checkpoint. The close of the writer already left no'
+.print '    WAL frame to checkpoint: the last close deletes -wal and -shm.'
+
+SELECT count(*) AS databases_recorded, sum(quiesce_wal_frames) AS wal_frames_found
+FROM databases;
+
+.print
+.print '── C. Rebuild from the store alone ─────────────────────────────────────'
+.print
+.print 'C1. Every local file is deleted. One fresh node per worker claims its share'
+.print '    of the fleet and restores it from the store. A claim reads every slot'
+.print '    twice (once to check the lineage, once to restore) and writes one fence.'
+
+SELECT databases, workers, local_files_left, listings, objects_read, fence_objects_written
+FROM rebuild;
+
+.print
+.print 'C2. The rebuilt databases: byte-identical (E1) to the sha256 recorded at'
+.print '    quiesce, and at the recipe step the catalog recorded and the writer last'
+.print '    acknowledged. Half are on the old schema (step 4), half on the new one'
+.print '    (step 5); nothing else. Each matches its recipe step file except the'
+.print '    change counter (bytes 24-27 and 92-95).'
+
+SELECT rebuilt_user_version AS recipe_step,
+       CASE WHEN rebuilt_state LIKE '%exact%' THEN 'exact' ELSE 'counter differs' END AS vs_recipe_file,
+       count(*) AS databases,
+       count(*) FILTER (byte_identical)                                    AS byte_identical,
+       count(*) FILTER (rebuilt_user_version = catalog_schema_version
+                        AND rebuilt_user_version = acknowledged_version)  AS schema_agrees
+FROM databases GROUP BY ALL ORDER BY recipe_step, vs_recipe_file;
+
+.print
+.print 'C3. The stream positions each database reached in the store (last_shipped in'
+.print '    the catalog), by schema:'
+
+SELECT rebuilt_user_version AS recipe_step, last_shipped, count(*) AS databases
+FROM databases GROUP BY ALL ORDER BY recipe_step, last_shipped;
+
+.print
+.print 'C4. A few databases, for a closer look:'
+
+SELECT database, writer, acknowledged_version AS acked, catalog_schema_version AS catalog,
+       last_shipped, rebuilt_user_version AS rebuilt,
+       CASE WHEN rebuilt_state LIKE '%exact%' THEN 'exact' ELSE 'counter differs' END AS vs_recipe_file,
+       byte_identical
+FROM databases WHERE database IN ('db-0001', 'db-0002', 'db-0500') ORDER BY database;
+
+.print
+.print '── D. The final checker pass ───────────────────────────────────────────'
+.print
+.print 'D1. After the rebuild, the checker rebuilds every published restore point'
+.print '    of every database. The slots the rebuild found are those restore points'
+.print '    minus the fences it wrote, and it read each of them exactly twice.'
+
+SELECT c.databases, c.restore_points, c.failed,
+       c.restore_points - r.fence_objects_written      AS slots_found,
+       r.objects_read,
+       r.objects_read = 2 * (c.restore_points - r.fence_objects_written) AS each_read_twice
+FROM checker_passes c, rebuild r WHERE c.pass = 'final' ORDER BY c.pass;
+
+.print
+.print '── E. Every process ────────────────────────────────────────────────────'
+.print
+.print 'E1. Problems and over-bounds lines of the writers, the checker and the'
+.print '    rebuilding process. All counts are 0; any line would be listed in the'
+.print '    table problems.'
+
+SELECT count(*) FILTER (kind = 'problem')             AS problems,
+       count(*) FILTER (kind = 'over bounds')         AS over_bounds,
+       count(*) FILTER (kind = 'rebuild over bounds') AS rebuild_over_bounds
+FROM problems;
 ```
 
-Captured evidence (`500` databases, default):
+Run from the repository root, with SeaweedFS running (this starts the `lab` container, runs the experiment in it, and prints the walkthrough; `500` databases by default, about `11` seconds in the lab container and about `2.5` minutes in the earlier capture):
+
+```text
+go run ./cmd/course run 10.4
+```
+
+Add `-i` (`go run ./cmd/course run -i 10.4`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries. For the outline's `2,000`-database fleet, run the experiment directly in the container: `docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.4-rebuild-the-fleet -databases 2000 -prefix exp-10-4-2000` (about `32` seconds in the lab container, about `9` minutes in the earlier capture).
+
+`course run` also prints the run-dependent values, which are not part of the stored evidence: where the store and the work directory were, the descriptor limit and bounds, byte counts, the passes of the concurrent checker, the standing-bounds summary of each writer when it closed, and how long each phase took.
+
+Captured evidence (`500` databases, default): the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/10.4-rebuild-the-fleet/`](evidence/10.4-rebuild-the-fleet/), and `go run ./cmd/course check evidence ch10` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/10.4-rebuild-the-fleet.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: descriptor soft limit 1048576; each writer's bound 320
-INFO: store http://127.0.0.1:18333, work directory _work/10.4
-fleet: 500 databases, 8 writer processes (each owns 62-63 and keeps at most 32 open), one checker process; store: bucket course-ch10b, prefix exp-10-4/
-INFO: write stream took 53.786s
-write stream: every database claimed and given recipe steps 1-4, each acknowledged store-durable
-schema rollout: recipe step 5 (CREATE INDEX events_by_account ON events(account_id, id)) applied to 248 of 500 databases, then stopped
-INFO: rollout took 12.897s
-INFO: waiting for the checker's last concurrent pass took 11.691s
-INFO: the concurrent checker ran 8 passes over the store and rebuilt 5440 restore points while the writers ran
-check ok: every restore point the checker found while the writers ran rebuilt to a recipe state
-INFO: writer w1: ok close; standing assertion: 347 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w2: ok close; standing assertion: 347 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w3: ok close; standing assertion: 347 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w4: ok close; standing assertion: 347 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w5: ok close; standing assertion: 342 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w6: ok close; standing assertion: 342 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w7: ok close; standing assertion: 342 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w8: ok close; standing assertion: 342 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-quiesce: every writer closed; 500 databases recorded after a TRUNCATE checkpoint (WAL frames found: 0)
-check ok: every database was at rest when quiesced: the writers' close left no WAL frame for the TRUNCATE checkpoint
-INFO: quiesce took 3.077s
-every local file deleted (0 files left under the writers' directories)
-check ok: the new node starts with empty disks
-INFO: rebuild of 500 databases by 8 workers took 24.866s; standing assertion: 17 checks, descriptors above baseline <= 104 (3 x 3 connections x 8 open databases + 32 reserve), memory growth <= 50 MiB
-rebuild read 5496 objects in 500 listings and wrote 500 fence objects
-INFO: rebuild read 384547544 bytes (769095 per database)
-rebuilt: 500 of 500 byte-identical (E1) to the sha256 recorded after the TRUNCATE checkpoint; 252 at recipe step 4, 248 at recipe step 5
-check ok: 500 of 500 rebuilt databases are byte-identical to the quiesced originals
-check ok: every rebuilt database is a recipe state whose schema version (user_version) is the one the catalog recorded and the last one acknowledged
-check ok: the rollout stopped halfway: databases are on the old schema (step 4) or the new one (step 5 with INDEX events_by_account ON events(account_id, id)), nothing else
-check ok: the rebuilding process stayed within the standing bounds
-INFO: final checker pass took 32.201s
-final checker pass: 500 databases, 3248 restore points, 0 fail to rebuild
-INFO: the final pass read 296918772 bytes, the store's whole content
-check ok: after the rebuild every published restore point of every database rebuilds to a recipe state
-check ok: the rebuild read each of the 2748 slots it found exactly twice (once to check the lineage, once to restore)
-INFO: checker: standing assertion: 10 checks, descriptors above baseline <= 32 (3 x 3 connections x 0 open databases + 32 reserve), memory growth <= 32 MiB
-check ok: no node reported a problem and every command was acknowledged
-check ok: after every command of every writer and checker command the descriptors and memory stayed within the standing bounds
-INFO: 2766 replies carried a bounds check; total runtime 2m28s
 
-all checks passed
+════════════════════════════════════════════════════════════════════════
+  10.4  Can the whole fleet be rebuilt from the store and the catalog?
+════════════════════════════════════════════════════════════════════════
+
+Writer processes own equal shares of the fleet and keep a bounded number
+of databases open. A separate checker process lists the store and rebuilds
+every published restore point in memory while the writers run. Then every
+writer closes, every local file is deleted, and fresh nodes rebuild the
+whole fleet from the S3 store and the catalog alone.
+┌───────────────────────────┬──────────────────────────────────────────────────────────┐
+│           name            │                          value                           │
+├───────────────────────────┼──────────────────────────────────────────────────────────┤
+│ databases                 │ 500                                                      │
+│ writer_processes          │ 8                                                        │
+│ open_databases_per_writer │ 32                                                       │
+│ checker_processes         │ 1                                                        │
+│ checker_workers           │ 4                                                        │
+│ checker_pause             │ 1s                                                       │
+│ bucket                    │ course-ch10b                                             │
+│ prefix                    │ exp-10-4/                                                │
+│ steps_before_rollout      │ 4                                                        │
+│ rollout_step              │ 5                                                        │
+│ rollout_sql               │ CREATE INDEX events_by_account ON events(account_id, id) │
+└───────────────────────────┴──────────────────────────────────────────────────────────┘
+
+── A. Write stream and a schema rollout stopped halfway ────────────────
+
+A1. Every database is claimed and given recipe steps 1-4, each write
+    acknowledged store-durable. Then recipe step 5 (the CREATE INDEX in
+    rollout_sql) is applied to the first half of the share of each writer,
+    and the rollout stops.
+┌────────┬───────────┬────────────┐
+│ writer │ databases │ rolled_out │
+├────────┼───────────┼────────────┤
+│ w1     │ 63        │ 31         │
+│ w2     │ 63        │ 31         │
+│ w3     │ 63        │ 31         │
+│ w4     │ 63        │ 31         │
+│ w5     │ 62        │ 31         │
+│ w6     │ 62        │ 31         │
+│ w7     │ 62        │ 31         │
+│ w8     │ 62        │ 31         │
+└────────┴───────────┴────────────┘
+┌───────────┬────────────┬────────────┐
+│ databases │ rolled_out │ per_writer │
+├───────────┼────────────┼────────────┤
+│ 500       │ 248        │ 62-63      │
+└───────────┴────────────┴────────────┘
+
+A2. Every restore point the checker found while the writers ran rebuilt to
+    a recipe state: no checker failure. How many passes it made depends on
+    timing; info_run has the count.
+┌─────────────────────┐
+│ concurrent_failures │
+├─────────────────────┤
+│ 0                   │
+└─────────────────────┘
+
+── B. Quiesce ──────────────────────────────────────────────────────────
+
+B1. Every writer closes. Each database is recorded (sha256, catalog row)
+    after a TRUNCATE checkpoint. The close of the writer already left no
+    WAL frame to checkpoint: the last close deletes -wal and -shm.
+┌────────────────────┬──────────────────┐
+│ databases_recorded │ wal_frames_found │
+├────────────────────┼──────────────────┤
+│ 500                │ 0                │
+└────────────────────┴──────────────────┘
+
+── C. Rebuild from the store alone ─────────────────────────────────────
+
+C1. Every local file is deleted. One fresh node per worker claims its share
+    of the fleet and restores it from the store. A claim reads every slot
+    twice (once to check the lineage, once to restore) and writes one fence.
+┌───────────┬─────────┬──────────────────┬──────────┬──────────────┬───────────────────────┐
+│ databases │ workers │ local_files_left │ listings │ objects_read │ fence_objects_written │
+├───────────┼─────────┼──────────────────┼──────────┼──────────────┼───────────────────────┤
+│ 500       │ 8       │ 0                │ 500      │ 5496         │ 500                   │
+└───────────┴─────────┴──────────────────┴──────────┴──────────────┴───────────────────────┘
+
+C2. The rebuilt databases: byte-identical (E1) to the sha256 recorded at
+    quiesce, and at the recipe step the catalog recorded and the writer last
+    acknowledged. Half are on the old schema (step 4), half on the new one
+    (step 5); nothing else. Each matches its recipe step file except the
+    change counter (bytes 24-27 and 92-95).
+┌─────────────┬─────────────────┬───────────┬────────────────┬───────────────┐
+│ recipe_step │ vs_recipe_file  │ databases │ byte_identical │ schema_agrees │
+├─────────────┼─────────────────┼───────────┼────────────────┼───────────────┤
+│ 4           │ counter differs │ 252       │ 252            │ 252           │
+│ 5           │ counter differs │ 248       │ 248            │ 248           │
+└─────────────┴─────────────────┴───────────┴────────────────┴───────────────┘
+
+C3. The stream positions each database reached in the store (last_shipped in
+    the catalog), by schema:
+┌─────────────┬──────────────┬───────────┐
+│ recipe_step │ last_shipped │ databases │
+├─────────────┼──────────────┼───────────┤
+│ 4           │ 5            │ 252       │
+│ 5           │ 6            │ 248       │
+└─────────────┴──────────────┴───────────┘
+
+C4. A few databases, for a closer look:
+┌──────────┬────────┬───────┬─────────┬──────────────┬─────────┬─────────────────┬────────────────┐
+│ database │ writer │ acked │ catalog │ last_shipped │ rebuilt │ vs_recipe_file  │ byte_identical │
+├──────────┼────────┼───────┼─────────┼──────────────┼─────────┼─────────────────┼────────────────┤
+│ db-0001  │ w1     │ 5     │ 5       │ 6            │ 5       │ counter differs │ true           │
+│ db-0002  │ w2     │ 5     │ 5       │ 6            │ 5       │ counter differs │ true           │
+│ db-0500  │ w4     │ 4     │ 4       │ 5            │ 4       │ counter differs │ true           │
+└──────────┴────────┴───────┴─────────┴──────────────┴─────────┴─────────────────┴────────────────┘
+
+── D. The final checker pass ───────────────────────────────────────────
+
+D1. After the rebuild, the checker rebuilds every published restore point
+    of every database. The slots the rebuild found are those restore points
+    minus the fences it wrote, and it read each of them exactly twice.
+┌───────────┬────────────────┬────────┬─────────────┬──────────────┬─────────────────┐
+│ databases │ restore_points │ failed │ slots_found │ objects_read │ each_read_twice │
+├───────────┼────────────────┼────────┼─────────────┼──────────────┼─────────────────┤
+│ 500       │ 3248           │ 0      │ 2748        │ 5496         │ true            │
+└───────────┴────────────────┴────────┴─────────────┴──────────────┴─────────────────┘
+
+── E. Every process ────────────────────────────────────────────────────
+
+E1. Problems and over-bounds lines of the writers, the checker and the
+    rebuilding process. All counts are 0; any line would be listed in the
+    table problems.
+┌──────────┬─────────────┬─────────────────────┐
+│ problems │ over_bounds │ rebuild_over_bounds │
+├──────────┼─────────────┼─────────────────────┤
+│ 0        │ 0           │ 0                   │
+└──────────┴─────────────┴─────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  every restore point the checker found while the writers ran rebuilt to a recipe state
+B  ✓  every database was at rest when quiesced: the writers' close left no WAL frame for the TRUNCATE checkpoint
+C  ✓  the new node starts with empty disks
+C  ✓  500 of 500 rebuilt databases are byte-identical to the quiesced originals
+C  ✓  every rebuilt database is a recipe state whose schema version (user_version) is the one the catalog recorded and the last one acknowledged
+C  ✓  the rollout stopped halfway: databases are on the old schema (step 4) or the new one (step 5 with INDEX events_by_account ON events(account_id, id)), nothing else
+C  ✓  the rebuilding process stayed within the standing bounds
+D  ✓  after the rebuild every published restore point of every database rebuilds to a recipe state
+D  ✓  the rebuild read each of the 2748 slots it found exactly twice (once to check the lineage, once to restore)
+E  ✓  no node reported a problem and every command was acknowledged
+E  ✓  after every command of every writer and checker command the descriptors and memory stayed within the standing bounds
+
+11 of 11 claims hold
+
+Experiment verdict: REBUILD THE FLEET OK
 ```
 
-Captured evidence (`2,000` databases, full outline size):
+Captured evidence (`2,000` databases, full outline size): the walkthrough of a lab-container run with `-databases 2000`, rendered in the same format. No tool checks this file.
 
 <!-- include: evidence/10.4-rebuild-the-fleet-2000.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: descriptor soft limit 1048576; each writer's bound 320
-INFO: store http://127.0.0.1:18333, work directory _work/big/10.4
-fleet: 2000 databases, 8 writer processes (each owns 250 and keeps at most 32 open), one checker process; store: bucket course-ch10b, prefix exp-10-4-2000/
-INFO: write stream took 3m38.433s
-write stream: every database claimed and given recipe steps 1-4, each acknowledged store-durable
-schema rollout: recipe step 5 (CREATE INDEX events_by_account ON events(account_id, id)) applied to 1000 of 2000 databases, then stopped
-INFO: rollout took 49.084s
-INFO: waiting for the checker's last concurrent pass took 45.288s
-INFO: the concurrent checker ran 15 passes over the store and rebuilt 33731 restore points while the writers ran
-check ok: every restore point the checker found while the writers ran rebuilt to a recipe state
-INFO: writer w1: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w2: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w3: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w4: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w5: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w6: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w7: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w8: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-quiesce: every writer closed; 2000 databases recorded after a TRUNCATE checkpoint (WAL frames found: 0)
-check ok: every database was at rest when quiesced: the writers' close left no WAL frame for the TRUNCATE checkpoint
-INFO: quiesce took 6.064s
-every local file deleted (0 files left under the writers' directories)
-check ok: the new node starts with empty disks
-INFO: rebuild of 2000 databases by 8 workers took 1m28.3s; standing assertion: 41 checks, descriptors above baseline <= 104 (3 x 3 connections x 8 open databases + 32 reserve), memory growth <= 50 MiB
-rebuild read 22000 objects in 2000 listings and wrote 2000 fence objects
-INFO: rebuild read 1538925284 bytes (769462 per database)
-rebuilt: 2000 of 2000 byte-identical (E1) to the sha256 recorded after the TRUNCATE checkpoint; 1000 at recipe step 4, 1000 at recipe step 5
-check ok: 2000 of 2000 rebuilt databases are byte-identical to the quiesced originals
-check ok: every rebuilt database is a recipe state whose schema version (user_version) is the one the catalog recorded and the last one acknowledged
-check ok: the rollout stopped halfway: databases are on the old schema (step 4) or the new one (step 5 with INDEX events_by_account ON events(account_id, id)), nothing else
-check ok: the rebuilding process stayed within the standing bounds
-INFO: final checker pass took 2m6.843s
-final checker pass: 2000 databases, 13000 restore points, 0 fail to rebuild
-INFO: the final pass read 1188042642 bytes, the store's whole content
-check ok: after the rebuild every published restore point of every database rebuilds to a recipe state
-check ok: the rebuild read each of the 11000 slots it found exactly twice (once to check the lineage, once to restore)
-INFO: checker: standing assertion: 17 checks, descriptors above baseline <= 32 (3 x 3 connections x 0 open databases + 32 reserve), memory growth <= 32 MiB
-check ok: no node reported a problem and every command was acknowledged
-check ok: after every command of every writer and checker command the descriptors and memory stayed within the standing bounds
-INFO: 11025 replies carried a bounds check; total runtime 9m11s
 
-all checks passed
+════════════════════════════════════════════════════════════════════════
+  10.4  Can the whole fleet be rebuilt from the store and the catalog?
+════════════════════════════════════════════════════════════════════════
+
+Writer processes own equal shares of the fleet and keep a bounded number
+of databases open. A separate checker process lists the store and rebuilds
+every published restore point in memory while the writers run. Then every
+writer closes, every local file is deleted, and fresh nodes rebuild the
+whole fleet from the S3 store and the catalog alone.
+┌───────────────────────────┬──────────────────────────────────────────────────────────┐
+│           name            │                          value                           │
+├───────────────────────────┼──────────────────────────────────────────────────────────┤
+│ databases                 │ 2000                                                     │
+│ writer_processes          │ 8                                                        │
+│ open_databases_per_writer │ 32                                                       │
+│ checker_processes         │ 1                                                        │
+│ checker_workers           │ 4                                                        │
+│ checker_pause             │ 1s                                                       │
+│ bucket                    │ course-ch10b                                             │
+│ prefix                    │ exp-10-4-2000/                                           │
+│ steps_before_rollout      │ 4                                                        │
+│ rollout_step              │ 5                                                        │
+│ rollout_sql               │ CREATE INDEX events_by_account ON events(account_id, id) │
+└───────────────────────────┴──────────────────────────────────────────────────────────┘
+
+── A. Write stream and a schema rollout stopped halfway ────────────────
+
+A1. Every database is claimed and given recipe steps 1-4, each write
+    acknowledged store-durable. Then recipe step 5 (the CREATE INDEX in
+    rollout_sql) is applied to the first half of the share of each writer,
+    and the rollout stops.
+┌────────┬───────────┬────────────┐
+│ writer │ databases │ rolled_out │
+├────────┼───────────┼────────────┤
+│ w1     │ 250       │ 125        │
+│ w2     │ 250       │ 125        │
+│ w3     │ 250       │ 125        │
+│ w4     │ 250       │ 125        │
+│ w5     │ 250       │ 125        │
+│ w6     │ 250       │ 125        │
+│ w7     │ 250       │ 125        │
+│ w8     │ 250       │ 125        │
+└────────┴───────────┴────────────┘
+┌───────────┬────────────┬────────────┐
+│ databases │ rolled_out │ per_writer │
+├───────────┼────────────┼────────────┤
+│ 2000      │ 1000       │ 250-250    │
+└───────────┴────────────┴────────────┘
+
+A2. Every restore point the checker found while the writers ran rebuilt to
+    a recipe state: no checker failure. How many passes it made depends on
+    timing; info_run has the count.
+┌─────────────────────┐
+│ concurrent_failures │
+├─────────────────────┤
+│ 0                   │
+└─────────────────────┘
+
+── B. Quiesce ──────────────────────────────────────────────────────────
+
+B1. Every writer closes. Each database is recorded (sha256, catalog row)
+    after a TRUNCATE checkpoint. The close of the writer already left no
+    WAL frame to checkpoint: the last close deletes -wal and -shm.
+┌────────────────────┬──────────────────┐
+│ databases_recorded │ wal_frames_found │
+├────────────────────┼──────────────────┤
+│ 2000               │ 0                │
+└────────────────────┴──────────────────┘
+
+── C. Rebuild from the store alone ─────────────────────────────────────
+
+C1. Every local file is deleted. One fresh node per worker claims its share
+    of the fleet and restores it from the store. A claim reads every slot
+    twice (once to check the lineage, once to restore) and writes one fence.
+┌───────────┬─────────┬──────────────────┬──────────┬──────────────┬───────────────────────┐
+│ databases │ workers │ local_files_left │ listings │ objects_read │ fence_objects_written │
+├───────────┼─────────┼──────────────────┼──────────┼──────────────┼───────────────────────┤
+│ 2000      │ 8       │ 0                │ 2000     │ 22000        │ 2000                  │
+└───────────┴─────────┴──────────────────┴──────────┴──────────────┴───────────────────────┘
+
+C2. The rebuilt databases: byte-identical (E1) to the sha256 recorded at
+    quiesce, and at the recipe step the catalog recorded and the writer last
+    acknowledged. Half are on the old schema (step 4), half on the new one
+    (step 5); nothing else. Each matches its recipe step file except the
+    change counter (bytes 24-27 and 92-95).
+┌─────────────┬─────────────────┬───────────┬────────────────┬───────────────┐
+│ recipe_step │ vs_recipe_file  │ databases │ byte_identical │ schema_agrees │
+├─────────────┼─────────────────┼───────────┼────────────────┼───────────────┤
+│ 4           │ counter differs │ 1000      │ 1000           │ 1000          │
+│ 5           │ counter differs │ 1000      │ 1000           │ 1000          │
+└─────────────┴─────────────────┴───────────┴────────────────┴───────────────┘
+
+C3. The stream positions each database reached in the store (last_shipped in
+    the catalog), by schema:
+┌─────────────┬──────────────┬───────────┐
+│ recipe_step │ last_shipped │ databases │
+├─────────────┼──────────────┼───────────┤
+│ 4           │ 5            │ 1000      │
+│ 5           │ 6            │ 1000      │
+└─────────────┴──────────────┴───────────┘
+
+C4. A few databases, for a closer look:
+┌──────────┬────────┬───────┬─────────┬──────────────┬─────────┬─────────────────┬────────────────┐
+│ database │ writer │ acked │ catalog │ last_shipped │ rebuilt │ vs_recipe_file  │ byte_identical │
+├──────────┼────────┼───────┼─────────┼──────────────┼─────────┼─────────────────┼────────────────┤
+│ db-0001  │ w1     │ 5     │ 5       │ 6            │ 5       │ counter differs │ true           │
+│ db-0002  │ w2     │ 5     │ 5       │ 6            │ 5       │ counter differs │ true           │
+│ db-0500  │ w4     │ 5     │ 5       │ 6            │ 5       │ counter differs │ true           │
+└──────────┴────────┴───────┴─────────┴──────────────┴─────────┴─────────────────┴────────────────┘
+
+── D. The final checker pass ───────────────────────────────────────────
+
+D1. After the rebuild, the checker rebuilds every published restore point
+    of every database. The slots the rebuild found are those restore points
+    minus the fences it wrote, and it read each of them exactly twice.
+┌───────────┬────────────────┬────────┬─────────────┬──────────────┬─────────────────┐
+│ databases │ restore_points │ failed │ slots_found │ objects_read │ each_read_twice │
+├───────────┼────────────────┼────────┼─────────────┼──────────────┼─────────────────┤
+│ 2000      │ 13000          │ 0      │ 11000       │ 22000        │ true            │
+└───────────┴────────────────┴────────┴─────────────┴──────────────┴─────────────────┘
+
+── E. Every process ────────────────────────────────────────────────────
+
+E1. Problems and over-bounds lines of the writers, the checker and the
+    rebuilding process. All counts are 0; any line would be listed in the
+    table problems.
+┌──────────┬─────────────┬─────────────────────┐
+│ problems │ over_bounds │ rebuild_over_bounds │
+├──────────┼─────────────┼─────────────────────┤
+│ 0        │ 0           │ 0                   │
+└──────────┴─────────────┴─────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  every restore point the checker found while the writers ran rebuilt to a recipe state
+B  ✓  every database was at rest when quiesced: the writers' close left no WAL frame for the TRUNCATE checkpoint
+C  ✓  the new node starts with empty disks
+C  ✓  2000 of 2000 rebuilt databases are byte-identical to the quiesced originals
+C  ✓  every rebuilt database is a recipe state whose schema version (user_version) is the one the catalog recorded and the last one acknowledged
+C  ✓  the rollout stopped halfway: databases are on the old schema (step 4) or the new one (step 5 with INDEX events_by_account ON events(account_id, id)), nothing else
+C  ✓  the rebuilding process stayed within the standing bounds
+D  ✓  after the rebuild every published restore point of every database rebuilds to a recipe state
+D  ✓  the rebuild read each of the 11000 slots it found exactly twice (once to check the lineage, once to restore)
+E  ✓  no node reported a problem and every command was acknowledged
+E  ✓  after every command of every writer and checker command the descriptors and memory stayed within the standing bounds
+
+11 of 11 claims hold
+
+Experiment verdict: REBUILD THE FLEET OK
 ```
 
 #### Reading the Experiment 10.4 evidence
 
 - **500-database default run (`evidence/10.4-rebuild-the-fleet.txt`):**
-  - **Lines 1–4:** Pin check passes; descriptor soft limit `1,048,576` easily exceeds each writer's bound of `320` (`3 * 3 * 32 + 32`). Eight writers (`w1`–`w8`) own `62–63` databases each (`4 * 63 + 4 * 62 = 500`) with at most `32` open at once.
-  - **Lines 5–11 (write stream, halfway schema rollout, concurrent checker):** Write stream takes `53.786s`; schema rollout applies recipe step `5` (`CREATE INDEX events_by_account ON events(account_id, id)`) to **`248 of 500`** databases (`4 * floor(63/2) + 4 * floor(62/2) = 4*31 + 4*31 = 248`) in `12.897s`. Meanwhile the checker subprocess ran `8` passes and rebuilt `5,440` restore points in memory with `0` failures.
-  - **Lines 12–24 (quiesce and wipe):** All `8` writers close cleanly within their `320`-descriptor / `104 MiB` bounds (`342–347` checks each). Opening every file for `PRAGMA wal_checkpoint(TRUNCATE)` finds **`WAL frames found: 0`** because `sqlite3WalClose` already checkpointed and removed `-wal` on writer close. Deleting `w1`–`w8` leaves **`0 files`** on disk.
-  - **Lines 25–32 (empty-disk rebuild):** Eight in-process rebuild workers (`fresh-1`–`fresh-8`) claim and restore all `500` databases in `24.866s` within the rebuilding process's `104`-descriptor / `50 MiB` bound (`K = 8`). The `CountingStore` records **`5,496` objects read in `500` listings (`384,547,544` bytes, `769,095` per database) and `500` fence objects written**. All **`500 of 500`** rebuilt databases are **E1 byte-identical** to the quiesced originals: **`252` at recipe step `4`** and **`248` at recipe step `5`**, matching both the catalog's `schema_version` and the last acknowledged step.
-  - **Lines 33–43 (final checker pass and double-read accounting):** The final pass inspects all `500` databases, reading the store's entire **`296,918,772` bytes**, and rebuilds **`3,248` restore points** (`252 * 6 + 248 * 7`: initial claim fence + `4` segments + optional rollout segment + rebuild fence) with **`0` failures**. Excluding the `500` newly written rebuild fences leaves `2,748` pre-rebuild slots, and `5,496 == 2 * 2,748`: `node.Claim` read every slot **exactly twice**—once in `adapter.Refresh` to validate the lineage, and once in `walship.LoadCatalog` to plan and restore. Across all **`2,766` replies** (writers + checker, total runtime `2m28s`), `0` problems and `0` bounds violations occurred.
+  - **Opening settings and A1:** Pin check passes (the experiment's own output, shown when it is run directly); the descriptor soft limit (`1,048,576` in the earlier capture; run-dependent, printed by `course run`) easily exceeds each writer's bound of `320` (`3 * 3 * 32 + 32`). Eight writers (`w1`–`w8`) own `62–63` databases each (`4 * 63 + 4 * 62 = 500`) with at most `32` open at once.
+  - **A1–A2 (write stream, halfway schema rollout, concurrent checker):** Write stream takes `53.786s` in the earlier capture (about `5s` in the lab; timings are run-dependent); schema rollout applies recipe step `5` (`CREATE INDEX events_by_account ON events(account_id, id)`) to **`248 of 500`** databases (`4 * floor(63/2) + 4 * floor(62/2) = 4*31 + 4*31 = 248`) in `12.897s` (earlier capture). Meanwhile the checker subprocess rebuilt restore points in memory with `0` failures; how many passes it made depends on timing (`8` passes and `5,440` restore points in the earlier capture, `3` passes and `4,326` or `5,169` points in lab runs).
+  - **B1 and C1 (quiesce and wipe):** All `8` writers close cleanly within their `320`-descriptor / `104 MiB` bounds (`342–347` checks each in the earlier capture; the per-writer summaries are run-dependent and printed by `course run`). Opening every file for `PRAGMA wal_checkpoint(TRUNCATE)` finds **`0` WAL frames** because `sqlite3WalClose` already checkpointed and removed `-wal` on writer close. Deleting `w1`–`w8` leaves **`0` files** on disk.
+  - **C1–C4 (empty-disk rebuild):** Eight in-process rebuild workers (`fresh-1`–`fresh-8`) claim and restore all `500` databases in `24.866s` (earlier capture) within the rebuilding process's `104`-descriptor / `50 MiB` bound (`K = 8`). The `CountingStore` records **`5,496` objects read in `500` listings and `500` fence objects written** (the byte count is run-dependent: `384,547,544` bytes, `769,095` per database, in the earlier capture; `384,547,088`, `769,094` per database, in a lab run). All **`500 of 500`** rebuilt databases are **E1 byte-identical** to the quiesced originals: **`252` at recipe step `4`** and **`248` at recipe step `5`**, matching both the catalog's `schema_version` and the last acknowledged step.
+  - **D1 and E1 (final checker pass and double-read accounting):** The final pass inspects all `500` databases, reading the store's entire contents (**`296,918,772` bytes** in the earlier capture, `296,918,544` in a lab run), and rebuilds **`3,248` restore points** (`252 * 6 + 248 * 7`: initial claim fence + `4` segments + optional rollout segment + rebuild fence) with **`0` failures**. Excluding the `500` newly written rebuild fences leaves `2,748` pre-rebuild slots, and `5,496 == 2 * 2,748`: `node.Claim` read every slot **exactly twice**—once in `adapter.Refresh` to validate the lineage, and once in `walship.LoadCatalog` to plan and restore. Across all replies (writers + checker; **`2,766`** with total runtime `2m28s` in the earlier capture, `2,761` in about `11s` in a lab run), `0` problems and `0` bounds violations occurred.
 - **2,000-database outline-scale run (`evidence/10.4-rebuild-the-fleet-2000.txt`):**
   - Each of the `8` writers owns exactly `250` databases (at most `32` open); schema rollout stops halfway at **`1,000 of 2,000`**.
-  - The concurrent checker runs `15` passes and rebuilds `33,731` restore points with `0` failures while the writers run (`3m38.433s` write stream + `49.084s` rollout).
-  - Quiesce records all `2,000` files (`WAL frames found: 0`), wipes local disk (`0` files left), and rebuilds all **`2,000 of 2,000`** databases **E1 byte-identical** (`1,000` at step `4`, `1,000` at step `5`) in `1m28.3s`, reading **`22,000` objects** (`2 * 11,000` slots, `1,538,925,284` bytes = `769,462` per database) in `2,000` listings and writing `2,000` fence objects.
-  - The final checker pass reads `1,188,042,642` bytes and verifies **`13,000` restore points** (`1,000 * 6 + 1,000 * 7`) with **`0` failures**. Standing bounds held across all **`11,025` replies** (total runtime `9m11s`).
+  - The concurrent checker rebuilds restore points with `0` failures while the writers run (run-dependent: `15` passes and `33,731` points in the earlier capture with a `3m38.433s` write stream + `49.084s` rollout; `5` passes and `22,501` points in the lab run).
+  - Quiesce records all `2,000` files (`0` WAL frames found), wipes local disk (`0` files left), and rebuilds all **`2,000 of 2,000`** databases **E1 byte-identical** (`1,000` at step `4`, `1,000` at step `5`) in `1m28.3s` (earlier capture), reading **`22,000` objects** (`2 * 11,000` slots; `1,538,925,532` bytes, about `769,462` per database, in the lab run; `1,538,925,284` in the earlier capture) in `2,000` listings and writing `2,000` fence objects.
+  - The final checker pass reads `1,188,042,766` bytes in the lab run (`1,188,042,642` in the earlier capture) and verifies **`13,000` restore points** (`1,000 * 6 + 1,000 * 7`) with **`0` failures**. Standing bounds held across all replies (`11,015` in the lab run, total runtime about `32s`; `11,025` and `9m11s` in the earlier capture).
 
 ---
 
@@ -7691,7 +9033,7 @@ Every answer below is grounded in this chapter's experiments and adversarial tes
 1. **How many connections and file descriptors can remain open?**
    Each open service database holds **`3` SQLite connections** (the writer plus `walship`'s control and pin connections) and opens **`7` file descriptors** (`3` `.db` + `3` `-wal` + `1` process-shared `-shm` via `unixInodeInfo`, `src/os_unix.c:1323-1342`, measured in Experiment 10.1's `0 / 7 / 14` descriptor progression). Bounding open databases per node to `K` via LRU eviction (`internal/connmgr`) caps descriptor growth at **`<= 3 * 3 * K + 32`** (e.g., `320` for `K = 32` in Experiment 10.4, verified against `procstat.FileLimit()` at startup and tested by `FLEET-04`). Closed databases hold `0` descriptors.
 2. **How much cache memory is consumed per database?**
-   Each connection sets `cache_size = -256` (`256 KiB`), giving a standing upper bound of `3K * (2 * 256 KiB + 256 KiB) + 32 MiB` (`41 MiB` for `K = 4`, `104 MiB` for `K = 32`), which held across every reply in Experiments 10.1–10.4 (`15`, `306`, `1,726`, `2,766`, and `11,025` replies) and across `600` rotated databases in `CAT-05a`. Keeping `fence.Adapter`'s slot cache metadata-only (`CAT-05b`) is essential so long segment histories do not leak RAM inside open handles.
+   Each connection sets `cache_size = -256` (`256 KiB`), giving a standing upper bound of `3K * (2 * 256 KiB + 256 KiB) + 32 MiB` (`41 MiB` for `K = 4`, `104 MiB` for `K = 32`), which held across every reply in Experiments 10.1–10.4 (`15`, `306`, `1,726`, `2,766`, and `11,025` replies in the earlier capture; the counts after 10.1 are run-dependent) and across `600` rotated databases in `CAT-05a`. Keeping `fence.Adapter`'s slot cache metadata-only (`CAT-05b`) is essential so long segment histories do not leak RAM inside open handles.
 3. **What is the write-ownership model?**
    The control-plane catalog names one `owner` and monotonically increasing `epoch` per database; the object store enforces write-once position slots (`If-None-Match: *`); and every writer obeys `fence.Adapter`'s rule ("append only at `end + 1` of your validated chain, and stop with `FencedError` if any slot holds a higher epoch"). Ownership changes only when the new owner's fence snapshot lands in the store—either abruptly by `claim` (Experiment 10.1, losing unshipped `local-durable` writes) or cooperatively by seven-step relocation (Experiment 10.3, draining and keeping them).
 4. **What happens when a reader blocks checkpoints?**
@@ -7734,6 +9076,6 @@ Answers are in [answers.md](answers.md).
 
 1. Why can SeaweedFS / S3 conditional writes (`If-None-Match: *`) not enforce single-writer ownership by themselves, and what happens in Experiment 10.1's `resume-from-global-end` mutant when `If-None-Match: *` stays enabled while `fence.Adapter`'s epoch check is removed?
 2. Why does a **takeover** (`Node.Claim`, Experiment 10.1) lose the previous owner's unshipped `local-durable` acknowledgements whereas a **relocation** (`relocate.Coordinator`, Experiment 10.3) preserves them—and why did Experiment 10.3 need a separate `SealSource` step after `FenceEpoch`?
-3. In Experiment 10.2 Part A, why did `store-durable` kills at `fsync 29`, `57`, and `85` land on `catalog.db-wal` and recover `user_version` **one step ahead** of the client's acknowledged count even after `_work/10.2/a/` was completely deleted?
+3. In Experiment 10.2 Part A, why did `store-durable` kills at `fsync 29`, `57`, and `85` land on `catalog.db-wal` and recover `user_version` **one step ahead** of the client's acknowledged count even after the node directory `_work/10.2/node/a/` was completely deleted?
 4. In Experiment 10.3, why did a `fail-before-put` on `a`'s final segment (case `22`) move the fence point from position `5` to position `4` while keeping the exact same drained SHA-256 (`d53fc07b1293…`), and why must `Coordinator.Rollback` record `rolled-back` in the catalog **before** calling `Destination.Discard` (case `32` / `REL-04`)?
 5. In Experiment 10.4, why did `PRAGMA wal_checkpoint(TRUNCATE)` find **`WAL frames found: 0`** across all `500` (and `2,000`) databases at quiesce, and why did the empty-disk rebuild read **`5,496` objects** (`22,000` at `2,000` databases)—exactly **twice** the number of pre-rebuild slots?

@@ -1,0 +1,39 @@
+part,step,process,action,result,code,value
+A,1,writer,recipe-step 6,SQLITE_OK,0,
+A,2,writer,recipe-step 7,SQLITE_OK,0,
+A,3,writer,recipe-step 8,SQLITE_OK,0,
+B,4,capture,begin deferred,SQLITE_OK,0,
+B,5,capture,user-version,SQLITE_OK,0,8
+B,6,capture,query PRAGMA page_count,SQLITE_OK,0,79
+B,7,capture,dbpage-write 1 20,SQLITE_OK,0,20 pages
+B,8,writer,recipe-step 9,SQLITE_OK,0,
+B,9,writer,checkpoint NOOP,SQLITE_OK,0,busy=0 log=84 checkpointed=0
+B,10,writer,checkpoint PASSIVE,SQLITE_OK,0,busy=0 log=84 checkpointed=61
+B,11,writer,checkpoint NOOP,SQLITE_OK,0,busy=0 log=84 checkpointed=61
+B,12,capture,dbpage-write 21 40,SQLITE_OK,0,20 pages
+B,13,writer,recipe-step 10,SQLITE_OK,0,
+B,14,writer,checkpoint NOOP,SQLITE_OK,0,busy=0 log=101 checkpointed=61
+B,15,writer,checkpoint PASSIVE,SQLITE_OK,0,busy=0 log=101 checkpointed=61
+B,16,writer,checkpoint NOOP,SQLITE_OK,0,busy=0 log=101 checkpointed=61
+B,17,capture,dbpage-write 41 60,SQLITE_OK,0,20 pages
+B,18,writer,recipe-step 11,SQLITE_OK,0,
+B,19,writer,checkpoint NOOP,SQLITE_OK,0,busy=0 log=116 checkpointed=61
+B,20,writer,checkpoint PASSIVE,SQLITE_OK,0,busy=0 log=116 checkpointed=61
+B,21,writer,checkpoint NOOP,SQLITE_OK,0,busy=0 log=116 checkpointed=61
+B,22,capture,dbpage-write 61 79,SQLITE_OK,0,19 pages
+B,23,capture,user-version,SQLITE_OK,0,8
+B,24,capture,commit,SQLITE_OK,0,
+C,25,capture,begin deferred,SQLITE_OK,0,
+C,26,capture,user-version,SQLITE_OK,0,11
+C,27,writer,"query SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size",SQLITE_OK,0,221184
+C,28,copier,copy-range db copy.db 0 221184,SQLITE_OK,0,bytes 0-221184
+C,29,writer,recipe-step 12,SQLITE_OK,0,
+C,30,writer,checkpoint NOOP,SQLITE_OK,0,busy=0 log=145 checkpointed=61
+C,31,writer,checkpoint PASSIVE,SQLITE_OK,0,busy=0 log=145 checkpointed=116
+C,32,writer,checkpoint NOOP,SQLITE_OK,0,busy=0 log=145 checkpointed=116
+C,33,copier,copy-range db copy.db 221184 end,SQLITE_OK,0,bytes 221184-438272
+C,34,writer,recipe-step 13,SQLITE_OK,0,
+C,35,copier,copy -wal copy.wal,SQLITE_OK,0,688072 bytes
+C,36,capture,user-version,SQLITE_OK,0,11
+C,37,capture,commit,SQLITE_OK,0,
+C,38,writer,user-version,SQLITE_OK,0,13

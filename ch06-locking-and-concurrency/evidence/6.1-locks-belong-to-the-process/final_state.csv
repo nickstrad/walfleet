@@ -1,0 +1,5 @@
+part,integrity,contents
+A,ok,1 row(s): holder
+B,ok,1 row(s): contender
+C,ok,"2 row(s): seed,holder"
+D,ok,1 row(s): holder

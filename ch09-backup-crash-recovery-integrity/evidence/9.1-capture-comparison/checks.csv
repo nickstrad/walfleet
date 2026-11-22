@@ -1,0 +1,16 @@
+seq,part,status,claim
+1,A,ok,closed-file copy reaches exactly the expected levels on a quiet database
+2,A,ok,backup API reaches exactly the expected levels on a quiet database
+3,A,ok,VACUUM INTO reaches exactly the expected levels on a quiet database
+4,A,ok,pages in a read transaction reaches exactly the expected levels on a quiet database
+5,A,ok,file + WAL under a held transaction reaches exactly the expected levels on a quiet database
+6,A,ok,"the backup's VACUUM INTO form differs from the source's only at byte 43, the schema cookie"
+7,B,ok,"the plain copy is byte-identical (E1) to an older recipe step (6), not to the committed step 7"
+8,B,ok,"under the writer, pages in a read transaction equals recipe step 7 at exactly the expected levels"
+9,B,ok,"under the writer, file + WAL under a held transaction equals recipe step 9 at exactly the expected levels"
+10,B,ok,"under the writer, VACUUM INTO equals recipe step 9 at exactly the expected levels"
+11,B,ok,"through the backup's own commits the copy keeps advancing 5 pages per step (no restart), although the remaining count rose when those commits grew the database"
+12,B,ok,after the writer child's commit the next step starts again from page 1: the backup restarted
+13,B,ok,"under the writer, backup API equals recipe step 13 at exactly the expected levels"
+14,B,ok,with a commit by another connection after every step the backup never finished: after 8 steps the smallest remaining count was 119
+15,C,ok,under the writer every capture except the plain file copy equals the exact recipe state it should; the plain copy equals an older one

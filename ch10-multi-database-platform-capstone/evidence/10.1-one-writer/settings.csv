@@ -1,0 +1,16 @@
+seq,name,value
+1,model_nodes,2
+2,model_max_epoch,3
+3,model_max_local_position,5
+4,model_seed,1
+5,bucket,course-ch10a
+6,prefix,exp-10-1/
+7,databases,db-0001 db-0002
+8,synchronous,FULL
+9,foreign_keys,ON
+10,secure_delete,ON
+11,cache_size,-256
+12,wal_autocheckpoint,0
+13,busy_timeout,5000ms
+14,open_databases_per_node,4
+15,fault_on_node_b,stale-list:/log/:1

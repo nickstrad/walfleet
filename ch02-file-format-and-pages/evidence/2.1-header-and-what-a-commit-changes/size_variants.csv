@@ -1,0 +1,5 @@
+variant,description,in_header_size,counters_disagree,ours,sqlite
+E1,"in-header size = file pages - 1, counters agree",38,false,38 (from in-header size),38
+E2,"in-header size = file pages - 1, byte 95 changed so counters disagree",38,true,39 (from file size),39
+E3,"in-header size = file pages + 5, counters agree",44,false,error: in-header size larger than the file,error: database disk image is malformed (11)
+E4,"in-header size = 0, counters agree",0,false,39 (from file size),39

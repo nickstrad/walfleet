@@ -1,0 +1,18 @@
+seq,id,what,equal,size_a,size_b,differing_pages,page1_bytes
+1,0,WAL build vs rollback build of the same recipe,false,1105920,1105920,1,18 19 27 95
+2,1,SQL random() in a value,false,245760,245760,59,
+3,2a,"current_timestamp, two runs inside one wall-clock second",true,245760,245760,,
+4,2b,"current_timestamp, third run one second later",false,245760,245760,59,
+5,3a,"INSERT ... SELECT without ORDER BY, same plan twice",true,245760,245760,,
+6,3b,"same statement, run 2 with reverse_unordered_selects=ON",false,245760,245760,29,
+7,3c,"with ORDER BY id, run 2 with reverse_unordered_selects=ON",true,245760,245760,,
+8,4a,"WAL, recipe settings (secure_delete=ON)",true,245760,245760,,
+9,4b,"WAL, secure_delete=OFF",false,245760,245760,24 28,
+10,4c,"rollback, secure_delete=ON",false,245760,245760,1,27 95
+11,4d,"WAL, one transaction per step: secure_delete=FAST vs ON",false,245760,245760,29 36 37,
+12,5,insert without an id after the maximum rowid,false,245760,245760,29,
+13,6a,"WAL, one connection per step vs one for all steps",false,245760,245760,1,27 95
+14,6b,"rollback, the same comparison",true,245760,245760,,
+15,6c,"WAL, 3 commits that never write page 1: one connection each vs one for all",true,245760,245760,,
+16,7a,"WAL, secure_delete=ON",false,245760,245760,1 29 37,27 95
+17,7b,"rollback, secure_delete=ON",false,245760,245760,29 37,

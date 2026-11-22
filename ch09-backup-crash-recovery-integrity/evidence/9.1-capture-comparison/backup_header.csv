@@ -1,0 +1,3 @@
+seq,comparison,equal_ignoring_header_bytes,ignored_header_bytes,differing_header_bytes
+1,backup copy vs the source,true,24-27 40-43 92-99,27 43 95
+2,both after VACUUM INTO,true,24-27 40-43 92-99,43

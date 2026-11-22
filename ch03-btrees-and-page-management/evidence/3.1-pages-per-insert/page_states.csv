@@ -1,0 +1,49 @@
+seq,part,label,insert_no,page,state,kind,cells,keys,content_start,unused,children,note
+1,A,"first split, depth 1 -> 2",5,1,before,table-leaf,1,,4034,3924,,sqlite_schema; header says 2 pages
+2,A,"first split, depth 1 -> 2",5,1,after,table-leaf,1,,4034,3924,,sqlite_schema; header says 4 pages
+3,A,"first split, depth 1 -> 2",5,2,before,table-leaf,4,"2,4,6,8",68,52,,
+4,A,"first split, depth 1 -> 2",5,2,after,table-interior,1,8,4091,4077,3 4,
+5,A,"first split, depth 1 -> 2",5,3,before,,,,,,,not in the file
+6,A,"first split, depth 1 -> 2",5,3,after,table-leaf,4,"2,4,6,8",68,52,,
+7,A,"first split, depth 1 -> 2",5,4,before,,,,,,,not in the file
+8,A,"first split, depth 1 -> 2",5,4,after,table-leaf,1,10,3089,3079,,
+9,A,first append split at depth 2,9,1,before,table-leaf,1,,4034,3924,,sqlite_schema; header says 4 pages
+10,A,first append split at depth 2,9,1,after,table-leaf,1,,4034,3924,,sqlite_schema; header says 5 pages
+11,A,first append split at depth 2,9,2,before,table-interior,1,8,4091,4077,3 4,
+12,A,first append split at depth 2,9,2,after,table-interior,2,"8,16",4086,4070,3 4 5,
+13,A,first append split at depth 2,9,5,before,,,,,,,not in the file
+14,A,first append split at depth 2,9,5,after,table-leaf,1,18,3089,3079,,
+15,A,an ordinary insert,14,6,before,table-leaf,1,26,3089,3079,,
+16,A,an ordinary insert,14,6,after,table-leaf,2,"26,28",2082,2070,,
+17,A,depth 2 -> 3,2053,1,before,table-leaf,1,,4034,3924,,sqlite_schema; header says 515 pages
+18,A,depth 2 -> 3,2053,1,after,table-leaf,1,,4034,3924,,sqlite_schema; header says 518 pages
+19,A,depth 2 -> 3,2053,2,before,table-interior,512,8..4096,1039,3,3 4 5 ... 515,
+20,A,depth 2 -> 3,2053,2,after,table-interior,1,2064,4090,4076,517 518,
+21,A,depth 2 -> 3,2053,516,before,,,,,,,not in the file
+22,A,depth 2 -> 3,2053,516,after,table-leaf,1,4106,3088,3078,,
+23,A,depth 2 -> 3,2053,517,before,,,,,,,not in the file
+24,A,depth 2 -> 3,2053,517,after,table-interior,257,8..2056,2569,2043,3 4 5 ... 260,
+25,A,depth 2 -> 3,2053,518,before,,,,,,,not in the file
+26,A,depth 2 -> 3,2053,518,after,table-interior,255,2072..4104,2566,2044,261 262 263 ... 516,
+27,B,before the middle insert,20,2,layout,table-interior,4,"8,16,24,32",4076,4056,3 4 5 6 7,
+28,B,before the middle insert,20,3,layout,table-leaf,4,"2,4,6,8",68,52,,
+29,B,before the middle insert,20,4,layout,table-leaf,4,"10,12,14,16",68,52,,
+30,B,before the middle insert,20,5,layout,table-leaf,4,"18,20,22,24",68,52,,
+31,B,before the middle insert,20,6,layout,table-leaf,4,"26,28,30,32",68,52,,
+32,B,before the middle insert,20,7,layout,table-leaf,4,"34,36,38,40",68,52,,
+33,B,middle split,21,1,before,table-leaf,1,,4034,3924,,sqlite_schema; header says 7 pages
+34,B,middle split,21,1,after,table-leaf,1,,4034,3924,,sqlite_schema; header says 8 pages
+35,B,middle split,21,2,before,table-interior,4,"8,16,24,32",4076,4056,3 4 5 6 7,
+36,B,middle split,21,2,after,table-interior,5,"8,14,20,24,32",4071,4049,3 4 5 8 6 7,
+37,B,middle split,21,4,before,table-leaf,4,"10,12,14,16",68,52,,
+38,B,middle split,21,4,after,table-leaf,4,"10,11,12,14",68,52,,
+39,B,middle split,21,5,before,table-leaf,4,"18,20,22,24",68,52,,
+40,B,middle split,21,5,after,table-leaf,3,"16,18,20",1075,1061,,
+41,B,middle split,21,8,before,,,,,,,not in the file
+42,B,middle split,21,8,after,table-leaf,2,"22,24",2082,2070,,
+43,B,leaves in key order after the middle split,21,3,layout,table-leaf,4,"2,4,6,8",68,52,,
+44,B,leaves in key order after the middle split,21,4,layout,table-leaf,4,"10,11,12,14",68,52,,
+45,B,leaves in key order after the middle split,21,5,layout,table-leaf,3,"16,18,20",1075,1061,,
+46,B,leaves in key order after the middle split,21,8,layout,table-leaf,2,"22,24",2082,2070,,
+47,B,leaves in key order after the middle split,21,6,layout,table-leaf,4,"26,28,30,32",68,52,,
+48,B,leaves in key order after the middle split,21,7,layout,table-leaf,4,"34,36,38,40",68,52,,

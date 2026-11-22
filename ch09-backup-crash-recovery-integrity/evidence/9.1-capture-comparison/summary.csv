@@ -1,0 +1,6 @@
+seq,method,strongest_level,safe_under_writer,blocks_the_writer
+1,closed-file copy,E1,false,the database must be closed
+2,backup API,E2,true,no (commits ran between steps)
+3,VACUUM INTO,E3 but journal_mode; E1 canonical,true,no (ran while the writer held its write transaction)
+4,pages in a read transaction,E1,true,no (a commit ran inside the read transaction)
+5,file + WAL under a held transaction,E1 after WAL replay,true,no (a commit ran inside the read transaction)

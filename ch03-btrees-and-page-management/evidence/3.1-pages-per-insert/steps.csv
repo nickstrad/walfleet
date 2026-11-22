@@ -1,0 +1,8 @@
+part,label,insert_no
+A,"first split, depth 1 -> 2",5
+A,first append split at depth 2,9
+A,next append split,13
+A,an ordinary insert,14
+A,depth 2 -> 3,2053
+B,middle split,21
+C,a common insert,50

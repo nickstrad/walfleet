@@ -1,0 +1,15 @@
+seq,name,pragma,home,header_bytes
+1,page_size,page_size,file,16-17
+2,journal_mode=wal,journal_mode,file,18-19
+3,auto_vacuum,auto_vacuum,file,"52-55,64-67"
+4,encoding,encoding,file,56-59
+5,user_version,user_version,file,60-63
+6,application_id,application_id,file,68-71
+7,default_cache_size,default_cache_size,file,48-51
+8,journal_mode=delete|truncate|persist|memory|off,journal_mode,connection,
+9,synchronous,synchronous,connection,
+10,foreign_keys,foreign_keys,connection,
+11,cache_size,cache_size,connection,
+12,busy_timeout,busy_timeout,connection,
+13,wal_autocheckpoint,wal_autocheckpoint,connection,
+14,secure_delete,secure_delete,connection,

@@ -1,0 +1,3 @@
+seq,moment,busy,log_frames,checkpointed,wal_bytes,mx_frame,shm_salt1,file_salt1,checkpoint_seq_before,checkpoint_seq_after
+1,right after wal_checkpoint(TRUNCATE),false,0,0,0,0,+1,,,
+2,after the next write (step 8),,,,94792,23,,+1,0,1

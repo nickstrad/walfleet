@@ -1,0 +1,13 @@
+seq,setting,pragma,value_set,on_original,fresh_default,on_copy,on_vacuum_into,lives_in
+1,page_size,page_size,8192,8192,4096,8192,8192,file
+2,journal_mode=wal,journal_mode,wal,wal,delete,wal,delete,file
+3,auto_vacuum,auto_vacuum,2,2,0,2,2,file
+4,encoding,encoding,utf-16le,utf-16le,utf-8,utf-16le,utf-16le,file
+5,user_version,user_version,7,7,0,7,7,file
+6,application_id,application_id,1397836120,1397836120,0,1397836120,1397836120,file
+7,synchronous,synchronous,1,1,2,2,2,connection
+8,foreign_keys,foreign_keys,1,1,0,0,0,connection
+9,cache_size,cache_size,-8000,-8000,-2000,-2000,-2000,connection
+10,busy_timeout,busy_timeout,3000,3000,0,0,0,connection
+11,wal_autocheckpoint,wal_autocheckpoint,200,200,1000,1000,1000,connection
+12,secure_delete,secure_delete,1,1,0,0,0,connection

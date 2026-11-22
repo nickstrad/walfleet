@@ -1,0 +1,6 @@
+seq,method,latest_commit,equals_step,want_step,e1,e2,e3,e3_except_journal_mode,e1_after_vacuum_into
+1,plain copy of the live file,7,6,,true,true,true,true,true
+2,pages in a read transaction,8,7,7,true,true,true,true,true
+3,file + WAL under a held transaction,9,9,9,true,true,true,true,true
+4,VACUUM INTO,10,9,9,false,false,false,true,true
+5,backup API,13,13,13,false,true,true,true,false

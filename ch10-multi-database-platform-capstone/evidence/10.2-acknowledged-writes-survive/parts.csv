@@ -1,0 +1,4 @@
+part,name,ran,note
+A,kills at a chosen fsync (strace),true,
+B,kills at a random time (portable),true,
+C,self-test: a node that acknowledges store-durable writes before the segment put,true,

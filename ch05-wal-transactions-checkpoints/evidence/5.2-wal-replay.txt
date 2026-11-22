@@ -1,62 +1,237 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/5.2
 
-== A. a quiet moment: steps 1-8 committed on one connection (wal_autocheckpoint=0), nothing in flight
-a child process copied the database (16384 bytes) and its -wal (638632 bytes) while the writer's connection was open
-the captured database file alone: step 0 (exact bytes)
-check ok: the captured database file alone is byte for byte recipe step 0: every change committed since is only in the -wal
-walfile replay (plain Go, no SQLite) of the copy:
-  frames in file 155, valid 155, committed transactions 8, last commit frame 155 (database size 79 pages)
-  applied 155 frames (79 distinct pages, 0 skipped beyond the committed size); base 16384 bytes -> output 323584 bytes
-  ignored: none
-check ok: at a quiet moment every frame is committed and nothing is ignored
-SQLite on the original: wal_checkpoint(TRUNCATE) -> busy=0 log=0 checkpointed=0, then close
-our replay vs SQLite's own checkpoint of the original: E1 bytes: equal (sha256 00eac4cab1747d717e2cebf666b7c63ed0504b8f83e8a2f15d02155130989af6)
-check ok: sha256 of our replay equals sha256 of SQLite's own checkpoint of the original
-our replay opened by SQLite: user_version 8 (the last committed recipe step), integrity_check ok, file unchanged by the open: true
-check ok: the replay is a valid database at recipe step 8
-recipe lookup of our replay: step 8 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: the replay is the recipe's state after step 8 (exact, or equal except the WAL change counter of one long-lived connection)
+════════════════════════════════════════════════════════════════════════
+  5.2  Is a base database plus the committed WAL frames the whole state?
+════════════════════════════════════════════════════════════════════════
 
-== B. mid-transaction: steps 9-10 committed, then "UPDATE documents SET title = upper(title)" left open with cache_size=10 so dirty pages spill into the -wal before any commit
-after the commits: -wal 168952 bytes, 41 frames, last commit frame 41
-a child process copied the database (323584 bytes) and its -wal (247232 bytes) while the writer's connection was open
-the captured -wal: 60 frames; last commit frame 41; 19 frames after it were written by the open transaction (spilled pages)
-check ok: the open transaction spilled frames into the -wal before committing, after the last commit frame
-check ok: every spilled frame passes the checksum and salt checks: the frames after the last commit frame are valid, only uncommitted
-walfile replay (plain Go, no SQLite) of the copy:
-  frames in file 60, valid 60, committed transactions 2, last commit frame 41 (database size 100 pages)
-  applied 41 frames (34 distinct pages, 0 skipped beyond the committed size); base 323584 bytes -> output 409600 bytes
-  ignored frames 42-60 (19): valid but uncommitted: no commit frame follows
-check ok: the replayer stops at the last commit frame: it applies frames up to it and ignores every valid spilled frame after it because no commit frame follows
-SQLite opened another copy of the same two files plus no -shm: user_version 10; wal_checkpoint(TRUNCATE) -> busy=0 log=0 checkpointed=0; closed
-our replay vs SQLite's recovery and checkpoint of the same captured files: E1 bytes: equal (sha256 fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7)
-check ok: sha256 of our replay equals sha256 of SQLite's recovery and checkpoint of the same captured files
-our replay opened by SQLite: user_version 10 (the last committed recipe step), integrity_check ok, file unchanged by the open: true
-check ok: the replay is a valid database at recipe step 10
-the stale -shm: mxFrame 155, nPage 79
-SQLite opened another copy of the same two files plus a stale -shm taken from the part A database (another file, other salts, mxFrame 155): user_version 10; wal_checkpoint(TRUNCATE) -> busy=0 log=0 checkpointed=0; closed
-our replay vs SQLite's checkpoint of the same files opened with a stale -shm: E1 bytes: equal (sha256 fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7)
-check ok: sha256 of our replay equals sha256 of SQLite's checkpoint of the same files opened with a stale -shm
-our replay opened by SQLite: user_version 10 (the last committed recipe step), integrity_check ok, file unchanged by the open: true
-check ok: the replay is a valid database at recipe step 10
-check ok: the -shm handed to SQLite described another WAL entirely, and SQLite rebuilt it from the -wal instead of trusting it
+A plain Go replayer applies the frames of a WAL to a base database file up
+to the last commit frame, with no SQLite. Its output is compared byte for
+byte (sha256) with what SQLite itself produces from the same files.
+(The tables show the first 16 hex digits of each sha256; the CSV keeps all.)
+Every capture is taken by a child process while the writer connection is
+still open, so the files are exactly what a crash would leave.
 
-== C. after a rollback: the open transaction rolls back; its frames stay in the -wal file
-after ROLLBACK: -wal 247232 bytes (60 frames, unchanged: true); wal-index mxFrame 41 (back at the last commit)
-check ok: a rollback leaves the spilled frames in the -wal file; only the wal-index forgets them
-a child process copied the database (323584 bytes) and its -wal (247232 bytes) while the writer's connection was open
-walfile replay (plain Go, no SQLite) of the copy:
-  frames in file 60, valid 60, committed transactions 2, last commit frame 41 (database size 100 pages)
-  applied 41 frames (34 distinct pages, 0 skipped beyond the committed size); base 323584 bytes -> output 409600 bytes
-  ignored frames 42-60 (19): valid but uncommitted: no commit frame follows
-check ok: the replayer ignores the rolled-back frames because no commit frame follows them
-SQLite on the original: wal_checkpoint(TRUNCATE) -> busy=0 log=0 checkpointed=0, then close
-our replay vs SQLite's own checkpoint of the original after the rollback: E1 bytes: equal (sha256 fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7)
-check ok: sha256 of our replay equals sha256 of SQLite's own checkpoint of the original after the rollback
-our replay opened by SQLite: user_version 10 (the last committed recipe step), integrity_check ok, file unchanged by the open: true
-check ok: the replay is a valid database at recipe step 10
-replay of the mid-transaction capture vs replay of the after-rollback capture: E1 bytes: equal (sha256 fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7)
-check ok: both captures rebuild the same committed state
+── A. A quiet moment ──────────────────────────────────────────────────
 
-WAL REPLAY OK
+Steps 1-8 are committed on one connection (wal_autocheckpoint=0); nothing
+is in flight.
+
+A1. The copy: a small database file and a large -wal.
+┌──────────────┬──────────┬───────────┐
+│   capture    │ db_bytes │ wal_bytes │
+├──────────────┼──────────┼───────────┤
+│ quiet moment │ 16384    │ 638632    │
+└──────────────┴──────────┴───────────┘
+
+A2. The database file alone is byte for byte recipe step 0 (exact = true):
+    every change committed since lives only in the -wal.
+┌──────────────────────────────┬──────┬───────┐
+│           subject            │ step │ exact │
+├──────────────────────────────┼──────┼───────┤
+│ captured database file alone │ 0    │ true  │
+└──────────────────────────────┴──────┴───────┘
+
+A3. The replay: all frames are committed, nothing is ignored, and the output
+    is the size of the database at the last commit.
+┌────────────────┬──────────────┬──────────────┬───────────────────┬────────────────┬────────────────┬────────────────┐
+│ frames_in_file │ valid_frames │ transactions │ last_commit_frame │ database_pages │ applied_frames │ distinct_pages │
+├────────────────┼──────────────┼──────────────┼───────────────────┼────────────────┼────────────────┼────────────────┤
+│ 155            │ 155          │ 8            │ 155               │ 79             │ 155            │ 79             │
+└────────────────┴──────────────┴──────────────┴───────────────────┴────────────────┴────────────────┴────────────────┘
+┌─────────────────────┬────────────┬──────────────┬────────────────┬───────────────┐
+│ skipped_beyond_size │ base_bytes │ output_bytes │ ignored_frames │ partial_bytes │
+├─────────────────────┼────────────┼──────────────┼────────────────┼───────────────┤
+│ 0                   │ 16384      │ 323584       │ 0              │ 0             │
+└─────────────────────┴────────────┴──────────────┴────────────────┴───────────────┘
+
+A4. SQLite on the original: a TRUNCATE checkpoint, then close. Then the
+    replay against that file, and the replay opened by SQLite.
+┌─────────────────────────────────────────────────┬───────┬────────────┬──────────────┐
+│                       run                       │ busy  │ log_frames │ checkpointed │
+├─────────────────────────────────────────────────┼───────┼────────────┼──────────────┤
+│ TRUNCATE checkpoint of the original, then close │ false │ 0          │ 0            │
+└─────────────────────────────────────────────────┴───────┴────────────┴──────────────┘
+┌─────────────────────────────────────────┬──────────┬───────┬──────────────────┐
+│                 against                 │  level   │ equal │    sha256_16     │
+├─────────────────────────────────────────┼──────────┼───────┼──────────────────┤
+│ SQLite's own checkpoint of the original │ E1 bytes │ true  │ 00eac4cab1747d71 │
+└─────────────────────────────────────────┴──────────┴───────┴──────────────────┘
+┌──────────────┬─────────────────┬───────────────────┐
+│ user_version │ integrity_check │ unchanged_by_open │
+├──────────────┼─────────────────┼───────────────────┤
+│ 8            │ ok              │ true              │
+└──────────────┴─────────────────┴───────────────────┘
+
+A5. The recipe lookup of the replay: step 8, equal except the change counter
+    (bytes 24-27 and 92-95) that one long-lived connection leaves behind;
+    exact = false means that masked match.
+┌────────────┬──────┬───────┐
+│  subject   │ step │ exact │
+├────────────┼──────┼───────┤
+│ our replay │ 8    │ false │
+└────────────┴──────┴───────┘
+
+── B. Mid-transaction ─────────────────────────────────────────────────
+
+Steps 9-10 are committed. Then UPDATE documents SET title = upper(title)
+is left open with cache_size=10, so dirty pages spill into the -wal before
+any commit.
+
+B1. The -wal after the commits, and as captured while the transaction is
+    open. The frames after the last commit frame are spilled: valid
+    (checksums and salts pass) but uncommitted.
+┌────────────────────────────────────────┬───────────┬────────┬──────────────┬───────────────────┬────────────────┐
+│                 moment                 │ wal_bytes │ frames │ valid_frames │ last_commit_frame │ spilled_frames │
+├────────────────────────────────────────┼───────────┼────────┼──────────────┼───────────────────┼────────────────┤
+│ after the commits                      │ 168952    │ 41     │ 41           │ 41                │ 0              │
+│ captured while the transaction is open │ 247232    │ 60     │ 60           │ 41                │ 19             │
+└────────────────────────────────────────┴───────────┴────────┴──────────────┴───────────────────┴────────────────┘
+┌──────────────────┬──────────┬───────────┐
+│     capture      │ db_bytes │ wal_bytes │
+├──────────────────┼──────────┼───────────┤
+│ open transaction │ 323584   │ 247232    │
+└──────────────────┴──────────┴───────────┘
+
+B2. The replay applies frames up to the last commit frame and ignores every
+    valid spilled frame after it, because no commit frame follows.
+┌────────────────┬──────────────┬──────────────┬───────────────────┬────────────────┬────────────────┬────────────────┐
+│ frames_in_file │ valid_frames │ transactions │ last_commit_frame │ database_pages │ applied_frames │ distinct_pages │
+├────────────────┼──────────────┼──────────────┼───────────────────┼────────────────┼────────────────┼────────────────┤
+│ 60             │ 60           │ 2            │ 41                │ 100            │ 41             │ 34             │
+└────────────────┴──────────────┴──────────────┴───────────────────┴────────────────┴────────────────┴────────────────┘
+┌─────────────────────┬────────────┬──────────────┬────────────────┬───────────────┐
+│ skipped_beyond_size │ base_bytes │ output_bytes │ ignored_frames │ partial_bytes │
+├─────────────────────┼────────────┼──────────────┼────────────────┼───────────────┤
+│ 0                   │ 323584     │ 409600       │ 19             │ 0             │
+└─────────────────────┴────────────┴──────────────┴────────────────┴───────────────┘
+┌──────────────────┬───────────────────────────────────────────────────────────────────┐
+│     capture      │                              ignored                              │
+├──────────────────┼───────────────────────────────────────────────────────────────────┤
+│ open transaction │ frames 42-60 (19): valid but uncommitted: no commit frame follows │
+└──────────────────┴───────────────────────────────────────────────────────────────────┘
+
+B3. SQLite opens a copy of the same captured files (no -shm), recovers,
+    and checkpoints with TRUNCATE. Our replay equals the result byte for
+    byte, and SQLite opens the replay as recipe step 10.
+┌─────────────────────────────────────────┬──────┬──────────────┬───────┬────────────┬──────────────┐
+│                   run                   │ shm  │ user_version │ busy  │ log_frames │ checkpointed │
+├─────────────────────────────────────────┼──────┼──────────────┼───────┼────────────┼──────────────┤
+│ opened a copy, then TRUNCATE checkpoint │ none │ 10           │ false │ 0          │ 0            │
+└─────────────────────────────────────────┴──────┴──────────────┴───────┴────────────┴──────────────┘
+┌─────────────────────────────────────────────────────────────┬──────────┬───────┬──────────────────┐
+│                           against                           │  level   │ equal │    sha256_16     │
+├─────────────────────────────────────────────────────────────┼──────────┼───────┼──────────────────┤
+│ SQLite's recovery and checkpoint of the same captured files │ E1 bytes │ true  │ fb68a52159415857 │
+└─────────────────────────────────────────────────────────────┴──────────┴───────┴──────────────────┘
+┌──────────────┬─────────────────┬───────────────────┐
+│ user_version │ integrity_check │ unchanged_by_open │
+├──────────────┼─────────────────┼───────────────────┤
+│ 10           │ ok              │ true              │
+└──────────────┴─────────────────┴───────────────────┘
+
+B4. The same again, but the copy also gets a stale -shm taken from the part
+    A database: another file, other salts, mxFrame 155. SQLite does not trust
+    it; it rebuilds the wal-index from the -wal. The result is the same.
+┌────────────────┬──────────────┬───────────────┐
+│ stale_mx_frame │ stale_n_page │ part_a_frames │
+├────────────────┼──────────────┼───────────────┤
+│ 155            │ 79           │ 155           │
+└────────────────┴──────────────┴───────────────┘
+┌─────────────────────────────────────────┬────────────────────┬──────────────┬───────┬────────────┬──────────────┐
+│                   run                   │        shm         │ user_version │ busy  │ log_frames │ checkpointed │
+├─────────────────────────────────────────┼────────────────────┼──────────────┼───────┼────────────┼──────────────┤
+│ opened a copy, then TRUNCATE checkpoint │ stale, from part A │ 10           │ false │ 0          │ 0            │
+└─────────────────────────────────────────┴────────────────────┴──────────────┴───────┴────────────┴──────────────┘
+┌────────────────────────────────────────────────────────────────┬──────────┬───────┬──────────────────┐
+│                            against                             │  level   │ equal │    sha256_16     │
+├────────────────────────────────────────────────────────────────┼──────────┼───────┼──────────────────┤
+│ SQLite's checkpoint of the same files opened with a stale -shm │ E1 bytes │ true  │ fb68a52159415857 │
+└────────────────────────────────────────────────────────────────┴──────────┴───────┴──────────────────┘
+┌──────────────┬─────────────────┬───────────────────┐
+│ user_version │ integrity_check │ unchanged_by_open │
+├──────────────┼─────────────────┼───────────────────┤
+│ 10           │ ok              │ true              │
+└──────────────┴─────────────────┴───────────────────┘
+
+── C. After a rollback ────────────────────────────────────────────────
+
+The open transaction rolls back. Its frames stay in the -wal file; only the
+wal-index forgets them (mx_frame is back at the last commit frame).
+
+C1. The -wal after ROLLBACK against the one captured in part B: the size is
+    unchanged.
+┌────────────────────────────────────────┬───────────┬────────┬──────────────┬───────────────────┬──────────┐
+│                 moment                 │ wal_bytes │ frames │ valid_frames │ last_commit_frame │ mx_frame │
+├────────────────────────────────────────┼───────────┼────────┼──────────────┼───────────────────┼──────────┤
+│ captured while the transaction is open │ 247232    │ 60     │ 60           │ 41                │          │
+│ after ROLLBACK                         │ 247232    │ 60     │ 60           │ 41                │ 41       │
+└────────────────────────────────────────┴───────────┴────────┴──────────────┴───────────────────┴──────────┘
+
+C2. A new capture after the rollback, and its replay: the same frames are
+    ignored, because no commit frame follows them.
+┌────────────────┬──────────┬───────────┐
+│    capture     │ db_bytes │ wal_bytes │
+├────────────────┼──────────┼───────────┤
+│ after rollback │ 323584   │ 247232    │
+└────────────────┴──────────┴───────────┘
+┌────────────────┬──────────────┬──────────────┬───────────────────┬────────────────┬────────────────┬────────────────┐
+│ frames_in_file │ valid_frames │ transactions │ last_commit_frame │ database_pages │ applied_frames │ distinct_pages │
+├────────────────┼──────────────┼──────────────┼───────────────────┼────────────────┼────────────────┼────────────────┤
+│ 60             │ 60           │ 2            │ 41                │ 100            │ 41             │ 34             │
+└────────────────┴──────────────┴──────────────┴───────────────────┴────────────────┴────────────────┴────────────────┘
+┌─────────────────────┬────────────┬──────────────┬────────────────┬───────────────┐
+│ skipped_beyond_size │ base_bytes │ output_bytes │ ignored_frames │ partial_bytes │
+├─────────────────────┼────────────┼──────────────┼────────────────┼───────────────┤
+│ 0                   │ 323584     │ 409600       │ 19             │ 0             │
+└─────────────────────┴────────────┴──────────────┴────────────────┴───────────────┘
+┌────────────────┬───────────────────────────────────────────────────────────────────┐
+│    capture     │                              ignored                              │
+├────────────────┼───────────────────────────────────────────────────────────────────┤
+│ after rollback │ frames 42-60 (19): valid but uncommitted: no commit frame follows │
+└────────────────┴───────────────────────────────────────────────────────────────────┘
+
+C3. SQLite on the original: TRUNCATE checkpoint, then close. Our replay
+    against it, and the two replays (open transaction, after rollback)
+    against each other.
+┌─────────────────────────────────────────────────┬───────┬────────────┬──────────────┐
+│                       run                       │ busy  │ log_frames │ checkpointed │
+├─────────────────────────────────────────────────┼───────┼────────────┼──────────────┤
+│ TRUNCATE checkpoint of the original, then close │ false │ 0          │ 0            │
+└─────────────────────────────────────────────────┴───────┴────────────┴──────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┬──────────┬───────┬──────────────────┐
+│                                    against                                     │  level   │ equal │    sha256_16     │
+├────────────────────────────────────────────────────────────────────────────────┼──────────┼───────┼──────────────────┤
+│ SQLite's own checkpoint of the original after the rollback                     │ E1 bytes │ true  │ fb68a52159415857 │
+│ replay of the open-transaction capture vs replay of the after-rollback capture │ E1 bytes │ true  │ fb68a52159415857 │
+└────────────────────────────────────────────────────────────────────────────────┴──────────┴───────┴──────────────────┘
+┌────────────────────────────────────────────────────────────┬──────────────┬─────────────────┬───────────────────┐
+│                          against                           │ user_version │ integrity_check │ unchanged_by_open │
+├────────────────────────────────────────────────────────────┼──────────────┼─────────────────┼───────────────────┤
+│ SQLite's own checkpoint of the original after the rollback │ 10           │ ok              │ true              │
+└────────────────────────────────────────────────────────────┴──────────────┴─────────────────┴───────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the captured database file alone is byte for byte recipe step 0: every change committed since is only in the -wal
+A  ✓  at a quiet moment every frame is committed and nothing is ignored
+A  ✓  sha256 of our replay equals sha256 of SQLite's own checkpoint of the original
+A  ✓  the replay is a valid database at recipe step 8
+A  ✓  the replay is the recipe's state after step 8 (exact, or equal except the WAL change counter of one long-lived connection)
+B  ✓  the open transaction spilled frames into the -wal before committing, after the last commit frame
+B  ✓  every spilled frame passes the checksum and salt checks: the frames after the last commit frame are valid, only uncommitted
+B  ✓  the replayer stops at the last commit frame: it applies frames up to it and ignores every valid spilled frame after it because no commit frame follows
+B  ✓  sha256 of our replay equals sha256 of SQLite's recovery and checkpoint of the same captured files
+B  ✓  the replay is a valid database at recipe step 10
+B  ✓  sha256 of our replay equals sha256 of SQLite's checkpoint of the same files opened with a stale -shm
+B  ✓  the replay is a valid database at recipe step 10
+B  ✓  the -shm handed to SQLite described another WAL entirely, and SQLite rebuilt it from the -wal instead of trusting it
+C  ✓  a rollback leaves the spilled frames in the -wal file; only the wal-index forgets them
+C  ✓  the replayer ignores the rolled-back frames because no commit frame follows them
+C  ✓  sha256 of our replay equals sha256 of SQLite's own checkpoint of the original after the rollback
+C  ✓  the replay is a valid database at recipe step 10
+C  ✓  both captures rebuild the same committed state
+
+18 of 18 claims hold
+
+Experiment verdict: WAL REPLAY OK

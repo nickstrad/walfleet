@@ -1,0 +1,12 @@
+model,step_no,action,outcome
+store-accepts-every-put,1,B claim,ok: catalog epoch 1
+store-accepts-every-put,2,B fence,ok: fence at 1
+store-accepts-every-put,3,A claim,ok: catalog epoch 2
+store-accepts-every-put,4,A fence-with-stale-list,ok: fence at 1
+resume-from-global-end,1,B claim,ok: catalog epoch 1
+resume-from-global-end,2,B fence,ok: fence at 1
+resume-from-global-end,3,A claim,ok: catalog epoch 2
+resume-from-global-end,4,A fence,ok: fence at 2
+resume-from-global-end,5,B crash,ok: volatile state lost
+resume-from-global-end,6,B restart,ok: resumed at the store's end 2
+resume-from-global-end,7,B ship,ok: positions 3-3 accepted

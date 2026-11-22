@@ -1,0 +1,5 @@
+mode,kill_no,in_flight,violations
+local-durable,1,true,0
+local-durable,2,true,0
+store-durable,1,true,0
+store-durable,2,true,0

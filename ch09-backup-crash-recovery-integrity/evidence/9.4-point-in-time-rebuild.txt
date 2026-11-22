@@ -1,127 +1,258 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/9.4
-== recipe built to step 2; writer and outsider each hold a connection (wal_autocheckpoint=0); the writer commits every step on a fresh connection
-shipper opened: snapshot snapshots/000000000002 (initial): position 2, 29 pages, user_version 2, state 69490a2dc9c1980f, after frame 0 of no WAL
 
-== phase 1: the writer commits steps 3-14 in batches; the shipper runs one cycle after each batch (snapshot every 3 segments)
-step  1  writer     recipe-session 3                     -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000003: positions 3-3, frames 1-18 of WAL generation #1, user_version 3-3, before 69490a2dc9c1980f after 329eb15614fee435
-   ship: checkpoint PASSIVE: busy=0 log=18 checkpointed=18; every shipped frame copied: true
-check ok: steps [3] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
-step  2  writer     recipe-session 4                     -> SQLITE_OK
-step  3  writer     recipe-session 5                     -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000004: positions 4-5, frames 1-36 of WAL generation #2, user_version 4-5, before 329eb15614fee435 after 4078a0bbc3758ed2
-   ship: checkpoint PASSIVE: busy=0 log=36 checkpointed=36; every shipped frame copied: true
-check ok: steps [4 5] shipped as one segment of 2 commit(s), then the shipper's checkpoint copied every frame
-step  4  writer     recipe-session 6                     -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000006: positions 6-6, frames 1-22 of WAL generation #3, user_version 6-6, before 4078a0bbc3758ed2 after 2d7996f5c596c99e
-   ship: checkpoint PASSIVE: busy=0 log=22 checkpointed=22; every shipped frame copied: true
-   ship: snapshot snapshots/000000000006 (periodic): position 6, 60 pages, user_version 6, state 2d7996f5c596c99e, after frame 22 of WAL generation #3
-check ok: steps [6] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
-step  5  writer     recipe-session 7                     -> SQLITE_OK
-step  6  writer     recipe-session 8                     -> SQLITE_OK
-step  7  writer     recipe-session 9                     -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000007: positions 7-9, frames 1-62 of WAL generation #4, user_version 7-9, before 2d7996f5c596c99e after ca22a3f016ee31e4
-   ship: checkpoint PASSIVE: busy=0 log=62 checkpointed=62; every shipped frame copied: true
-check ok: steps [7 8 9] shipped as one segment of 3 commit(s), then the shipper's checkpoint copied every frame
-step  8  writer     recipe-session 10                    -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000010: positions 10-10, frames 1-17 of WAL generation #5, user_version 10-10, before ca22a3f016ee31e4 after 044c77909ad64db8
-   ship: checkpoint PASSIVE: busy=0 log=17 checkpointed=17; every shipped frame copied: true
-check ok: steps [10] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
-step  9  writer     recipe-session 11                    -> SQLITE_OK
-step 10  writer     recipe-session 12                    -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000011: positions 11-12, frames 1-44 of WAL generation #6, user_version 11-12, before 044c77909ad64db8 after 649990133c619869
-   ship: checkpoint PASSIVE: busy=0 log=44 checkpointed=44; every shipped frame copied: true
-   ship: snapshot snapshots/000000000012 (periodic): position 12, 118 pages, user_version 12, state 649990133c619869, after frame 44 of WAL generation #6
-check ok: steps [11 12] shipped as one segment of 2 commit(s), then the shipper's checkpoint copied every frame
-step 11  writer     recipe-session 13                    -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000013: positions 13-13, frames 1-22 of WAL generation #7, user_version 13-13, before 649990133c619869 after cf469938e5222774
-   ship: checkpoint PASSIVE: busy=0 log=22 checkpointed=22; every shipped frame copied: true
-check ok: steps [13] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
-step 12  writer     recipe-session 14                    -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000014: positions 14-14, frames 1-18 of WAL generation #8, user_version 14-14, before cf469938e5222774 after e7f84f8b8cd28ab5
-   ship: checkpoint PASSIVE: busy=0 log=18 checkpointed=18; every shipped frame copied: true
-check ok: steps [14] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
-check ok: every segment came from a new WAL generation: the WAL restarted after each shipper checkpoint (8 generations)
+════════════════════════════════════════════════════════════════════════
+  9.4  Point-in-time rebuild from a snapshot and WAL segments
+════════════════════════════════════════════════════════════════════════
 
-== phase 2: the shipper stops; the writer commits 15 and 16; the outsider runs a TRUNCATE checkpoint; the writer commits 17; the shipper restarts
-step 13  writer     recipe-session 15                    -> SQLITE_OK
-step 14  writer     recipe-session 16                    -> SQLITE_OK
-step 15  outsider   checkpoint TRUNCATE                  -> SQLITE_OK busy=0 log=0 checkpointed=0
-check ok: the outsider's TRUNCATE checkpoint copied steps 15-16 into the database file and emptied the WAL
-step 16  writer     recipe-session 17                    -> SQLITE_OK
-shipper reopened: resumed from the store at position 14
-   ship: wal: discontinuity: the WAL header changed while the shipper held no read mark
-   ship: segment: none
-   ship: checkpoint PASSIVE: busy=0 log=13 checkpointed=13; every shipped frame copied: true
-   ship: snapshot snapshots/000000000015 (discontinuity): position 15, 162 pages, user_version 17, state 4a1f971701e2b5cd, after frame 13 of WAL generation #9
-check ok: the restarted shipper sees a WAL header it did not ship, cannot vouch for what happened in between, and takes a new snapshot (it holds step 17)
-step 17  writer     recipe-session 18                    -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000016: positions 16-16, frames 1-25 of WAL generation #10, user_version 18-18, before 4a1f971701e2b5cd after 055a4f7a088f1c76
-   ship: checkpoint PASSIVE: busy=0 log=25 checkpointed=25; every shipped frame copied: true
-step 18  writer     recipe-session 19                    -> SQLITE_OK
-step 19  writer     recipe-session 20                    -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000017: positions 17-18, frames 1-36 of WAL generation #11, user_version 19-20, before 055a4f7a088f1c76 after e769f5c3b1663de2
-   ship: checkpoint PASSIVE: busy=0 log=36 checkpointed=36; every shipped frame copied: true
+The recipe database is built to step 2. Two child processes, writer and
+outsider, each hold a connection (wal_autocheckpoint=0); the writer commits
+every step on a fresh connection. A shipper (internal/walship) copies each
+new run of committed WAL frames to a store as one segment, then runs a
+PASSIVE checkpoint, and stores a snapshot every 3 segments. A stream
+position counts the commits the shipper has shipped.
 
-== restore every position from the store and compare with the recipe
-store: 4 snapshot(s) at positions [2 6 12 15], 10 segment(s), 0 damaged object(s)
-position  2: snapshot  2 + 0 segment(s) -> user_version  2, sha256 69490a2dc9c1980f, recipe step  2 sha256 69490a2dc9c1980f, E1 equal true; older snapshots: 0 give the same bytes, 0 cannot reach it
-check ok: position 2 restores byte-identical to recipe step 2 from every snapshot that reaches it
-position  3: snapshot  2 + 1 segment(s) -> user_version  3, sha256 329eb15614fee435, recipe step  3 sha256 329eb15614fee435, E1 equal true; older snapshots: 0 give the same bytes, 0 cannot reach it
-check ok: position 3 restores byte-identical to recipe step 3 from every snapshot that reaches it
-position  4: snapshot  2 + 2 segment(s) -> user_version  4, sha256 e6aa5f4e37fde0be, recipe step  4 sha256 e6aa5f4e37fde0be, E1 equal true; older snapshots: 0 give the same bytes, 0 cannot reach it
-check ok: position 4 restores byte-identical to recipe step 4 from every snapshot that reaches it
-position  5: snapshot  2 + 2 segment(s) -> user_version  5, sha256 4078a0bbc3758ed2, recipe step  5 sha256 4078a0bbc3758ed2, E1 equal true; older snapshots: 0 give the same bytes, 0 cannot reach it
-check ok: position 5 restores byte-identical to recipe step 5 from every snapshot that reaches it
-position  6: snapshot  6 + 0 segment(s) -> user_version  6, sha256 2d7996f5c596c99e, recipe step  6 sha256 2d7996f5c596c99e, E1 equal true; older snapshots: 1 give the same bytes, 0 cannot reach it
-check ok: position 6 restores byte-identical to recipe step 6 from every snapshot that reaches it
-position  7: snapshot  6 + 1 segment(s) -> user_version  7, sha256 7d8ae978254856c0, recipe step  7 sha256 7d8ae978254856c0, E1 equal true; older snapshots: 1 give the same bytes, 0 cannot reach it
-check ok: position 7 restores byte-identical to recipe step 7 from every snapshot that reaches it
-position  8: snapshot  6 + 1 segment(s) -> user_version  8, sha256 f27921ff12ecd673, recipe step  8 sha256 f27921ff12ecd673, E1 equal true; older snapshots: 1 give the same bytes, 0 cannot reach it
-check ok: position 8 restores byte-identical to recipe step 8 from every snapshot that reaches it
-position  9: snapshot  6 + 1 segment(s) -> user_version  9, sha256 ca22a3f016ee31e4, recipe step  9 sha256 ca22a3f016ee31e4, E1 equal true; older snapshots: 1 give the same bytes, 0 cannot reach it
-check ok: position 9 restores byte-identical to recipe step 9 from every snapshot that reaches it
-position 10: snapshot  6 + 2 segment(s) -> user_version 10, sha256 044c77909ad64db8, recipe step 10 sha256 044c77909ad64db8, E1 equal true; older snapshots: 1 give the same bytes, 0 cannot reach it
-check ok: position 10 restores byte-identical to recipe step 10 from every snapshot that reaches it
-position 11: snapshot  6 + 3 segment(s) -> user_version 11, sha256 6ced94850b7f17c8, recipe step 11 sha256 6ced94850b7f17c8, E1 equal true; older snapshots: 1 give the same bytes, 0 cannot reach it
-check ok: position 11 restores byte-identical to recipe step 11 from every snapshot that reaches it
-position 12: snapshot 12 + 0 segment(s) -> user_version 12, sha256 649990133c619869, recipe step 12 sha256 649990133c619869, E1 equal true; older snapshots: 2 give the same bytes, 0 cannot reach it
-check ok: position 12 restores byte-identical to recipe step 12 from every snapshot that reaches it
-position 13: snapshot 12 + 1 segment(s) -> user_version 13, sha256 cf469938e5222774, recipe step 13 sha256 cf469938e5222774, E1 equal true; older snapshots: 2 give the same bytes, 0 cannot reach it
-check ok: position 13 restores byte-identical to recipe step 13 from every snapshot that reaches it
-position 14: snapshot 12 + 2 segment(s) -> user_version 14, sha256 e7f84f8b8cd28ab5, recipe step 14 sha256 e7f84f8b8cd28ab5, E1 equal true; older snapshots: 2 give the same bytes, 0 cannot reach it
-check ok: position 14 restores byte-identical to recipe step 14 from every snapshot that reaches it
-position 15: snapshot 15 + 0 segment(s) -> user_version 17, sha256 4a1f971701e2b5cd, recipe step 17 sha256 4a1f971701e2b5cd, E1 equal true; older snapshots: 0 give the same bytes, 3 cannot reach it
-check ok: position 15 restores byte-identical to recipe step 17 from every snapshot that reaches it
-position 16: snapshot 15 + 1 segment(s) -> user_version 18, sha256 055a4f7a088f1c76, recipe step 18 sha256 055a4f7a088f1c76, E1 equal true; older snapshots: 0 give the same bytes, 3 cannot reach it
-check ok: position 16 restores byte-identical to recipe step 18 from every snapshot that reaches it
-position 17: snapshot 15 + 2 segment(s) -> user_version 19, sha256 e57cb4d4d450456a, recipe step 19 sha256 e57cb4d4d450456a, E1 equal true; older snapshots: 0 give the same bytes, 3 cannot reach it
-check ok: position 17 restores byte-identical to recipe step 19 from every snapshot that reaches it
-position 18: snapshot 15 + 2 segment(s) -> user_version 20, sha256 e769f5c3b1663de2, recipe step 20 sha256 e769f5c3b1663de2, E1 equal true; older snapshots: 0 give the same bytes, 3 cannot reach it
-check ok: position 18 restores byte-identical to recipe step 20 from every snapshot that reaches it
-check ok: a restore from the newest snapshot never replays more than 3 segments (worst here: 3)
-recipe steps with no restore point: [15 16]
-check ok: only steps 15 and 16 have no restore point: they were committed and checkpointed away while the shipper was down
-restored.db (position 18): integrity_check ok, equals recipe step 20 (exact bytes); the live database after every process closed equals recipe step 20 (exact bytes)
-check ok: the newest restore point, written to a file, opens, passes integrity_check and equals the live database's final state (step 20)
+── A. Phase 1: shipping steps 3-14 ─────────────────────────────────────
 
-== damaged stores (each a copy of the store above)
-segment 7 deleted; restore to position 9: segment chain is broken: no segment starts at position 7
-check ok: segment 7 deleted: refused while planning, before any page is applied
-segments 10 and 11 swapped; restore to position 11: segment chain is broken: the segment starting at position 10 is damaged: malformed walship object: key names first position 10, metadata says 11
-check ok: segments 10 and 11 swapped: refused while planning, before any page is applied
-one byte of segment 13 flipped; restore to position 13: segment chain is broken: the segment starting at position 13 is damaged: malformed walship object: body sha256 does not match its metadata
-check ok: one byte of segment 13 flipped: refused while planning, before any page is applied
+A1. The shipper opens on an empty store and takes the initial snapshot.
+┌────────────────────────┬─────────┬──────────┬───────┬──────────────┬──────────────────┬───────────────────┐
+│        snapshot        │ reason  │ position │ pages │ user_version │   state_sha256   │  after_wal_frame  │
+├────────────────────────┼─────────┼──────────┼───────┼──────────────┼──────────────────┼───────────────────┤
+│ snapshots/000000000002 │ initial │ 2        │ 29    │ 2            │ 69490a2dc9c1980f │ none (no WAL yet) │
+└────────────────────────┴─────────┴──────────┴───────┴──────────────┴──────────────────┴───────────────────┘
 
-POINT IN TIME OK
+A2. The writer commits a batch of steps, then the shipper runs one cycle.
+    Each batch becomes one segment. The checkpoint copies every frame, so
+    the next commit restarts the WAL: every segment is a new generation
+    and starts at frame 1.
+┌───────┬─────────────────┬───────────────────────┬───────────┬────────┬────────────┬──────────────┬─────────────────┐
+│ cycle │ steps_committed │        segment        │ positions │ frames │ generation │ user_version │   checkpoint    │
+├───────┼─────────────────┼───────────────────────┼───────────┼────────┼────────────┼──────────────┼─────────────────┤
+│ 1     │ 3               │ segments/000000000003 │ 3-3       │ 1-18   │ #1         │ 3-3          │ copied 18 of 18 │
+│ 2     │ 4 5             │ segments/000000000004 │ 4-5       │ 1-36   │ #2         │ 4-5          │ copied 36 of 36 │
+│ 3     │ 6               │ segments/000000000006 │ 6-6       │ 1-22   │ #3         │ 6-6          │ copied 22 of 22 │
+│ 4     │ 7 8 9           │ segments/000000000007 │ 7-9       │ 1-62   │ #4         │ 7-9          │ copied 62 of 62 │
+│ 5     │ 10              │ segments/000000000010 │ 10-10     │ 1-17   │ #5         │ 10-10        │ copied 17 of 17 │
+│ 6     │ 11 12           │ segments/000000000011 │ 11-12     │ 1-44   │ #6         │ 11-12        │ copied 44 of 44 │
+│ 7     │ 13              │ segments/000000000013 │ 13-13     │ 1-22   │ #7         │ 13-13        │ copied 22 of 22 │
+│ 8     │ 14              │ segments/000000000014 │ 14-14     │ 1-18   │ #8         │ 14-14        │ copied 18 of 18 │
+└───────┴─────────────────┴───────────────────────┴───────────┴────────┴────────────┴──────────────┴─────────────────┘
+
+A3. After every third segment the shipper also stores a snapshot of the
+    state that segment leaves:
+┌───────┬────────────────────────┬──────────┬──────────┬───────┬──────────────┬──────────────────┬─────────────────┐
+│ cycle │        snapshot        │  reason  │ position │ pages │ user_version │   state_sha256   │ after_wal_frame │
+├───────┼────────────────────────┼──────────┼──────────┼───────┼──────────────┼──────────────────┼─────────────────┤
+│ 3     │ snapshots/000000000006 │ periodic │ 6        │ 60    │ 6            │ 2d7996f5c596c99e │ 22 of #3        │
+│ 6     │ snapshots/000000000012 │ periodic │ 12       │ 118   │ 12           │ 649990133c619869 │ 44 of #6        │
+└───────┴────────────────────────┴──────────┴──────────┴───────┴──────────────┴──────────────────┴─────────────────┘
+
+── B. Phase 2: the shipper is down while another process checkpoints ──
+
+B1. With the shipper closed, the writer commits 15 and 16, the outsider
+    runs a TRUNCATE checkpoint (it copies them into the database file and
+    empties the WAL), and the writer commits 17.
+┌──────┬──────────┬─────────────────────┬───────────────────────────────────────┐
+│ step │  child   │       action        │                outcome                │
+├──────┼──────────┼─────────────────────┼───────────────────────────────────────┤
+│ 13   │ writer   │ recipe-session 15   │ SQLITE_OK                             │
+│ 14   │ writer   │ recipe-session 16   │ SQLITE_OK                             │
+│ 15   │ outsider │ checkpoint TRUNCATE │ SQLITE_OK busy=0 log=0 checkpointed=0 │
+│ 16   │ writer   │ recipe-session 17   │ SQLITE_OK                             │
+└──────┴──────────┴─────────────────────┴───────────────────────────────────────┘
+
+B2. The shipper reopens from the store, which ends at position 14:
+┌──────────────────────────────────┬──────────┐
+│             started              │ position │
+├──────────────────────────────────┼──────────┤
+│ reopened: resumed from the store │ 14       │
+└──────────────────────────────────┴──────────┘
+
+B3. Its first cycle finds a WAL header it never shipped. It cannot know
+    what was committed in between, so it ships no segment and stores a
+    new snapshot instead. That snapshot holds step 17 at position 15.
+┌───────┬───────────────────────────────────────────────────────────────────────────┬─────────┬─────────────────┐
+│ cycle │                                    wal                                    │ segment │   checkpoint    │
+├───────┼───────────────────────────────────────────────────────────────────────────┼─────────┼─────────────────┤
+│ 9     │ discontinuity: the WAL header changed while the shipper held no read mark │ none    │ copied 13 of 13 │
+└───────┴───────────────────────────────────────────────────────────────────────────┴─────────┴─────────────────┘
+┌───────┬────────────────────────┬───────────────┬──────────┬───────┬──────────────┬──────────────────┬─────────────────┐
+│ cycle │        snapshot        │    reason     │ position │ pages │ user_version │   state_sha256   │ after_wal_frame │
+├───────┼────────────────────────┼───────────────┼──────────┼───────┼──────────────┼──────────────────┼─────────────────┤
+│ 9     │ snapshots/000000000015 │ discontinuity │ 15       │ 162   │ 17           │ 4a1f971701e2b5cd │ 13 of #9        │
+└───────┴────────────────────────┴───────────────┴──────────┴───────┴──────────────┴──────────────────┴─────────────────┘
+
+B4. Shipping resumes from the new snapshot: steps 18-20 become positions
+    16-18. From here on the position and the recipe step differ by 2.
+┌───────┬─────────────────┬───────────────────────┬───────────┬────────┬────────────┬──────────────┬─────────────────┐
+│ cycle │ steps_committed │        segment        │ positions │ frames │ generation │ user_version │   checkpoint    │
+├───────┼─────────────────┼───────────────────────┼───────────┼────────┼────────────┼──────────────┼─────────────────┤
+│ 10    │ 18              │ segments/000000000016 │ 16-16     │ 1-25   │ #10        │ 18-18        │ copied 25 of 25 │
+│ 11    │ 19 20           │ segments/000000000017 │ 17-18     │ 1-36   │ #11        │ 19-20        │ copied 36 of 36 │
+└───────┴─────────────────┴───────────────────────┴───────────┴────────┴────────────┴──────────────┴─────────────────┘
+
+B5. Each segment names the database state it starts from and the state
+    it leaves. Every segment starts from the state the store held just
+    before it: the previous segment, or the snapshot after the gap.
+┌───────┬───────────────────────┬──────────────────┬──────────────────┬────────────────────────┬───────┐
+│ cycle │        segment        │  before_sha256   │   after_sha256   │      starts_from       │ links │
+├───────┼───────────────────────┼──────────────────┼──────────────────┼────────────────────────┼───────┤
+│ 1     │ segments/000000000003 │ 69490a2dc9c1980f │ 329eb15614fee435 │ snapshots/000000000002 │ true  │
+│ 2     │ segments/000000000004 │ 329eb15614fee435 │ 4078a0bbc3758ed2 │ segments/000000000003  │ true  │
+│ 3     │ segments/000000000006 │ 4078a0bbc3758ed2 │ 2d7996f5c596c99e │ segments/000000000004  │ true  │
+│ 4     │ segments/000000000007 │ 2d7996f5c596c99e │ ca22a3f016ee31e4 │ segments/000000000006  │ true  │
+│ 5     │ segments/000000000010 │ ca22a3f016ee31e4 │ 044c77909ad64db8 │ segments/000000000007  │ true  │
+│ 6     │ segments/000000000011 │ 044c77909ad64db8 │ 649990133c619869 │ segments/000000000010  │ true  │
+│ 7     │ segments/000000000013 │ 649990133c619869 │ cf469938e5222774 │ segments/000000000011  │ true  │
+│ 8     │ segments/000000000014 │ cf469938e5222774 │ e7f84f8b8cd28ab5 │ segments/000000000013  │ true  │
+│ 10    │ segments/000000000016 │ 4a1f971701e2b5cd │ 055a4f7a088f1c76 │ snapshots/000000000015 │ true  │
+│ 11    │ segments/000000000017 │ 055a4f7a088f1c76 │ e769f5c3b1663de2 │ segments/000000000016  │ true  │
+└───────┴───────────────────────┴──────────────────┴──────────────────┴────────────────────────┴───────┘
+
+── C. Restore every position ───────────────────────────────────────────
+
+C1. What the store holds (every object passed its checks):
+┌───────────┬────────────────────┬──────────┬─────────┐
+│ snapshots │ snapshot_positions │ segments │ damaged │
+├───────────┼────────────────────┼──────────┼─────────┤
+│ 4         │ 2 6 12 15          │ 10       │ 0       │
+└───────────┴────────────────────┴──────────┴─────────┘
+
+C2. Each position restored from the newest snapshot at or before it, then
+    compared with the recipe built to the same step. Every restore is
+    byte-identical (E1), and none replays more than 3 segments.
+┌──────────┬──────────┬──────────┬──────────────┬──────────────────┬──────────────────┬──────────┐
+│ position │ snapshot │ segments │ user_version │      sha256      │  recipe_sha256   │ e1_equal │
+├──────────┼──────────┼──────────┼──────────────┼──────────────────┼──────────────────┼──────────┤
+│ 2        │ 2        │ 0        │ 2            │ 69490a2dc9c1980f │ 69490a2dc9c1980f │ true     │
+│ 3        │ 2        │ 1        │ 3            │ 329eb15614fee435 │ 329eb15614fee435 │ true     │
+│ 4        │ 2        │ 2        │ 4            │ e6aa5f4e37fde0be │ e6aa5f4e37fde0be │ true     │
+│ 5        │ 2        │ 2        │ 5            │ 4078a0bbc3758ed2 │ 4078a0bbc3758ed2 │ true     │
+│ 6        │ 6        │ 0        │ 6            │ 2d7996f5c596c99e │ 2d7996f5c596c99e │ true     │
+│ 7        │ 6        │ 1        │ 7            │ 7d8ae978254856c0 │ 7d8ae978254856c0 │ true     │
+│ 8        │ 6        │ 1        │ 8            │ f27921ff12ecd673 │ f27921ff12ecd673 │ true     │
+│ 9        │ 6        │ 1        │ 9            │ ca22a3f016ee31e4 │ ca22a3f016ee31e4 │ true     │
+│ 10       │ 6        │ 2        │ 10           │ 044c77909ad64db8 │ 044c77909ad64db8 │ true     │
+│ 11       │ 6        │ 3        │ 11           │ 6ced94850b7f17c8 │ 6ced94850b7f17c8 │ true     │
+│ 12       │ 12       │ 0        │ 12           │ 649990133c619869 │ 649990133c619869 │ true     │
+│ 13       │ 12       │ 1        │ 13           │ cf469938e5222774 │ cf469938e5222774 │ true     │
+│ 14       │ 12       │ 2        │ 14           │ e7f84f8b8cd28ab5 │ e7f84f8b8cd28ab5 │ true     │
+│ 15       │ 15       │ 0        │ 17           │ 4a1f971701e2b5cd │ 4a1f971701e2b5cd │ true     │
+│ 16       │ 15       │ 1        │ 18           │ 055a4f7a088f1c76 │ 055a4f7a088f1c76 │ true     │
+│ 17       │ 15       │ 2        │ 19           │ e57cb4d4d450456a │ e57cb4d4d450456a │ true     │
+│ 18       │ 15       │ 2        │ 20           │ e769f5c3b1663de2 │ e769f5c3b1663de2 │ true     │
+└──────────┴──────────┴──────────┴──────────────┴──────────────────┴──────────────────┴──────────┘
+
+C3. The same positions restored from every older snapshot. Before the
+    discontinuity the older snapshots give the same bytes; after it no
+    segment chain leads from them to position 15 or later, and the plan
+    refuses.
+┌──────────┬─────────────────┬─────────────────┬──────────────────┬────────────────────┐
+│ position │ newest_snapshot │ older_snapshots │ older_same_bytes │ older_cannot_reach │
+├──────────┼─────────────────┼─────────────────┼──────────────────┼────────────────────┤
+│ 2        │ 2               │ 0               │ 0                │ 0                  │
+│ 3        │ 2               │ 0               │ 0                │ 0                  │
+│ 4        │ 2               │ 0               │ 0                │ 0                  │
+│ 5        │ 2               │ 0               │ 0                │ 0                  │
+│ 6        │ 6               │ 1               │ 1                │ 0                  │
+│ 7        │ 6               │ 1               │ 1                │ 0                  │
+│ 8        │ 6               │ 1               │ 1                │ 0                  │
+│ 9        │ 6               │ 1               │ 1                │ 0                  │
+│ 10       │ 6               │ 1               │ 1                │ 0                  │
+│ 11       │ 6               │ 1               │ 1                │ 0                  │
+│ 12       │ 12              │ 2               │ 2                │ 0                  │
+│ 13       │ 12              │ 2               │ 2                │ 0                  │
+│ 14       │ 12              │ 2               │ 2                │ 0                  │
+│ 15       │ 15              │ 3               │ 0                │ 3                  │
+│ 16       │ 15              │ 3               │ 0                │ 3                  │
+│ 17       │ 15              │ 3               │ 0                │ 3                  │
+│ 18       │ 15              │ 3               │ 0                │ 3                  │
+└──────────┴─────────────────┴─────────────────┴──────────────────┴────────────────────┘
+
+C4. Recipe steps with no restore point: the two that were committed and
+    checkpointed away while the shipper was down.
+┌─────────────┐
+│ recipe_step │
+├─────────────┤
+│ 15          │
+│ 16          │
+└─────────────┘
+
+C5. The newest position written out as a file, beside the live database
+    once every process has closed it. Both are recipe step 20, byte for byte.
+┌──────────────────────────────────────────────┬──────────┬─────────────────┬─────────────┬─────────────┐
+│                     file                     │ position │ integrity_check │ recipe_step │ exact_bytes │
+├──────────────────────────────────────────────┼──────────┼─────────────────┼─────────────┼─────────────┤
+│ restored.db                                  │ 18       │ ok              │ 20          │ true        │
+│ the live database after every process closed │          │                 │ 20          │ true        │
+└──────────────────────────────────────────────┴──────────┴─────────────────┴─────────────┴─────────────┘
+
+── D. Damaged stores ───────────────────────────────────────────────────
+
+D1. Three copies of the store, each damaged one way. Every restore is
+    refused while planning, before any page is applied.
+┌─────┬────────────────────────────────┬────────────┬────────────────────────┐
+│ seq │             damage             │ restore_to │ refused_while_planning │
+├─────┼────────────────────────────────┼────────────┼────────────────────────┤
+│ 1   │ segment 7 deleted              │ 9          │ true                   │
+│ 2   │ segments 10 and 11 swapped     │ 11         │ true                   │
+│ 3   │ one byte of segment 13 flipped │ 13         │ true                   │
+└─────┴────────────────────────────────┴────────────┴────────────────────────┘
+
+D2. Why each was refused. Every error is walship.ErrBrokenChain; each
+    further line is the cause of the line above it.
+┌────────────────────────────────┬─────────────────────────────────────────────────────┐
+│             damage             │                        error                        │
+├────────────────────────────────┼─────────────────────────────────────────────────────┤
+│ segment 7 deleted              │ segment chain is broken                             │
+│                                │   no segment starts at position 7                   │
+│ segments 10 and 11 swapped     │ segment chain is broken                             │
+│                                │   the segment starting at position 10 is damaged    │
+│                                │     malformed walship object                        │
+│                                │       key names first position 10, metadata says 11 │
+│ one byte of segment 13 flipped │ segment chain is broken                             │
+│                                │   the segment starting at position 13 is damaged    │
+│                                │     malformed walship object                        │
+│                                │       body sha256 does not match its metadata       │
+└────────────────────────────────┴─────────────────────────────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  steps [3] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  steps [4 5] shipped as one segment of 2 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  steps [6] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  steps [7 8 9] shipped as one segment of 3 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  steps [10] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  steps [11 12] shipped as one segment of 2 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  steps [13] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  steps [14] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  every segment came from a new WAL generation: the WAL restarted after each shipper checkpoint (8 generations)
+B  ✓  the outsider's TRUNCATE checkpoint copied steps 15-16 into the database file and emptied the WAL
+B  ✓  the restarted shipper sees a WAL header it did not ship, cannot vouch for what happened in between, and takes a new snapshot (it holds step 17)
+C  ✓  position 2 restores byte-identical to recipe step 2 from every snapshot that reaches it
+C  ✓  position 3 restores byte-identical to recipe step 3 from every snapshot that reaches it
+C  ✓  position 4 restores byte-identical to recipe step 4 from every snapshot that reaches it
+C  ✓  position 5 restores byte-identical to recipe step 5 from every snapshot that reaches it
+C  ✓  position 6 restores byte-identical to recipe step 6 from every snapshot that reaches it
+C  ✓  position 7 restores byte-identical to recipe step 7 from every snapshot that reaches it
+C  ✓  position 8 restores byte-identical to recipe step 8 from every snapshot that reaches it
+C  ✓  position 9 restores byte-identical to recipe step 9 from every snapshot that reaches it
+C  ✓  position 10 restores byte-identical to recipe step 10 from every snapshot that reaches it
+C  ✓  position 11 restores byte-identical to recipe step 11 from every snapshot that reaches it
+C  ✓  position 12 restores byte-identical to recipe step 12 from every snapshot that reaches it
+C  ✓  position 13 restores byte-identical to recipe step 13 from every snapshot that reaches it
+C  ✓  position 14 restores byte-identical to recipe step 14 from every snapshot that reaches it
+C  ✓  position 15 restores byte-identical to recipe step 17 from every snapshot that reaches it
+C  ✓  position 16 restores byte-identical to recipe step 18 from every snapshot that reaches it
+C  ✓  position 17 restores byte-identical to recipe step 19 from every snapshot that reaches it
+C  ✓  position 18 restores byte-identical to recipe step 20 from every snapshot that reaches it
+C  ✓  a restore from the newest snapshot never replays more than 3 segments (worst here: 3)
+C  ✓  only steps 15 and 16 have no restore point: they were committed and checkpointed away while the shipper was down
+C  ✓  the newest restore point, written to a file, opens, passes integrity_check and equals the live database's final state (step 20)
+D  ✓  segment 7 deleted: refused while planning, before any page is applied
+D  ✓  segments 10 and 11 swapped: refused while planning, before any page is applied
+D  ✓  one byte of segment 13 flipped: refused while planning, before any page is applied
+
+34 of 34 claims hold
+
+Experiment verdict: POINT IN TIME OK

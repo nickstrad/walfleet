@@ -1,0 +1,6 @@
+name,type,root_page,btree_pages,overflow_pages,cells
+sqlite_schema,table,1,1,0,4
+accounts,table,2,3,0,184
+documents,table,3,70,170,164
+events,table,4,18,0,1193
+events_by_account,index,28,5,0,1177

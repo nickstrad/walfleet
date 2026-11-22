@@ -5,6 +5,9 @@
 // INFO lines only), and contrasts TRUNCATE run by a third connection against
 // TRUNCATE run by the writer itself (src/wal.c:2199-2395, 3875-3915,
 // 4088-4098, 4301-4432).
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 5.4
 package main
 
 import (
@@ -17,6 +20,7 @@ import (
 	"time"
 
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walfile"
 
@@ -49,15 +53,26 @@ func (p readerPosition) String() string {
 	return "no reader"
 }
 
-var failures []string
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 5.4" runs both.
+// part labels the claims: A is the mode and reader matrix, B the writer's own TRUNCATE.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		cases, nextWrites, ownTruncate, infoElapsed *results.Table
+	}
+)
+
+func openTables() {
+	tables.cases = set.Table("cases", "seq", "mode", "reader", "frames_before", "reader_frame", "busy", "log_frames", "checkpointed", "wal_bytes", "mx_frame", "n_backfill", "file_salt1", "shm_salt1")
+	tables.nextWrites = set.Table("next_writes", "seq", "mode", "reader", "restarted", "file_salt1", "checkpoint_seq", "wal_bytes", "mx_frame", "valid_frames", "frames_in_file")
+	tables.ownTruncate = set.Table("own_truncate", "seq", "moment", "busy", "log_frames", "checkpointed", "wal_bytes", "mx_frame", "shm_salt1", "file_salt1", "checkpoint_seq_before", "checkpoint_seq_after")
+	tables.infoElapsed = set.Table("info_elapsed", "seq", "mode", "reader", "elapsed_ms")
+}
 
 func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -198,13 +213,6 @@ func runCase(ctx context.Context, template, dir, mode string, reader readerPosit
 	return o
 }
 
-func yesNo(b bool) string {
-	if b {
-		return "yes"
-	}
-	return "no"
-}
-
 func delta(before, after uint32) string {
 	switch after {
 	case before:
@@ -238,10 +246,9 @@ func main() {
 	if err := recipe.Default().Build(ctx, template, templateStep); err != nil {
 		fatal("build", err)
 	}
-	fmt.Println()
-	fmt.Printf("== setup per case: recipe step %d (closed file); writer commits step %d and step %d with wal_autocheckpoint=0;\n", templateStep, firstCommit, secondCommit)
-	fmt.Printf("   \"reader behind\" began its read transaction between the two commits, \"reader current\" after both;\n")
-	fmt.Printf("   a third connection (busy_timeout=%dms) runs the checkpoint; then the reader ends and the writer commits step %d\n", checkpointerBusyMs, nextWrite)
+	part = "A"
+	set = results.MustOpen(dir)
+	openTables()
 	modes := []string{sqlitex.CheckpointPassive, sqlitex.CheckpointFull, sqlitex.CheckpointRestart, sqlitex.CheckpointTruncate}
 	readers := []readerPosition{noReader, readerBehind, readerCurrent}
 	var outcomes []outcome
@@ -250,26 +257,19 @@ func main() {
 			outcomes = append(outcomes, runCase(ctx, template, dir, mode, reader))
 		}
 	}
-	fmt.Println()
-	fmt.Println("checkpoint result and state right after it (WAL file header from a child's copy; wal-index from the -shm):")
-	fmt.Printf("%-9s %-15s %-30s %9s %8s %9s %12s %12s\n", "mode", "reader", "busy/log/checkpointed", "WAL bytes", "mxFrame", "nBackfill", "file salt-1", "shm salt-1")
-	for _, o := range outcomes {
-		fmt.Printf("%-9s %-15s %-30s %9d %8d %9d %12s %12s\n", o.mode, o.reader, o.result, o.after.walSize, o.after.indexMaxFrame, o.after.indexBackfill,
-			saltDelta(o.before, o.after), delta(o.before.indexSalt1, o.after.indexSalt1))
-		fmt.Printf("INFO: %s %s elapsed %s\n", o.mode, o.reader, o.elapsed.Round(time.Millisecond))
-	}
-	fmt.Println()
-	fmt.Printf("after the reader ended and the writer committed step %d:\n", nextWrite)
-	fmt.Printf("%-9s %-15s %-10s %12s %14s %9s %8s %s\n", "mode", "reader", "restarted", "file salt-1", "checkpoint-seq", "WAL bytes", "mxFrame", "valid frames / frames in file")
-	for _, o := range outcomes {
-		restarted := o.next.indexMaxFrame < o.before.indexMaxFrame
-		fmt.Printf("%-9s %-15s %-10s %12s %14s %9d %8d %d / %d\n", o.mode, o.reader, yesNo(restarted), saltDelta(o.before, o.next),
+	for i, o := range outcomes {
+		var readerFrame any
+		if o.reader == readerBehind {
+			readerFrame = o.readerFrame
+		}
+		tables.cases.Row(i+1, o.mode, o.reader, o.before.indexMaxFrame, readerFrame, o.result.Busy, o.result.LogFrames, o.result.Checkpointed,
+			o.after.walSize, o.after.indexMaxFrame, o.after.indexBackfill, saltDelta(o.before, o.after), delta(o.before.indexSalt1, o.after.indexSalt1))
+		tables.nextWrites.Row(i+1, o.mode, o.reader, o.next.indexMaxFrame < o.before.indexMaxFrame, saltDelta(o.before, o.next),
 			delta(o.before.walSequence, o.next.walSequence), o.next.walSize, o.next.indexMaxFrame, o.next.walValid, o.next.walFrames)
+		tables.infoElapsed.Row(i+1, o.mode, o.reader, o.elapsed.Milliseconds())
 	}
-	fmt.Println()
 	n := outcomes[0].before.indexMaxFrame
 	behind := outcomes[1].readerFrame
-	fmt.Printf("frames before every checkpoint: %d; the \"reader behind\" snapshot is frame %d\n", n, behind)
 	byKey := map[string]outcome{}
 	for _, o := range outcomes {
 		byKey[o.mode+"/"+o.reader.String()] = o
@@ -329,15 +329,7 @@ func main() {
 	check(truncated.next.walSalt1 != truncated.before.walSalt1 && truncated.next.walSalt1 != truncated.before.walSalt1+1 && truncated.next.walSequence == truncated.before.walSequence,
 		"after another connection's TRUNCATE, the writer's next WAL header has new random salts and the writer's own checkpoint sequence (0): the sequence is per connection")
 	ownTruncate(ctx, template, dir)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("CHECKPOINT MODES FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("CHECKPOINT MODES OK")
+	set.Finish("CHECKPOINT MODES")
 }
 
 // ownTruncate repeats TRUNCATE/no-reader on the writer connection itself: its
@@ -345,8 +337,7 @@ func main() {
 // commit preserves salt-1 + 1 and writes checkpoint sequence 1 instead of
 // re-randomizing salts.
 func ownTruncate(ctx context.Context, template, dir string) {
-	fmt.Println()
-	fmt.Printf("== the writer runs TRUNCATE itself (no reader), then commits step %d\n", nextWrite)
+	part = "B"
 	root := filepath.Join(dir, "truncate-by-writer")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		fatal("mkdir", err)
@@ -372,9 +363,10 @@ func ownTruncate(ctx context.Context, template, dir string) {
 	if err := writer.Close(); err != nil {
 		fatal("close", err)
 	}
-	fmt.Printf("wal_checkpoint(TRUNCATE) -> %s; WAL bytes %d; shm salt-1 %s\n", result, after.walSize, delta(before.indexSalt1, after.indexSalt1))
-	fmt.Printf("next write: WAL bytes %d, mxFrame %d, file salt-1 %s, checkpoint-seq %s (%d -> %d)\n", next.walSize, next.indexMaxFrame,
-		saltDelta(before, next), delta(before.walSequence, next.walSequence), before.walSequence, next.walSequence)
+	tables.ownTruncate.Row(1, "right after wal_checkpoint(TRUNCATE)", result.Busy, result.LogFrames, result.Checkpointed, after.walSize, after.indexMaxFrame,
+		delta(before.indexSalt1, after.indexSalt1), nil, nil, nil)
+	tables.ownTruncate.Row(2, fmt.Sprintf("after the next write (step %d)", nextWrite), nil, nil, nil, next.walSize, next.indexMaxFrame,
+		nil, saltDelta(before, next), before.walSequence, next.walSequence)
 	check(next.walSalt1 == before.walSalt1+1 && next.walSequence == before.walSequence+1,
 		"when the connection that ran TRUNCATE writes next, the new WAL header has salt-1 + 1 and checkpoint sequence + 1")
 }

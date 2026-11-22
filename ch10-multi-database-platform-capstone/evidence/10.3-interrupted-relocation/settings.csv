@@ -1,0 +1,9 @@
+seq,name,value
+1,bucket,course-ch10b
+2,prefix,exp-10-3/
+3,synchronous,FULL
+4,foreign_keys,ON
+5,secure_delete,ON
+6,cache_size,-256
+7,wal_autocheckpoint,0
+8,busy_timeout,5000ms

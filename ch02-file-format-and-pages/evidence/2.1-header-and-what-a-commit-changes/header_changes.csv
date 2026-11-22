@@ -1,0 +1,85 @@
+event_seq,view,byte_offset,size,field,before_value,after_value,changed_bytes
+1,file vs previous,24,4,file change counter,30,31,27
+1,file vs previous,28,4,database size in pages,244,251,31
+1,file vs previous,32,4,first freelist trunk page,82,131,35
+1,file vs previous,60,4,user version,27,28,63
+1,file vs previous,92,4,version-valid-for,30,31,95
+2,file vs previous,24,4,file change counter,31,32,27
+2,file vs previous,28,4,database size in pages,251,259,30 31
+2,file vs previous,32,4,first freelist trunk page,131,0,35
+2,file vs previous,36,4,freelist page count,1,0,39
+2,file vs previous,60,4,user version,28,29,63
+2,file vs previous,92,4,version-valid-for,31,32,95
+3,file vs previous,24,4,file change counter,32,33,27
+3,file vs previous,28,4,database size in pages,259,270,31
+3,file vs previous,32,4,first freelist trunk page,0,230,35
+3,file vs previous,36,4,freelist page count,0,3,39
+3,file vs previous,60,4,user version,29,30,63
+3,file vs previous,92,4,version-valid-for,32,33,95
+4,current vs previous,24,4,file change counter,29,30,27
+4,current vs previous,28,4,database size in pages,244,251,31
+4,current vs previous,32,4,first freelist trunk page,82,131,35
+4,current vs previous,60,4,user version,27,28,63
+4,current vs previous,92,4,version-valid-for,29,30,95
+4,file vs base,,,,,,
+5,current vs previous,28,4,database size in pages,251,259,30 31
+5,current vs previous,32,4,first freelist trunk page,131,0,35
+5,current vs previous,36,4,freelist page count,1,0,39
+5,current vs previous,60,4,user version,28,29,63
+5,file vs base,,,,,,
+6,current vs previous,28,4,database size in pages,259,270,31
+6,current vs previous,32,4,first freelist trunk page,0,230,35
+6,current vs previous,36,4,freelist page count,0,3,39
+6,current vs previous,60,4,user version,29,30,63
+6,file vs base,,,,,,
+7,file vs base,24,4,file change counter,29,30,27
+7,file vs base,28,4,database size in pages,244,270,30 31
+7,file vs base,32,4,first freelist trunk page,82,230,35
+7,file vs base,36,4,freelist page count,1,3,39
+7,file vs base,60,4,user version,27,30,63
+7,file vs base,92,4,version-valid-for,29,30,95
+8,current vs base,,,,,,
+9,current vs base,,,,,,
+10,current vs base,,,,,,
+11,current vs previous,24,4,file change counter,29,30,27
+11,current vs previous,28,4,database size in pages,244,251,31
+11,current vs previous,32,4,first freelist trunk page,82,131,35
+11,current vs previous,60,4,user version,27,28,63
+11,current vs previous,92,4,version-valid-for,29,30,95
+12,current vs previous,24,4,file change counter,30,31,27
+12,current vs previous,28,4,database size in pages,251,259,30 31
+12,current vs previous,32,4,first freelist trunk page,131,0,35
+12,current vs previous,36,4,freelist page count,1,0,39
+12,current vs previous,60,4,user version,28,29,63
+12,current vs previous,92,4,version-valid-for,30,31,95
+13,current vs previous,24,4,file change counter,31,32,27
+13,current vs previous,28,4,database size in pages,259,270,31
+13,current vs previous,32,4,first freelist trunk page,0,230,35
+13,current vs previous,36,4,freelist page count,0,3,39
+13,current vs previous,60,4,user version,29,30,63
+13,current vs previous,92,4,version-valid-for,31,32,95
+14,current vs previous,24,4,file change counter,29,30,27
+14,current vs previous,28,4,database size in pages,244,251,31
+14,current vs previous,32,4,first freelist trunk page,82,131,35
+14,current vs previous,60,4,user version,27,28,63
+14,current vs previous,92,4,version-valid-for,29,30,95
+15,current vs previous,24,4,file change counter,30,31,27
+15,current vs previous,28,4,database size in pages,251,259,30 31
+15,current vs previous,32,4,first freelist trunk page,131,0,35
+15,current vs previous,36,4,freelist page count,1,0,39
+15,current vs previous,60,4,user version,28,29,63
+15,current vs previous,92,4,version-valid-for,30,31,95
+16,current vs previous,24,4,file change counter,31,32,27
+16,current vs previous,28,4,database size in pages,259,270,31
+16,current vs previous,32,4,first freelist trunk page,0,230,35
+16,current vs previous,36,4,freelist page count,0,3,39
+16,current vs previous,60,4,user version,29,30,63
+16,current vs previous,92,4,version-valid-for,31,32,95
+17,file vs before,18,1,write version,1,2,18
+17,file vs before,19,1,read version,1,2,19
+17,file vs before,24,4,file change counter,6,7,27
+17,file vs before,92,4,version-valid-for,6,7,95
+18,file vs WAL,18,1,write version,2,1,18
+18,file vs WAL,19,1,read version,2,1,19
+18,file vs WAL,24,4,file change counter,7,8,27
+18,file vs WAL,92,4,version-valid-for,7,8,95

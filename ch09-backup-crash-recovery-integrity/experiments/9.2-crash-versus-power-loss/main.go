@@ -6,6 +6,10 @@
 // src/wal.h:25-26, src/wal.c:2199-2395, 4038-4266) and cross-checked by strace
 // on Linux. Part A (Linux only) kills the writer child via strace --inject on
 // entry to every sync and six spread pwrite64 calls to verify crash recovery.
+//
+// It prints only its verdict (and LINUX-ONLY notices where strace is missing).
+// The measurements go to CSV tables that report.sql presents:
+// go run ./cmd/course run 9.2
 package main
 
 import (
@@ -24,6 +28,7 @@ import (
 
 	"github.com/nickstrad/walfleet/internal/procs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 	"github.com/nickstrad/walfleet/internal/walfile"
@@ -142,14 +147,15 @@ func openReader(ctx context.Context, path string, options sqlitex.Options) (*sql
 }
 
 type writerRun struct {
-	lastAck      int
-	commitEnd    map[int]int64
-	generation   map[int]uint32
-	checkpoint   string
-	checkpointed int
-	logFrames    int
-	readerFrom   int
-	lastEvent    string
+	lastAck        int
+	commitEnd      map[int]int64
+	generation     map[int]uint32
+	checkpoint     string
+	checkpointBusy int
+	checkpointed   int
+	logFrames      int
+	readerFrom     int
+	lastEvent      string
 }
 
 func parseRun(stdout string) (writerRun, error) {
@@ -172,8 +178,7 @@ func parseRun(stdout string) (writerRun, error) {
 			}
 			run.commitEnd[k], run.generation[k] = end, generation
 		case strings.HasPrefix(line, "checkpoint "):
-			var busy int
-			if _, err := fmt.Sscanf(line, "checkpoint %d busy=%d log=%d checkpointed=%d", &k, &busy, &run.logFrames, &run.checkpointed); err != nil || k != checkpointAfter {
+			if _, err := fmt.Sscanf(line, "checkpoint %d busy=%d log=%d checkpointed=%d", &k, &run.checkpointBusy, &run.logFrames, &run.checkpointed); err != nil || k != checkpointAfter {
 				return run, fmt.Errorf("bad checkpoint line %q", line)
 			}
 			run.checkpoint, run.lastEvent = line, "checkpoint"
@@ -239,6 +244,28 @@ type lab struct {
 	r      recipe.Recipe
 	dir    string
 	base   string
+	set    *results.Set
+	cuts   int
+	tables struct {
+		runs, commits, syncs, rules, powerCuts, killPlans, kills, skipped *results.Table
+	}
+}
+
+func (x *lab) openTables() {
+	x.tables.runs = x.set.Table("runs", "seq", "variant", "synchronous", "reader_from", "first_acknowledged", "last_acknowledged", "checkpoint_after", "checkpoint_busy", "checkpoint_log", "checkpointed", "same_generation_after_checkpoint", "crash_integrity", "crash_recovered_step", "crash_exact_bytes")
+	x.tables.commits = x.set.Table("commits", "variant", "step", "wal_end", "wal_generation")
+	x.tables.syncs = x.set.Table("syncs", "variant", "file", "syncs", "writes_after_last_sync", "lowest_unsynced_offset")
+	x.tables.rules = x.set.Table("sync_rules", "variant", "wal_synced_up_to", "database_file_unsynced", "power_model_not_applicable")
+	x.tables.powerCuts = x.set.Table("power_cuts", "seq", "variant", "database_file", "wal_kept_bytes", "wal_bytes", "lost_commits", "integrity", "recovered_step", "exact_bytes")
+	x.tables.killPlans = x.set.Table("kill_plans", "synchronous", "sync_calls", "pwrite64_calls", "pwrite64_kills")
+	x.tables.kills = x.set.Table("kills", "synchronous", "kill_no", "syscall", "call_no", "killed_call", "signal", "acknowledged", "recovered_step", "exact_bytes", "integrity")
+	x.tables.skipped = x.set.Table("skipped", "part", "variant", "what")
+}
+
+// linuxOnly prints the LINUX-ONLY notice and records it in the skipped table.
+func (x *lab) linuxOnly(part string, variant any, what string) {
+	fmt.Println(trace.LinuxOnlyMessage(what, packagePath))
+	x.tables.skipped.Row(part, variant, what)
 }
 
 func copyFile(from, to string, limit int64) error {
@@ -310,7 +337,7 @@ func (x *lab) runWriter(dir string, v variant, kill *trace.KillAt) (string, *tra
 	return result.Stdout, result
 }
 
-func (x *lab) model(v variant) *trace.Result {
+func (x *lab) model(seq int, v variant) *trace.Result {
 	level := v.level
 	dir := filepath.Join(x.dir, "model-"+v.dirName())
 	stdout, result := x.runWriter(dir, v, nil)
@@ -319,14 +346,17 @@ func (x *lab) model(v variant) *trace.Result {
 		x.lab.Fatal("parse", err)
 	}
 	db := filepath.Join(dir, "r.db")
-	fmt.Printf("-- %s: the writer acknowledged steps %d-%d; %s; it exited without closing\n", v, baseStep+1, run.lastAck, run.checkpoint)
 	sameGeneration := run.generation[run.lastAck] == run.generation[checkpointAfter]
 	if v.readerFrom != 0 {
-		fmt.Printf("   the checkpoint copied %d of %d frames; the commits after it stayed in the same WAL generation: %t\n", run.checkpointed, run.logFrames, sameGeneration)
-		x.lab.Check(run.readerFrom == v.readerFrom && run.checkpointed > 0 && run.checkpointed < run.logFrames && sameGeneration,
+		x.set.Check("B", run.readerFrom == v.readerFrom && run.checkpointed > 0 && run.checkpointed < run.logFrames && sameGeneration,
 			fmt.Sprintf("%s: the reader stopped the checkpoint short of the end and the WAL did not restart", v))
-	} else {
-		fmt.Printf("   the checkpoint copied %d of %d frames; the commits after it stayed in the same WAL generation: %t\n", run.checkpointed, run.logFrames, sameGeneration)
+	}
+	generation := 0
+	for k := baseStep + 1; k <= run.lastAck; k++ {
+		if k == baseStep+1 || run.generation[k] != run.generation[k-1] {
+			generation++
+		}
+		x.tables.commits.Row(v.dirName(), k, run.commitEnd[k], generation)
 	}
 	for _, suffix := range []string{"", "-wal"} {
 		if err := copyFile(db+suffix, filepath.Join(dir, "crash", "r.db"+suffix), -1); err != nil {
@@ -334,11 +364,23 @@ func (x *lab) model(v variant) *trace.Result {
 		}
 	}
 	integrity, match := x.recover(filepath.Join(dir, "crash", "r.db"))
-	fmt.Printf("   process crash (files as the kernel holds them): integrity_check %s, recovered %s\n", integrity, match)
-	x.lab.Check(integrity == "ok" && match.Step == run.lastAck, fmt.Sprintf("%s: a process crash keeps every acknowledged step (%d)", v, run.lastAck))
+	var readerFrom any
+	if v.readerFrom != 0 {
+		readerFrom = v.readerFrom
+	}
+	x.tables.runs.Row(seq, v.dirName(), level, readerFrom, baseStep+1, run.lastAck, checkpointAfter, run.checkpointBusy, run.logFrames, run.checkpointed, sameGeneration, integrity, match.Step, match.Exact)
+	x.set.Check("B", integrity == "ok" && match.Step == run.lastAck, fmt.Sprintf("%s: a process crash keeps every acknowledged step (%d)", v, run.lastAck))
 
 	rule := ruleCut(level, run)
 	cut, hasCut, outside := rule.cut, rule.hasCut, rule.outside
+	var syncedUpTo, notApplicable any
+	if hasCut {
+		syncedUpTo = cut
+	}
+	if outside != "" {
+		notApplicable = outside
+	}
+	x.tables.rules.Row(v.dirName(), syncedUpTo, rule.databaseUnsynced, notApplicable)
 	if result != nil {
 		real, err := filepath.EvalSymlinks(db)
 		if err != nil {
@@ -346,16 +388,15 @@ func (x *lab) model(v variant) *trace.Result {
 		}
 		walSyncs := trace.SyncsOf(result.Log.Calls, real+"-wal")
 		dbSyncs := trace.SyncsOf(result.Log.Calls, real)
-		fmt.Printf("   strace: -wal %s\n", walSyncs)
-		fmt.Printf("   strace: database file %s\n", dbSyncs)
-		x.lab.Check(walSyncs.HasUnsynced == hasCut && (!hasCut || walSyncs.FirstUnsynced == cut) && dbSyncs.HasUnsynced == rule.databaseUnsynced,
+		x.syncRow(v, "-wal", walSyncs)
+		x.syncRow(v, "database file", dbSyncs)
+		x.set.Check("B", walSyncs.HasUnsynced == hasCut && (!hasCut || walSyncs.FirstUnsynced == cut) && dbSyncs.HasUnsynced == rule.databaseUnsynced,
 			fmt.Sprintf("%s: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced", v))
 	} else {
-		fmt.Println(trace.LinuxOnlyMessage("the strace confirmation of the synced bytes (the model below uses the rule read from wal.c and pager.c)", packagePath))
+		x.linuxOnly("B", v.dirName(), "the strace confirmation of the synced bytes (the model below uses the rule read from wal.c and pager.c)")
 	}
 	if outside != "" {
-		fmt.Printf("   power-cut model: not applicable at %s: %s, so a power cut can leave any mix of old and new database pages\n", level, outside)
-		x.lab.Check(level == "OFF", "only synchronous=OFF leaves database-file writes that were never synced")
+		x.set.Check("B", level == "OFF", "only synchronous=OFF leaves database-file writes that were never synced")
 		return result
 	}
 	walData, err := os.ReadFile(db + "-wal")
@@ -377,26 +418,35 @@ func (x *lab) model(v variant) *trace.Result {
 		x.lab.Fatal("copy", err)
 	}
 	integrity, match = x.recover(power)
-	fmt.Printf("   power-cut model: -wal kept up to byte %d of %d (everything after the last sync removed), no -shm: integrity_check %s, recovered %s; acknowledged commits past the cut: %d\n",
-		keep, len(walData), integrity, match, lost)
-	x.lab.Check(integrity == "ok" && match.Step == run.lastAck-lost, fmt.Sprintf("%s: the model recovers step %d, the last acknowledged step minus the %d commit(s) written after the last sync", v, run.lastAck-lost, lost))
+	x.cuts++
+	x.tables.powerCuts.Row(x.cuts, v.dirName(), "as written", keep, len(walData), lost, integrity, match.Step, match.Exact)
+	x.set.Check("B", integrity == "ok" && match.Step == run.lastAck-lost, fmt.Sprintf("%s: the model recovers step %d, the last acknowledged step minus the %d commit(s) written after the last sync", v, run.lastAck-lost, lost))
 	if rule.databaseUnsynced {
 		before := filepath.Join(dir, "power-before-checkpoint", "r.db")
 		if err := errors.Join(copyFile(db+beforeCheckpointSuffix, before, -1), copyFile(db+"-wal", before+"-wal", keep)); err != nil {
 			x.lab.Fatal("copy", err)
 		}
 		beforeIntegrity, beforeMatch := x.recover(before)
-		fmt.Printf("   the checkpoint copied only part of the WAL, so it did not sync the database file; the same model with the database file as it was before the checkpoint (none of those writes kept): integrity_check %s, recovered %s\n", beforeIntegrity, beforeMatch)
-		x.lab.Check(beforeIntegrity == "ok" && beforeMatch.Step == match.Step,
+		x.cuts++
+		x.tables.powerCuts.Row(x.cuts, v.dirName(), "as before the checkpoint", keep, len(walData), lost, beforeIntegrity, beforeMatch.Step, beforeMatch.Exact)
+		x.set.Check("B", beforeIntegrity == "ok" && beforeMatch.Step == match.Step,
 			fmt.Sprintf("%s: with or without the checkpoint's unsynced database writes the model recovers step %d, because the WAL frames they came from were synced before the checkpoint wrote them", v, match.Step))
 	}
 	if level == "NORMAL" {
-		x.lab.Check(lost > 0 && match.Step < run.lastAck && match.Step == checkpointAfter, fmt.Sprintf("%s: the acknowledged commits after the checkpoint at step %d are lost in the model, yet the database is consistent", v, checkpointAfter))
+		x.set.Check("B", lost > 0 && match.Step < run.lastAck && match.Step == checkpointAfter, fmt.Sprintf("%s: the acknowledged commits after the checkpoint at step %d are lost in the model, yet the database is consistent", v, checkpointAfter))
 	}
 	if level == "FULL" {
-		x.lab.Check(lost == 0 && match.Step == run.lastAck, "FULL: no acknowledged commit is lost in the model")
+		x.set.Check("B", lost == 0 && match.Step == run.lastAck, "FULL: no acknowledged commit is lost in the model")
 	}
 	return result
+}
+
+func (x *lab) syncRow(v variant, file string, r trace.SyncRecord) {
+	var lowest any
+	if r.HasUnsynced {
+		lowest = r.FirstUnsynced
+	}
+	x.tables.syncs.Row(v.dirName(), file, r.Syncs, len(r.Unsynced), lowest)
 }
 
 // writerThread identifies the OS thread (tid) that executed the writer's
@@ -436,7 +486,7 @@ func (x *lab) killSweep(level string, uninterrupted *trace.Result) {
 			writes++
 		}
 	}
-	fmt.Printf("-- synchronous=%s: the uninterrupted writer made %d sync call(s) and %d pwrite64 call(s); kill on entry to each sync and to %d of the writes\n", level, syncs, writes, pwriteKills)
+	x.tables.killPlans.Row(level, syncs, writes, pwriteKills)
 	var points []trace.KillAt
 	for i := 1; i <= syncs; i++ {
 		points = append(points, trace.KillAt{Syscalls: []string{"fsync", "fdatasync"}, When: i})
@@ -458,8 +508,8 @@ func (x *lab) killSweep(level string, uninterrupted *trace.Result) {
 			}
 		}
 		integrity, match := x.recover(filepath.Join(dir, "r.db"))
-		fmt.Printf("   kill at %s #%d (%s): acknowledged %d, recovered %s, integrity_check %s\n", point.Syscalls[0], point.When, killed, run.lastAck, match, integrity)
-		x.lab.Check(result.Killed == "SIGKILL" && integrity == "ok" && match.Found() && match.Step >= run.lastAck && match.Step <= run.lastAck+1,
+		x.tables.kills.Row(level, i+1, point.Syscalls[0], point.When, killed, result.Killed, run.lastAck, match.Step, match.Exact, integrity)
+		x.set.Check("A", result.Killed == "SIGKILL" && integrity == "ok" && match.Found() && match.Step >= run.lastAck && match.Step <= run.lastAck+1,
 			fmt.Sprintf("%s kill %d: integrity ok, recovered step %d is the last acknowledged step or the one being committed", level, i+1, match.Step))
 	}
 }
@@ -478,28 +528,26 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("9.2")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	x := &lab{traced: trace.Supported && !*portable, ctx: ctx, lab: procs.NewLab(os.Stdout), r: recipe.Default(), dir: dir, base: filepath.Join(dir, "base", "r.db")}
+	x := &lab{traced: trace.Supported && !*portable, ctx: ctx, lab: procs.NewLab(os.Stdout), r: recipe.Default(), dir: dir, base: filepath.Join(dir, "base", "r.db"), set: results.MustOpen(dir)}
+	x.openTables()
 	if err := os.MkdirAll(filepath.Dir(x.base), 0o755); err != nil {
 		x.lab.Fatal("mkdir", err)
 	}
 	if err := x.r.Build(ctx, x.base, baseStep); err != nil {
 		x.lab.Fatal("build", err)
 	}
-	fmt.Printf("== recipe built to step %d; a writer child commits steps %d-%d on one connection (wal_autocheckpoint=0) and runs one PASSIVE checkpoint after step %d\n", baseStep, baseStep+1, lastStep, checkpointAfter)
-	fmt.Println()
-	fmt.Println("== part B: what a process crash keeps, and what the simplest power cut keeps")
+	// Part B: what a process crash keeps, and what the simplest power cut keeps.
 	traces := map[variant]*trace.Result{}
-	for _, v := range modelVariants {
-		traces[v] = x.model(v)
+	for i, v := range modelVariants {
+		traces[v] = x.model(i+1, v)
 	}
-	fmt.Println()
-	fmt.Println("== part A: kill the writer at chosen syscalls, reopen, identify the state")
+	// Part A: kill the writer at chosen syscalls, reopen, identify the state.
 	if !x.traced {
-		fmt.Println(trace.LinuxOnlyMessage("killing the writer at a chosen syscall with strace", packagePath))
+		x.linuxOnly("A", nil, "killing the writer at a chosen syscall with strace")
 	} else {
 		for _, level := range levels {
 			x.killSweep(level, traces[variant{level, 0}])
 		}
 	}
-	x.lab.Report("CRASH VERSUS POWER LOSS")
+	x.set.Finish("CRASH VERSUS POWER LOSS")
 }

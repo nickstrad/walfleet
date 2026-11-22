@@ -1,0 +1,5 @@
+seq,variant,synchronous,reader_from,first_acknowledged,last_acknowledged,checkpoint_after,checkpoint_busy,checkpoint_log,checkpointed,same_generation_after_checkpoint,crash_integrity,crash_recovered_step,crash_exact_bytes
+1,off,OFF,,4,11,7,0,74,74,false,ok,11,false
+2,normal,NORMAL,,4,11,7,0,74,74,false,ok,11,false
+3,full,FULL,,4,11,7,0,74,74,false,ok,11,false
+4,normal-reader-5,NORMAL,5,4,11,7,0,74,36,true,ok,11,false

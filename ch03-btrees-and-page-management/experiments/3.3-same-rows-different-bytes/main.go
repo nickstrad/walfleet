@@ -2,6 +2,9 @@
 // and replay) and tests E1, E2, and E3 equality across different build
 // histories, a sqlite3_backup copy, dbhash blind spots, and VACUUM INTO's
 // canonical-form boundaries.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 3.3
 package main
 
 import (
@@ -14,11 +17,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/nickstrad/walfleet/internal/equal"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -27,15 +32,56 @@ const (
 	shuffleSeed = 3
 )
 
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 3.3" runs both.
+var (
+	set    *results.Set
+	tables struct {
+		builds, r0Tables, r0Facts, capture, captureLines, compare, headerValues,
+		canonicalHeader, pairs, limits *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+)
+
+func openTables() {
+	tables.builds = set.Table("builds", "seq", "name", "how", "bytes", "file_sha256", "logical_sha256", "dump_sha256", "dbhash", "canonical_sha256")
+	tables.r0Tables = set.Table("r0_tables", "table_name", "rows")
+	tables.r0Facts = set.Table("r0_facts", "name", "value")
+	tables.capture = set.Table("capture", "path", "bytes", "lines", "sha256")
+	tables.captureLines = set.Table("capture_lines", "line_no", "text")
+	tables.compare = set.Table("compare", "seq", "part", "subject", "what", "level", "equal", "differing_pages", "pages_total", "size_a", "size_b", "header_bytes_differing", "differences")
+	tables.headerValues = set.Table("header_values", "part", "subject", "field", "value_a", "value_b")
+	tables.canonicalHeader = set.Table("canonical_header", "bytes", "byte_18", "byte_19", "change_counter", "schema_cookie")
+	tables.pairs = set.Table("pairs", "seq", "pair", "ours_equal", "dbhash_equal", "first_difference")
+	tables.limits = set.Table("limits", "seq", "case_name", "dbhash_sources_equal", "captures_equal")
+}
+
+var compareSeq int
+
+// recordFiles writes an E1 or E2 comparison; level is "E1" or "E2".
+func recordFiles(part, subject, what, level string, r equal.Result) {
+	var header any
+	if len(r.IgnoredDiffering) > 0 {
+		parts := make([]string, len(r.IgnoredDiffering))
+		for i, b := range r.IgnoredDiffering {
+			parts[i] = fmt.Sprint(b)
+		}
+		header = strings.Join(parts, " ")
+	}
+	compareSeq++
+	tables.compare.Row(compareSeq, part, subject, what, level, r.Equal, r.DifferingPages, r.SizeA/int64(r.PageSize), r.SizeA, r.SizeB, header, nil)
+}
+
+// recordLogical writes an E3 comparison.
+func recordLogical(part, subject, what string, r equal.LogicalResult) {
+	compareSeq++
+	tables.compare.Row(compareSeq, part, subject, what, "E3", r.Equal, nil, nil, nil, nil, nil, strings.Join(r.Differences, "; "))
+}
+
+func orNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func fatal(what string, err error) {
@@ -347,13 +393,6 @@ func backupCopy(ctx context.Context, source, target string) {
 	}
 }
 
-func short(h string) string {
-	if len(h) > 16 {
-		return h[:16]
-	}
-	return h
-}
-
 type build struct {
 	name      string
 	how       string
@@ -379,13 +418,12 @@ func locateDBHash() string {
 		return ""
 	}
 	fmt.Printf("INFO: dbhash %s\n", displayPath(tool))
-	fmt.Println("dbhash: found (built from the pinned tree; it prints a SHA1 of the schema and every row it reads)")
 	return tool
 }
 
 func dbhashOf(ctx context.Context, tool, path string) string {
 	if tool == "" {
-		return "-"
+		return ""
 	}
 	h := must(equal.RunDBHash(ctx, tool, path))("dbhash " + filepath.Base(path))
 	atRest(path)
@@ -401,8 +439,6 @@ func distinct(values []string) int {
 }
 
 func partA(ctx context.Context, dir, tool string) content {
-	fmt.Println()
-	fmt.Println("== A. the same final rows built four ways, then captured as an ordered logical dump and replayed (rung R2)")
 	r0 := filepath.Join(dir, "builds", "r0.db")
 	if err := os.MkdirAll(filepath.Dir(r0), 0o755); err != nil {
 		fatal("mkdir", err)
@@ -416,7 +452,14 @@ func partA(ctx context.Context, dir, tool string) content {
 	for _, row := range c.rows {
 		perTable[row.table.Name]++
 	}
-	fmt.Printf("content of R0 (recipe seed 1, 30 steps of inserts, updates and deletes): %d schema statements, rows accounts=%d documents=%d events=%d, user_version %d\n", len(c.schema), perTable["accounts"], perTable["documents"], perTable["events"], c.userVersion)
+	var tableNames []string
+	for name := range perTable {
+		tableNames = append(tableNames, name)
+	}
+	sort.Strings(tableNames)
+	for _, name := range tableNames {
+		tables.r0Tables.Row(name, perTable[name])
+	}
 	builds := []*build{{name: "r0", how: "the recipe: 31 transactions with updates and deletes, index created at step 5"}}
 	builds[0].path = r0
 	oneTx := filepath.Join(dir, "builds", "one-transaction.db")
@@ -446,15 +489,13 @@ func partA(ctx context.Context, dir, tool string) content {
 		fatal("write dump", err)
 	}
 	lines := strings.Split(strings.TrimSuffix(script, "\n"), "\n")
-	fmt.Printf("capture: %s, %d bytes, %d lines, sha256 %s\n", "capture/r0.sql", len(script), len(lines), equal.SHA256Hex([]byte(script)))
+	tables.capture.Row("capture/r0.sql", len(script), len(lines), equal.SHA256Hex([]byte(script)))
 	for i, line := range lines {
 		if i < 9 || i >= len(lines)-4 {
 			if len(line) > 140 {
 				line = line[:140] + "..."
 			}
-			fmt.Printf("  %s\n", line)
-		} else if i == 9 {
-			fmt.Printf("  ... (%d INSERT lines)\n", len(lines)-13)
+			tables.captureLines.Row(i+1, line)
 		}
 	}
 	replayed := filepath.Join(dir, "builds", "replayed.db")
@@ -484,19 +525,25 @@ func partA(ctx context.Context, dir, tool string) content {
 			fatal("hash", fmt.Errorf("%s changed while it was hashed", b.name))
 		}
 	}
-	fmt.Println("builds:")
-	for _, b := range builds {
+	for i, b := range builds {
 		info := must(os.Stat(b.path))("stat")
-		fmt.Printf("  %-16s %s; %d bytes\n", b.name, b.how, info.Size())
+		tables.builds.Row(i+1, b.name, b.how, info.Size(), b.sha, b.logical.SHA256, b.dumpSHA, orNil(b.dbhash), b.canonSHA)
 	}
-	fmt.Println("each build against R0 (E1 = file sha256, E2 = page diff ignoring header bytes 24-27, 40-43, 92-99, E3 = logical hash + integrity_check + foreign_key_check):")
-	fmt.Printf("  %-16s %-16s %-44s %-44s %s\n", "build", "sha256", "E1 vs r0", "E2 vs r0", "E3 vs r0")
+	r0Logical := builds[0].logical
+	tables.r0Facts.Row("schema_rows", r0Logical.SchemaRows)
+	for _, p := range r0Logical.Pragmas {
+		tables.r0Facts.Row(p.Name, p.Value)
+	}
+	tables.r0Facts.Row("integrity_check", r0Logical.Integrity)
+	tables.r0Facts.Row("foreign_key_check_rows", len(r0Logical.ForeignKeyCheck))
 	var shas, logicals, dumps, hashes, canon []string
 	for _, b := range builds {
 		e1 := must(equal.CompareFiles(r0, b.path, pageSize))("E1")
 		e2 := must(equal.ComparePageFiles(r0, b.path, pageSize))("E2")
 		e3 := equal.CompareLogical(builds[0].logical, b.logical)
-		fmt.Printf("  %-16s %-16s %-44s %-44s %s\n", b.name, short(b.sha), verdict(e1), verdict(e2), logicalVerdict(e3))
+		recordFiles("A", b.name, "build vs r0", "E1", e1)
+		recordFiles("A", b.name, "build vs r0", "E2", e2)
+		recordLogical("A", b.name, "build vs r0", e3)
 		if b.name != "backup" {
 			shas = append(shas, b.sha)
 		}
@@ -505,40 +552,35 @@ func partA(ctx context.Context, dir, tool string) content {
 		hashes = append(hashes, b.dbhash)
 		canon = append(canon, b.canonSHA)
 		if b.name == "backup" {
-			check(!e1.Equal && e2.Equal, fmt.Sprintf("the backup copy differs from R0 in bytes (%s) but is equal at E2: only declared header bytes differ", e2))
+			set.Check("A", !e1.Equal && e2.Equal, fmt.Sprintf("the backup copy differs from R0 in bytes (%s) but is equal at E2: only declared header bytes differ", e2))
 		}
 	}
-	fmt.Println("the same builds, logically and canonically:")
-	fmt.Printf("  %-16s %-16s %-16s %-40s %s\n", "build", "logical sha256", "dump sha256", "dbhash", "VACUUM INTO sha256")
-	for _, b := range builds {
-		fmt.Printf("  %-16s %-16s %-16s %-40s %s\n", b.name, short(b.logical.SHA256), short(b.dumpSHA), b.dbhash, short(b.canonSHA))
-	}
-	fmt.Printf("logical hash of R0: %s\n", builds[0].logical.Summary())
-	fmt.Printf("distinct file sha256 among r0, one-transaction, per-statement, shuffled, replayed: %d\n", distinct(shas))
-	check(builds[1].sha == builds[2].sha, "in WAL mode one transaction and one transaction per statement give byte-identical files: commit boundaries alone leave no trace when rows are only appended")
-	check(builds[3].sha != builds[1].sha && builds[0].sha != builds[1].sha && builds[0].sha != builds[3].sha, "insert order (shuffled) and history (R0's updates and deletes) each give a different file")
-	check(distinct(logicals) == 1, "every build has the same logical hash")
+	set.Check("A", builds[1].sha == builds[2].sha, "in WAL mode one transaction and one transaction per statement give byte-identical files: commit boundaries alone leave no trace when rows are only appended")
+	set.Check("A", builds[3].sha != builds[1].sha && builds[0].sha != builds[1].sha && builds[0].sha != builds[3].sha, "insert order (shuffled) and history (R0's updates and deletes) each give a different file")
+	set.Check("A", distinct(logicals) == 1, "every build has the same logical hash")
 	allE3 := true
 	for _, b := range builds {
 		if !equal.CompareLogical(builds[0].logical, b.logical).Equal {
 			allE3 = false
 		}
 	}
-	check(allE3, "every build is equal to R0 at E3 (logical hash, integrity_check ok, foreign_key_check unchanged)")
-	check(distinct(dumps) == 1, "the ordered logical capture is itself identical for every build: it depends on content and the schema's creation order, not on insert order, batching or updates")
-	check(distinct(canon[:5]) == 1, "after VACUUM INTO every build, the replayed copy included, has the same sha256 (E1 between canonical forms)")
+	set.Check("A", allE3, "every build is equal to R0 at E3 (logical hash, integrity_check ok, foreign_key_check unchanged)")
+	set.Check("A", distinct(dumps) == 1, "the ordered logical capture is itself identical for every build: it depends on content and the schema's creation order, not on insert order, batching or updates")
+	set.Check("A", distinct(canon[:5]) == 1, "after VACUUM INTO every build, the replayed copy included, has the same sha256 (E1 between canonical forms)")
 	// sqlite3_backup_step sets the destination schema cookie to old+1
 	// (backup.c:448; 0+1=1 on a fresh file), and sqlite3RunVacuum copies the
 	// source schema cookie +1 (vacuum.c:143-427), leaving byte 43 differing.
 	backupCanon := builds[5].canonical
 	ce1 := must(equal.CompareFiles(builds[0].canonical, backupCanon, pageSize))("E1")
 	ce2 := must(equal.ComparePageFiles(builds[0].canonical, backupCanon, pageSize))("E2")
-	fmt.Printf("canonical form of the backup vs of R0: E1 %s; E2 %s; schema cookies %s\n", verdict(ce1), verdict(ce2), cookies(builds[0].canonical, backupCanon))
-	check(!ce1.Equal && ce2.Equal && fmt.Sprint(ce2.IgnoredDiffering) == "[43]", "except the backup copy: the backup API sets the copy's schema cookie to (old destination cookie + 1) = 1 (backup.c:448), VACUUM INTO carries the cookie + 1, so its canonical form differs at byte 43 only")
+	recordFiles("A", "backup", "canonical form vs canonical form of r0", "E1", ce1)
+	recordFiles("A", "backup", "canonical form vs canonical form of r0", "E2", ce2)
+	recordCookies("A", "backup", builds[0].canonical, backupCanon)
+	set.Check("A", !ce1.Equal && ce2.Equal && fmt.Sprint(ce2.IgnoredDiffering) == "[43]", "except the backup copy: the backup API sets the copy's schema cookie to (old destination cookie + 1) = 1 (backup.c:448), VACUUM INTO carries the cookie + 1, so its canonical form differs at byte 43 only")
 	if tool != "" {
-		check(distinct(hashes) == 1, "dbhash from the pinned tree also calls every build equal: it agrees with our logical hash on equality")
+		set.Check("A", distinct(hashes) == 1, "dbhash from the pinned tree also calls every build equal: it agrees with our logical hash on equality")
 	}
-	fmt.Printf("canonical form: %s\n", canonicalHeader(builds[0].canonical))
+	recordCanonicalHeader(builds[0].canonical)
 	ok := true
 	for _, b := range builds {
 		l := must(equal.LogicalHashFile(ctx, b.canonical))("logical hash")
@@ -550,13 +592,11 @@ func partA(ctx context.Context, dir, tool string) content {
 			ok = false
 		}
 	}
-	check(ok, "VACUUM INTO keeps every row, the schema and user_version/application_id, but writes a rollback-mode file: its logical hash differs from the source only in journal_mode")
+	set.Check("A", ok, "VACUUM INTO keeps every row, the schema and user_version/application_id, but writes a rollback-mode file: its logical hash differs from the source only in journal_mode")
 	return c
 }
 
 func rollbackPair(ctx context.Context, dir string, c content) {
-	fmt.Println()
-	fmt.Println("== A2. the same two batchings in rollback mode (journal_mode=DELETE)")
 	one := filepath.Join(dir, "builds", "rollback-one-transaction.db")
 	per := filepath.Join(dir, "builds", "rollback-per-statement.db")
 	buildOneTransaction(ctx, one, "delete", c)
@@ -570,8 +610,10 @@ func rollbackPair(ctx context.Context, dir string, c content) {
 	e1 := must(equal.CompareFiles(one, per, pageSize))("E1")
 	e2 := must(equal.ComparePageFiles(one, per, pageSize))("E2")
 	ia, ib := must(os.ReadFile(one))("read"), must(os.ReadFile(per))("read")
-	fmt.Printf("one transaction vs one per statement: E1 %s; E2 %s; change counters %d and %d\n", verdict(e1), verdict(e2), be32(ia[24:28]), be32(ib[24:28]))
-	check(!e1.Equal && e2.Equal, "in rollback mode the batching shows, but only in the change counter (bytes 24-27 and 92-95 count commits): E2 equal")
+	recordFiles("A2", "rollback-one-transaction", "vs rollback-per-statement", "E1", e1)
+	recordFiles("A2", "rollback-one-transaction", "vs rollback-per-statement", "E2", e2)
+	tables.headerValues.Row("A2", "rollback-one-transaction", "change_counter", be32(ia[24:28]), be32(ib[24:28]))
+	set.Check("A2", !e1.Equal && e2.Equal, "in rollback mode the batching shows, but only in the change counter (bytes 24-27 and 92-95 count commits): E2 equal")
 }
 
 func sameExceptJournalMode(a, b equal.Logical) bool {
@@ -579,33 +621,18 @@ func sameExceptJournalMode(a, b equal.Logical) bool {
 	return len(diff.Differences) == 1 && strings.HasPrefix(diff.Differences[0], "pragma journal_mode")
 }
 
-func canonicalHeader(path string) string {
+func recordCanonicalHeader(path string) {
 	image := must(os.ReadFile(path))("read")
-	return fmt.Sprintf("%d bytes, header bytes 18-19 = %d,%d (1 = rollback journal), change counter %d, schema cookie %d",
-		len(image), image[18], image[19], be32(image[24:28]), be32(image[40:44]))
+	tables.canonicalHeader.Row(len(image), image[18], image[19], be32(image[24:28]), be32(image[40:44]))
+}
+
+func recordCookies(part, subject, a, b string) {
+	ia, ib := must(os.ReadFile(a))("read"), must(os.ReadFile(b))("read")
+	tables.headerValues.Row(part, subject, "schema_cookie", be32(ia[40:44]), be32(ib[40:44]))
 }
 
 func be32(b []byte) uint32 {
 	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
-}
-
-func verdict(r equal.Result) string {
-	switch {
-	case r.Equal && len(r.IgnoredDiffering) > 0:
-		return fmt.Sprintf("equal except header bytes %v", r.IgnoredDiffering)
-	case r.Equal:
-		return "equal"
-	case r.SizeA != r.SizeB:
-		return fmt.Sprintf("differ (%d pages differ, sizes differ)", r.DifferingPages)
-	}
-	return fmt.Sprintf("differ (%d of %d pages)", r.DifferingPages, r.SizeA/int64(r.PageSize))
-}
-
-func logicalVerdict(r equal.LogicalResult) string {
-	if r.Equal {
-		return "equal"
-	}
-	return "differ: " + strings.Join(r.Differences, "; ")
 }
 
 func newDB(ctx context.Context, path string, statements ...string) string {
@@ -640,8 +667,6 @@ type pair struct {
 // including dbhash's unframed value concatenation and missing table boundaries
 // in tool/dbhash.c:281-360 and tool/dbhash.c:379-491.
 func partB(ctx context.Context, dir, tool string) {
-	fmt.Println()
-	fmt.Println("== B. pairs that differ in content where a weaker logical hash says equal")
 	pairs := []pair{
 		{"implicit rowids (1,2 vs 5,9)", []string{"CREATE TABLE t(v TEXT)", "INSERT INTO t(rowid, v) VALUES(1, 'x'), (2, 'y')"}, []string{"CREATE TABLE t(v TEXT)", "INSERT INTO t(rowid, v) VALUES(5, 'x'), (9, 'y')"}, "table t differs", true},
 		{"sqlite_sequence (1 vs 2)", []string{"CREATE TABLE t(id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)", "INSERT INTO t(v) VALUES('x')"}, []string{"CREATE TABLE t(id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)", "INSERT INTO t(v) VALUES('x')", "INSERT INTO t(v) VALUES('y')", "DELETE FROM t WHERE id = 2"}, "table sqlite_sequence differs", true},
@@ -650,7 +675,6 @@ func partB(ctx context.Context, dir, tool string) {
 		{"value boundary ('a3','b' vs 'a','3b')", []string{"CREATE TABLE t(id INTEGER PRIMARY KEY, a TEXT, b TEXT)", "INSERT INTO t VALUES(1, 'a3', 'b')"}, []string{"CREATE TABLE t(id INTEGER PRIMARY KEY, a TEXT, b TEXT)", "INSERT INTO t VALUES(1, 'a', '3b')"}, "table t differs", true},
 		{"row moved between tables", []string{"CREATE TABLE a(v TEXT)", "CREATE TABLE b(v TEXT)", "INSERT INTO a(rowid, v) VALUES(1, 'x'), (2, 'y')", "INSERT INTO b(rowid, v) VALUES(1, 'z')"}, []string{"CREATE TABLE a(v TEXT)", "CREATE TABLE b(v TEXT)", "INSERT INTO a(rowid, v) VALUES(1, 'x')", "INSERT INTO b(rowid, v) VALUES(1, 'y'), (2, 'z')"}, "table a differs", true},
 	}
-	fmt.Printf("  %-40s %-6s %-6s %s\n", "pair", "ours", "dbhash", "our first difference")
 	type claim struct {
 		ok   bool
 		text string
@@ -663,23 +687,22 @@ func partB(ctx context.Context, dir, tool string) {
 		if err != nil {
 			fatal("compare", err)
 		}
-		dbhashVerdict := "-"
+		var dbhashEqual any
 		if tool != "" {
 			ha, hb := dbhashOf(ctx, tool, a), dbhashOf(ctx, tool, b)
-			dbhashVerdict = sameWord(ha == hb)
-			claims = append(claims, claim{(ha == hb) == p.dbhash, fmt.Sprintf("%s: dbhash says %s", p.name, dbhashVerdict)})
+			dbhashEqual = ha == hb
+			claims = append(claims, claim{(ha == hb) == p.dbhash, fmt.Sprintf("%s: dbhash says %s", p.name, sameWord(ha == hb))})
 		}
 		first := ""
 		if len(result.Differences) > 0 {
 			first = result.Differences[0]
 		}
-		fmt.Printf("  %-40s %-6s %-6s %s\n", p.name, sameWord(result.Equal), dbhashVerdict, first)
+		tables.pairs.Row(i+1, p.name, result.Equal, dbhashEqual, orNil(first))
 		claims = append(claims, claim{!result.Equal && strings.Contains(first, p.ours), fmt.Sprintf("%s: our logical hash tells the two apart", p.name)})
 	}
 	for _, c := range claims {
-		check(c.ok, c.text)
+		set.Check("B", c.ok, c.text)
 	}
-	fmt.Println("  sqldiff is not built by build-tools; the research probe found it reports integer 1 and real 1.0 as equal (docs/knowledge/determinism-and-rebuild.md, Q4)")
 }
 
 func sameWord(equalValues bool) string {
@@ -693,8 +716,6 @@ func sameWord(equalValues bool) string {
 // (vacuum.c:143-427): table creation order, prior schema-cookie increments,
 // and index creation timing.
 func partC(ctx context.Context, dir, tool string) {
-	fmt.Println()
-	fmt.Println("== C. where VACUUM INTO stops being a canonical form")
 	cases := []struct {
 		name string
 		a, b []string
@@ -718,53 +739,48 @@ func partC(ctx context.Context, dir, tool string) {
 		vacuumInto(ctx, b, cb)
 		e1 := must(equal.CompareFiles(ca, cb, pageSize))("E1")
 		e2 := must(equal.ComparePageFiles(ca, cb, pageSize))("E2")
-		fmt.Printf("  %s: sources at E3: %s; VACUUM INTO outputs at E1: %s; at E2: %s; schema cookies %s\n", c.name, logicalVerdict(e3), verdict(e1), verdict(e2), cookies(ca, cb))
+		recordLogical("C", c.name, "sources", e3)
+		recordFiles("C", c.name, "VACUUM INTO outputs", "E1", e1)
+		recordFiles("C", c.name, "VACUUM INTO outputs", "E2", e2)
+		recordCookies("C", c.name, ca, cb)
+		var dbhashEqual, capturesEqual any
 		if tool != "" {
-			fmt.Printf("    dbhash of the sources: %s\n", sameWord(dbhashOf(ctx, tool, a) == dbhashOf(ctx, tool, b)))
+			dbhashEqual = dbhashOf(ctx, tool, a) == dbhashOf(ctx, tool, b)
 		}
 		switch i {
 		case 0:
-			check(e3.Equal && !e1.Equal && !e2.Equal, "same content, tables created in another order: logically equal, but VACUUM INTO copies tables in sqlite_schema order, so the canonical files differ beyond the header")
+			set.Check("C", e3.Equal && !e1.Equal && !e2.Equal, "same content, tables created in another order: logically equal, but VACUUM INTO copies tables in sqlite_schema order, so the canonical files differ beyond the header")
 			scriptA, scriptB := dump(ctx, a), dump(ctx, b)
 			rb := strings.TrimSuffix(b, ".db") + "-replayed.db"
 			replay(ctx, scriptB, rb)
 			crb := strings.TrimSuffix(rb, ".db") + "-vacuum.db"
 			vacuumInto(ctx, rb, crb)
 			replayE1 := must(equal.CompareFiles(cb, crb, pageSize))("E1")
-			fmt.Printf("    captures of the two sources: %s; the second source's capture replayed and canonicalized vs the second source's canonical form at E1: %s\n", sameWord(scriptA == scriptB), verdict(replayE1))
-			check(scriptA != scriptB && replayE1.Equal, "the capture writes CREATE TABLE in sqlite_schema order, so it records the creation order too: the replay of a source canonicalizes to the source's own canonical bytes")
+			capturesEqual = scriptA == scriptB
+			recordFiles("C", c.name, "replay of the second source's capture, canonicalized, vs the second source's canonical form", "E1", replayE1)
+			set.Check("C", scriptA != scriptB && replayE1.Equal, "the capture writes CREATE TABLE in sqlite_schema order, so it records the creation order too: the replay of a source canonicalizes to the source's own canonical bytes")
 		case 1:
-			check(e3.Equal && !e1.Equal && e2.Equal, "a schema change that left no trace in the content still raises the schema cookie, and VACUUM INTO carries the cookie (+1): the canonical files differ only at bytes 40-43")
+			set.Check("C", e3.Equal && !e1.Equal && e2.Equal, "a schema change that left no trace in the content still raises the schema cookie, and VACUUM INTO carries the cookie (+1): the canonical files differ only at bytes 40-43")
 		case 2:
-			check(e3.Equal && e1.Equal, "an index built before or after the rows canonicalizes to the same bytes: VACUUM INTO rebuilds every index")
+			set.Check("C", e3.Equal && e1.Equal, "an index built before or after the rows canonicalizes to the same bytes: VACUUM INTO rebuilds every index")
 		}
+		tables.limits.Row(i+1, c.name, dbhashEqual, capturesEqual)
 	}
-}
-
-func cookies(a, b string) string {
-	ia, ib := must(os.ReadFile(a))("read"), must(os.ReadFile(b))("read")
-	return fmt.Sprintf("%d and %d", be32(ia[40:44]), be32(ib[40:44]))
 }
 
 func main() {
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("3.3")
+	set = results.MustOpen(dir)
+	openTables()
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
 	tool := locateDBHash()
 	c := partA(ctx, dir, tool)
 	rollbackPair(ctx, dir, c)
 	partB(ctx, dir, tool)
 	partC(ctx, dir, tool)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("SAME ROWS FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("SAME ROWS OK")
+	set.Finish("SAME ROWS")
 }
 
 func displayPath(path string) string {

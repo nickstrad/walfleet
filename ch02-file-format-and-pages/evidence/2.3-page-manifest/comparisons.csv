@@ -1,0 +1,4 @@
+part,name,result,equal,first_differing_page,differing_pages
+A,run 1 vs run 2,manifests identical,true,,0
+B,original vs rebuilt,E1 bytes: equal (sha256 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74),true,,0
+B,step 29 vs step 30,"manifests differ: first differing page 1 (page image differs), 30 page(s) differ",false,1,30

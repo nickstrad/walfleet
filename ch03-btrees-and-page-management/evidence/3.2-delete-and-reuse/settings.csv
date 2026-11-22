@@ -1,0 +1,9 @@
+name,value
+page_size,4096
+blob_bytes,1000
+initial_rows,400
+delete_first,99
+delete_last,302
+reuse_rows,100
+grow_batches,30
+rows_per_tx,4

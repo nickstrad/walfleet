@@ -4,6 +4,9 @@
 // cannot restart; part B begins on a fully checkpointed WAL so the reader holds
 // read lock 0 (WAL_READ_LOCK(0)), letting the WAL restart once while blocking
 // all subsequent backfill (nBackfill stays 0).
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 5.3
 package main
 
 import (
@@ -15,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walfile"
 
@@ -30,15 +34,27 @@ const (
 	countQuery         = "SELECT count(*) FROM events"
 )
 
-var failures []string
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 5.3" runs both.
+// part labels the rows written while a part runs; the first sample of a part is
+// the baseline of its salt-1 column, because the salts themselves are random.
+var (
+	set             *results.Set
+	part            string
+	seq             int
+	baseSalt        uint32
+	haveBase        bool
+	sampleTable     *results.Table
+	checkpointTable *results.Table
+)
+
+func openTables() {
+	sampleTable = set.Table("samples", "seq", "part", "moment", "step", "wal_bytes", "mx_frame", "n_backfill", "read_marks", "reader_rows", "writer_rows", "checkpoint_seq", "salt1_advance", "valid_frames", "frames_in_file")
+	checkpointTable = set.Table("checkpoints", "seq", "part", "moment", "busy", "log_frames", "checkpointed")
+}
 
 func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -129,19 +145,27 @@ func openReader(ctx context.Context, path string) (*sqlitex.DB, *sql.Tx, int) {
 	return reader, tx, count(ctx, tx)
 }
 
-func header(label string) {
-	fmt.Printf("%-24s %9s %8s %9s  %-22s %11s %11s\n", label, "WAL bytes", "mxFrame", "nBackfill", "read marks [0..4]", "reader rows", "writer rows")
-}
-
-func row(label string, s sample, readerRows, writerRows int) {
-	fmt.Printf("%-24s %9d %8d %9d  %-22s %11s %11s\n", label, s.walSize, s.maxFrame, s.backfill, marksText(s.marks), rowsText(readerRows), rowsText(writerRows))
-}
-
-func rowsText(rows int) string {
-	if rows < 0 {
-		return "-"
+// row records one sample of the live WAL and wal-index. step is the recipe
+// step just committed (nil when none); a reader or writer count of -1 is not
+// taken at that moment.
+func row(moment string, step any, s sample, readerRows, writerRows int) {
+	if !haveBase {
+		baseSalt, haveBase = s.salt1, true
 	}
-	return fmt.Sprintf("%d", rows)
+	seq++
+	sampleTable.Row(seq, part, moment, step, s.walSize, s.maxFrame, s.backfill, marksText(s.marks), rowsValue(readerRows), rowsValue(writerRows), s.sequence, s.salt1-baseSalt, s.validCount, s.frames)
+}
+
+func rowsValue(rows int) any {
+	if rows < 0 {
+		return nil
+	}
+	return rows
+}
+
+func checkpointRow(moment string, result sqlitex.CheckpointResult) {
+	seq++
+	checkpointTable.Row(seq, part, moment, result.Busy, result.LogFrames, result.Checkpointed)
 }
 
 func prepare(ctx context.Context, dir, name string) (string, string) {
@@ -157,25 +181,23 @@ func prepare(ctx context.Context, dir, name string) (string, string) {
 }
 
 func partA(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Printf("== A. a reader holds one read transaction open while a writer commits recipe steps %d-%d (wal_autocheckpoint=%d)\n", readerStartsAfter+1, lastLoopStep, autocheckpointSize)
+	part, haveBase = "A", false
 	r := recipe.Default().WithSteps(nextWriteStep)
 	path, scratch := prepare(ctx, dir, "a-pinned")
 	writer := openWriter(ctx, path)
 	if err := r.ApplyStep(ctx, writer, readerStartsAfter); err != nil {
 		fatal("step", err)
 	}
-	header("moment")
 	// Do not query writer before openReader: a SELECT on writer would run
 	// walTryBeginRead (src/wal.c:3182-3205) and write aReadMark[1] = 22 before
 	// the reader opens. Sampling after each writer SELECT inside the loop keeps
 	// every row's read marks aligned with that step's state.
 	start := take(ctx, path, scratch)
-	row(fmt.Sprintf("after step %d", readerStartsAfter), start, -1, -1)
+	row(fmt.Sprintf("after step %d", readerStartsAfter), readerStartsAfter, start, -1, -1)
 	reader, tx, readerRows := openReader(ctx, path)
 	writerRows := count(ctx, writer)
 	pinned := take(ctx, path, scratch)
-	row("reader began", pinned, readerRows, writerRows)
+	row("reader began", nil, pinned, readerRows, writerRows)
 	snapshot := pinned.maxFrame
 	check(snapshot == start.maxFrame && !hasMark(start.marks, snapshot) && hasMark(pinned.marks, snapshot) && pinned.backfill < snapshot,
 		"the reader's snapshot is a read mark equal to mxFrame when it began, and that WAL content was not yet checkpointed")
@@ -189,7 +211,7 @@ func partA(ctx context.Context, dir string) {
 		writerRows := count(ctx, writer)
 		s := take(ctx, path, scratch)
 		rows := count(ctx, tx)
-		row(fmt.Sprintf("step %d committed", k), s, rows, writerRows)
+		row(fmt.Sprintf("step %d committed", k), k, s, rows, writerRows)
 		readerStable = readerStable && rows == readerRows
 		marksHeld = marksHeld && hasMark(s.marks, snapshot)
 		backfillBounded = backfillBounded && s.backfill <= snapshot
@@ -204,7 +226,6 @@ func partA(ctx context.Context, dir string) {
 		neverRestarted = neverRestarted && samples[i].maxFrame > samples[i-1].maxFrame && samples[i].salt1 == pinned.salt1
 	}
 	last := samples[len(samples)-1]
-	fmt.Printf("autocheckpoint first reached the reader's mark %d at step %d; mxFrame at the end %d, so %d frames could not be checkpointed\n", snapshot, firstAutocheckpointed, last.maxFrame, last.maxFrame-last.backfill)
 	check(readerStable, "the reader's row count never changed while the writer committed")
 	check(growing && neverRestarted, "the WAL grew on every commit and never restarted while the reader stayed open")
 	check(marksHeld && backfillBounded && firstAutocheckpointed > 0 && last.backfill == snapshot,
@@ -221,12 +242,12 @@ func partA(ctx context.Context, dir string) {
 	}
 	writerRows = count(ctx, writer)
 	ended := take(ctx, path, scratch)
-	row("reader ended", ended, -1, writerRows)
+	row("reader ended", nil, ended, -1, writerRows)
 	result := must(sqlitex.Checkpoint(ctx, writer, "", sqlitex.CheckpointPassive))("checkpoint")
 	writerRows = count(ctx, writer)
 	afterCheckpoint := take(ctx, path, scratch)
-	row("PASSIVE checkpoint", afterCheckpoint, -1, writerRows)
-	fmt.Printf("wal_checkpoint(PASSIVE) -> %s\n", result)
+	row("PASSIVE checkpoint", nil, afterCheckpoint, -1, writerRows)
+	checkpointRow("PASSIVE checkpoint", result)
 	check(!result.Busy && afterCheckpoint.backfill == afterCheckpoint.maxFrame && afterCheckpoint.walSize == last.walSize,
 		"with the reader gone one checkpoint brings nBackfill to mxFrame; the WAL file keeps its size")
 	if err := r.ApplyStep(ctx, writer, nextWriteStep); err != nil {
@@ -234,9 +255,7 @@ func partA(ctx context.Context, dir string) {
 	}
 	writerRows = count(ctx, writer)
 	restarted := take(ctx, path, scratch)
-	row(fmt.Sprintf("step %d committed", nextWriteStep), restarted, -1, writerRows)
-	fmt.Printf("after the next write: WAL header checkpoint-seq %d -> %d, salt-1 advanced by %d; valid frames %d of %d in the file (the rest are the old generation)\n",
-		pinned.sequence, restarted.sequence, restarted.salt1-pinned.salt1, restarted.validCount, restarted.frames)
+	row(fmt.Sprintf("step %d committed", nextWriteStep), nextWriteStep, restarted, -1, writerRows)
 	check(restarted.maxFrame < last.maxFrame && restarted.validCount == int(restarted.maxFrame) && restarted.salt1 == pinned.salt1+1 && restarted.sequence == pinned.sequence+1 && restarted.walSize == last.walSize,
 		"the next write restarted the WAL at frame 1 (salt-1 + 1, checkpoint sequence + 1); the file is reused, not shrunk")
 	if err := writer.Close(); err != nil {
@@ -245,8 +264,7 @@ func partA(ctx context.Context, dir string) {
 }
 
 func partB(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== B. a reader that began right after a complete checkpoint reads the database file only (read mark 0)")
+	part, haveBase = "B", false
 	r := recipe.Default()
 	path, scratch := prepare(ctx, dir, "b-mark-zero")
 	writer := openWriter(ctx, path)
@@ -254,10 +272,9 @@ func partB(ctx context.Context, dir string) {
 		fatal("step", err)
 	}
 	result := must(sqlitex.Checkpoint(ctx, writer, "", sqlitex.CheckpointPassive))("checkpoint")
-	fmt.Printf("wal_checkpoint(PASSIVE) after step %d -> %s\n", readerStartsAfter, result)
-	header("moment")
 	before := take(ctx, path, scratch)
-	row("checkpointed", before, -1, -1)
+	row("checkpointed", readerStartsAfter, before, -1, -1)
+	checkpointRow(fmt.Sprintf("PASSIVE checkpoint after step %d", readerStartsAfter), result)
 	// With nBackfill == mxFrame, walTryBeginRead takes WAL_READ_LOCK(0) shared
 	// instead of setting a mark in slots 1..4 (src/wal.c:3134-3163). The writer
 	// can restart the WAL because walRestartLog only locks slots 1..4
@@ -266,7 +283,7 @@ func partB(ctx context.Context, dir string) {
 	reader, tx, readerRows := openReader(ctx, path)
 	writerRows := count(ctx, writer)
 	began := take(ctx, path, scratch)
-	row("reader began", began, readerRows, writerRows)
+	row("reader began", nil, began, readerRows, writerRows)
 	check(began.backfill == began.maxFrame && began.marks == before.marks, "the WAL was fully checkpointed, so the reader took no read mark in 1..4 (it holds read lock 0 and ignores the WAL)")
 	readerStable, backfillZero := true, true
 	var samples []sample
@@ -277,14 +294,12 @@ func partB(ctx context.Context, dir string) {
 		writerRows := count(ctx, writer)
 		s := take(ctx, path, scratch)
 		rows := count(ctx, tx)
-		row(fmt.Sprintf("step %d committed", k), s, rows, writerRows)
+		row(fmt.Sprintf("step %d committed", k), k, s, rows, writerRows)
 		readerStable = readerStable && rows == readerRows
 		backfillZero = backfillZero && s.backfill == 0
 		samples = append(samples, s)
 	}
 	first, last := samples[0], samples[len(samples)-1]
-	fmt.Printf("first write after the reader began: salt-1 advanced by %d, mxFrame %d (the WAL restarted); at the end mxFrame %d with nBackfill %d\n",
-		first.salt1-before.salt1, first.maxFrame, last.maxFrame, last.backfill)
 	check(first.salt1 == before.salt1+1 && first.maxFrame < before.maxFrame, "a reader on read lock 0 does not stop the writer from restarting the WAL")
 	check(readerStable, "the reader's row count never changed")
 	check(backfillZero && last.maxFrame >= autocheckpointSize, "but no checkpoint can copy a single frame while it is open: nBackfill stays 0 although autocheckpoint ran on every commit past the threshold")
@@ -297,8 +312,8 @@ func partB(ctx context.Context, dir string) {
 	result = must(sqlitex.Checkpoint(ctx, writer, "", sqlitex.CheckpointPassive))("checkpoint")
 	writerRows = count(ctx, writer)
 	after := take(ctx, path, scratch)
-	row("reader ended + PASSIVE", after, -1, writerRows)
-	fmt.Printf("wal_checkpoint(PASSIVE) -> %s\n", result)
+	row("reader ended + PASSIVE", nil, after, -1, writerRows)
+	checkpointRow("PASSIVE checkpoint after the reader ended", result)
 	check(after.backfill == after.maxFrame, "once the reader ends, a checkpoint copies everything")
 	if err := writer.Close(); err != nil {
 		fatal("close", err)
@@ -314,17 +329,11 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("5.3")
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
+	set = results.MustOpen(dir)
+	openTables()
 	partA(ctx, dir)
 	partB(ctx, dir)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("READER PINS THE WAL FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("READER PINS THE WAL OK")
+	set.Finish("READER PINS THE WAL")
 }
 
 func displayPath(path string) string {

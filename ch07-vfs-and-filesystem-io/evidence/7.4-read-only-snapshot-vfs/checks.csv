@@ -1,0 +1,21 @@
+seq,part,status,claim
+1,A,ok,the snapshot is a WAL-format database with every commit checkpointed into the main file and no -wal left
+2,B,ok,"point lookup: the remote result equals the local file's (1 row(s), digest 564912d877435e1b)"
+3,B,ok,"point lookup: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead"
+4,B,ok,"point lookup: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 4 reads so far fit in the 500-page cache)"
+5,B,ok,"index range scan: the remote result equals the local file's (29 row(s), digest d98fa27230232e1c)"
+6,B,ok,"index range scan: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead"
+7,B,ok,"index range scan: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 15 reads so far fit in the 500-page cache)"
+8,B,ok,"full scan: the remote result equals the local file's (1 row(s), digest 6b2a4af3714ab7f4)"
+9,B,ok,"full scan: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead"
+10,B,ok,"full scan: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 20 reads so far fit in the 500-page cache)"
+11,C,ok,"full scan: when the query reads more pages than the cache holds, the repeat reads evicted pages again (17 range requests); only pages still in the cache are free"
+12,D,ok,without immutable=1 ((no parameters)) the WAL-format snapshot fails to open with SQLITE_CANTOPEN (14)
+13,D,ok,without immutable=1 (mode=ro) the WAL-format snapshot fails to open with SQLITE_CANTOPEN (14)
+14,D,ok,with immutable=1 the WAL-format snapshot opens and reads the same state as the local file
+15,E,ok,"a checkpointed snapshot with header bytes 18-19 rewritten to 1 opens without immutable=1 and reads the same state (the WAL flag in the header, not the content, is what demands shared memory)"
+16,E,ok,"without immutable=1 SQLite checks for a hot journal (3 stat request(s) for snapshot-rollback.db-journal), which immutable=1 skips"
+17,F,ok,"immutable=1 ignores the -wal: the remote read returns step 29's state while the writer has committed step 30 (a stale read, no error)"
+18,F,ok,with immutable=1 SQLite never asks for the -wal file (0 requests name it)
+19,F,ok,without immutable=1 the live WAL database cannot be opened through the read-only VFS either (SQLITE_CANTOPEN)
+20,F,ok,"once the commit is checkpointed into the main file, the republished snapshot shows step 30"

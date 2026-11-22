@@ -1,0 +1,3 @@
+secure_delete,rows_deleted,held_on_leaf_pages,freelist_pages,former_leaves_freed,wal_frames
+OFF,204,27-78,29-78,50,5
+ON,204,27-78,29-78,50,54

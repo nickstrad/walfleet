@@ -1,68 +1,164 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/6.4
-== live database: recipe built to step 5; the writer commits steps 6-8 (wal_autocheckpoint=0); every capture holds hold=read
-step  1  writer     recipe-step 6                        -> SQLITE_OK
-step  2  writer     recipe-step 7                        -> SQLITE_OK
-step  3  writer     recipe-step 8                        -> SQLITE_OK
 
--- method 1: every page through sqlite_dbpage inside one transaction, in 4 chunks; between chunks the writer commits a recipe step and checkpoints
-step  4  capture    begin deferred                       -> SQLITE_OK
-step  5  capture    user-version                         -> SQLITE_OK 8
-check ok: the capture's transaction sees recipe step 8
-step  6  capture    query PRAGMA page_count              -> SQLITE_OK 79
-step  7  capture    dbpage-write 1 20                    -> SQLITE_OK 20 pages
-step  8  writer     recipe-step 9                        -> SQLITE_OK
-step  9  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=84 checkpointed=0
-step 10  writer     checkpoint PASSIVE                   -> SQLITE_OK busy=0 log=84 checkpointed=61
-step 11  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=84 checkpointed=61
-step 12  capture    dbpage-write 21 40                   -> SQLITE_OK 20 pages
-step 13  writer     recipe-step 10                       -> SQLITE_OK
-step 14  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=101 checkpointed=61
-step 15  writer     checkpoint PASSIVE                   -> SQLITE_OK busy=0 log=101 checkpointed=61
-step 16  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=101 checkpointed=61
-step 17  capture    dbpage-write 41 60                   -> SQLITE_OK 20 pages
-step 18  writer     recipe-step 11                       -> SQLITE_OK
-step 19  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=116 checkpointed=61
-step 20  writer     checkpoint PASSIVE                   -> SQLITE_OK busy=0 log=116 checkpointed=61
-step 21  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=116 checkpointed=61
-step 22  capture    dbpage-write 61 79                   -> SQLITE_OK 19 pages
-step 23  capture    user-version                         -> SQLITE_OK 8
-step 24  capture    commit                               -> SQLITE_OK
-check ok: the capture's transaction saw step 8 from its first read to its last
-check ok: the first checkpoint during the page capture copied WAL frames into the database file under the open transaction
+════════════════════════════════════════════════════════════════════════
+  6.4  A consistent snapshot of a live database (rung R4)
+════════════════════════════════════════════════════════════════════════
 
--- method 2: in a new transaction, plain copies of the database file (in two halves) and then its -wal; between the halves the writer commits a recipe step and checkpoints
-step 25  capture    begin deferred                       -> SQLITE_OK
-step 26  capture    user-version                         -> SQLITE_OK 11
-check ok: the second transaction sees step 11, the last commit
-step 27  writer     query SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size -> SQLITE_OK 221184
-step 28  copier     copy-range db copy.db 0 221184       -> SQLITE_OK bytes 0-221184
-step 29  writer     recipe-step 12                       -> SQLITE_OK
-step 30  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=145 checkpointed=61
-step 31  writer     checkpoint PASSIVE                   -> SQLITE_OK busy=0 log=145 checkpointed=116
-step 32  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=145 checkpointed=116
-step 33  copier     copy-range db copy.db 221184 end     -> SQLITE_OK bytes 221184-438272
-step 34  writer     recipe-step 13                       -> SQLITE_OK
-step 35  copier     copy -wal copy.wal                   -> SQLITE_OK 688072 bytes
-step 36  capture    user-version                         -> SQLITE_OK 11
-step 37  capture    commit                               -> SQLITE_OK
-check ok: the capture's transaction saw step 11 from its first read to its last
-check ok: the checkpoint between the two halves wrote WAL frames into the database file while it was being copied
-step 38  writer     user-version                         -> SQLITE_OK 13
-check ok: meanwhile the writer committed steps 9-13
+A writer process keeps committing recipe steps to a WAL database and
+running PASSIVE checkpoints (wal_autocheckpoint=0) while a capture process
+takes a snapshot without stopping it, in two ways. hold is the transaction
+the capture holds: read (BEGIN, then a read) or immediate (BEGIN IMMEDIATE,
+under which the writer cannot commit and only checkpoints).
+┌──────┬───────────┬───────────────┬────────┐
+│ hold │ base_step │ snapshot_step │ chunks │
+├──────┼───────────┼───────────────┼────────┤
+│ read │ 5         │ 8             │ 4      │
+└──────┴───────────┴───────────────┴────────┘
 
-== checks after every process closed
-page capture: 79 pages, manifest sha256 fdacd7ac2cf9defb
-rebuilt from the page capture: sha256 1558477d01bc85e9, integrity_check ok, user_version 8, equals recipe step 8 (equal except the change counter at bytes 24-27 and 92-95)
-reference (recipe to step 8 on one connection, then checkpoint): sha256 1558477d01bc85e9, integrity_check ok, user_version 8, equals recipe step 8 (equal except the change counter at bytes 24-27 and 92-95)
-E1 rebuilt vs reference: E1 bytes: equal (sha256 1558477d01bc85e9ec8dfa29e63f245bc427ee31a6da515ffc3f75a892579529)
-check ok: the page capture passes integrity_check and its bytes equal the recipe run to exactly step 8 and checkpointed (E1)
-replay: frames in file 167, valid 167, committed transactions 8, last commit frame 167 (database size 124 pages)
-replay: applied 167 frames (92 distinct pages, 0 skipped beyond the committed size); base 438272 bytes -> output 507904 bytes
-replay: ignored: none
-rebuilt from the file + -wal copy: sha256 fbe88f844fab4985, integrity_check ok, user_version 13, equals recipe step 13 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: the file + -wal copy rebuilds to a recipe state at or after its transaction's snapshot (step 11): step 13, the last commit before the -wal was copied
-the database-file copy on its own: sha256 04c300a81ff19200, integrity_check 10 problem(s), the first: Freelist: freelist leaf count too big on page 35, user_version 5, equals recipe no recipe step
-check ok: on its own the database-file copy is torn (it fails integrity_check or equals no recipe state); the -wal frames repair it
+── A. The live database ───────────────────────────────────────────────
 
-LIVE SNAPSHOT OK
+The recipe is built to step 5; the writer commits steps 6-8.
+┌──────┬─────────┬───────────────┬───────────┬───────┐
+│ step │ process │    action     │  result   │ value │
+├──────┼─────────┼───────────────┼───────────┼───────┤
+│ 1    │ writer  │ recipe-step 6 │ SQLITE_OK │       │
+│ 2    │ writer  │ recipe-step 7 │ SQLITE_OK │       │
+│ 3    │ writer  │ recipe-step 8 │ SQLITE_OK │       │
+└──────┴─────────┴───────────────┴───────────┴───────┘
+
+── B. Method 1: every page through sqlite_dbpage in one transaction ───
+
+The capture begins a transaction, reads user_version (step 5: 8), and
+writes the pages out in 4 chunks. Between chunks the writer commits the next
+recipe step and runs a PASSIVE checkpoint, with a NOOP checkpoint before and
+after to read how many frames are backfilled. The first PASSIVE checkpoint
+copies frames into the database file under the open transaction (checkpointed
+goes from 0 to 61, steps 9-11).
+The capture still sees step 8 at the end (step 23).
+┌──────┬─────────┬─────────────────────────┬───────────┬────────────────────────────────┐
+│ step │ process │         action          │  result   │             value              │
+├──────┼─────────┼─────────────────────────┼───────────┼────────────────────────────────┤
+│ 4    │ capture │ begin deferred          │ SQLITE_OK │                                │
+│ 5    │ capture │ user-version            │ SQLITE_OK │ 8                              │
+│ 6    │ capture │ query PRAGMA page_count │ SQLITE_OK │ 79                             │
+│ 7    │ capture │ dbpage-write 1 20       │ SQLITE_OK │ 20 pages                       │
+│ 8    │ writer  │ recipe-step 9           │ SQLITE_OK │                                │
+│ 9    │ writer  │ checkpoint NOOP         │ SQLITE_OK │ busy=0 log=84 checkpointed=0   │
+│ 10   │ writer  │ checkpoint PASSIVE      │ SQLITE_OK │ busy=0 log=84 checkpointed=61  │
+│ 11   │ writer  │ checkpoint NOOP         │ SQLITE_OK │ busy=0 log=84 checkpointed=61  │
+│ 12   │ capture │ dbpage-write 21 40      │ SQLITE_OK │ 20 pages                       │
+│ 13   │ writer  │ recipe-step 10          │ SQLITE_OK │                                │
+│ 14   │ writer  │ checkpoint NOOP         │ SQLITE_OK │ busy=0 log=101 checkpointed=61 │
+│ 15   │ writer  │ checkpoint PASSIVE      │ SQLITE_OK │ busy=0 log=101 checkpointed=61 │
+│ 16   │ writer  │ checkpoint NOOP         │ SQLITE_OK │ busy=0 log=101 checkpointed=61 │
+│ 17   │ capture │ dbpage-write 41 60      │ SQLITE_OK │ 20 pages                       │
+│ 18   │ writer  │ recipe-step 11          │ SQLITE_OK │                                │
+│ 19   │ writer  │ checkpoint NOOP         │ SQLITE_OK │ busy=0 log=116 checkpointed=61 │
+│ 20   │ writer  │ checkpoint PASSIVE      │ SQLITE_OK │ busy=0 log=116 checkpointed=61 │
+│ 21   │ writer  │ checkpoint NOOP         │ SQLITE_OK │ busy=0 log=116 checkpointed=61 │
+│ 22   │ capture │ dbpage-write 61 79      │ SQLITE_OK │ 19 pages                       │
+│ 23   │ capture │ user-version            │ SQLITE_OK │ 8                              │
+│ 24   │ capture │ commit                  │ SQLITE_OK │                                │
+└──────┴─────────┴─────────────────────────┴───────────┴────────────────────────────────┘
+
+── C. Method 2: plain copies of the database file and its -wal ────────
+
+In a new transaction (it sees step 11), the copier copies the database file
+in two halves; between them the writer commits step 12 and a PASSIVE
+checkpoint writes frames into the file (checkpointed 61 -> 116, step 31).
+The writer commits step 13, then the copier copies -wal.
+HALF_QUERY stands for
+  SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size
+┌──────┬─────────┬──────────────────────────────────┬───────────┬─────────────────────────────────┐
+│ step │ process │              action              │  result   │              value              │
+├──────┼─────────┼──────────────────────────────────┼───────────┼─────────────────────────────────┤
+│ 25   │ capture │ begin deferred                   │ SQLITE_OK │                                 │
+│ 26   │ capture │ user-version                     │ SQLITE_OK │ 11                              │
+│ 27   │ writer  │ query HALF_QUERY                 │ SQLITE_OK │ 221184                          │
+│ 28   │ copier  │ copy-range db copy.db 0 221184   │ SQLITE_OK │ bytes 0-221184                  │
+│ 29   │ writer  │ recipe-step 12                   │ SQLITE_OK │                                 │
+│ 30   │ writer  │ checkpoint NOOP                  │ SQLITE_OK │ busy=0 log=145 checkpointed=61  │
+│ 31   │ writer  │ checkpoint PASSIVE               │ SQLITE_OK │ busy=0 log=145 checkpointed=116 │
+│ 32   │ writer  │ checkpoint NOOP                  │ SQLITE_OK │ busy=0 log=145 checkpointed=116 │
+│ 33   │ copier  │ copy-range db copy.db 221184 end │ SQLITE_OK │ bytes 221184-438272             │
+│ 34   │ writer  │ recipe-step 13                   │ SQLITE_OK │                                 │
+│ 35   │ copier  │ copy -wal copy.wal               │ SQLITE_OK │ 688072 bytes                    │
+│ 36   │ capture │ user-version                     │ SQLITE_OK │ 11                              │
+│ 37   │ capture │ commit                           │ SQLITE_OK │                                 │
+│ 38   │ writer  │ user-version                     │ SQLITE_OK │ 13                              │
+└──────┴─────────┴──────────────────────────────────┴───────────┴─────────────────────────────────┘
+
+── D. Checks after every process closed ───────────────────────────────
+
+D1. Method 1. The captured pages are rebuilt into a database file and
+    compared byte for byte (E1) with a reference: the recipe run to step 8
+    on one connection, then checkpointed.
+┌───────┬──────────────────┐
+│ pages │ manifest_sha256  │
+├───────┼──────────────────┤
+│ 79    │ fdacd7ac2cf9defb │
+└───────┴──────────────────┘
+┌──────────────────────┬──────────┬───────┐
+│         name         │  level   │ equal │
+├──────────────────────┼──────────┼───────┤
+│ rebuilt vs reference │ E1 bytes │ true  │
+└──────────────────────┴──────────┴───────┘
+
+D2. Method 2. The copied -wal is replayed over the copied database file
+    with the WAL replayer of Chapter 5.
+┌─────────────────────┬───────────────┐
+│        field        │     value     │
+├─────────────────────┼───────────────┤
+│ wal_ignored_reason  │ none          │
+│ frames_in_file      │ 167           │
+│ valid_frames        │ 167           │
+│ transactions        │ 8             │
+│ last_commit_frame   │ 167           │
+│ database_pages      │ 124           │
+│ applied_frames      │ 167           │
+│ distinct_pages      │ 92            │
+│ skipped_beyond_size │ 0             │
+│ base_bytes          │ 438272        │
+│ output_bytes        │ 507904        │
+│ ignored             │ ignored: none │
+└─────────────────────┴───────────────┘
+
+D3. Every checked file. The page capture equals the reference byte for byte
+    (the same sha256) and is recipe step 8. The file + -wal copy is step 13,
+    the last commit before -wal was copied. The database-file copy alone is
+    torn: the -wal frames repair it. exact = false: equal to the recipe step
+    except the change counter at bytes 24-27 and 92-95.
+┌───────────────────────────────────┬──────────────────┬──────────────┬──────────────┬───────┐
+│               name                │      sha256      │ user_version │ matched_step │ exact │
+├───────────────────────────────────┼──────────────────┼──────────────┼──────────────┼───────┤
+│ rebuilt from the page capture     │ 1558477d01bc85e9 │ 8            │ 8            │ false │
+│ reference                         │ 1558477d01bc85e9 │ 8            │ 8            │ false │
+│ rebuilt from the file + -wal copy │ fbe88f844fab4985 │ 13           │ 13           │ false │
+│ the database-file copy on its own │ 04c300a81ff19200 │ 5            │              │ false │
+└───────────────────────────────────┴──────────────────┴──────────────┴──────────────┴───────┘
+┌───────────────────────────────────┬────────────────────────────────────────────────────────────────────────────┐
+│               name                │                                 integrity                                  │
+├───────────────────────────────────┼────────────────────────────────────────────────────────────────────────────┤
+│ rebuilt from the page capture     │ ok                                                                         │
+│ reference                         │ ok                                                                         │
+│ rebuilt from the file + -wal copy │ ok                                                                         │
+│ the database-file copy on its own │ 10 problem(s), the first: Freelist: freelist leaf count too big on page 35 │
+└───────────────────────────────────┴────────────────────────────────────────────────────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+B  ✓  the capture's transaction sees recipe step 8
+B  ✓  the capture's transaction saw step 8 from its first read to its last
+B  ✓  the first checkpoint during the page capture copied WAL frames into the database file under the open transaction
+C  ✓  the second transaction sees step 11, the last commit
+C  ✓  the capture's transaction saw step 11 from its first read to its last
+C  ✓  the checkpoint between the two halves wrote WAL frames into the database file while it was being copied
+C  ✓  meanwhile the writer committed steps 9-13
+D  ✓  the page capture passes integrity_check and its bytes equal the recipe run to exactly step 8 and checkpointed (E1)
+D  ✓  the file + -wal copy rebuilds to a recipe state at or after its transaction's snapshot (step 11): step 13, the last commit before the -wal was copied
+D  ✓  on its own the database-file copy is torn (it fails integrity_check or equals no recipe state); the -wal frames repair it
+
+10 of 10 claims hold
+
+Experiment verdict: LIVE SNAPSHOT OK

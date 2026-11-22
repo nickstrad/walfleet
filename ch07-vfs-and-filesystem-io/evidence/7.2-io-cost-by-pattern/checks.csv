@@ -1,0 +1,7 @@
+seq,part,status,claim
+1,B,ok,"rollback (DELETE) at NORMAL: every commit, at every batch size, makes 3 syncs [db:1 dir:1 journal:1]"
+2,B,ok,"rollback (DELETE) at FULL: every commit, at every batch size, makes 4 syncs [db:1 dir:1 journal:2]"
+3,B,ok,"WAL at NORMAL: a commit makes [-]; the commit that runs an automatic checkpoint makes [db:1 wal:1] (1 such), and the next commit, which restarts the WAL and writes a new WAL header, makes [wal:1] (1 such)"
+4,B,ok,"WAL at FULL: a commit makes [wal:1]; the commit that runs an automatic checkpoint makes [db:1 wal:2] (1 such), and the next commit, which restarts the WAL and writes a new WAL header, makes [wal:2] (1 such)"
+5,A,ok,"rollback FULL: 1000 one-row commits cost 4000 syncs, one 1000-row commit costs 4 (x1000)"
+6,A,ok,"1000 one-row commits at NORMAL: WAL 3 syncs and 4461320 bytes written, rollback 3000 syncs and 17038688 bytes"

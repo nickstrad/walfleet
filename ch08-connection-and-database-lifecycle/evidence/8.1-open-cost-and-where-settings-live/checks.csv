@@ -1,0 +1,23 @@
+seq,part,status,claim
+1,A,ok,1 table(s): open opens only the database file and reads only its 100-byte header
+2,A,ok,"1 table(s): the first statement reads exactly the sqlite_schema b-tree pages (1, from dbstat) plus t0001's root page"
+3,A,ok,1 table(s): page 1 is read twice: once before the -wal is opened (header byte 19 = 2 sends lockBtree to open the WAL) and once after
+4,A,ok,"1 table(s): nothing is read from the -wal or -shm (the -wal is empty; the -shm is mapped, not read)"
+5,A,ok,"1 table(s): the -wal and -shm files are opened at the first statement, not at open"
+6,A,ok,100 table(s): open opens only the database file and reads only its 100-byte header
+7,A,ok,"100 table(s): the first statement reads exactly the sqlite_schema b-tree pages (5, from dbstat) plus t0001's root page"
+8,A,ok,100 table(s): page 1 is read twice: once before the -wal is opened (header byte 19 = 2 sends lockBtree to open the WAL) and once after
+9,A,ok,"100 table(s): nothing is read from the -wal or -shm (the -wal is empty; the -shm is mapped, not read)"
+10,A,ok,"100 table(s): the -wal and -shm files are opened at the first statement, not at open"
+11,A,ok,1000 table(s): open opens only the database file and reads only its 100-byte header
+12,A,ok,"1000 table(s): the first statement reads exactly the sqlite_schema b-tree pages (36, from dbstat) plus t0001's root page"
+13,A,ok,1000 table(s): page 1 is read twice: once before the -wal is opened (header byte 19 = 2 sends lockBtree to open the WAL) and once after
+14,A,ok,"1000 table(s): nothing is read from the -wal or -shm (the -wal is empty; the -shm is mapped, not read)"
+15,A,ok,"1000 table(s): the -wal and -shm files are opened at the first statement, not at open"
+16,A,ok,"SCHEMA_USED is 0 after open for every schema, and after the first statement it grows with the table count (1 < 100 < 1000)"
+17,B,ok,the original is at rest after its last connection closed
+18,B,ok,"a plain copy of the closed file has the same sha256 (rung R5: capture = the file at rest, rebuild = copy)"
+19,B,ok,"every value set differs from the fresh default, and every setting that survived the copy is exactly a setting sqlitex.SettingPlacements declares as living in the file"
+20,B,ok,VACUUM INTO keeps every file setting except journal_mode: its output is a rollback-mode file (header bytes 18-19 = 1)
+21,B,ok,a rollback journal mode (persist) does not survive a reopen: it is per connection; only wal is stored in the file
+22,B,ok,the deprecated PRAGMA default_cache_size is stored in header bytes 48-51 and becomes the starting cache_size of every new connection to the file

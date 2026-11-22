@@ -1,0 +1,586 @@
+commit_seq,n,kind,call
+1,1,other,fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
+1,2,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+1,3,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
+1,4,other,pread64 t.db off=24 len=16
+1,5,other,fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
+1,6,other,pread64 t.db off=4096 len=4096
+1,7,other,open t.db-journal
+1,8,other,fcntl t.db-journal F_SETFD
+1,9,journal-header,pwrite64 t.db-journal off=0 len=512
+1,10,journal-record,pwrite64 t.db-journal off=512 len=4
+1,11,journal-record,pwrite64 t.db-journal off=516 len=4096
+1,12,journal-record,pwrite64 t.db-journal off=4612 len=4
+1,13,other,pread64 t.db off=8192 len=4096
+1,14,other,pread64 t.db off=98304 len=4096
+1,15,journal-record,pwrite64 t.db-journal off=4616 len=4
+1,16,journal-record,pwrite64 t.db-journal off=4620 len=4096
+1,17,journal-record,pwrite64 t.db-journal off=8716 len=4
+1,18,other,pread64 t.db off=77824 len=4096
+1,19,journal-record,pwrite64 t.db-journal off=8720 len=4
+1,20,journal-record,pwrite64 t.db-journal off=8724 len=4096
+1,21,journal-record,pwrite64 t.db-journal off=12820 len=4
+1,22,journal-record,pwrite64 t.db-journal off=12824 len=4
+1,23,journal-record,pwrite64 t.db-journal off=12828 len=4096
+1,24,journal-record,pwrite64 t.db-journal off=16924 len=4
+1,25,other,pread64 t.db off=12288 len=4096
+1,26,other,pread64 t.db off=106496 len=4096
+1,27,journal-record,pwrite64 t.db-journal off=16928 len=4
+1,28,journal-record,pwrite64 t.db-journal off=16932 len=4096
+1,29,journal-record,pwrite64 t.db-journal off=21028 len=4
+1,30,journal-record,pwrite64 t.db-journal off=21032 len=4
+1,31,journal-record,pwrite64 t.db-journal off=21036 len=4096
+1,32,journal-record,pwrite64 t.db-journal off=25132 len=4
+1,33,other,pread64 t.db off=102400 len=4096
+1,34,journal-record,pwrite64 t.db-journal off=25136 len=4
+1,35,journal-record,pwrite64 t.db-journal off=25140 len=4096
+1,36,journal-record,pwrite64 t.db-journal off=29236 len=4
+1,37,other,fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
+1,38,other,fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
+1,39,other,pread64 t.db-journal off=29696 len=8 = 0
+1,40,journal-sync,sync t.db-journal
+1,41,other,open .
+1,42,other,fcntl . F_SETFD
+1,43,dir-sync,sync .
+1,44,other,close .
+1,45,journal-count,pwrite64 t.db-journal off=0 len=12
+1,46,journal-sync,sync t.db-journal
+1,47,db-page,pwrite64 t.db off=0 len=4096
+1,48,db-page,pwrite64 t.db off=4096 len=4096
+1,49,db-page,pwrite64 t.db off=8192 len=4096
+1,50,db-page,pwrite64 t.db off=12288 len=4096
+1,51,db-page,pwrite64 t.db off=77824 len=4096
+1,52,db-page,pwrite64 t.db off=86016 len=4096
+1,53,db-page,pwrite64 t.db off=102400 len=4096
+1,54,db-page,pwrite64 t.db off=106496 len=4096
+1,55,db-page,pwrite64 t.db off=118784 len=4096
+1,56,db-page,pwrite64 t.db off=122880 len=4096
+1,57,db-page,pwrite64 t.db off=126976 len=4096
+1,58,db-page,pwrite64 t.db off=131072 len=4096
+1,59,db-page,pwrite64 t.db off=135168 len=4096
+1,60,db-page,pwrite64 t.db off=139264 len=4096
+1,61,db-page,pwrite64 t.db off=143360 len=4096
+1,62,db-page,pwrite64 t.db off=147456 len=4096
+1,63,db-page,pwrite64 t.db off=151552 len=4096
+1,64,db-page,pwrite64 t.db off=155648 len=4096
+1,65,db-sync,sync t.db
+1,66,other,close t.db-journal
+1,67,journal-unlink,unlink t.db-journal
+1,68,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+1,69,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
+1,70,other,fcntl t.db F_SETLK F_UNLCK start=0 len=0
+2,1,other,fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
+2,2,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+2,3,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
+2,4,other,pread64 t.db off=24 len=16
+2,5,other,fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
+2,6,other,pread64 t.db off=4096 len=4096
+2,7,other,open t.db-journal
+2,8,other,fcntl t.db-journal F_SETFD
+2,9,journal-header,pwrite64 t.db-journal off=0 len=512
+2,10,journal-record,pwrite64 t.db-journal off=512 len=4
+2,11,journal-record,pwrite64 t.db-journal off=516 len=4096
+2,12,journal-record,pwrite64 t.db-journal off=4612 len=4
+2,13,other,pread64 t.db off=8192 len=4096
+2,14,other,pread64 t.db off=98304 len=4096
+2,15,journal-record,pwrite64 t.db-journal off=4616 len=4
+2,16,journal-record,pwrite64 t.db-journal off=4620 len=4096
+2,17,journal-record,pwrite64 t.db-journal off=8716 len=4
+2,18,other,pread64 t.db off=77824 len=4096
+2,19,journal-record,pwrite64 t.db-journal off=8720 len=4
+2,20,journal-record,pwrite64 t.db-journal off=8724 len=4096
+2,21,journal-record,pwrite64 t.db-journal off=12820 len=4
+2,22,journal-record,pwrite64 t.db-journal off=12824 len=4
+2,23,journal-record,pwrite64 t.db-journal off=12828 len=4096
+2,24,journal-record,pwrite64 t.db-journal off=16924 len=4
+2,25,other,pread64 t.db off=12288 len=4096
+2,26,other,pread64 t.db off=106496 len=4096
+2,27,journal-record,pwrite64 t.db-journal off=16928 len=4
+2,28,journal-record,pwrite64 t.db-journal off=16932 len=4096
+2,29,journal-record,pwrite64 t.db-journal off=21028 len=4
+2,30,journal-record,pwrite64 t.db-journal off=21032 len=4
+2,31,journal-record,pwrite64 t.db-journal off=21036 len=4096
+2,32,journal-record,pwrite64 t.db-journal off=25132 len=4
+2,33,other,pread64 t.db off=102400 len=4096
+2,34,journal-record,pwrite64 t.db-journal off=25136 len=4
+2,35,journal-record,pwrite64 t.db-journal off=25140 len=4096
+2,36,journal-record,pwrite64 t.db-journal off=29236 len=4
+2,37,other,fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
+2,38,other,fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
+2,39,other,pread64 t.db-journal off=29696 len=8 = 0
+2,40,journal-count,pwrite64 t.db-journal off=0 len=12
+2,41,journal-sync,sync t.db-journal
+2,42,other,open .
+2,43,other,fcntl . F_SETFD
+2,44,dir-sync,sync .
+2,45,other,close .
+2,46,db-page,pwrite64 t.db off=0 len=4096
+2,47,db-page,pwrite64 t.db off=4096 len=4096
+2,48,db-page,pwrite64 t.db off=8192 len=4096
+2,49,db-page,pwrite64 t.db off=12288 len=4096
+2,50,db-page,pwrite64 t.db off=77824 len=4096
+2,51,db-page,pwrite64 t.db off=86016 len=4096
+2,52,db-page,pwrite64 t.db off=102400 len=4096
+2,53,db-page,pwrite64 t.db off=106496 len=4096
+2,54,db-page,pwrite64 t.db off=118784 len=4096
+2,55,db-page,pwrite64 t.db off=122880 len=4096
+2,56,db-page,pwrite64 t.db off=126976 len=4096
+2,57,db-page,pwrite64 t.db off=131072 len=4096
+2,58,db-page,pwrite64 t.db off=135168 len=4096
+2,59,db-page,pwrite64 t.db off=139264 len=4096
+2,60,db-page,pwrite64 t.db off=143360 len=4096
+2,61,db-page,pwrite64 t.db off=147456 len=4096
+2,62,db-page,pwrite64 t.db off=151552 len=4096
+2,63,db-page,pwrite64 t.db off=155648 len=4096
+2,64,db-sync,sync t.db
+2,65,other,close t.db-journal
+2,66,journal-unlink,unlink t.db-journal
+2,67,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+2,68,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
+2,69,other,fcntl t.db F_SETLK F_UNLCK start=0 len=0
+3,1,other,fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
+3,2,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+3,3,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
+3,4,other,pread64 t.db off=24 len=16
+3,5,other,fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
+3,6,other,pread64 t.db off=4096 len=4096
+3,7,other,open t.db-journal
+3,8,other,fcntl t.db-journal F_SETFD
+3,9,journal-header,pwrite64 t.db-journal off=0 len=512
+3,10,journal-record,pwrite64 t.db-journal off=512 len=4
+3,11,journal-record,pwrite64 t.db-journal off=516 len=4096
+3,12,journal-record,pwrite64 t.db-journal off=4612 len=4
+3,13,other,pread64 t.db off=8192 len=4096
+3,14,other,pread64 t.db off=98304 len=4096
+3,15,journal-record,pwrite64 t.db-journal off=4616 len=4
+3,16,journal-record,pwrite64 t.db-journal off=4620 len=4096
+3,17,journal-record,pwrite64 t.db-journal off=8716 len=4
+3,18,other,pread64 t.db off=77824 len=4096
+3,19,journal-record,pwrite64 t.db-journal off=8720 len=4
+3,20,journal-record,pwrite64 t.db-journal off=8724 len=4096
+3,21,journal-record,pwrite64 t.db-journal off=12820 len=4
+3,22,journal-record,pwrite64 t.db-journal off=12824 len=4
+3,23,journal-record,pwrite64 t.db-journal off=12828 len=4096
+3,24,journal-record,pwrite64 t.db-journal off=16924 len=4
+3,25,other,pread64 t.db off=12288 len=4096
+3,26,other,pread64 t.db off=106496 len=4096
+3,27,journal-record,pwrite64 t.db-journal off=16928 len=4
+3,28,journal-record,pwrite64 t.db-journal off=16932 len=4096
+3,29,journal-record,pwrite64 t.db-journal off=21028 len=4
+3,30,journal-record,pwrite64 t.db-journal off=21032 len=4
+3,31,journal-record,pwrite64 t.db-journal off=21036 len=4096
+3,32,journal-record,pwrite64 t.db-journal off=25132 len=4
+3,33,other,pread64 t.db off=102400 len=4096
+3,34,journal-record,pwrite64 t.db-journal off=25136 len=4
+3,35,journal-record,pwrite64 t.db-journal off=25140 len=4096
+3,36,journal-record,pwrite64 t.db-journal off=29236 len=4
+3,37,other,fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
+3,38,other,fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
+3,39,db-page,pwrite64 t.db off=0 len=4096
+3,40,db-page,pwrite64 t.db off=4096 len=4096
+3,41,db-page,pwrite64 t.db off=8192 len=4096
+3,42,db-page,pwrite64 t.db off=12288 len=4096
+3,43,db-page,pwrite64 t.db off=77824 len=4096
+3,44,db-page,pwrite64 t.db off=86016 len=4096
+3,45,db-page,pwrite64 t.db off=102400 len=4096
+3,46,db-page,pwrite64 t.db off=106496 len=4096
+3,47,db-page,pwrite64 t.db off=118784 len=4096
+3,48,db-page,pwrite64 t.db off=122880 len=4096
+3,49,db-page,pwrite64 t.db off=126976 len=4096
+3,50,db-page,pwrite64 t.db off=131072 len=4096
+3,51,db-page,pwrite64 t.db off=135168 len=4096
+3,52,db-page,pwrite64 t.db off=139264 len=4096
+3,53,db-page,pwrite64 t.db off=143360 len=4096
+3,54,db-page,pwrite64 t.db off=147456 len=4096
+3,55,db-page,pwrite64 t.db off=151552 len=4096
+3,56,db-page,pwrite64 t.db off=155648 len=4096
+3,57,other,close t.db-journal
+3,58,journal-unlink,unlink t.db-journal
+3,59,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+3,60,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
+3,61,other,fcntl t.db F_SETLK F_UNLCK start=0 len=0
+4,1,other,fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
+4,2,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+4,3,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
+4,4,other,pread64 t.db off=24 len=16
+4,5,other,fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
+4,6,other,pread64 t.db off=4096 len=4096
+4,7,other,open t.db-journal
+4,8,other,fcntl t.db-journal F_SETFD
+4,9,journal-header,pwrite64 t.db-journal off=0 len=512
+4,10,journal-record,pwrite64 t.db-journal off=512 len=4
+4,11,journal-record,pwrite64 t.db-journal off=516 len=4096
+4,12,journal-record,pwrite64 t.db-journal off=4612 len=4
+4,13,other,pread64 t.db off=8192 len=4096
+4,14,journal-record,pwrite64 t.db-journal off=4616 len=4
+4,15,journal-record,pwrite64 t.db-journal off=4620 len=4096
+4,16,journal-record,pwrite64 t.db-journal off=8716 len=4
+4,17,journal-record,pwrite64 t.db-journal off=8720 len=4
+4,18,journal-record,pwrite64 t.db-journal off=8724 len=4096
+4,19,journal-record,pwrite64 t.db-journal off=12820 len=4
+4,20,other,pread64 t.db off=12288 len=4096
+4,21,journal-record,pwrite64 t.db-journal off=12824 len=4
+4,22,journal-record,pwrite64 t.db-journal off=12828 len=4096
+4,23,journal-record,pwrite64 t.db-journal off=16924 len=4
+4,24,other,fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
+4,25,other,fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
+4,26,other,pread64 t.db-journal off=17408 len=8 = 0
+4,27,journal-sync,sync t.db-journal
+4,28,other,open .
+4,29,other,fcntl . F_SETFD
+4,30,dir-sync,sync .
+4,31,other,close .
+4,32,journal-count,pwrite64 t.db-journal off=0 len=12
+4,33,journal-sync,sync t.db-journal
+4,34,db-page,pwrite64 t.db off=0 len=4096
+4,35,db-page,pwrite64 t.db off=4096 len=4096
+4,36,db-page,pwrite64 t.db off=8192 len=4096
+4,37,db-page,pwrite64 t.db off=12288 len=4096
+4,38,db-page,pwrite64 t.db off=16384 len=4096
+4,39,db-page,pwrite64 t.db off=20480 len=4096
+4,40,db-page,pwrite64 t.db off=24576 len=4096
+4,41,db-page,pwrite64 t.db off=28672 len=4096
+4,42,db-page,pwrite64 t.db off=32768 len=4096
+4,43,db-page,pwrite64 t.db off=36864 len=4096
+4,44,db-page,pwrite64 t.db off=40960 len=4096
+4,45,db-page,pwrite64 t.db off=45056 len=4096
+4,46,db-page,pwrite64 t.db off=49152 len=4096
+4,47,db-page,pwrite64 t.db off=53248 len=4096
+4,48,db-page,pwrite64 t.db off=57344 len=4096
+4,49,db-page,pwrite64 t.db off=61440 len=4096
+4,50,db-page,pwrite64 t.db off=65536 len=4096
+4,51,db-page,pwrite64 t.db off=69632 len=4096
+4,52,db-page,pwrite64 t.db off=73728 len=4096
+4,53,db-page,pwrite64 t.db off=77824 len=4096
+4,54,db-page,pwrite64 t.db off=81920 len=4096
+4,55,db-page,pwrite64 t.db off=86016 len=4096
+4,56,db-sync,sync t.db
+4,57,other,close t.db-journal
+4,58,journal-unlink,unlink t.db-journal
+4,59,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+4,60,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
+4,61,other,fcntl t.db F_SETLK F_UNLCK start=0 len=0
+5,1,other,fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
+5,2,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+5,3,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
+5,4,other,pread64 t.db off=24 len=16
+5,5,other,fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
+5,6,other,pread64 t.db off=4096 len=4096
+5,7,other,open t.db-journal
+5,8,other,fcntl t.db-journal F_SETFD
+5,9,journal-header,pwrite64 t.db-journal off=0 len=512
+5,10,journal-record,pwrite64 t.db-journal off=512 len=4
+5,11,journal-record,pwrite64 t.db-journal off=516 len=4096
+5,12,journal-record,pwrite64 t.db-journal off=4612 len=4
+5,13,other,pread64 t.db off=8192 len=4096
+5,14,journal-record,pwrite64 t.db-journal off=4616 len=4
+5,15,journal-record,pwrite64 t.db-journal off=4620 len=4096
+5,16,journal-record,pwrite64 t.db-journal off=8716 len=4
+5,17,journal-record,pwrite64 t.db-journal off=8720 len=4
+5,18,journal-record,pwrite64 t.db-journal off=8724 len=4096
+5,19,journal-record,pwrite64 t.db-journal off=12820 len=4
+5,20,other,pread64 t.db off=12288 len=4096
+5,21,journal-record,pwrite64 t.db-journal off=12824 len=4
+5,22,journal-record,pwrite64 t.db-journal off=12828 len=4096
+5,23,journal-record,pwrite64 t.db-journal off=16924 len=4
+5,24,other,fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
+5,25,other,fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
+5,26,other,pread64 t.db-journal off=17408 len=8 = 0
+5,27,journal-count,pwrite64 t.db-journal off=0 len=12
+5,28,journal-sync,sync t.db-journal
+5,29,other,open .
+5,30,other,fcntl . F_SETFD
+5,31,dir-sync,sync .
+5,32,other,close .
+5,33,db-page,pwrite64 t.db off=0 len=4096
+5,34,db-page,pwrite64 t.db off=4096 len=4096
+5,35,db-page,pwrite64 t.db off=8192 len=4096
+5,36,db-page,pwrite64 t.db off=12288 len=4096
+5,37,db-page,pwrite64 t.db off=16384 len=4096
+5,38,db-page,pwrite64 t.db off=20480 len=4096
+5,39,db-page,pwrite64 t.db off=24576 len=4096
+5,40,db-page,pwrite64 t.db off=28672 len=4096
+5,41,db-page,pwrite64 t.db off=32768 len=4096
+5,42,db-page,pwrite64 t.db off=36864 len=4096
+5,43,db-page,pwrite64 t.db off=40960 len=4096
+5,44,db-page,pwrite64 t.db off=45056 len=4096
+5,45,db-page,pwrite64 t.db off=49152 len=4096
+5,46,db-page,pwrite64 t.db off=53248 len=4096
+5,47,db-page,pwrite64 t.db off=57344 len=4096
+5,48,db-page,pwrite64 t.db off=61440 len=4096
+5,49,db-page,pwrite64 t.db off=65536 len=4096
+5,50,db-page,pwrite64 t.db off=69632 len=4096
+5,51,db-page,pwrite64 t.db off=73728 len=4096
+5,52,db-page,pwrite64 t.db off=77824 len=4096
+5,53,db-page,pwrite64 t.db off=81920 len=4096
+5,54,db-page,pwrite64 t.db off=86016 len=4096
+5,55,db-sync,sync t.db
+5,56,other,close t.db-journal
+5,57,journal-unlink,unlink t.db-journal
+5,58,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+5,59,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
+5,60,other,fcntl t.db F_SETLK F_UNLCK start=0 len=0
+6,1,other,fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
+6,2,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+6,3,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
+6,4,other,pread64 t.db off=24 len=16
+6,5,other,fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
+6,6,other,pread64 t.db off=4096 len=4096
+6,7,other,open t.db-journal
+6,8,other,fcntl t.db-journal F_SETFD
+6,9,journal-header,pwrite64 t.db-journal off=0 len=512
+6,10,journal-record,pwrite64 t.db-journal off=512 len=4
+6,11,journal-record,pwrite64 t.db-journal off=516 len=4096
+6,12,journal-record,pwrite64 t.db-journal off=4612 len=4
+6,13,other,pread64 t.db off=8192 len=4096
+6,14,journal-record,pwrite64 t.db-journal off=4616 len=4
+6,15,journal-record,pwrite64 t.db-journal off=4620 len=4096
+6,16,journal-record,pwrite64 t.db-journal off=8716 len=4
+6,17,journal-record,pwrite64 t.db-journal off=8720 len=4
+6,18,journal-record,pwrite64 t.db-journal off=8724 len=4096
+6,19,journal-record,pwrite64 t.db-journal off=12820 len=4
+6,20,other,pread64 t.db off=12288 len=4096
+6,21,journal-record,pwrite64 t.db-journal off=12824 len=4
+6,22,journal-record,pwrite64 t.db-journal off=12828 len=4096
+6,23,journal-record,pwrite64 t.db-journal off=16924 len=4
+6,24,other,fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
+6,25,other,fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
+6,26,db-page,pwrite64 t.db off=0 len=4096
+6,27,db-page,pwrite64 t.db off=4096 len=4096
+6,28,db-page,pwrite64 t.db off=8192 len=4096
+6,29,db-page,pwrite64 t.db off=12288 len=4096
+6,30,db-page,pwrite64 t.db off=16384 len=4096
+6,31,db-page,pwrite64 t.db off=20480 len=4096
+6,32,db-page,pwrite64 t.db off=24576 len=4096
+6,33,db-page,pwrite64 t.db off=28672 len=4096
+6,34,db-page,pwrite64 t.db off=32768 len=4096
+6,35,db-page,pwrite64 t.db off=36864 len=4096
+6,36,db-page,pwrite64 t.db off=40960 len=4096
+6,37,db-page,pwrite64 t.db off=45056 len=4096
+6,38,db-page,pwrite64 t.db off=49152 len=4096
+6,39,db-page,pwrite64 t.db off=53248 len=4096
+6,40,db-page,pwrite64 t.db off=57344 len=4096
+6,41,db-page,pwrite64 t.db off=61440 len=4096
+6,42,db-page,pwrite64 t.db off=65536 len=4096
+6,43,db-page,pwrite64 t.db off=69632 len=4096
+6,44,db-page,pwrite64 t.db off=73728 len=4096
+6,45,db-page,pwrite64 t.db off=77824 len=4096
+6,46,db-page,pwrite64 t.db off=81920 len=4096
+6,47,db-page,pwrite64 t.db off=86016 len=4096
+6,48,other,close t.db-journal
+6,49,journal-unlink,unlink t.db-journal
+6,50,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+6,51,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
+6,52,other,fcntl t.db F_SETLK F_UNLCK start=0 len=0
+7,1,other,fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
+7,2,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+7,3,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
+7,4,other,pread64 t.db off=24 len=16
+7,5,other,fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
+7,6,other,pread64 t.db off=4096 len=4096
+7,7,other,open t.db-journal
+7,8,other,fcntl t.db-journal F_SETFD
+7,9,journal-header,pwrite64 t.db-journal off=0 len=512
+7,10,journal-record,pwrite64 t.db-journal off=512 len=4
+7,11,journal-record,pwrite64 t.db-journal off=516 len=4096
+7,12,journal-record,pwrite64 t.db-journal off=4612 len=4
+7,13,other,pread64 t.db off=8192 len=4096
+7,14,other,pread64 t.db off=98304 len=4096
+7,15,journal-record,pwrite64 t.db-journal off=4616 len=4
+7,16,journal-record,pwrite64 t.db-journal off=4620 len=4096
+7,17,journal-record,pwrite64 t.db-journal off=8716 len=4
+7,18,other,pread64 t.db off=77824 len=4096
+7,19,journal-record,pwrite64 t.db-journal off=8720 len=4
+7,20,journal-record,pwrite64 t.db-journal off=8724 len=4096
+7,21,journal-record,pwrite64 t.db-journal off=12820 len=4
+7,22,journal-record,pwrite64 t.db-journal off=12824 len=4
+7,23,journal-record,pwrite64 t.db-journal off=12828 len=4096
+7,24,journal-record,pwrite64 t.db-journal off=16924 len=4
+7,25,other,pread64 t.db off=12288 len=4096
+7,26,other,pread64 t.db off=106496 len=4096
+7,27,journal-record,pwrite64 t.db-journal off=16928 len=4
+7,28,journal-record,pwrite64 t.db-journal off=16932 len=4096
+7,29,journal-record,pwrite64 t.db-journal off=21028 len=4
+7,30,journal-record,pwrite64 t.db-journal off=21032 len=4
+7,31,journal-record,pwrite64 t.db-journal off=21036 len=4096
+7,32,journal-record,pwrite64 t.db-journal off=25132 len=4
+7,33,other,pread64 t.db off=102400 len=4096
+7,34,journal-record,pwrite64 t.db-journal off=25136 len=4
+7,35,journal-record,pwrite64 t.db-journal off=25140 len=4096
+7,36,journal-record,pwrite64 t.db-journal off=29236 len=4
+7,37,other,fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
+7,38,other,fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
+7,39,other,pread64 t.db-journal off=29696 len=8 = 0
+7,40,journal-sync,sync t.db-journal
+7,41,other,open .
+7,42,other,fcntl . F_SETFD
+7,43,dir-sync,sync .
+7,44,other,close .
+7,45,journal-count,pwrite64 t.db-journal off=0 len=12
+7,46,journal-sync,sync t.db-journal
+7,47,db-page,pwrite64 t.db off=0 len=4096
+7,48,db-page,pwrite64 t.db off=4096 len=4096
+7,49,db-page,pwrite64 t.db off=8192 len=4096
+7,50,db-page,pwrite64 t.db off=12288 len=4096
+7,51,db-page,pwrite64 t.db off=77824 len=4096
+7,52,db-page,pwrite64 t.db off=86016 len=4096
+7,53,db-page,pwrite64 t.db off=102400 len=4096
+7,54,db-page,pwrite64 t.db off=106496 len=4096
+7,55,db-page,pwrite64 t.db off=118784 len=4096
+7,56,db-page,pwrite64 t.db off=122880 len=4096
+7,57,db-page,pwrite64 t.db off=126976 len=4096
+7,58,db-page,pwrite64 t.db off=131072 len=4096
+7,59,db-page,pwrite64 t.db off=135168 len=4096
+7,60,db-page,pwrite64 t.db off=139264 len=4096
+7,61,db-page,pwrite64 t.db off=143360 len=4096
+7,62,db-page,pwrite64 t.db off=147456 len=4096
+7,63,db-page,pwrite64 t.db off=151552 len=4096
+7,64,db-page,pwrite64 t.db off=155648 len=4096
+7,65,db-sync,sync t.db
+7,66,other,close t.db-journal
+7,67,journal-unlink,unlink t.db-journal
+7,68,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+7,69,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
+7,70,other,fcntl t.db F_SETLK F_UNLCK start=0 len=0
+8,1,other,fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
+8,2,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+8,3,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
+8,4,other,pread64 t.db off=24 len=16
+8,5,other,fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
+8,6,other,pread64 t.db off=4096 len=4096
+8,7,other,open t.db-journal
+8,8,other,fcntl t.db-journal F_SETFD
+8,9,journal-header,pwrite64 t.db-journal off=0 len=512
+8,10,journal-record,pwrite64 t.db-journal off=512 len=4
+8,11,journal-record,pwrite64 t.db-journal off=516 len=4096
+8,12,journal-record,pwrite64 t.db-journal off=4612 len=4
+8,13,other,pread64 t.db off=8192 len=4096
+8,14,other,pread64 t.db off=98304 len=4096
+8,15,journal-record,pwrite64 t.db-journal off=4616 len=4
+8,16,journal-record,pwrite64 t.db-journal off=4620 len=4096
+8,17,journal-record,pwrite64 t.db-journal off=8716 len=4
+8,18,other,pread64 t.db off=77824 len=4096
+8,19,journal-record,pwrite64 t.db-journal off=8720 len=4
+8,20,journal-record,pwrite64 t.db-journal off=8724 len=4096
+8,21,journal-record,pwrite64 t.db-journal off=12820 len=4
+8,22,journal-record,pwrite64 t.db-journal off=12824 len=4
+8,23,journal-record,pwrite64 t.db-journal off=12828 len=4096
+8,24,journal-record,pwrite64 t.db-journal off=16924 len=4
+8,25,other,pread64 t.db off=12288 len=4096
+8,26,other,pread64 t.db off=106496 len=4096
+8,27,journal-record,pwrite64 t.db-journal off=16928 len=4
+8,28,journal-record,pwrite64 t.db-journal off=16932 len=4096
+8,29,journal-record,pwrite64 t.db-journal off=21028 len=4
+8,30,journal-record,pwrite64 t.db-journal off=21032 len=4
+8,31,journal-record,pwrite64 t.db-journal off=21036 len=4096
+8,32,journal-record,pwrite64 t.db-journal off=25132 len=4
+8,33,other,pread64 t.db off=102400 len=4096
+8,34,journal-record,pwrite64 t.db-journal off=25136 len=4
+8,35,journal-record,pwrite64 t.db-journal off=25140 len=4096
+8,36,journal-record,pwrite64 t.db-journal off=29236 len=4
+8,37,other,fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
+8,38,other,fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
+8,39,other,pread64 t.db-journal off=29696 len=8 = 0
+8,40,journal-sync,sync t.db-journal
+8,41,other,open .
+8,42,other,fcntl . F_SETFD
+8,43,dir-sync,sync .
+8,44,other,close .
+8,45,journal-count,pwrite64 t.db-journal off=0 len=12
+8,46,journal-sync,sync t.db-journal
+8,47,db-page,pwrite64 t.db off=0 len=4096
+8,48,db-page,pwrite64 t.db off=4096 len=4096
+8,49,db-page,pwrite64 t.db off=8192 len=4096
+8,50,db-page,pwrite64 t.db off=12288 len=4096
+8,51,db-page,pwrite64 t.db off=77824 len=4096
+8,52,db-page,pwrite64 t.db off=86016 len=4096
+8,53,db-page,pwrite64 t.db off=102400 len=4096
+8,54,db-page,pwrite64 t.db off=106496 len=4096
+8,55,db-page,pwrite64 t.db off=118784 len=4096
+8,56,db-page,pwrite64 t.db off=122880 len=4096
+8,57,db-page,pwrite64 t.db off=126976 len=4096
+8,58,db-page,pwrite64 t.db off=131072 len=4096
+8,59,db-page,pwrite64 t.db off=135168 len=4096
+8,60,db-page,pwrite64 t.db off=139264 len=4096
+8,61,db-page,pwrite64 t.db off=143360 len=4096
+8,62,db-page,pwrite64 t.db off=147456 len=4096
+8,63,db-page,pwrite64 t.db off=151552 len=4096
+8,64,db-page,pwrite64 t.db off=155648 len=4096
+8,65,db-sync,sync t.db
+8,66,journal-truncate,ftruncate t.db-journal len=0
+8,67,journal-sync,sync t.db-journal
+8,68,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+8,69,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
+8,70,other,close t.db-journal
+8,71,other,fcntl t.db F_SETLK F_UNLCK start=0 len=0
+9,1,other,fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
+9,2,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+9,3,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
+9,4,other,pread64 t.db off=24 len=16
+9,5,other,fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
+9,6,other,pread64 t.db off=4096 len=4096
+9,7,other,open t.db-journal
+9,8,other,fcntl t.db-journal F_SETFD
+9,9,journal-header,pwrite64 t.db-journal off=0 len=512
+9,10,journal-record,pwrite64 t.db-journal off=512 len=4
+9,11,journal-record,pwrite64 t.db-journal off=516 len=4096
+9,12,journal-record,pwrite64 t.db-journal off=4612 len=4
+9,13,other,pread64 t.db off=8192 len=4096
+9,14,other,pread64 t.db off=98304 len=4096
+9,15,journal-record,pwrite64 t.db-journal off=4616 len=4
+9,16,journal-record,pwrite64 t.db-journal off=4620 len=4096
+9,17,journal-record,pwrite64 t.db-journal off=8716 len=4
+9,18,other,pread64 t.db off=77824 len=4096
+9,19,journal-record,pwrite64 t.db-journal off=8720 len=4
+9,20,journal-record,pwrite64 t.db-journal off=8724 len=4096
+9,21,journal-record,pwrite64 t.db-journal off=12820 len=4
+9,22,journal-record,pwrite64 t.db-journal off=12824 len=4
+9,23,journal-record,pwrite64 t.db-journal off=12828 len=4096
+9,24,journal-record,pwrite64 t.db-journal off=16924 len=4
+9,25,other,pread64 t.db off=12288 len=4096
+9,26,other,pread64 t.db off=106496 len=4096
+9,27,journal-record,pwrite64 t.db-journal off=16928 len=4
+9,28,journal-record,pwrite64 t.db-journal off=16932 len=4096
+9,29,journal-record,pwrite64 t.db-journal off=21028 len=4
+9,30,journal-record,pwrite64 t.db-journal off=21032 len=4
+9,31,journal-record,pwrite64 t.db-journal off=21036 len=4096
+9,32,journal-record,pwrite64 t.db-journal off=25132 len=4
+9,33,other,pread64 t.db off=102400 len=4096
+9,34,journal-record,pwrite64 t.db-journal off=25136 len=4
+9,35,journal-record,pwrite64 t.db-journal off=25140 len=4096
+9,36,journal-record,pwrite64 t.db-journal off=29236 len=4
+9,37,other,fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
+9,38,other,fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
+9,39,other,pread64 t.db-journal off=29696 len=8 = 0
+9,40,journal-sync,sync t.db-journal
+9,41,other,open .
+9,42,other,fcntl . F_SETFD
+9,43,dir-sync,sync .
+9,44,other,close .
+9,45,journal-count,pwrite64 t.db-journal off=0 len=12
+9,46,journal-sync,sync t.db-journal
+9,47,db-page,pwrite64 t.db off=0 len=4096
+9,48,db-page,pwrite64 t.db off=4096 len=4096
+9,49,db-page,pwrite64 t.db off=8192 len=4096
+9,50,db-page,pwrite64 t.db off=12288 len=4096
+9,51,db-page,pwrite64 t.db off=77824 len=4096
+9,52,db-page,pwrite64 t.db off=86016 len=4096
+9,53,db-page,pwrite64 t.db off=102400 len=4096
+9,54,db-page,pwrite64 t.db off=106496 len=4096
+9,55,db-page,pwrite64 t.db off=118784 len=4096
+9,56,db-page,pwrite64 t.db off=122880 len=4096
+9,57,db-page,pwrite64 t.db off=126976 len=4096
+9,58,db-page,pwrite64 t.db off=131072 len=4096
+9,59,db-page,pwrite64 t.db off=135168 len=4096
+9,60,db-page,pwrite64 t.db off=139264 len=4096
+9,61,db-page,pwrite64 t.db off=143360 len=4096
+9,62,db-page,pwrite64 t.db off=147456 len=4096
+9,63,db-page,pwrite64 t.db off=151552 len=4096
+9,64,db-page,pwrite64 t.db off=155648 len=4096
+9,65,db-sync,sync t.db
+9,66,journal-zero-header,pwrite64 t.db-journal off=0 len=28
+9,67,journal-sync,sync t.db-journal
+9,68,other,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+9,69,other,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
+9,70,other,close t.db-journal
+9,71,other,fcntl t.db F_SETLK F_UNLCK start=0 len=0

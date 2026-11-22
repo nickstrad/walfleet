@@ -5,9 +5,10 @@
 // which determinism rules are required and where SQLite's behavior differs
 // between WAL and rollback modes.
 //
-// Run from the repo root (portable; no strace needed):
+// It prints only its verdict; the measurements go to CSV tables that
+// report.sql presents (portable; no strace needed):
 //
-//	go run ./ch01-architecture-and-execution-path/experiments/1.3-recipe-rebuild
+//	go run ./cmd/course run 1.3
 package main
 
 import (
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -31,16 +33,56 @@ const (
 	secondsTries = 3
 )
 
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables. part labels the claims of the part
+// that is running: A the rebuild, B broken variants 1-5, C sessions, D the
+// rolled-back savepoint.
+var (
+	set        *results.Set
+	part       string
+	comparison int
+	tables     struct {
+		recipe, plan, runs, stepHashes, lookup, comparisons, unusedPages *results.Table
+		infoRun, infoHashes                                              *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+)
+
+func openTables() {
+	tables.recipe = set.Table("recipe", "key", "value")
+	tables.plan = set.Table("plan", "step", "schema", "inserts", "updates", "deletes", "indexes")
+	tables.runs = set.Table("runs", "mode", "run", "path", "pages", "sha256")
+	tables.stepHashes = set.Table("step_hashes", "mode", "step", "run1_sha256", "run2_sha256", "cached_sha256")
+	tables.lookup = set.Table("lookup", "built_to_step", "matched_step", "exact")
+	tables.comparisons = set.Table("comparisons", "seq", "id", "what", "equal", "size_a", "size_b", "differing_pages", "page1_bytes")
+	tables.unusedPages = set.Table("unused_pages", "id", "page", "bytes_differing", "bytes_outside_unused", "kind")
+	tables.infoRun = set.Table("info_run", "key", "value")
+	tables.infoHashes = set.Table("info_hashes", "name", "run", "sha256")
 }
+
+func check(ok bool, claim string) { set.Check(part, ok, claim) }
+
+// record writes one file comparison; id is the number of the variant in report.sql.
+func record(id, what string, d fileDiff) {
+	comparison++
+	tables.comparisons.Row(comparison, id, what, d.Equal, d.SizeA, d.SizeB, joinInts(d.DifferingPages), joinInts(d.Page1Bytes))
+}
+
+// recordUnused writes where the differing bytes of a comparison sit.
+func recordUnused(id string, report unusedReport) {
+	for _, page := range report.Pages {
+		tables.unusedPages.Row(id, page.Page, page.Count, page.InUse, page.Kind)
+	}
+}
+
+func joinInts(values []int) string {
+	text := make([]string, len(values))
+	for i, v := range values {
+		text[i] = fmt.Sprint(v)
+	}
+	return strings.Join(text, " ")
+}
+
+func infoHash(name, run, sha string) { tables.infoHashes.Row(name, run, sha) }
 
 func fatal(what string, err error) {
 	fmt.Printf("FATAL %s: %v\n", what, err)
@@ -52,30 +94,6 @@ type fileDiff struct {
 	SizeA, SizeB   int
 	DifferingPages []int
 	Page1Bytes     []int
-}
-
-func (d fileDiff) String() string {
-	if d.Equal {
-		return "identical"
-	}
-	if len(d.DifferingPages) == 0 {
-		return fmt.Sprintf("differ: sizes %d and %d bytes", d.SizeA, d.SizeB)
-	}
-	text := fmt.Sprintf("differ: first differing page %d, %d page(s) differ %v", d.DifferingPages[0], len(d.DifferingPages), limitPages(d.DifferingPages))
-	if d.SizeA != d.SizeB {
-		text += fmt.Sprintf(", sizes %d and %d pages", d.SizeA/pageSize, d.SizeB/pageSize)
-	}
-	if len(d.Page1Bytes) > 0 {
-		text += fmt.Sprintf(", page 1 bytes %v", d.Page1Bytes)
-	}
-	return text
-}
-
-func limitPages(pages []int) string {
-	if len(pages) <= 8 {
-		return fmt.Sprint(pages)
-	}
-	return fmt.Sprintf("%v...", pages[:8])
 }
 
 // compareFiles compares two closed database files page by page (1-based) and
@@ -238,7 +256,8 @@ func runTwice(ctx context.Context, r recipe.Recipe, dir string, v variant) fileD
 		applyStatementsInSession(ctx, r, path, v.pragmas, v.statement...)
 	}
 	d := compareFiles(a, b)
-	fmt.Printf("INFO: %s sha256 run 1 %s, run 2 %s\n", v.name, hashOf(a).Exact, hashOf(b).Exact)
+	infoHash(v.name, "run 1", hashOf(a).Exact)
+	infoHash(v.name, "run 2", hashOf(b).Exact)
 	return d
 }
 
@@ -259,12 +278,14 @@ func timestampVariant(ctx context.Context, r recipe.Recipe, dir string) (sameSec
 		applyStatementsInSession(ctx, r, a, nil, statement)
 		applyStatementsInSession(ctx, r, b, nil, statement)
 		if time.Now().Unix() != started {
-			fmt.Printf("INFO: timestamp attempt %d crossed a second boundary; retrying\n", attempt+1)
+			tables.infoRun.Row(fmt.Sprintf("timestamp attempt %d", attempt+1), "crossed a second boundary; retried")
 			continue
 		}
 		waitForNextSecond()
 		applyStatementsInSession(ctx, r, c, nil, statement)
-		fmt.Printf("INFO: timestamp sha256 run 1 %s, run 2 %s, run 3 %s\n", hashOf(a).Exact, hashOf(b).Exact, hashOf(c).Exact)
+		infoHash("timestamp", "run 1", hashOf(a).Exact)
+		infoHash("timestamp", "run 2", hashOf(b).Exact)
+		infoHash("timestamp", "run 3", hashOf(c).Exact)
 		return compareFiles(a, b), compareFiles(a, c)
 	}
 	fatal("timestamp variant", fmt.Errorf("could not run two inserts inside one wall-clock second in %d attempts", secondsTries))
@@ -334,7 +355,8 @@ func batchVariant(ctx context.Context, r recipe.Recipe, dir, secureDelete string
 			fatal("at rest", err)
 		}
 	}
-	fmt.Printf("INFO: batches %s sha256 one-per-step %s, merged %s\n", label, hashOf(a).Exact, hashOf(b).Exact)
+	infoHash("batches "+label, "one per step", hashOf(a).Exact)
+	infoHash("batches "+label, "merged", hashOf(b).Exact)
 	d := compareFiles(a, b)
 	return d, classifyDifferences(a, b, d)
 }
@@ -467,9 +489,17 @@ func unusedBytes(data []byte, page int, fl freelist) ([]bool, string, error) {
 	return unused, "b-tree page, unallocated space and freeblocks", nil
 }
 
+// differingPage describes one page whose bytes differ: how many bytes, what
+// kind of page it is in the two files, and how many of the bytes are outside
+// unused space.
+type differingPage struct {
+	Page, Count, InUse int
+	Kind               string
+}
+
 type unusedReport struct {
 	OnlyUnused    bool
-	Kinds         []string
+	Pages         []differingPage
 	LeafPages     []int
 	FreelistPages []int
 }
@@ -498,7 +528,7 @@ func classifyImages(dataA, dataB []byte, d fileDiff) unusedReport {
 	freeB, errB := readFreelist(dataB)
 	if errA != nil || errB != nil {
 		report.OnlyUnused = false
-		report.Kinds = append(report.Kinds, fmt.Sprintf("freelist unreadable: %v / %v", errA, errB))
+		report.Pages = append(report.Pages, differingPage{Kind: fmt.Sprintf("freelist unreadable: %v / %v", errA, errB)})
 		return report
 	}
 	for _, page := range d.DifferingPages {
@@ -506,7 +536,7 @@ func classifyImages(dataA, dataB []byte, d fileDiff) unusedReport {
 		unusedB, kindB, errB := unusedBytes(dataB, page, freeB)
 		if errA != nil || errB != nil {
 			report.OnlyUnused = false
-			report.Kinds = append(report.Kinds, fmt.Sprintf("page %d: unparseable (%v / %v)", page, errA, errB))
+			report.Pages = append(report.Pages, differingPage{Page: page, Kind: fmt.Sprintf("unparseable (%v / %v)", errA, errB)})
 			continue
 		}
 		base := (page - 1) * pageSize
@@ -530,10 +560,7 @@ func classifyImages(dataA, dataB []byte, d fileDiff) unusedReport {
 		if kindB != kindA {
 			kind = kindA + " / " + kindB
 		}
-		if inUse > 0 {
-			kind += fmt.Sprintf("; %d of these bytes are outside unused space", inUse)
-		}
-		report.Kinds = append(report.Kinds, fmt.Sprintf("page %d: %d bytes (%s)", page, count, kind))
+		report.Pages = append(report.Pages, differingPage{Page: page, Count: count, InUse: inUse, Kind: kind})
 	}
 	return report
 }
@@ -575,19 +602,25 @@ func main() {
 	if err != nil {
 		fatal("work dir", err)
 	}
-	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
+	set = results.MustOpen(work)
+	openTables()
+	tables.infoRun.Row("work dir", displayPath(dir))
 
 	r := recipe.Default()
-	fmt.Printf("recipe: %s (index created at step %d, settings: %s; %s)\n", r, recipe.IndexStep, r.SQLiteOptions().File, r.SQLiteOptions().Conn)
+	tables.recipe.Row("recipe", r.String())
+	tables.recipe.Row("index_step", recipe.IndexStep)
+	tables.recipe.Row("file_settings", r.SQLiteOptions().File)
+	tables.recipe.Row("conn_settings", r.SQLiteOptions().Conn)
 	plan, err := r.Plan()
 	if err != nil {
 		fatal("plan", err)
 	}
 	for _, s := range plan {
-		fmt.Printf("  %s\n", s.Summary())
+		counts := s.Counts()
+		tables.plan.Row(s.Number, counts.Schema, counts.Inserts, counts.Updates, counts.Deletes, counts.Indexes)
 	}
 
-	fmt.Println("\n== R0: rebuild the recipe twice ==")
+	part = "A"
 	if err := os.MkdirAll(filepath.Join(dir, "run-1"), 0o755); err != nil {
 		fatal("mkdir", err)
 	}
@@ -598,15 +631,11 @@ func main() {
 	second := filepath.Join(dir, "run-2", "elsewhere", "another-name.db")
 	started := time.Now()
 	firstHashes := rebuild(ctx, r, first)
-	fmt.Printf("INFO: one build of %d steps took %s\n", r.Steps, time.Since(started).Round(time.Millisecond))
+	tables.infoRun.Row("one build", fmt.Sprintf("%d steps took %s", r.Steps, time.Since(started).Round(time.Millisecond)))
 	secondHashes := rebuild(ctx, r, second)
-	fmt.Printf("run 1 (run-1/recipe.db): %d pages, sha256 %s\n", pages(first), hashOf(first).Exact)
-	fmt.Printf("run 2 (run-2/elsewhere/another-name.db): %d pages, sha256 %s\n", pages(second), hashOf(second).Exact)
+	tables.runs.Row(r.JournalMode, 1, "run-1/recipe.db", pages(first), hashOf(first).Exact)
+	tables.runs.Row(r.JournalMode, 2, "run-2/elsewhere/another-name.db", pages(second), hashOf(second).Exact)
 	check(hashOf(first) == hashOf(second), "two builds of the recipe in different directories under different names are byte-identical")
-	fmt.Println("per-step state hashes (sha256 of the closed file after step k):")
-	for k, h := range firstHashes {
-		fmt.Printf("  step %2d %s\n", k, h.Exact)
-	}
 	check(slices.Equal(firstHashes, secondHashes), fmt.Sprintf("the per-step hash lists of the two runs are identical (%d states)", len(firstHashes)))
 	distinct := map[string]bool{}
 	for _, h := range firstHashes {
@@ -617,6 +646,9 @@ func main() {
 	if err != nil {
 		fatal("step hashes", err)
 	}
+	for k, h := range firstHashes {
+		tables.stepHashes.Row(r.JournalMode, k, h.Exact, secondHashes[k].Exact, cached[k].Exact)
+	}
 	check(slices.Equal(cached, firstHashes), "recipe.StepHashes (the cached list later chapters use) equals the list just built")
 	middle := filepath.Join(dir, "run-1", "to-step-12.db")
 	if err := r.Build(ctx, middle, 12); err != nil {
@@ -626,7 +658,7 @@ func main() {
 	if err != nil {
 		fatal("match", err)
 	}
-	fmt.Printf("lookup: a database built to step 12 is %s\n", match)
+	tables.lookup.Row(12, match.Step, match.Exact)
 	check(match == recipe.Match{Step: 12, Exact: true}, "recipe.MatchStep names the step a database equals")
 
 	deleteRecipe := r.WithJournalMode(sqlitex.JournalDelete)
@@ -634,55 +666,53 @@ func main() {
 	deleteB := filepath.Join(dir, "run-2", "recipe-delete.db")
 	deleteHashesA := rebuild(ctx, deleteRecipe, deleteA)
 	deleteHashesB := rebuild(ctx, deleteRecipe, deleteB)
-	fmt.Printf("same recipe in rollback mode (journal_mode=delete): sha256 %s\n", hashOf(deleteA).Exact)
+	tables.runs.Row(deleteRecipe.JournalMode, 1, "run-1/recipe-delete.db", pages(deleteA), hashOf(deleteA).Exact)
+	tables.runs.Row(deleteRecipe.JournalMode, 2, "run-2/recipe-delete.db", pages(deleteB), hashOf(deleteB).Exact)
+	for k := range deleteHashesA {
+		tables.stepHashes.Row(deleteRecipe.JournalMode, k, deleteHashesA[k].Exact, deleteHashesB[k].Exact, nil)
+	}
 	check(slices.Equal(deleteHashesA, deleteHashesB), "the rollback-mode recipe also rebuilds byte for byte at every step")
-	modes := compareFiles(first, deleteA)
-	fmt.Printf("WAL build vs rollback build of the same recipe: %s\n", modes)
+	record("0", "WAL build vs rollback build of the same recipe", compareFiles(first, deleteA))
 
-	fmt.Printf("\n== broken variants: recipe to step %d, then one extra transaction, each run twice into fresh files ==\n", variantBase)
+	part = "B"
 	randomDiff := runTwice(ctx, r, dir, variant{
 		name:      "random",
 		rule:      "no SQL random()",
 		statement: []string{"INSERT INTO events(id, account_id, kind, amount, note) VALUES(900001, 1, 'fee', random(), 'random')"},
 	})
-	fmt.Printf("1. SQL random() in a value: %s\n", randomDiff)
+	record("1", "SQL random() in a value", randomDiff)
 	check(!randomDiff.Equal, "SQL random() makes two runs differ")
 
 	sameSecond, nextSecond := timestampVariant(ctx, r, dir)
-	fmt.Printf("2. current_timestamp in a value, two runs inside one wall-clock second: %s\n", sameSecond)
-	fmt.Printf("   current_timestamp in a value, third run one second later: %s\n", nextSecond)
+	record("2a", "current_timestamp, two runs inside one wall-clock second", sameSecond)
+	record("2b", "current_timestamp, third run one second later", nextSecond)
 	check(sameSecond.Equal && !nextSecond.Equal, "current_timestamp makes runs differ once the wall clock's second changes (its resolution is one second, so two fast runs can still match)")
 
 	unordered := "INSERT INTO archive(account_id, amount) SELECT account_id, amount FROM events WHERE amount > 0"
 	ordered := unordered + " ORDER BY id"
 	createArchive := "CREATE TABLE archive(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, amount INTEGER NOT NULL)"
 	unorderedSame := runTwice(ctx, r, dir, variant{name: "unordered", statement: []string{createArchive, unordered}})
-	fmt.Printf("3. INSERT ... SELECT without ORDER BY (rowids from scan order), same plan twice: %s\n", unorderedSame)
+	record("3a", "INSERT ... SELECT without ORDER BY, same plan twice", unorderedSame)
 	unorderedPlan := runTwiceWithPlanChange(ctx, r, dir, "unordered-plan", createArchive, unordered)
-	fmt.Printf("   the same statement, run 2 with a different scan order (PRAGMA reverse_unordered_selects=ON): %s\n", unorderedPlan)
+	record("3b", "same statement, run 2 with reverse_unordered_selects=ON", unorderedPlan)
 	orderedPlan := runTwiceWithPlanChange(ctx, r, dir, "ordered-plan", createArchive, ordered)
-	fmt.Printf("   with ORDER BY id, run 2 with reverse_unordered_selects=ON: %s\n", orderedPlan)
+	record("3c", "with ORDER BY id, run 2 with reverse_unordered_selects=ON", orderedPlan)
 	check(unorderedSame.Equal, "FINDING: an unordered INSERT ... SELECT run twice on the same build with the same plan gives identical files")
 	check(!unorderedPlan.Equal && orderedPlan.Equal, "an unordered INSERT ... SELECT changes the file when the scan order changes; ORDER BY removes the dependence")
 
 	batchesWAL, _ := batchVariant(ctx, r, dir, "ON")
-	fmt.Printf("4. steps 0-%d on one connection, steps 2+3 and 4+5 each committed as one transaction instead of two:\n", variantBase)
-	fmt.Printf("   WAL mode, recipe settings (secure_delete=ON): %s\n", batchesWAL)
+	record("4a", "WAL, recipe settings (secure_delete=ON)", batchesWAL)
 	batchesWALOff, unusedWALOff := batchVariant(ctx, r, dir, "OFF")
-	fmt.Printf("   WAL mode, secure_delete=OFF: %s\n", batchesWALOff)
-	for _, kind := range unusedWALOff.Kinds {
-		fmt.Printf("     %s\n", kind)
-	}
+	record("4b", "WAL, secure_delete=OFF", batchesWALOff)
+	recordUnused("4b", unusedWALOff)
 	batchesDelete, _ := batchVariant(ctx, deleteRecipe, dir, "ON")
-	fmt.Printf("   rollback mode, secure_delete=ON: %s\n", batchesDelete)
+	record("4c", "rollback, secure_delete=ON", batchesDelete)
 	check(batchesWAL.Equal, "FINDING: in WAL mode on one connection with secure_delete=ON, different transaction batches give identical files")
 	check(!batchesWALOff.Equal && unusedWALOff.OnlyUnused, "with secure_delete=OFF different batches differ, and only in bytes no cell uses (stale content left in unallocated space, freeblocks or freelist pages)")
 	check(onlyChangeCounter(batchesDelete), "in rollback mode different batches differ, and with secure_delete=ON only in the change counter (it counts commits)")
 	fastVsOn, fastVsOnUnused := secureDeleteFastVariant(ctx, r, dir)
-	fmt.Printf("   WAL mode, one transaction per step, secure_delete=FAST vs secure_delete=ON: %s\n", fastVsOn)
-	for _, kind := range fastVsOnUnused.Kinds {
-		fmt.Printf("     %s\n", kind)
-	}
+	record("4d", "WAL, one transaction per step: secure_delete=FAST vs ON", fastVsOn)
+	recordUnused("4d", fastVsOnUnused)
 	check(!fastVsOn.Equal && fastVsOnUnused.OnlyUnused && slices.Equal(fastVsOnUnused.FreelistPages, fastVsOn.DifferingPages), "secure_delete=FAST is not ON: on the same history FAST leaves old bytes in the unused space of freelist pages that ON zeroes")
 
 	rowidDiff := runTwice(ctx, r, dir, variant{
@@ -693,42 +723,32 @@ func main() {
 			"INSERT INTO tickets(label) VALUES('next')",
 		},
 	})
-	fmt.Printf("5. an insert without an id after rowid %s (SQLite picks a random unused rowid): %s\n", maxRowid, rowidDiff)
+	record("5", "insert without an id after the maximum rowid", rowidDiff)
 	check(!rowidDiff.Equal, "rowid assignment past the maximum rowid makes two runs differ")
 
-	fmt.Println("\n== a source of variation the outline did not list: connection sessions ==")
+	part = "C"
 	walSessions := sessionVariant(ctx, r, dir)
 	deleteSessions := sessionVariant(ctx, deleteRecipe, dir)
 	walSessionsNoPage1 := sessionsWithoutPage1(ctx, r, dir)
-	fmt.Printf("6. WAL mode, steps 0-%d one connection per step vs one connection for all steps: %s\n", variantBase, walSessions)
-	fmt.Printf("   rollback mode, the same comparison: %s\n", deleteSessions)
+	record("6a", "WAL, one connection per step vs one for all steps", walSessions)
+	record("6b", "rollback, the same comparison", deleteSessions)
 	check(onlyChangeCounter(walSessions), "FINDING: in WAL mode the number of connection sessions changes the file, and only the change counter (bytes 24-27 and 92-95)")
 	check(deleteSessions.Equal, "in rollback mode the number of connection sessions does not change the file")
-	fmt.Printf("   WAL mode, recipe to step %d, then %d commits that never write page 1, one connection per commit vs one connection for all: %s\n", variantBase, page1UntouchedCommits, walSessionsNoPage1)
+	record("6c", fmt.Sprintf("WAL, %d commits that never write page 1: one connection each vs one for all", page1UntouchedCommits), walSessionsNoPage1)
 	check(walSessionsNoPage1.Equal, "in WAL mode only a commit that writes page 1 writes the change counter: sessions whose commits never touch page 1 leave the file identical")
 
-	fmt.Println("\n== a source of variation the outline did not list: rolled-back work inside a committed transaction ==")
+	part = "D"
 	walAborted, walAbortedUnused := abortedSavepointVariant(ctx, r, dir)
 	deleteAborted, deleteAbortedUnused := abortedSavepointVariant(ctx, deleteRecipe, dir)
-	fmt.Printf("7. recipe to step %d, then one transaction committing one INSERT; run 2 first inserts %d documents of %d bytes inside a SAVEPOINT and rolls back to it\n", variantBase, abortedDocuments, abortedDocumentBytes)
-	fmt.Printf("   WAL mode, secure_delete=ON: %s\n", walAborted)
-	for _, kind := range walAbortedUnused.Kinds {
-		fmt.Printf("     %s\n", kind)
-	}
-	fmt.Printf("   rollback mode, secure_delete=ON: %s\n", deleteAborted)
-	for _, kind := range deleteAbortedUnused.Kinds {
-		fmt.Printf("     %s\n", kind)
-	}
+	record("7a", "WAL, secure_delete=ON", walAborted)
+	recordUnused("7a", walAbortedUnused)
+	record("7b", "rollback, secure_delete=ON", deleteAborted)
+	recordUnused("7b", deleteAbortedUnused)
 	walRest := slices.DeleteFunc(slices.Clone(walAborted.DifferingPages), func(page int) bool { return page == 1 })
 	check(!walAborted.Equal && onlyCounterBytes(walAborted.Page1Bytes) && len(walRest) > 0 && slices.Equal(walRest, walAbortedUnused.LeafPages), "WAL mode: a rolled-back SAVEPOINT changes the committed file even with secure_delete=ON: reused freelist leaf pages keep the rolled-back bytes, and page 1's change counter moves")
 	check(!deleteAborted.Equal && deleteAbortedUnused.OnlyUnused && slices.Equal(deleteAbortedUnused.LeafPages, deleteAborted.DifferingPages), "rollback mode: a rolled-back SAVEPOINT leaves the rolled-back bytes in reused freelist leaf pages (secure_delete=ON does not clear them)")
 
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("RECIPE REBUILD FAILED: %d claim(s) do not hold: %s\n", len(failures), strings.Join(failures, "; "))
-		os.Exit(1)
-	}
-	fmt.Println("RECIPE REBUILD OK")
+	set.Finish("RECIPE REBUILD")
 }
 
 const touchAccountSQL = "UPDATE accounts SET balance = balance + 1 WHERE id = 1"
@@ -773,7 +793,8 @@ func sessionsWithoutPage1(ctx context.Context, r recipe.Recipe, dir string) file
 	if err := recipe.CheckAtRest(oneSession); err != nil {
 		fatal("at rest", err)
 	}
-	fmt.Printf("INFO: page1-untouched sha256 one-per-commit %s, one-for-all %s\n", hashOf(perSession).Exact, hashOf(oneSession).Exact)
+	infoHash("page1-untouched", "one per commit", hashOf(perSession).Exact)
+	infoHash("page1-untouched", "one for all", hashOf(oneSession).Exact)
 	return compareFiles(perSession, oneSession)
 }
 
@@ -798,7 +819,8 @@ func abortedSavepointVariant(ctx context.Context, r recipe.Recipe, dir string) (
 	applyStatementsInSession(ctx, r, clean, nil, committedEventSQL)
 	insertDocuments := fmt.Sprintf("WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < %d) INSERT INTO documents(id, account_id, title, body) SELECT 900000 + i, 1, 'aborted', unhex(replace(hex(zeroblob(%d)), '00', 'AB')) FROM n", abortedDocuments-1, abortedDocumentBytes)
 	applyStatementsInSession(ctx, r, aborted, nil, "SAVEPOINT aborted", insertDocuments, "ROLLBACK TO aborted", "RELEASE aborted", committedEventSQL)
-	fmt.Printf("INFO: savepoint %s sha256 never-run %s, rolled-back %s\n", r.JournalMode, hashOf(clean).Exact, hashOf(aborted).Exact)
+	infoHash("savepoint "+r.JournalMode, "never run", hashOf(clean).Exact)
+	infoHash("savepoint "+r.JournalMode, "rolled back", hashOf(aborted).Exact)
 	d := compareFiles(clean, aborted)
 	return d, classifyDifferences(clean, aborted, d)
 }

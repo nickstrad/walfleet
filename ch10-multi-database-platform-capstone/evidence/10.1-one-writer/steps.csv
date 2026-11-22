@@ -1,0 +1,16 @@
+step,node,command,reply,descriptors,model_agrees
+1,a,claim db-0001,"ok claim db-0001: epoch 1, restored position 0, fence at position 1, attempts 1",0,true
+2,a,write db-0001 store-durable,"ok write db-0001 store-durable: acknowledged at epoch 1, user_version 1, stored through position 2",7,true
+3,a,write db-0001 local-durable,"ok write db-0001 local-durable: acknowledged at epoch 1, user_version 2, committed locally (not yet in the store)",7,true
+4,b,claim db-0001,"ok claim db-0001: epoch 2, restored position 2, fence at position 3, attempts 2",0,true
+5,a,write db-0001 store-durable,"refused write db-0001 store-durable: fenced: db-0001 position 3 is held by epoch 2, this writer has epoch 1",0,true
+6,a,write db-0001 local-durable,"refused write db-0001 local-durable: fenced: db-0001 position 3 is held by epoch 2, this writer has epoch 1",0,true
+7,b,write db-0001 store-durable,"ok write db-0001 store-durable: acknowledged at epoch 2, user_version 2, stored through position 4",7,true
+8,b,claim db-0002,"ok claim db-0002: epoch 1, restored position 0, fence at position 1, attempts 1",7,true
+9,b,write db-0002 store-durable,"ok write db-0002 store-durable: acknowledged at epoch 1, user_version 1, stored through position 2",14,true
+10,a,claim db-0002,"ok claim db-0002: epoch 2, restored position 2, fence at position 3, attempts 1",0,true
+11,b,kill,,,
+12,b,restart,,,
+13,b,write db-0002 store-durable,"refused write db-0002 store-durable: fenced: db-0002 position 3 is held by epoch 2, this writer has epoch 1",0,true
+14,b,write db-0001 store-durable,"ok write db-0001 store-durable: acknowledged at epoch 2, user_version 3, stored through position 5",7,true
+15,a,write db-0002 store-durable,"ok write db-0002 store-durable: acknowledged at epoch 2, user_version 2, stored through position 4",7,true

@@ -1,0 +1,6 @@
+seq,part,label,journal_bytes,first_byte,hot,header,record_count,initial_pages,sector_size,page_size,records,record_pages,checksum_failures,trailing_bytes
+1,C,"step 3 executed, COMMIT not yet issued",29240,0,false,not-yet-synced,0,29,512,4096,7,2 1 20 3 27 4 26,0,0
+2,E,mid-write crash,29240,217,true,synced,7,29,512,4096,7,2 1 20 3 27 4 26,0,0
+3,F,delete,,,,,,,,,,,,
+4,F,truncate,0,,false,,,,,,,,,
+5,F,persist,29240,0,false,zeroed,,,,,,,,

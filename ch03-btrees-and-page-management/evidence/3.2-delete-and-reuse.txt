@@ -1,96 +1,238 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/3.2
-settings: page_size=4096, journal_mode=wal, synchronous=FULL; files are read only after their connection closed
 
-== secure_delete=OFF (WAL; every step is its own connection, so the file is at rest and checkpointed when it is read)
-1. 400 rows of 1000-byte blobs (each blob repeats a marker like "SECRET-000150"): file 417792 bytes = 102 pages; freelist 0 page(s) (trunk [], 0 leaves); 100 table-leaf pages
-2. DELETE FROM t WHERE id BETWEEN 99 AND 302 (204 rows, held on leaf pages 27-78): file 417792 bytes = 102 pages; freelist 50 page(s) (trunk [29], 49 leaves)
-   pages now on the freelist: 29-78; of them, former leaves of the deleted rows: 50
-   the DELETE's commit wrote 5 WAL frames
-check ok: the file does not shrink on delete
-check ok: pages emptied by the delete moved to the freelist
-   search for the deleted markers: 199 of 204 deleted rows still readable in the file, on 52 page(s): freelist-leaf=49 freelist-trunk=1 table-leaf=2
-3. 100 new rows (ids 1001..1100): file 417792 bytes = 102 pages; freelist 25 page(s) (trunk [29], 24 leaves)
-   leaf pages holding the new rows: 30,55-78; of them taken from the freelist: 25
-check ok: the new rows fit in the file: its size is unchanged
-check ok: every leaf page of the new rows is a former freelist page
-   search for the deleted markers: 104 of 204 deleted rows still readable in the file, on 27 page(s): freelist-leaf=24 freelist-trunk=1 table-leaf=2
-4. 30 more transactions of 4 rows each: file 438272 bytes = 107 pages; freelist 0 page(s) (trunk [], 0 leaves)
-   batch 1: freelist 25->24, page_count 102->102
-   batch 25: freelist 1->0, page_count 102->102
-   batch 26: freelist 0->0, page_count 102->103
-   batch 27: freelist 0->0, page_count 103->104
-   ... (2 more batches that grew the file)
-   batch 30: freelist 0->0, page_count 106->107
-check ok: page_count grows only once the freelist is used up: every transaction that added pages ended with an empty freelist
-check ok: once the freelist is used up, the file grows
-5. DELETE FROM t WHERE id >= 1001: file 438272 bytes = 107 pages; freelist 55 page(s) (trunk [102], 54 leaves)
-check ok: the file still does not shrink
-   search for the NEW- and GROW- markers just deleted: 217 of 220 deleted rows still readable in the file, on 55 page(s): freelist-leaf=54 freelist-trunk=1
-6. VACUUM: file 208896 bytes = 51 pages; freelist 0 page(s) (trunk [], 0 leaves)
-   search for the deleted markers: 0 of 424 deleted rows still readable in the file, on 0 page(s)
-check ok: VACUUM is what returns space: 107 pages -> 51, at least the 55 freelist pages are gone
-check ok: after VACUUM no marker of a row deleted in step 2 or step 5 is left in the file
+════════════════════════════════════════════════════════════════════════
+  3.2  Does a DELETE return space or erase bytes?
+════════════════════════════════════════════════════════════════════════
 
-== secure_delete=ON (WAL; every step is its own connection, so the file is at rest and checkpointed when it is read)
-1. 400 rows of 1000-byte blobs (each blob repeats a marker like "SECRET-000150"): file 417792 bytes = 102 pages; freelist 0 page(s) (trunk [], 0 leaves); 100 table-leaf pages
-2. DELETE FROM t WHERE id BETWEEN 99 AND 302 (204 rows, held on leaf pages 27-78): file 417792 bytes = 102 pages; freelist 50 page(s) (trunk [29], 49 leaves)
-   pages now on the freelist: 29-78; of them, former leaves of the deleted rows: 50
-   the DELETE's commit wrote 54 WAL frames
-check ok: the file does not shrink on delete
-check ok: pages emptied by the delete moved to the freelist
-   search for the deleted markers: 0 of 204 deleted rows still readable in the file, on 0 page(s)
-3. 100 new rows (ids 1001..1100): file 417792 bytes = 102 pages; freelist 25 page(s) (trunk [29], 24 leaves)
-   leaf pages holding the new rows: 30,55-78; of them taken from the freelist: 25
-check ok: the new rows fit in the file: its size is unchanged
-check ok: every leaf page of the new rows is a former freelist page
-   search for the deleted markers: 0 of 204 deleted rows still readable in the file, on 0 page(s)
-4. 30 more transactions of 4 rows each: file 438272 bytes = 107 pages; freelist 0 page(s) (trunk [], 0 leaves)
-   batch 1: freelist 25->24, page_count 102->102
-   batch 25: freelist 1->0, page_count 102->102
-   batch 26: freelist 0->0, page_count 102->103
-   batch 27: freelist 0->0, page_count 103->104
-   ... (2 more batches that grew the file)
-   batch 30: freelist 0->0, page_count 106->107
-check ok: page_count grows only once the freelist is used up: every transaction that added pages ended with an empty freelist
-check ok: once the freelist is used up, the file grows
-5. DELETE FROM t WHERE id >= 1001: file 438272 bytes = 107 pages; freelist 55 page(s) (trunk [102], 54 leaves)
-check ok: the file still does not shrink
-   search for the NEW- and GROW- markers just deleted: 0 of 220 deleted rows still readable in the file, on 0 page(s)
-6. VACUUM: file 208896 bytes = 51 pages; freelist 0 page(s) (trunk [], 0 leaves)
-   search for the deleted markers: 0 of 424 deleted rows still readable in the file, on 0 page(s)
-check ok: VACUUM is what returns space: 107 pages -> 51, at least the 55 freelist pages are gone
-check ok: after VACUUM no marker of a row deleted in step 2 or step 5 is left in the file
+Table t(id INTEGER PRIMARY KEY, v BLOB). Each blob is 1000 bytes and repeats
+a marker such as SECRET-000150, so a deleted row can be searched for in the
+file. Parts A and B run the same six steps with secure_delete=OFF and ON.
+Every step is its own connection, so the file is at rest and checkpointed
+when it is read. Settings: journal_mode=wal, synchronous=FULL.
 
-== comparison
-file sizes, secure_delete=OFF: [417792 417792 417792 438272 438272 208896]
-file sizes, secure_delete=ON:  [417792 417792 417792 438272 438272 208896]
-deleted rows readable after the delete: OFF 199, ON 0
-deleted rows readable after the reuse:  OFF 104, ON 0
-WAL frames written by the DELETE of 204 rows: OFF 5, ON 54
-check ok: secure_delete costs WAL frames: the zeroed pages are written, while without it freed leaf pages are not written at all
-check ok: without secure_delete the deleted payload bytes are still in the file
-check ok: without secure_delete freelist leaf pages keep their old content
-check ok: the second delete leaves its rows readable too without secure_delete
-check ok: with secure_delete the deleted payload bytes are nowhere in the database file at rest
-check ok: secure_delete changes the bytes, not the layout: file sizes are the same at every step
+The constants:
+┌──────────────┬───────┐
+│     name     │ value │
+├──────────────┼───────┤
+│ blob_bytes   │ 1000  │
+│ delete_first │ 99    │
+│ delete_last  │ 302   │
+│ grow_batches │ 30    │
+│ initial_rows │ 400   │
+│ page_size    │ 4096  │
+│ reuse_rows   │ 100   │
+│ rows_per_tx  │ 4     │
+└──────────────┴───────┘
 
-== a transaction that needs more pages than the freelist holds (secure_delete=ON, WAL)
-40 rows, then DELETE of ids 1..8: freelist 2, page_count 12
-one transaction of 32 new rows (8 leaves' worth): freelist 2 -> 0, page_count 12 -> 18
-check ok: a transaction that needs more pages than the freelist holds takes the freelist pages first, then grows the file in the same transaction: so the rule is per page allocation, not per transaction
+── A. secure_delete=OFF (the default) ─────────────────────────────
 
-== auto_vacuum: the file shrinks on its own only when the database was created with auto_vacuum FULL or INCREMENTAL
-  auto_vacuum=NONE        200 rows: 52 pages; DELETE of 150 rows: 52 pages, freelist 37; PRAGMA incremental_vacuum: 52 pages
-  auto_vacuum=FULL        200 rows: 53 pages; DELETE of 150 rows: 16 pages, freelist 0; PRAGMA incremental_vacuum: 16 pages
-  auto_vacuum=INCREMENTAL 200 rows: 53 pages; DELETE of 150 rows: 53 pages, freelist 37; PRAGMA incremental_vacuum: 16 pages
-check ok: auto_vacuum=NONE (SQLite's default and the recipe's): the file never shrinks on its own; PRAGMA incremental_vacuum does nothing
-check ok: auto_vacuum=FULL: the DELETE's own commit moves pages and truncates the file, leaving no freelist
-check ok: auto_vacuum=INCREMENTAL: freed pages wait on the freelist until PRAGMA incremental_vacuum truncates the file
+A1. The file after each step. Steps: 1 insert the rows, 2 delete ids 99..302,
+    3 insert 100 new rows (ids 1001..1100), 4 insert 30 transactions of 4 rows,
+    5 delete ids >= 1001, 6 VACUUM. Only VACUUM makes the file smaller.
+┌──────┬────────────────────────┬────────────┬───────┬────────────────┬───────┬─────────────────┬──────────────────┐
+│ step │          what          │ file_bytes │ pages │ freelist_pages │ trunk │ freelist_leaves │ table_leaf_pages │
+├──────┼────────────────────────┼────────────┼───────┼────────────────┼───────┼─────────────────┼──────────────────┤
+│ 1    │ insert the rows        │ 417792     │ 102   │ 0              │       │ 0               │ 100              │
+│ 2    │ delete rows            │ 417792     │ 102   │ 50             │ 29    │ 49              │ 50               │
+│ 3    │ insert new rows        │ 417792     │ 102   │ 25             │ 29    │ 24              │ 75               │
+│ 4    │ grow with more inserts │ 438272     │ 107   │ 0              │       │ 0               │ 105              │
+│ 5    │ delete the new rows    │ 438272     │ 107   │ 55             │ 102   │ 54              │ 50               │
+│ 6    │ VACUUM                 │ 208896     │ 51    │ 0              │       │ 0               │ 49               │
+└──────┴────────────────────────┴────────────┴───────┴────────────────┴───────┴─────────────────┴──────────────────┘
 
-== secure_delete=ON and the -wal file (wal_autocheckpoint=0, one connection)
-40 rows inserted then deleted; deleted rows readable in the -wal: after the DELETE 40 of 40, after wal_checkpoint(PASSIVE) 40, after wal_checkpoint(TRUNCATE) 0; in the database file at rest: 0
-check ok: secure_delete zeroes the database pages, but the -wal still holds the frames the INSERT wrote: every deleted row stays readable there, even after a PASSIVE checkpoint copied the zeroed pages back
-check ok: only when the WAL is reset (here by wal_checkpoint(TRUNCATE)) are the deleted rows gone from the files on disk
+A2. Step 2: the delete empties leaf pages and moves them to the freelist.
+    Compare held_on_leaf_pages with freelist_pages. wal_frames is what the
+    commit of the DELETE wrote to the -wal.
+┌──────────────┬────────────────────┬────────────────┬─────────────────────┬────────────┐
+│ rows_deleted │ held_on_leaf_pages │ freelist_pages │ former_leaves_freed │ wal_frames │
+├──────────────┼────────────────────┼────────────────┼─────────────────────┼────────────┤
+│ 204          │ 27-78              │ 29-78          │ 50                  │ 5          │
+└──────────────┴────────────────────┴────────────────┴─────────────────────┴────────────┘
 
-DELETE AND REUSE OK
+A3. Step 3: the new rows go into former freelist pages, so the file does not grow.
+┌──────────┬────────────────┬────────────────┬─────────────────────┐
+│ new_rows │ new_leaf_pages │ new_leaf_count │ taken_from_freelist │
+├──────────┼────────────────┼────────────────┼─────────────────────┤
+│ 100      │ 30,55-78       │ 25             │ 25                  │
+└──────────┴────────────────┴────────────────┴─────────────────────┘
+
+A4. Step 4: page_count grows only when the freelist is empty. Batch 1, every
+    batch that grew the file, and the batch that emptied the freelist:
+┌───────┬─────────────────┬────────────────┬──────────────┬─────────────┐
+│ batch │ freelist_before │ freelist_after │ pages_before │ pages_after │
+├───────┼─────────────────┼────────────────┼──────────────┼─────────────┤
+│ 1     │ 25              │ 24             │ 102          │ 102         │
+│ 25    │ 1               │ 0              │ 102          │ 102         │
+│ 26    │ 0               │ 0              │ 102          │ 103         │
+│ 27    │ 0               │ 0              │ 103          │ 104         │
+│ 28    │ 0               │ 0              │ 104          │ 105         │
+│ 29    │ 0               │ 0              │ 105          │ 106         │
+│ 30    │ 0               │ 0              │ 106          │ 107         │
+└───────┴─────────────────┴────────────────┴──────────────┴─────────────┘
+
+A5. Searching the file at rest for the markers of the deleted rows. roles names
+    the kind of page each marker was found on.
+┌──────┬───────────────────┬─────────────┬────────────┬────────────────────┬────────────────────────────────────────────────┐
+│ step │ markers_searched  │ rows_sought │ rows_found │ pages_with_markers │                     roles                      │
+├──────┼───────────────────┼─────────────┼────────────┼────────────────────┼────────────────────────────────────────────────┤
+│ 2    │ SECRET            │ 204         │ 199        │ 52                 │ freelist-leaf=49 freelist-trunk=1 table-leaf=2 │
+│ 3    │ SECRET            │ 204         │ 104        │ 27                 │ freelist-leaf=24 freelist-trunk=1 table-leaf=2 │
+│ 5    │ NEW, GROW         │ 220         │ 217        │ 55                 │ freelist-leaf=54 freelist-trunk=1              │
+│ 6    │ SECRET, NEW, GROW │ 424         │ 0          │ 0                  │                                                │
+└──────┴───────────────────┴─────────────┴────────────┴────────────────────┴────────────────────────────────────────────────┘
+
+── B. secure_delete=ON ─────────────────────────────
+
+B1. The file after each step. Steps: 1 insert the rows, 2 delete ids 99..302,
+    3 insert 100 new rows (ids 1001..1100), 4 insert 30 transactions of 4 rows,
+    5 delete ids >= 1001, 6 VACUUM. Only VACUUM makes the file smaller.
+┌──────┬────────────────────────┬────────────┬───────┬────────────────┬───────┬─────────────────┬──────────────────┐
+│ step │          what          │ file_bytes │ pages │ freelist_pages │ trunk │ freelist_leaves │ table_leaf_pages │
+├──────┼────────────────────────┼────────────┼───────┼────────────────┼───────┼─────────────────┼──────────────────┤
+│ 1    │ insert the rows        │ 417792     │ 102   │ 0              │       │ 0               │ 100              │
+│ 2    │ delete rows            │ 417792     │ 102   │ 50             │ 29    │ 49              │ 50               │
+│ 3    │ insert new rows        │ 417792     │ 102   │ 25             │ 29    │ 24              │ 75               │
+│ 4    │ grow with more inserts │ 438272     │ 107   │ 0              │       │ 0               │ 105              │
+│ 5    │ delete the new rows    │ 438272     │ 107   │ 55             │ 102   │ 54              │ 50               │
+│ 6    │ VACUUM                 │ 208896     │ 51    │ 0              │       │ 0               │ 49               │
+└──────┴────────────────────────┴────────────┴───────┴────────────────┴───────┴─────────────────┴──────────────────┘
+
+B2. Step 2: the delete empties leaf pages and moves them to the freelist.
+    Compare held_on_leaf_pages with freelist_pages. wal_frames is what the
+    commit of the DELETE wrote to the -wal.
+┌──────────────┬────────────────────┬────────────────┬─────────────────────┬────────────┐
+│ rows_deleted │ held_on_leaf_pages │ freelist_pages │ former_leaves_freed │ wal_frames │
+├──────────────┼────────────────────┼────────────────┼─────────────────────┼────────────┤
+│ 204          │ 27-78              │ 29-78          │ 50                  │ 54         │
+└──────────────┴────────────────────┴────────────────┴─────────────────────┴────────────┘
+
+B3. Step 3: the new rows go into former freelist pages, so the file does not grow.
+┌──────────┬────────────────┬────────────────┬─────────────────────┐
+│ new_rows │ new_leaf_pages │ new_leaf_count │ taken_from_freelist │
+├──────────┼────────────────┼────────────────┼─────────────────────┤
+│ 100      │ 30,55-78       │ 25             │ 25                  │
+└──────────┴────────────────┴────────────────┴─────────────────────┘
+
+B4. Step 4: page_count grows only when the freelist is empty. Batch 1, every
+    batch that grew the file, and the batch that emptied the freelist:
+┌───────┬─────────────────┬────────────────┬──────────────┬─────────────┐
+│ batch │ freelist_before │ freelist_after │ pages_before │ pages_after │
+├───────┼─────────────────┼────────────────┼──────────────┼─────────────┤
+│ 1     │ 25              │ 24             │ 102          │ 102         │
+│ 25    │ 1               │ 0              │ 102          │ 102         │
+│ 26    │ 0               │ 0              │ 102          │ 103         │
+│ 27    │ 0               │ 0              │ 103          │ 104         │
+│ 28    │ 0               │ 0              │ 104          │ 105         │
+│ 29    │ 0               │ 0              │ 105          │ 106         │
+│ 30    │ 0               │ 0              │ 106          │ 107         │
+└───────┴─────────────────┴────────────────┴──────────────┴─────────────┘
+
+B5. Searching the file at rest for the markers of the deleted rows. roles names
+    the kind of page each marker was found on.
+┌──────┬───────────────────┬─────────────┬────────────┬────────────────────┬───────┐
+│ step │ markers_searched  │ rows_sought │ rows_found │ pages_with_markers │ roles │
+├──────┼───────────────────┼─────────────┼────────────┼────────────────────┼───────┤
+│ 2    │ SECRET            │ 204         │ 0          │ 0                  │       │
+│ 3    │ SECRET            │ 204         │ 0          │ 0                  │       │
+│ 5    │ NEW, GROW         │ 220         │ 0          │ 0                  │       │
+│ 6    │ SECRET, NEW, GROW │ 424         │ 0          │ 0                  │       │
+└──────┴───────────────────┴─────────────┴────────────┴────────────────────┴───────┘
+
+── C. Comparison ───────────────────────────────────────────────────────
+
+C1. secure_delete changes the bytes, not the layout: the file size after each
+    step is the same in both runs.
+┌──────┬────────────────────────┬───────────┬──────────┐
+│ step │          what          │ bytes_off │ bytes_on │
+├──────┼────────────────────────┼───────────┼──────────┤
+│ 1    │ insert the rows        │ 417792    │ 417792   │
+│ 2    │ delete rows            │ 417792    │ 417792   │
+│ 3    │ insert new rows        │ 417792    │ 417792   │
+│ 4    │ grow with more inserts │ 438272    │ 438272   │
+│ 5    │ delete the new rows    │ 438272    │ 438272   │
+│ 6    │ VACUUM                 │ 208896    │ 208896   │
+└──────┴────────────────────────┴───────────┴──────────┘
+
+C2. What a reader of the file finds, and what the DELETE cost in WAL frames:
+┌───────────────┬───────────────────────┬──────────────────────┬──────────────────────────────┬───────────────────┐
+│ secure_delete │ readable_after_delete │ readable_after_reuse │ readable_after_second_delete │ delete_wal_frames │
+├───────────────┼───────────────────────┼──────────────────────┼──────────────────────────────┼───────────────────┤
+│ OFF           │ 199                   │ 104                  │ 217                          │ 5                 │
+│ ON            │ 0                     │ 0                    │ 0                            │ 54                │
+└───────────────┴───────────────────────┴──────────────────────┴──────────────────────────────┴───────────────────┘
+
+── D. A transaction that needs more pages than the freelist holds ──────
+
+secure_delete=ON, WAL. 40 rows, DELETE of ids 1..8, then one transaction of 32
+new rows (8 leaves worth). It takes the freelist pages first and then grows
+the file, all in one transaction.
+┌───────────────┬──────────────┬─────────────────┬────────────────┬───────────────────┬──────────────────┐
+│ rows_inserted │ deleted_rows │ freelist_before │ freelist_after │ page_count_before │ page_count_after │
+├───────────────┼──────────────┼─────────────────┼────────────────┼───────────────────┼──────────────────┤
+│ 32            │ 8            │ 2               │ 0              │ 12                │ 18               │
+└───────────────┴──────────────┴─────────────────┴────────────────┴───────────────────┴──────────────────┘
+
+── E. auto_vacuum ──────────────────────────────────────────────────────
+
+The file shrinks on its own only when the database was created with
+auto_vacuum FULL or INCREMENTAL. Each mode: 200 rows, DELETE of 150 rows,
+then PRAGMA incremental_vacuum, each in its own connection.
+┌─────────────┬───────────────┬────────────────────┬───────────────────────┬────────────────────────────────┐
+│    mode     │ pages_created │ pages_after_delete │ freelist_after_delete │ pages_after_incremental_vacuum │
+├─────────────┼───────────────┼────────────────────┼───────────────────────┼────────────────────────────────┤
+│ NONE        │ 52            │ 52                 │ 37                    │ 52                             │
+│ FULL        │ 53            │ 16                 │ 0                     │ 16                             │
+│ INCREMENTAL │ 53            │ 53                 │ 37                    │ 16                             │
+└─────────────┴───────────────┴────────────────────┴───────────────────────┴────────────────────────────────┘
+
+── F. secure_delete=ON and the -wal file ───────────────────────────────
+
+wal_autocheckpoint=0, one connection. 40 rows are inserted, then deleted. How
+many of the 40 deleted rows can still be read in the -wal, and in the database
+file at rest?
+┌─────────────────────────────────────┬───────────────┬────────────┐
+│              location               │ rows_readable │ rows_total │
+├─────────────────────────────────────┼───────────────┼────────────┤
+│ -wal after the DELETE               │ 40            │ 40         │
+│ -wal after wal_checkpoint(PASSIVE)  │ 40            │ 40         │
+│ -wal after wal_checkpoint(TRUNCATE) │ 0             │ 40         │
+│ database file at rest               │ 0             │ 40         │
+└─────────────────────────────────────┴───────────────┴────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the file does not shrink on delete
+A  ✓  pages emptied by the delete moved to the freelist
+A  ✓  the new rows fit in the file: its size is unchanged
+A  ✓  every leaf page of the new rows is a former freelist page
+A  ✓  page_count grows only once the freelist is used up: every transaction that added pages ended with an empty freelist
+A  ✓  once the freelist is used up, the file grows
+A  ✓  the file still does not shrink
+A  ✓  VACUUM is what returns space: 107 pages -> 51, at least the 55 freelist pages are gone
+A  ✓  after VACUUM no marker of a row deleted in step 2 or step 5 is left in the file
+B  ✓  the file does not shrink on delete
+B  ✓  pages emptied by the delete moved to the freelist
+B  ✓  the new rows fit in the file: its size is unchanged
+B  ✓  every leaf page of the new rows is a former freelist page
+B  ✓  page_count grows only once the freelist is used up: every transaction that added pages ended with an empty freelist
+B  ✓  once the freelist is used up, the file grows
+B  ✓  the file still does not shrink
+B  ✓  VACUUM is what returns space: 107 pages -> 51, at least the 55 freelist pages are gone
+B  ✓  after VACUUM no marker of a row deleted in step 2 or step 5 is left in the file
+C  ✓  secure_delete costs WAL frames: the zeroed pages are written, while without it freed leaf pages are not written at all
+C  ✓  without secure_delete the deleted payload bytes are still in the file
+C  ✓  without secure_delete freelist leaf pages keep their old content
+C  ✓  the second delete leaves its rows readable too without secure_delete
+C  ✓  with secure_delete the deleted payload bytes are nowhere in the database file at rest
+C  ✓  secure_delete changes the bytes, not the layout: file sizes are the same at every step
+D  ✓  a transaction that needs more pages than the freelist holds takes the freelist pages first, then grows the file in the same transaction: so the rule is per page allocation, not per transaction
+E  ✓  auto_vacuum=NONE (SQLite's default and the recipe's): the file never shrinks on its own; PRAGMA incremental_vacuum does nothing
+E  ✓  auto_vacuum=FULL: the DELETE's own commit moves pages and truncates the file, leaving no freelist
+E  ✓  auto_vacuum=INCREMENTAL: freed pages wait on the freelist until PRAGMA incremental_vacuum truncates the file
+F  ✓  secure_delete zeroes the database pages, but the -wal still holds the frames the INSERT wrote: every deleted row stays readable there, even after a PASSIVE checkpoint copied the zeroed pages back
+F  ✓  only when the WAL is reset (here by wal_checkpoint(TRUNCATE)) are the deleted rows gone from the files on disk
+
+30 of 30 claims hold
+
+Experiment verdict: DELETE AND REUSE OK

@@ -1,73 +1,197 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
 
-== A. what open reads and what the first statement reads ==
-each database: WAL mode, at rest, N tables of 4 columns, all empty; first statement: SELECT count(*) FROM t0001
+════════════════════════════════════════════════════════════════════════
+  8.1  What does opening a database cost, and where do settings live?
+════════════════════════════════════════════════════════════════════════
 
-1 table(s): file 2 pages
-  SCHEMA_USED: 0 bytes after open, 827 bytes after the first statement (827 bytes per table)
-INFO: first statement on 1 table(s) took 598µs in this process
-  open             2 event(s): open schema-1.db, read 100 bytes at 0
-  first statement  5 event(s): read page 1, open schema-1.db-wal, open schema-1.db-shm, read page 1, read page 2
-                   whole-page reads of the .db file: 3, distinct pages 2: 1-2
-  close            0 event(s): none
-check ok: 1 table(s): open opens only the database file and reads only its 100-byte header
-check ok: 1 table(s): the first statement reads exactly the sqlite_schema b-tree pages (1, from dbstat) plus t0001's root page
-check ok: 1 table(s): page 1 is read twice: once before the -wal is opened (header byte 19 = 2 sends lockBtree to open the WAL) and once after
-check ok: 1 table(s): nothing is read from the -wal or -shm (the -wal is empty; the -shm is mapped, not read)
-check ok: 1 table(s): the -wal and -shm files are opened at the first statement, not at open
+Part A builds three WAL databases, at rest, with 1, 100 and 1000 tables
+of 4 columns, all empty. A child process opens each one with a plain
+driver connection (no PRAGMA), runs SELECT count(*) FROM t0001 and closes
+it under strace; the child marks where each phase starts.
 
-100 table(s): file 105 pages
-  SCHEMA_USED: 0 bytes after open, 26601 bytes after the first statement (266 bytes per table)
-INFO: first statement on 100 table(s) took 1.536ms in this process
-  open             2 event(s): open schema-100.db, read 100 bytes at 0
-  first statement  9 event(s): read page 1, open schema-100.db-wal, open schema-100.db-shm, read page 1, read page 34, read page 36, read page 69, read page 102, ... 1 more
-                   whole-page reads of the .db file: 7, distinct pages 6: 1-2,34,36,69,102
-  close            0 event(s): none
-check ok: 100 table(s): open opens only the database file and reads only its 100-byte header
-check ok: 100 table(s): the first statement reads exactly the sqlite_schema b-tree pages (5, from dbstat) plus t0001's root page
-check ok: 100 table(s): page 1 is read twice: once before the -wal is opened (header byte 19 = 2 sends lockBtree to open the WAL) and once after
-check ok: 100 table(s): nothing is read from the -wal or -shm (the -wal is empty; the -shm is mapped, not read)
-check ok: 100 table(s): the -wal and -shm files are opened at the first statement, not at open
+Part B sets twelve settings on one file with sqlitex.Open, closes it,
+and reopens the file, a plain copy and a VACUUM INTO copy without
+applying any setting.
 
-1000 table(s): file 1036 pages
-  SCHEMA_USED: 0 bytes after open, 251601 bytes after the first statement (251 bytes per table)
-INFO: first statement on 1000 table(s) took 7.891ms in this process
-  open             2 event(s): open schema-1000.db, read 100 bytes at 0
-  first statement  40 event(s): read page 1, open schema-1000.db-wal, open schema-1000.db-shm, read page 1, read page 34, read page 36, read page 69, read page 102, ... 32 more
-                   whole-page reads of the .db file: 38, distinct pages 37: 1-2,34,36,69,102,132,162,192,222,252,282,312,342,372,402,432,462,492,522,552,582,612,642,672,702,732,762,792,822,852,882,912,942,972,1002,1032
-  close            0 event(s): none
-check ok: 1000 table(s): open opens only the database file and reads only its 100-byte header
-check ok: 1000 table(s): the first statement reads exactly the sqlite_schema b-tree pages (36, from dbstat) plus t0001's root page
-check ok: 1000 table(s): page 1 is read twice: once before the -wal is opened (header byte 19 = 2 sends lockBtree to open the WAL) and once after
-check ok: 1000 table(s): nothing is read from the -wal or -shm (the -wal is empty; the -shm is mapped, not read)
-check ok: 1000 table(s): the -wal and -shm files are opened at the first statement, not at open
-check ok: SCHEMA_USED is 0 after open for every schema, and after the first statement it grows with the table count (1 < 100 < 1000)
+Skipped on this platform:
+┌──────┬─────────┐
+│ part │  what   │
+├──────┼─────────┤
+│ -    │ nothing │
+└──────┴─────────┘
 
-== B. which settings live in the file and which belong to the connection ==
-check ok: the original is at rest after its last connection closed: at rest, 24576 bytes, sha256 6d566c958f17426cc0f7114d46ad61f044cac8a0952ba4c3c88ee26fad022172
-check ok: a plain copy of the closed file has the same sha256 (rung R5: capture = the file at rest, rebuild = copy)
-set on the original with sqlitex.Open, then closed; each file reopened with a plain driver connection (no settings applied)
-  setting              original     default      copy         VACUUM INTO  lives in
-  page_size            8192         4096         8192         8192         file
-  journal_mode=wal     wal          delete       wal          delete       file
-  auto_vacuum          2            0            2            2            file
-  encoding             utf-16le     utf-8        utf-16le     utf-16le     file
-  user_version         7            0            7            7            file
-  application_id       1397836120   0            1397836120   1397836120   file
-  synchronous          1            2            2            2            connection
-  foreign_keys         1            0            0            0            connection
-  cache_size           -8000        -2000        -2000        -2000        connection
-  busy_timeout         3000         0            0            0            connection
-  wal_autocheckpoint   200          1000         1000         1000         connection
-  secure_delete        1            0            0            0            connection
-check ok: every value set differs from the fresh default, and every setting that survived the copy is exactly a setting sqlitex.SettingPlacements declares as living in the file
-check ok: VACUUM INTO keeps every file setting except journal_mode: its output is a rollback-mode file (header bytes 18-19 = 1)
+── A. What open reads, and what the first statement reads ──────────────
 
-the two journal_mode cases and the deprecated default_cache_size:
-  journal_mode=persist set on a new file, reopened: delete
-  PRAGMA default_cache_size=777, then a copy opened: default_cache_size 777, cache_size 777, header bytes 48-51 = 777
-check ok: a rollback journal mode (persist) does not survive a reopen: it is per connection; only wal is stored in the file
-check ok: the deprecated PRAGMA default_cache_size is stored in header bytes 48-51 and becomes the starting cache_size of every new connection to the file
-settings-json: {"placements":[{"name":"page_size","pragma":"page_size","home":"file","header_bytes":"16-17"},{"name":"journal_mode=wal","pragma":"journal_mode","home":"file","header_bytes":"18-19"},{"name":"auto_vacuum","pragma":"auto_vacuum","home":"file","header_bytes":"52-55,64-67"},{"name":"encoding","pragma":"encoding","home":"file","header_bytes":"56-59"},{"name":"user_version","pragma":"user_version","home":"file","header_bytes":"60-63"},{"name":"application_id","pragma":"application_id","home":"file","header_bytes":"68-71"},{"name":"default_cache_size","pragma":"default_cache_size","home":"file","header_bytes":"48-51"},{"name":"journal_mode=delete|truncate|persist|memory|off","pragma":"journal_mode","home":"connection"},{"name":"synchronous","pragma":"synchronous","home":"connection"},{"name":"foreign_keys","pragma":"foreign_keys","home":"connection"},{"name":"cache_size","pragma":"cache_size","home":"connection"},{"name":"busy_timeout","pragma":"busy_timeout","home":"connection"},{"name":"wal_autocheckpoint","pragma":"wal_autocheckpoint","home":"connection"},{"name":"secure_delete","pragma":"secure_delete","home":"connection"}],"observed":[{"setting":"page_size","home":"file","set_on_original":"8192","fresh_connection_default":"4096","read_on_copy":"8192","read_on_vacuum_into":"8192","placement":{"name":"page_size","pragma":"page_size","home":"file","header_bytes":"16-17"}},{"setting":"journal_mode=wal","home":"file","set_on_original":"wal","fresh_connection_default":"delete","read_on_copy":"wal","read_on_vacuum_into":"delete","placement":{"name":"journal_mode=wal","pragma":"journal_mode","home":"file","header_bytes":"18-19"}},{"setting":"auto_vacuum","home":"file","set_on_original":"2","fresh_connection_default":"0","read_on_copy":"2","read_on_vacuum_into":"2","placement":{"name":"auto_vacuum","pragma":"auto_vacuum","home":"file","header_bytes":"52-55,64-67"}},{"setting":"encoding","home":"file","set_on_original":"utf-16le","fresh_connection_default":"utf-8","read_on_copy":"utf-16le","read_on_vacuum_into":"utf-16le","placement":{"name":"encoding","pragma":"encoding","home":"file","header_bytes":"56-59"}},{"setting":"user_version","home":"file","set_on_original":"7","fresh_connection_default":"0","read_on_copy":"7","read_on_vacuum_into":"7","placement":{"name":"user_version","pragma":"user_version","home":"file","header_bytes":"60-63"}},{"setting":"application_id","home":"file","set_on_original":"1397836120","fresh_connection_default":"0","read_on_copy":"1397836120","read_on_vacuum_into":"1397836120","placement":{"name":"application_id","pragma":"application_id","home":"file","header_bytes":"68-71"}},{"setting":"synchronous","home":"connection","set_on_original":"1","fresh_connection_default":"2","read_on_copy":"2","read_on_vacuum_into":"2","placement":{"name":"synchronous","pragma":"synchronous","home":"connection"}},{"setting":"foreign_keys","home":"connection","set_on_original":"1","fresh_connection_default":"0","read_on_copy":"0","read_on_vacuum_into":"0","placement":{"name":"foreign_keys","pragma":"foreign_keys","home":"connection"}},{"setting":"cache_size","home":"connection","set_on_original":"-8000","fresh_connection_default":"-2000","read_on_copy":"-2000","read_on_vacuum_into":"-2000","placement":{"name":"cache_size","pragma":"cache_size","home":"connection"}},{"setting":"busy_timeout","home":"connection","set_on_original":"3000","fresh_connection_default":"0","read_on_copy":"0","read_on_vacuum_into":"0","placement":{"name":"busy_timeout","pragma":"busy_timeout","home":"connection"}},{"setting":"wal_autocheckpoint","home":"connection","set_on_original":"200","fresh_connection_default":"1000","read_on_copy":"1000","read_on_vacuum_into":"1000","placement":{"name":"wal_autocheckpoint","pragma":"wal_autocheckpoint","home":"connection"}},{"setting":"secure_delete","home":"connection","set_on_original":"1","fresh_connection_default":"0","read_on_copy":"0","read_on_vacuum_into":"0","placement":{"name":"secure_delete","pragma":"secure_delete","home":"connection"}}]}
+A1. Schema memory is 0 after open: the schema is not read until the
+    first statement. Then it grows with the number of tables.
+┌────────┬────────────┬─────────────────────┬────────────────────────┬─────────────────────────┬─────────────────┐
+│ tables │ file_pages │ sqlite_schema_pages │ schema_used_after_open │ schema_used_after_first │ bytes_per_table │
+├────────┼────────────┼─────────────────────┼────────────────────────┼─────────────────────────┼─────────────────┤
+│ 1      │ 2          │ 1                   │ 0                      │ 827                     │ 827             │
+│ 100    │ 105        │ 5                   │ 0                      │ 26601                   │ 266             │
+│ 1000   │ 1036       │ 36                  │ 0                      │ 251601                  │ 251             │
+└────────┴────────────┴─────────────────────┴────────────────────────┴─────────────────────────┴─────────────────┘
 
-all checks passed
+A2. Per phase: open opens only the .db file and reads its 100-byte header
+    (the one partial read); the first statement opens -wal and -shm and
+    reads whole pages of the .db file; close reads nothing. Nothing is
+    read from -wal or -shm.
+┌────────┬─────────────────┬────────┬──────────────┬──────────────────┬────────────┬────────────────┬──────────────────┐
+│ tables │      phase      │ events │ files_opened │ partial_db_reads │ page_reads │ distinct_pages │ other_file_reads │
+├────────┼─────────────────┼────────┼──────────────┼──────────────────┼────────────┼────────────────┼──────────────────┤
+│ 1      │ open            │ 2      │ .db          │ 1                │ 0          │ 0              │ 0                │
+│ 1      │ first statement │ 5      │ -wal -shm    │ 0                │ 3          │ 2              │ 0                │
+│ 1      │ close           │ 0      │              │ 0                │ 0          │ 0              │ 0                │
+│ 100    │ open            │ 2      │ .db          │ 1                │ 0          │ 0              │ 0                │
+│ 100    │ first statement │ 9      │ -wal -shm    │ 0                │ 7          │ 6              │ 0                │
+│ 100    │ close           │ 0      │              │ 0                │ 0          │ 0              │ 0                │
+│ 1000   │ open            │ 2      │ .db          │ 1                │ 0          │ 0              │ 0                │
+│ 1000   │ first statement │ 40     │ -wal -shm    │ 0                │ 38         │ 37             │ 0                │
+│ 1000   │ close           │ 0      │              │ 0                │ 0          │ 0              │ 0                │
+└────────┴─────────────────┴────────┴──────────────┴──────────────────┴────────────┴────────────────┴──────────────────┘
+
+A3. The events in order, side by side. Page 1 is read, the header says
+    WAL (byte 19 = 2), so -wal and -shm are opened and page 1 is read
+    again, now through the WAL. Then the sqlite_schema pages follow.
+┌─────────────────┬──────┬──────────────────────┬────────────────────────┬─────────────────────────┐
+│      phase      │ step │       1 table        │       100 tables       │       1000 tables       │
+├─────────────────┼──────┼──────────────────────┼────────────────────────┼─────────────────────────┤
+│ open            │ 1    │ open schema-1.db     │ open schema-100.db     │ open schema-1000.db     │
+│ open            │ 2    │ read 100 bytes at 0  │ read 100 bytes at 0    │ read 100 bytes at 0     │
+│ first statement │ 1    │ read page 1          │ read page 1            │ read page 1             │
+│ first statement │ 2    │ open schema-1.db-wal │ open schema-100.db-wal │ open schema-1000.db-wal │
+│ first statement │ 3    │ open schema-1.db-shm │ open schema-100.db-shm │ open schema-1000.db-shm │
+│ first statement │ 4    │ read page 1          │ read page 1            │ read page 1             │
+│ first statement │ 5    │ read page 2          │ read page 34           │ read page 34            │
+│ first statement │ 6    │                      │ read page 36           │ read page 36            │
+│ first statement │ 7    │                      │ read page 69           │ read page 69            │
+│ first statement │ 8    │                      │ read page 102          │ read page 102           │
+│ first statement │ 9    │                      │ read page 2            │ read page 132           │
+│ first statement │ more │                      │                        │ ... 31 more             │
+└─────────────────┴──────┴──────────────────────┴────────────────────────┴─────────────────────────┘
+
+A4. The pages the first statement reads are exactly the pages listed in
+    schema_pages: the sqlite_schema b-tree (from dbstat) plus the root page
+    of t0001. Page 1 is the sqlite_schema root and the page read twice.
+┌────────┬──────────────┬────────────┬────────────┬──────────────┬─────────────────┬─────────────────┐
+│ tables │ schema_pages │ t0001_root │ pages_read │ page_1_reads │ read_not_listed │ listed_not_read │
+├────────┼──────────────┼────────────┼────────────┼──────────────┼─────────────────┼─────────────────┤
+│ 1      │ 1            │ 2          │ 2          │ 2            │ 0               │ 0               │
+│ 100    │ 5            │ 2          │ 6          │ 2            │ 0               │ 0               │
+│ 1000   │ 36           │ 2          │ 37         │ 2            │ 0               │ 0               │
+└────────┴──────────────┴────────────┴────────────┴──────────────┴─────────────────┴─────────────────┘
+
+A5. The page numbers, as ranges. Page 2 is the root of t0001, the first
+    table created; every other page belongs to sqlite_schema, whose pages
+    are spread through the file because they were allocated between tables.
+┌────────┬─────────────────────────────────────────────────────────┐
+│ tables │            pages_read_by_the_first_statement            │
+├────────┼─────────────────────────────────────────────────────────┤
+│ 1      │ 1-2                                                     │
+│ 100    │ 1-2,34,36,69,102                                        │
+│ 1000   │ 1-2,34,36,69,102,132,162,192,222,252,282,312,342,372    │
+│ 1000   │ 402,432,462,492,522,552,582,612,642,672,702,732,762,792 │
+│ 1000   │ 822,852,882,912,942,972,1002,1032                       │
+└────────┴─────────────────────────────────────────────────────────┘
+
+── B. Which settings live in the file, and which in the connection ─────
+
+B1. After its last connection closed the original is one file at rest,
+    and a plain copy of it has the same sha256 (rung R5: capture = the
+    file at rest, rebuild = copy).
+┌─────────────┬─────────┬───────┬──────────────────────────────────────────────────────────────────┐
+│    file     │ at_rest │ bytes │                              sha256                              │
+├─────────────┼─────────┼───────┼──────────────────────────────────────────────────────────────────┤
+│ original.db │ true    │ 24576 │ 6d566c958f17426cc0f7114d46ad61f044cac8a0952ba4c3c88ee26fad022172 │
+│ copy.db     │ true    │ 24576 │ 6d566c958f17426cc0f7114d46ad61f044cac8a0952ba4c3c88ee26fad022172 │
+└─────────────┴─────────┴───────┴──────────────────────────────────────────────────────────────────┘
+
+B2. Each setting as set on the original, on a fresh file (the default),
+    and on the copy and the VACUUM INTO output, each opened with no
+    settings applied. A setting the copy kept lives in the file; the
+    declared column is what sqlitex.SettingPlacements says. VACUUM INTO
+    keeps every file setting except journal_mode=wal.
+┌────────────────────┬─────────────┬─────────┬────────────┬─────────────┬────────────┬────────────┬──────────────┐
+│      setting       │ on_original │ default │    copy    │ vacuum_into │  lives_in  │  declared  │ header_bytes │
+├────────────────────┼─────────────┼─────────┼────────────┼─────────────┼────────────┼────────────┼──────────────┤
+│ page_size          │ 8192        │ 4096    │ 8192       │ 8192        │ file       │ file       │ 16-17        │
+│ journal_mode=wal   │ wal         │ delete  │ wal        │ delete      │ file       │ file       │ 18-19        │
+│ auto_vacuum        │ 2           │ 0       │ 2          │ 2           │ file       │ file       │ 52-55,64-67  │
+│ encoding           │ utf-16le    │ utf-8   │ utf-16le   │ utf-16le    │ file       │ file       │ 56-59        │
+│ user_version       │ 7           │ 0       │ 7          │ 7           │ file       │ file       │ 60-63        │
+│ application_id     │ 1397836120  │ 0       │ 1397836120 │ 1397836120  │ file       │ file       │ 68-71        │
+│ synchronous        │ 1           │ 2       │ 2          │ 2           │ connection │ connection │              │
+│ foreign_keys       │ 1           │ 0       │ 0          │ 0           │ connection │ connection │              │
+│ cache_size         │ -8000       │ -2000   │ -2000      │ -2000       │ connection │ connection │              │
+│ busy_timeout       │ 3000        │ 0       │ 0          │ 0           │ connection │ connection │              │
+│ wal_autocheckpoint │ 200         │ 1000    │ 1000       │ 1000        │ connection │ connection │              │
+│ secure_delete      │ 1           │ 0       │ 0          │ 0           │ connection │ connection │              │
+└────────────────────┴─────────────┴─────────┴────────────┴─────────────┴────────────┴────────────┴──────────────┘
+
+B3. The two journal_mode cases and the deprecated default_cache_size.
+    A rollback mode (persist) reverts to delete on reopen; only wal is
+    stored in the file (header bytes 18-19 = 2), and the VACUUM INTO output
+    is a rollback-mode file (bytes 18-19 = 1).
+    default_cache_size is stored in header bytes 48-51 and becomes the
+    starting cache_size of every new connection.
+┌───────────────────────────────────────────────────┬────────────────────┬────────┐
+│                     case_name                     │      observed      │ value  │
+├───────────────────────────────────────────────────┼────────────────────┼────────┤
+│ VACUUM INTO output                                │ header bytes 18-19 │ 1 1    │
+│ journal_mode=persist set on a new file, reopened  │ journal_mode       │ delete │
+│ PRAGMA default_cache_size=777, then a copy opened │ default_cache_size │ 777    │
+│ PRAGMA default_cache_size=777, then a copy opened │ cache_size         │ 777    │
+│ PRAGMA default_cache_size=777, then a copy opened │ header bytes 48-51 │ 777    │
+└───────────────────────────────────────────────────┴────────────────────┴────────┘
+
+B4. The settings a platform must store outside the file to rebuild a
+    database that behaves the same are the connection rows of this list
+    (sqlitex.SettingPlacements, which B2 checks against):
+┌─────────────────────────────────────────────────┬────────────────────┬────────────┬──────────────┐
+│                      name                       │       pragma       │    home    │ header_bytes │
+├─────────────────────────────────────────────────┼────────────────────┼────────────┼──────────────┤
+│ page_size                                       │ page_size          │ file       │ 16-17        │
+│ journal_mode=wal                                │ journal_mode       │ file       │ 18-19        │
+│ auto_vacuum                                     │ auto_vacuum        │ file       │ 52-55,64-67  │
+│ encoding                                        │ encoding           │ file       │ 56-59        │
+│ user_version                                    │ user_version       │ file       │ 60-63        │
+│ application_id                                  │ application_id     │ file       │ 68-71        │
+│ default_cache_size                              │ default_cache_size │ file       │ 48-51        │
+│ journal_mode=delete|truncate|persist|memory|off │ journal_mode       │ connection │              │
+│ synchronous                                     │ synchronous        │ connection │              │
+│ foreign_keys                                    │ foreign_keys       │ connection │              │
+│ cache_size                                      │ cache_size         │ connection │              │
+│ busy_timeout                                    │ busy_timeout       │ connection │              │
+│ wal_autocheckpoint                              │ wal_autocheckpoint │ connection │              │
+│ secure_delete                                   │ secure_delete      │ connection │              │
+└─────────────────────────────────────────────────┴────────────────────┴────────────┴──────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  1 table(s): open opens only the database file and reads only its 100-byte header
+A  ✓  1 table(s): the first statement reads exactly the sqlite_schema b-tree pages (1, from dbstat) plus t0001's root page
+A  ✓  1 table(s): page 1 is read twice: once before the -wal is opened (header byte 19 = 2 sends lockBtree to open the WAL) and once after
+A  ✓  1 table(s): nothing is read from the -wal or -shm (the -wal is empty; the -shm is mapped, not read)
+A  ✓  1 table(s): the -wal and -shm files are opened at the first statement, not at open
+A  ✓  100 table(s): open opens only the database file and reads only its 100-byte header
+A  ✓  100 table(s): the first statement reads exactly the sqlite_schema b-tree pages (5, from dbstat) plus t0001's root page
+A  ✓  100 table(s): page 1 is read twice: once before the -wal is opened (header byte 19 = 2 sends lockBtree to open the WAL) and once after
+A  ✓  100 table(s): nothing is read from the -wal or -shm (the -wal is empty; the -shm is mapped, not read)
+A  ✓  100 table(s): the -wal and -shm files are opened at the first statement, not at open
+A  ✓  1000 table(s): open opens only the database file and reads only its 100-byte header
+A  ✓  1000 table(s): the first statement reads exactly the sqlite_schema b-tree pages (36, from dbstat) plus t0001's root page
+A  ✓  1000 table(s): page 1 is read twice: once before the -wal is opened (header byte 19 = 2 sends lockBtree to open the WAL) and once after
+A  ✓  1000 table(s): nothing is read from the -wal or -shm (the -wal is empty; the -shm is mapped, not read)
+A  ✓  1000 table(s): the -wal and -shm files are opened at the first statement, not at open
+A  ✓  SCHEMA_USED is 0 after open for every schema, and after the first statement it grows with the table count (1 < 100 < 1000)
+B  ✓  the original is at rest after its last connection closed
+B  ✓  a plain copy of the closed file has the same sha256 (rung R5: capture = the file at rest, rebuild = copy)
+B  ✓  every value set differs from the fresh default, and every setting that survived the copy is exactly a setting sqlitex.SettingPlacements declares as living in the file
+B  ✓  VACUUM INTO keeps every file setting except journal_mode: its output is a rollback-mode file (header bytes 18-19 = 1)
+B  ✓  a rollback journal mode (persist) does not survive a reopen: it is per connection; only wal is stored in the file
+B  ✓  the deprecated PRAGMA default_cache_size is stored in header bytes 48-51 and becomes the starting cache_size of every new connection to the file
+
+22 of 22 claims hold
+
+Experiment verdict: OPEN COST AND WHERE SETTINGS LIVE OK

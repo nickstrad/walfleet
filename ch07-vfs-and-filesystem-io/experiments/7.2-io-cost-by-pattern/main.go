@@ -4,9 +4,9 @@
 // batching {1x1000, 20x50, 1000x1}. Each cell runs a child Go process under
 // Linux strace and splits the syscall log per commit using a marker file.
 //
-// Run from the repo root (Linux; on macOS, use docker compose run --rm lab):
-//
-//	go run ./ch07-vfs-and-filesystem-io/experiments/7.2-io-cost-by-pattern
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 7.2 (strace needs Linux, which
+// the lab container provides).
 package main
 
 import (
@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 )
@@ -64,16 +65,9 @@ func cells() []cell {
 	return out
 }
 
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
-}
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 7.2" runs both.
+var set *results.Set
 
 func fatal(what string, err error) {
 	fmt.Printf("FATAL %s: %v\n", what, err)
@@ -89,9 +83,14 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	base := sqlitex.MustWorkDir("7.2")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(base))
-	fmt.Printf("workload: %d rows (id INTEGER PRIMARY KEY, v BLOB of %d bytes) into an empty table, Go driver, one connection\n", totalRows, valueBytes)
-	fmt.Println("settings: page_size 4096, cache_size -2000, wal_autocheckpoint 1000, secure_delete OFF; the table is created before measuring")
+	set = results.MustOpen(base)
+	cellTable := set.Table("cells", "cell", "journal", "sync", "commits", "rows_per_commit")
+	for i, c := range cells() {
+		cellTable.Row(i+1, c.journal, c.sync, c.commits(), c.batch)
+	}
+	tracing := set.Table("tracing", "syscalls")
 	if !trace.Supported {
+		tracing.Row(trace.LinuxOnlyMessage("counting writes, bytes and syncs with strace", packagePath))
 		for _, c := range cells() {
 			dir := filepath.Join(base, c.dirName())
 			if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -101,11 +100,12 @@ func main() {
 				fatal(c.label(), err)
 			}
 		}
-		fmt.Println("all 12 workloads ran without strace")
 		trace.PrintLinuxOnly("counting writes, bytes and syncs with strace", packagePath)
+		set.Finish("IO COST BY PATTERN")
 		return
 	}
-	results := map[cell]*measurement{}
+	tracing.Row("traced with strace")
+	measured := map[cell]*measurement{}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, parallelCells)
@@ -123,7 +123,7 @@ func main() {
 			m, err := measure(ctx, dir, c)
 			mu.Lock()
 			defer mu.Unlock()
-			results[c] = m
+			measured[c] = m
 			errs[c] = err
 		}()
 	}
@@ -133,12 +133,8 @@ func main() {
 			fatal(c.label(), errs[c])
 		}
 	}
-	report(results)
-	if len(failures) > 0 {
-		fmt.Printf("FAIL: %d claim(s) did not hold\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("ALL CHECKS PASSED")
+	report(measured)
+	set.Finish("IO COST BY PATTERN")
 }
 
 func options(c cell) sqlitex.Options {
@@ -285,12 +281,14 @@ type commitShape struct {
 	totalSyncs int
 }
 
+// measurement holds one cell's counts: all sums the commits, segments has one
+// entry per commit and a last one for the close, and dbWrites says whether that
+// segment wrote the database file.
 type measurement struct {
-	all       *counts
-	close     *counts
-	shapes    map[commitShape]int
-	shapeList []commitShape
-	sequence  []commitShape
+	all      *counts
+	segments []*counts
+	dbWrites []bool
+	sequence []commitShape
 }
 
 // classifyWALCommits verifies every WAL commit fits the plain, checkpoint, or
@@ -370,71 +368,76 @@ func measure(ctx context.Context, dir string, c cell) (*measurement, error) {
 	if len(segments) != c.commits()+1 {
 		return nil, fmt.Errorf("found %d marker segments, want %d commits + close", len(segments), c.commits())
 	}
-	m := &measurement{all: newCounts(), close: newCounts(), shapes: map[commitShape]int{}}
+	m := &measurement{all: newCounts()}
 	for i, seg := range segments {
 		target := newCounts()
+		dbWrites := false
 		for _, s := range seg {
 			target.add(s)
 			if i < c.commits() {
 				m.all.add(s)
-			} else {
-				m.close.add(s)
 			}
-		}
-		if i == c.commits() {
-			continue
-		}
-		dbWrites := false
-		for _, s := range seg {
 			if trace.CanonicalName(s.Name) == "pwrite64" && s.Path == dbName {
 				dbWrites = true
 			}
 		}
-		shape := commitShape{syncs: roleList(target.syncs), dbWrites: dbWrites, totalSyncs: target.totalSyncs()}
-		m.sequence = append(m.sequence, shape)
-		if m.shapes[shape] == 0 {
-			m.shapeList = append(m.shapeList, shape)
+		m.segments = append(m.segments, target)
+		m.dbWrites = append(m.dbWrites, dbWrites)
+		if i < c.commits() {
+			m.sequence = append(m.sequence, commitShape{syncs: roleList(target.syncs), dbWrites: dbWrites, totalSyncs: target.totalSyncs()})
 		}
-		m.shapes[shape]++
 	}
 	return m, nil
 }
 
-func report(results map[cell]*measurement) {
-	fmt.Println()
-	fmt.Println("== totals while the rows were written (all commits; close not included) ==")
-	fmt.Println("mode   sync   commits x rows | pwrite  bytes written | syncs total (by file)            | opens          | unlinks        | ftruncate")
-	for _, c := range cells() {
-		m := results[c]
-		a := m.all
-		fmt.Printf("%s | %6d %13d | %5d %-26s | %-14s | %-14s | %s\n", c.label(), a.writes, a.bytes, a.totalSyncs(), "("+roleList(a.syncs)+")", roleList(a.opens), roleList(a.unlinks), roleList(a.truncates))
+// roles and kinds name the per-file columns of the segments table, such as
+// syncs_db or unlinks_wal.
+var (
+	roles = []string{"db", "dir", "journal", "shm", "wal"}
+	kinds = []struct {
+		name   string
+		counts func(*counts) map[string]int
+	}{
+		{"syncs", func(c *counts) map[string]int { return c.syncs }},
+		{"opens", func(c *counts) map[string]int { return c.opens }},
+		{"unlinks", func(c *counts) map[string]int { return c.unlinks }},
+		{"ftruncates", func(c *counts) map[string]int { return c.truncates }},
 	}
-	fmt.Println()
-	fmt.Println("== syncs per commit: how many commits had each sync pattern ==")
-	fmt.Println("(db-writes = the commit also wrote database pages, i.e. an automatic checkpoint ran inside it in WAL mode)")
-	for _, c := range cells() {
-		m := results[c]
-		var parts []string
-		for _, s := range m.shapeList {
-			extra := ""
-			if s.dbWrites {
-				extra = " +db-writes"
-			}
-			parts = append(parts, fmt.Sprintf("%d commit(s): %d sync(s) [%s]%s", m.shapes[s], s.totalSyncs, s.syncs, extra))
+)
+
+func report(measured map[cell]*measurement) {
+	columns := []string{"cell", "seq", "phase", "pwrites", "bytes", "db_writes"}
+	for _, k := range kinds {
+		for _, r := range roles {
+			columns = append(columns, k.name+"_"+r)
 		}
-		fmt.Printf("%s | %s\n", c.label(), strings.Join(parts, "; "))
 	}
-	fmt.Println()
-	fmt.Println("== at close (after the last commit) ==")
-	for _, c := range cells() {
-		k := results[c].close
-		fmt.Printf("%s | pwrite %d bytes %d | syncs %d (%s) | unlinks %s | ftruncate %s\n", c.label(), k.writes, k.bytes, k.totalSyncs(), roleList(k.syncs), roleList(k.unlinks), roleList(k.truncates))
+	table := set.Table("segments", columns...)
+	for i, c := range cells() {
+		m := measured[c]
+		for j, seg := range m.segments {
+			phase := "commit"
+			if j == c.commits() {
+				phase = "close"
+			}
+			row := []any{i + 1, j + 1, phase, seg.writes, seg.bytes, m.dbWrites[j]}
+			for _, k := range kinds {
+				for _, r := range roles {
+					row = append(row, k.counts(seg)[r])
+				}
+			}
+			table.Row(row...)
+		}
 	}
-	fmt.Println()
 
 	expectEvery := func(c cell, want string) bool {
-		m := results[c]
-		return len(m.shapeList) == 1 && m.shapeList[0].syncs == want
+		sequence := measured[c].sequence
+		for _, s := range sequence {
+			if s != sequence[0] {
+				return false
+			}
+		}
+		return len(sequence) > 0 && sequence[0].syncs == want
 	}
 	for _, sync := range []string{sqlitex.SyncNormal, sqlitex.SyncFull} {
 		want := "db:1 dir:1 journal:1"
@@ -447,23 +450,23 @@ func report(results map[cell]*measurement) {
 		for _, batch := range []int{totalRows, 50, 1} {
 			ok = ok && expectEvery(cell{sqlitex.JournalDelete, sync, batch}, want)
 		}
-		check(ok, fmt.Sprintf("rollback (DELETE) at %s: every commit, at every batch size, makes %d syncs [%s]", sync, n, want))
+		set.Check("B", ok, fmt.Sprintf("rollback (DELETE) at %s: every commit, at every batch size, makes %d syncs [%s]", sync, n, want))
 	}
 	for _, sync := range []string{sqlitex.SyncNormal, sqlitex.SyncFull} {
 		plain, restart, checkpoint := walShapes(sync)
 		var sequences [][]commitShape
 		for _, batch := range []int{totalRows, 50, 1} {
-			sequences = append(sequences, results[cell{sqlitex.JournalWAL, sync, batch}].sequence)
+			sequences = append(sequences, measured[cell{sqlitex.JournalWAL, sync, batch}].sequence)
 		}
 		ok, checkpoints, restarts := classifyWALCommits(sequences, plain, restart, checkpoint)
-		check(ok, fmt.Sprintf("WAL at %s: a commit makes [%s]; the commit that runs an automatic checkpoint makes [%s] (%d such), and the next commit, which restarts the WAL and writes a new WAL header, makes [%s] (%d such)", sync, plain, checkpoint, checkpoints, restart, restarts))
+		set.Check("B", ok, fmt.Sprintf("WAL at %s: a commit makes [%s]; the commit that runs an automatic checkpoint makes [%s] (%d such), and the next commit, which restarts the WAL and writes a new WAL header, makes [%s] (%d such)", sync, plain, checkpoint, checkpoints, restart, restarts))
 	}
-	one := results[cell{sqlitex.JournalDelete, sqlitex.SyncFull, 1}].all.totalSyncs()
-	all := results[cell{sqlitex.JournalDelete, sqlitex.SyncFull, totalRows}].all.totalSyncs()
-	check(one == 1000*all, fmt.Sprintf("rollback FULL: 1000 one-row commits cost %d syncs, one 1000-row commit costs %d (x%d)", one, all, one/max(all, 1)))
-	walOne := results[cell{sqlitex.JournalWAL, sqlitex.SyncNormal, 1}].all
-	delOne := results[cell{sqlitex.JournalDelete, sqlitex.SyncNormal, 1}].all
-	check(walOne.totalSyncs() < delOne.totalSyncs() && walOne.bytes < delOne.bytes, fmt.Sprintf("1000 one-row commits at NORMAL: WAL %d syncs and %d bytes written, rollback %d syncs and %d bytes", walOne.totalSyncs(), walOne.bytes, delOne.totalSyncs(), delOne.bytes))
+	one := measured[cell{sqlitex.JournalDelete, sqlitex.SyncFull, 1}].all.totalSyncs()
+	all := measured[cell{sqlitex.JournalDelete, sqlitex.SyncFull, totalRows}].all.totalSyncs()
+	set.Check("A", one == 1000*all, fmt.Sprintf("rollback FULL: 1000 one-row commits cost %d syncs, one 1000-row commit costs %d (x%d)", one, all, one/max(all, 1)))
+	walOne := measured[cell{sqlitex.JournalWAL, sqlitex.SyncNormal, 1}].all
+	delOne := measured[cell{sqlitex.JournalDelete, sqlitex.SyncNormal, 1}].all
+	set.Check("A", walOne.totalSyncs() < delOne.totalSyncs() && walOne.bytes < delOne.bytes, fmt.Sprintf("1000 one-row commits at NORMAL: WAL %d syncs and %d bytes written, rollback %d syncs and %d bytes", walOne.totalSyncs(), walOne.bytes, delOne.totalSyncs(), delOne.bytes))
 }
 
 // walShapes returns the expected per-commit sync patterns in WAL mode:

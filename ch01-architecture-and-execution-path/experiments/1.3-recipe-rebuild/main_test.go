@@ -164,8 +164,7 @@ func TestFreeblocksAndGapAreUnused(t *testing.T) {
 }
 
 // TestPartialPageDifferenceDoesNotPanic checks that diffImages compares partial
-// trailing pages and that fileDiff.String handles size mismatches without
-// panicking.
+// trailing pages and that sizes that differ are reported as different pages.
 func TestPartialPageDifferenceDoesNotPanic(t *testing.T) {
 	a := make([]byte, pageSize+10)
 	b := slices.Clone(a)
@@ -173,12 +172,6 @@ func TestPartialPageDifferenceDoesNotPanic(t *testing.T) {
 	d := diffImages(a, b)
 	if d.Equal || !slices.Equal(d.DifferingPages, []int{2}) {
 		t.Fatalf("diff %+v", d)
-	}
-	if !strings.HasPrefix(d.String(), "differ") {
-		t.Fatal(d.String())
-	}
-	if got := (fileDiff{SizeA: 1, SizeB: 2}).String(); !strings.Contains(got, "differ") {
-		t.Fatal(got)
 	}
 	short := diffImages(make([]byte, pageSize), make([]byte, pageSize+3))
 	if short.Equal || !slices.Equal(short.DifferingPages, []int{2}) {

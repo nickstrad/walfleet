@@ -1,0 +1,6 @@
+seq,part,status,claim
+1,A,ok,every check passes on the undamaged file
+2,B,ok,"b-tree page header (cell count): caught by integrity_check true, quick_check true, E3 true, manifest true"
+3,B,ok,"unindexed column (events.note): caught by integrity_check false, quick_check false, E3 true, manifest true"
+4,B,ok,"indexed column (events.account_id): caught by integrity_check true, quick_check false, E3 true, manifest true"
+5,B,ok,"freelist leaf page: caught by integrity_check false, quick_check false, E3 false, manifest true"

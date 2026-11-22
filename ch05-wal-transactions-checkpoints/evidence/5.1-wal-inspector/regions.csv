@@ -1,0 +1,13 @@
+seq,region,differs
+0,header magic,false
+1,header version,false
+2,header page size,false
+3,header checkpoint sequence,false
+4,header salts,true
+5,header checksum,true
+6,frame page number,false
+7,frame commit size,false
+8,frame salts,true
+9,frame checksums,true
+10,page data,false
+11,bytes beyond the end of the shorter file,false

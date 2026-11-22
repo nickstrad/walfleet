@@ -4,6 +4,9 @@
 // idle WAL connections (Part B), PRAGMA shrink_memory across the shared page
 // cache group (Part C), and descriptor sharing and parking with two connections
 // to one WAL file in the same process (Part D).
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 8.2
 package main
 
 import (
@@ -15,10 +18,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 
 	"github.com/nickstrad/walfleet/internal/procstat"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 )
@@ -29,21 +34,47 @@ import (
 // overhead) for this experiment's 3-table recipe workload.
 const uncountedBudget = 256 * 1024
 
-const packagePath = "ch08-connection-and-database-lifecycle/experiments/8.2-idle-cost"
+const (
+	packagePath = "ch08-connection-and-database-lifecycle/experiments/8.2-idle-cost"
+	readQuery   = "SELECT count(*), sum(length(body)) FROM documents"
+	stmtQuery   = "SELECT name, balance FROM accounts WHERE id = ?"
+)
 
 var (
-	failures    []string
 	connections = flag.Int("n", 200, "idle WAL connections opened in part B, one database file each")
 	recipeStep  = flag.Int("step", 3, "recipe step every database file in part B is built to")
 )
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. part labels
+// the rows and claims written while a part runs.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		setup, fdStates, fleet, fleetTargets, connections, skipped, infoCache, infoMemory, infoLimits *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	setupSeq int
+)
+
+func openTables() {
+	tables.setup = set.Table("setup", "seq", "name", "value")
+	tables.fdStates = set.Table("fd_states", "part", "journal_mode", "seq", "state", "descriptors", "expected", "targets", "side_files")
+	tables.fleet = set.Table("fleet", "seq", "stage", "descriptors", "files_not_at_rest")
+	tables.fleetTargets = set.Table("fleet_targets", "target")
+	tables.connections = set.Table("connections", "conn", "schema_used", "stmt_used", "schema_used_after_shrink", "stmt_used_after_shrink")
+	tables.skipped = set.Table("skipped", "part", "what")
+	tables.infoCache = set.Table("info_cache", "conn", "cache_used", "after_shrink_on_conn_0", "after_shrink_on_all")
+	tables.infoMemory = set.Table("info_memory", "seq", "stage", "rss_bytes")
+	tables.infoLimits = set.Table("info_limits", "soft", "hard")
+}
+
+func setup(name string, value any) {
+	setupSeq++
+	tables.setup.Row(setupSeq, name, value)
+}
+
+func check(ok bool, claim string) {
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -59,15 +90,19 @@ func descriptorCount() int {
 	return n
 }
 
-func openNames(dir string) string {
+// openNames returns the descriptor targets under dir, sorted and
+// space-separated, or nil where descriptors name no files.
+func openNames(dir string) any {
 	if !procstat.TargetsSupported {
-		return ""
+		return nil
 	}
 	under, err := procstat.DescriptorsUnder(dir)
 	if err != nil {
 		fatal("list descriptors", err)
 	}
-	return " [" + strings.Join(procstat.RelativeTargets(dir, under), " ") + "]"
+	targets := procstat.RelativeTargets(dir, under)
+	slices.Sort(targets)
+	return strings.Join(targets, " ")
 }
 
 func sideFiles(path string) string {
@@ -76,9 +111,6 @@ func sideFiles(path string) string {
 		if _, err := os.Stat(path + suffix); err == nil {
 			present = append(present, filepath.Base(path+suffix))
 		}
-	}
-	if len(present) == 0 {
-		return "none"
 	}
 	return strings.Join(present, " ")
 }
@@ -128,9 +160,11 @@ func createTable(ctx context.Context, path, journalMode string) {
 }
 
 func partA(ctx context.Context, work string) {
-	fmt.Println("\n== A. descriptors held by one connection, per state ==")
+	part = "A"
 	if !procstat.TargetsSupported {
-		trace.PrintLinuxOnly("descriptor file names (from "+procstat.DescriptorDir+", which names no files on "+runtime.GOOS+")", packagePath)
+		what := "descriptor file names (from " + procstat.DescriptorDir + ", which names no files on " + runtime.GOOS + ")"
+		trace.PrintLinuxOnly(what, packagePath)
+		tables.skipped.Row("A", what)
 	}
 	want := map[string][]int{
 		sqlitex.JournalDelete: {1, 1, 2, 1, 0},
@@ -143,13 +177,12 @@ func partA(ctx context.Context, work string) {
 		}
 		path := filepath.Join(dir, "t.db")
 		createTable(ctx, path, mode)
-		fmt.Printf("journal_mode=%s (file t.db)\n", mode)
 		base := descriptorCount()
 		var got []int
 		show := func(label string) {
 			delta := descriptorCount() - base
 			got = append(got, delta)
-			fmt.Printf("  %-36s %d%s  side files: %s\n", label, delta, openNames(dir), sideFiles(path))
+			tables.fdStates.Row("A", mode, len(got), label, delta, want[mode][len(got)-1], openNames(dir), sideFiles(path))
 		}
 		db, conn := plainConnection(ctx, path)
 		show("opened, no statement yet")
@@ -236,11 +269,9 @@ func settledMemory() procstat.Memory {
 	return m
 }
 
-func mib(n int64) string { return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20)) }
-
 func partB(ctx context.Context, work string) {
+	part = "B"
 	n := *connections
-	fmt.Printf("\n== B. %d idle WAL connections, one database file each ==\n", n)
 	dir := filepath.Join(work, "B")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		fatal("mkdir", err)
@@ -261,8 +292,16 @@ func partB(ctx context.Context, work string) {
 			fatal("copy", err)
 		}
 	}
-	fmt.Printf("every file: a copy of recipe step %d (%d bytes, %d pages); settings: sqlitex defaults (%s)\n", *recipeStep, len(image), len(image)/4096, sqlitex.DefaultConnSettings())
-	fmt.Println("per connection: one read of every documents row (SELECT count(*), sum(length(body)) FROM documents) and one prepared statement kept open")
+	setup("connections", n)
+	setup("every file", fmt.Sprintf("a copy of recipe step %d", *recipeStep))
+	setup("file bytes", len(image))
+	setup("file pages", len(image)/4096)
+	for _, setting := range strings.Fields(sqlitex.DefaultConnSettings().String()) {
+		name, value, _ := strings.Cut(setting, "=")
+		setup("sqlitex default "+name, value)
+	}
+	setup("read per connection", readQuery)
+	setup("prepared statement kept open", stmtQuery)
 	baseFDs := descriptorCount()
 	baseMemory := settledMemory()
 	idle := make([]idleConnection, n)
@@ -278,35 +317,30 @@ func partB(ctx context.Context, work string) {
 			fatal("conn", err)
 		}
 		var rows, bytes int64
-		if err := conn.QueryRowContext(ctx, "SELECT count(*), sum(length(body)) FROM documents").Scan(&rows, &bytes); err != nil {
+		if err := conn.QueryRowContext(ctx, readQuery).Scan(&rows, &bytes); err != nil {
 			fatal("scan", err)
 		}
-		stmt, err := conn.PrepareContext(ctx, "SELECT name, balance FROM accounts WHERE id = ?")
+		stmt, err := conn.PrepareContext(ctx, stmtQuery)
 		if err != nil {
 			fatal("prepare", err)
 		}
 		idle[i] = idleConnection{db: db, conn: conn, stmt: stmt}
 	}
 	fds := descriptorCount() - baseFDs
-	fmt.Printf("descriptors held: %d (%.2f per connection)\n", fds, float64(fds)/float64(n))
+	tables.fleet.Row(1, fmt.Sprintf("all %d open and idle", n), fds, nil)
 	check(fds == 3*n, fmt.Sprintf("%d idle WAL connections hold exactly 3 x %d = %d descriptors", n, n, 3*n))
 	if procstat.TargetsSupported {
 		under, err := procstat.DescriptorsUnder(dir)
 		if err != nil {
 			fatal("list", err)
 		}
-		kinds := map[string]int{}
-		for _, target := range procstat.RelativeTargets(dir, under) {
-			switch {
-			case strings.HasSuffix(target, "-wal"):
-				kinds["-wal"]++
-			case strings.HasSuffix(target, "-shm"):
-				kinds["-shm"]++
-			default:
-				kinds["db"]++
-			}
+		targets := procstat.RelativeTargets(dir, under)
+		slices.Sort(targets)
+		for _, target := range targets {
+			tables.fleetTargets.Row(target)
 		}
-		fmt.Printf("descriptor targets: db=%d -wal=%d -shm=%d\n", kinds["db"], kinds["-wal"], kinds["-shm"])
+	} else {
+		tables.skipped.Row("B", "descriptor file names")
 	}
 	before := readAll(ctx, idle)
 	total := sum(before)
@@ -314,15 +348,11 @@ func partB(ctx context.Context, work string) {
 	growth := afterOpen.RSS - baseMemory.RSS
 	schemaLo, schemaHi := minMax(before, func(u usage) int64 { return u.schema })
 	stmtLo, stmtHi := minMax(before, func(u usage) int64 { return u.stmt })
-	cacheLo, cacheHi := minMax(before, func(u usage) int64 { return u.cache })
-	fmt.Printf("SCHEMA_USED per connection: %d bytes (min %d, max %d)\n", schemaHi, schemaLo, schemaHi)
-	fmt.Printf("STMT_USED per connection: %d bytes (min %d, max %d)\n", stmtHi, stmtLo, stmtHi)
-	fmt.Printf("INFO: CACHE_USED per connection: min %d max %d bytes (includes the Pager allocation, whose size depends on the path length)\n", cacheLo, cacheHi)
-	fmt.Printf("INFO: sum over %d connections: cache %s + schema %s + statements %s = %s\n", n, mib(total.cache), mib(total.schema), mib(total.stmt), mib(total.total()))
-	fmt.Printf("INFO: process memory (%s): before %s, after %s, growth %s = %.2f x the summed counters\n", procstat.MemorySource, mib(baseMemory.RSS), mib(afterOpen.RSS), mib(growth), float64(growth)/float64(total.total()))
+	cacheLo, _ := minMax(before, func(u usage) int64 { return u.cache })
+	tables.infoMemory.Row(1, "before opening", baseMemory.RSS)
+	tables.infoMemory.Row(2, "all open and idle", afterOpen.RSS)
 	check(schemaLo == schemaHi && stmtLo == stmtHi, "every connection reports the same SCHEMA_USED and the same STMT_USED (same schema, same statement)")
 	uncounted := growth - total.total()
-	fmt.Printf("INFO: memory the three counters do not report: %s in total, %.0f KiB per connection\n", mib(uncounted), float64(uncounted)/float64(n)/1024)
 	check(growth >= total.total(), "process memory grew by at least the sum of CACHE_USED + SCHEMA_USED + STMT_USED")
 	check(uncounted <= int64(n)*uncountedBudget, fmt.Sprintf("process memory grew by at most that sum + %d KiB per connection (the stated margin for memory the counters do not report)", uncountedBudget/1024))
 
@@ -331,12 +361,11 @@ func partB(ctx context.Context, work string) {
 	// (src/pragma.c:2439-2442 -> sqlite3_db_release_memory src/main.c:897-915
 	// -> pcache1Shrink src/pcache1.c:839-851) recycles unpinned pages across
 	// every connection in that group at once.
-	fmt.Println("\n== C. PRAGMA shrink_memory ==")
+	part = "C"
 	if _, err := idle[0].conn.ExecContext(ctx, "PRAGMA shrink_memory"); err != nil {
 		fatal("shrink", err)
 	}
 	afterOne := readAll(ctx, idle)
-	fmt.Printf("INFO: after shrink_memory on connection 0: its CACHE_USED %d -> %d; connection 1 %d -> %d\n", before[0].cache, afterOne[0].cache, before[1].cache, afterOne[1].cache)
 	droppedEverywhere := true
 	for i := range afterOne {
 		if afterOne[i].cache >= before[i].cache {
@@ -352,12 +381,14 @@ func partB(ctx context.Context, work string) {
 	after := readAll(ctx, idle)
 	shrunk := sum(after)
 	afterShrink := settledMemory()
-	fmt.Printf("INFO: after shrink_memory on every connection: cache %s -> %s, schema %s -> %s, statements %s -> %s\n", mib(total.cache), mib(shrunk.cache), mib(total.schema), mib(shrunk.schema), mib(total.stmt), mib(shrunk.stmt))
-	fmt.Printf("INFO: process memory after shrink: %s (was %s)\n", mib(afterShrink.RSS), mib(afterOpen.RSS))
+	tables.infoMemory.Row(3, "after shrink_memory on every connection", afterShrink.RSS)
+	for i := range idle {
+		tables.connections.Row(i, before[i].schema, before[i].stmt, after[i].schema, after[i].stmt)
+		tables.infoCache.Row(i, before[i].cache, afterOne[i].cache, after[i].cache)
+	}
 	check(shrunk.schema == total.schema && shrunk.stmt == total.stmt, "shrink_memory leaves SCHEMA_USED and STMT_USED unchanged on every connection")
 	check(sum(afterOne).cache == shrunk.cache, "running shrink_memory on the other connections afterwards released nothing more")
-	floorLo, floorHi := minMax(after, func(u usage) int64 { return u.cache })
-	fmt.Printf("INFO: CACHE_USED per connection after shrink: min %d max %d bytes (was %d)\n", floorLo, floorHi, cacheHi)
+	_, floorHi := minMax(after, func(u usage) int64 { return u.cache })
 	check(floorHi*8 < cacheLo, "after shrink every connection's CACHE_USED is under 1/8 of what it was")
 
 	for _, c := range idle {
@@ -378,6 +409,7 @@ func partB(ctx context.Context, work string) {
 			notAtRest++
 		}
 	}
+	tables.fleet.Row(2, fmt.Sprintf("all %d closed", n), left, notAtRest)
 	check(left == 0 && notAtRest == 0, fmt.Sprintf("after closing all %d: 0 descriptors left and every file at rest (no -wal, -shm, -journal)", n))
 }
 
@@ -386,7 +418,8 @@ func partB(ctx context.Context, work string) {
 // parking in unixClose -> setPendingFd (src/os_unix.c:2341-2371, 2101-2109)
 // until closePendingFds (src/os_unix.c:1471-1482) runs when locks reach zero.
 func partD(ctx context.Context, work string) {
-	fmt.Println("\n== D. two connections to one WAL file in one process ==")
+	part = "D"
+	want := []int{3, 5, 4, 0}
 	dir := filepath.Join(work, "D")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		fatal("mkdir", err)
@@ -398,7 +431,7 @@ func partD(ctx context.Context, work string) {
 	show := func(label string) {
 		delta := descriptorCount() - base
 		got = append(got, delta)
-		fmt.Printf("  %-44s %d%s  side files: %s\n", label, delta, openNames(dir), sideFiles(path))
+		tables.fdStates.Row("D", sqlitex.JournalWAL, len(got), label, delta, want[len(got)-1], openNames(dir), sideFiles(path))
 	}
 	read := func(conn *sql.Conn) {
 		var count int
@@ -426,7 +459,7 @@ func partD(ctx context.Context, work string) {
 		fatal("close", err)
 	}
 	show("connection 1 closed")
-	check(fmt.Sprint(got) == fmt.Sprint([]int{3, 5, 4, 0}), "two connections share one -shm descriptor (5, not 6); the closed connection's database descriptor stays open (4, not 3) until the last connection to the file closes")
+	check(fmt.Sprint(got) == fmt.Sprint(want), "two connections share one -shm descriptor (5, not 6); the closed connection's database descriptor stays open (4, not 3) until the last connection to the file closes")
 }
 
 func main() {
@@ -437,18 +470,17 @@ func main() {
 		fatal("flags", fmt.Errorf("need -n >= 20 and 1 <= -step <= %d", recipe.DefaultSteps))
 	}
 	work := sqlitex.MustWorkDir("8.2")
+	set = results.MustOpen(work)
+	openTables()
 	soft, hard, err := procstat.FileLimit()
 	if err != nil {
 		fatal("file limit", err)
 	}
-	fmt.Printf("descriptors counted from %s; process memory from %s\n", procstat.DescriptorDir, procstat.MemorySource)
-	fmt.Printf("INFO: descriptor limit (RLIMIT_NOFILE as this Go process sees it): soft %d, hard %d\n", soft, hard)
+	setup("descriptors counted from", procstat.DescriptorDir)
+	setup("process memory from", procstat.MemorySource)
+	tables.infoLimits.Row(soft, hard)
 	partA(ctx, work)
 	partB(ctx, work)
 	partD(ctx, work)
-	if len(failures) > 0 {
-		fmt.Printf("\n%d check(s) FAILED\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("\nall checks passed")
+	set.Finish("IDLE COST")
 }

@@ -1,0 +1,13 @@
+cell,journal,sync,commits,rows_per_commit
+1,delete,NORMAL,1,1000
+2,delete,NORMAL,20,50
+3,delete,NORMAL,1000,1
+4,delete,FULL,1,1000
+5,delete,FULL,20,50
+6,delete,FULL,1000,1
+7,wal,NORMAL,1,1000
+8,wal,NORMAL,20,50
+9,wal,NORMAL,1000,1
+10,wal,FULL,1,1000
+11,wal,FULL,20,50
+12,wal,FULL,1000,1

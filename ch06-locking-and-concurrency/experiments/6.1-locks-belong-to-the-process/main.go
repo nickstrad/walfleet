@@ -9,9 +9,13 @@
 // outcomes after a stray close of -shm (SQLITE_PROTOCOL on an empty WAL,
 // silent overwrite on an active WAL, and silent loss when the contender exits
 // first and deletes -wal/-shm).
+//
+// It prints only its verdict. The steps, lock states and outcomes go to CSV
+// tables that report.sql presents: go run ./cmd/course run 6.1
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -20,8 +24,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strings"
 
 	"github.com/nickstrad/walfleet/internal/procs"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 )
@@ -30,11 +37,132 @@ const packagePath = "ch06-locking-and-concurrency/experiments/6.1-locks-belong-t
 
 const rowsQuery = "SELECT count(*) || ' row(s): ' || coalesce(group_concat(who, ','), '') FROM (SELECT who FROM lab ORDER BY id)"
 
-func prepare(ctx context.Context, lab *procs.Lab, dir, journal string) (string, *procs.Child, *procs.Child) {
+// Every step, lock probe and outcome goes to a CSV table in <work dir>/results/;
+// part labels the rows written while a part runs.
+var (
+	set     *results.Set
+	part    string
+	viewSeq int
+	tables  struct {
+		steps, lockViews, lockProbes, procLocks, finalState, files, infoRun, infoProcesses *results.Table
+	}
+)
+
+func openTables() {
+	tables.steps = set.Table("steps", "part", "step", "process", "action", "result", "code", "value")
+	tables.lockViews = set.Table("lock_views", "seq", "part", "after_step", "file", "proc_locks_listed", "proc_locks")
+	tables.lockProbes = set.Table("lock_probes", "part", "after_step", "file", "lock", "first_byte", "last_byte", "state", "holder")
+	tables.procLocks = set.Table("proc_locks", "part", "after_step", "file", "process", "class", "type", "bytes", "lock")
+	tables.finalState = set.Table("final_state", "part", "integrity", "contents")
+	tables.files = set.Table("files", "seq", "part", "moment", "file", "state")
+	tables.infoRun = set.Table("info_run", "work_dir", "goos")
+	tables.infoProcesses = set.Table("info_processes", "part", "process", "pid")
+}
+
+// recorder is a procs.Lab that writes each step, lock view and claim to the
+// tables instead of printing them.
+type recorder struct{ *procs.Lab }
+
+func newRecorder() *recorder {
+	lab := procs.NewLab(os.Stdout)
+	lab.Script.Out = nil
+	return &recorder{lab}
+}
+
+func (l *recorder) Do(child *procs.Child, action string, args ...string) procs.Result {
+	return l.step(child, action, args, l.Lab.Do(child, action, args...))
+}
+
+func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
+	return l.step(child, action, args, l.Lab.Must(child, action, args...))
+}
+
+func (l *recorder) step(child *procs.Child, action string, args []string, r procs.Result) procs.Result {
+	value := r.Value
+	if r.Code == procs.CodeNotSQLite {
+		value = r.Error
+	}
+	tables.steps.Row(part, r.Step, child.Name, procs.ActionText(action, args), r.CodeName(), r.Code, value)
+	return r
+}
+
+func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
+
+// Locks probes ranges on path from the parent (fcntl F_GETLK) and, on Linux,
+// lists the children's /proc/locks entries for path.
+func (l *recorder) Locks(file, path string, ranges []procs.LockRange) procs.LockView {
+	states, err := procs.ProbeRanges(path, ranges)
+	if err != nil {
+		l.Fatal("probe locks", err)
+	}
+	step := l.Script.Step()
+	for _, s := range states {
+		// F_GETLK names one arbitrary holder of a shared read lock, so only a
+		// write lock has a holder worth naming.
+		var holder any
+		if s.Holder.Held && s.Holder.Write {
+			holder = l.PidName(s.Holder.Pid)
+		}
+		tables.lockProbes.Row(part, step, file, s.Range.Name, s.Range.Start, s.Range.Start+s.Range.Length-1, s.Holder.Kind(), holder)
+	}
+	view := procs.LockView{Ranges: states}
+	if procs.ProcLocksSupported {
+		view.Proc = l.procLocks(file, path, ranges, step)
+		view.ProcListed = true
+	}
+	viewSeq++
+	tables.lockViews.Row(viewSeq, part, step, file, view.ProcListed, len(view.Proc))
+	return view
+}
+
+func (l *recorder) procLocks(file, path string, ranges []procs.LockRange, step int) []procs.ProcLock {
+	inode, err := procs.FileInode(path)
+	if err != nil {
+		l.Fatal("inode", err)
+	}
+	all, err := procs.ReadProcLocks()
+	if err != nil {
+		l.Fatal(procs.ProcLocksPath, err)
+	}
+	names := map[int]string{}
+	pids := map[int]bool{}
+	for _, child := range l.Script.Children() {
+		names[child.Pid] = child.Name
+		pids[child.Pid] = true
+	}
+	mine := procs.FilterProcLocks(all, inode, pids)
+	sorted := slices.SortedFunc(slices.Values(mine), func(a, b procs.ProcLock) int {
+		return cmp.Or(cmp.Compare(names[a.Pid], names[b.Pid]), cmp.Compare(a.Type, b.Type), cmp.Compare(a.Start, b.Start))
+	})
+	for _, lock := range sorted {
+		tables.procLocks.Row(part, step, file, names[lock.Pid], lock.Class, lock.Type, lock.RangeText(), rangeLabel(lock, ranges))
+	}
+	return mine
+}
+
+// rangeLabel names the SQLite lock range a kernel lock covers exactly, or
+// "(A+B)" when the kernel merged adjacent ranges into one lock.
+func rangeLabel(lock procs.ProcLock, ranges []procs.LockRange) string {
+	var covered []string
+	for _, r := range ranges {
+		if lock.Start == r.Start && !lock.ToEOF && lock.Length() == r.Length {
+			return r.Name
+		}
+		if r.Start <= lock.End && lock.Start <= r.Start+r.Length-1 {
+			covered = append(covered, r.Name)
+		}
+	}
+	if len(covered) == 0 {
+		return "(no named range)"
+	}
+	return "(" + strings.Join(covered, "+") + ")"
+}
+
+func prepare(ctx context.Context, lab *recorder, dir, journal string) (string, *procs.Child, *procs.Child) {
 	return prepareIn(ctx, lab, filepath.Join(dir, journal), procs.SQLOptions{JournalMode: journal})
 }
 
-func prepareIn(ctx context.Context, lab *procs.Lab, partDir string, options procs.SQLOptions) (string, *procs.Child, *procs.Child) {
+func prepareIn(ctx context.Context, lab *recorder, partDir string, options procs.SQLOptions) (string, *procs.Child, *procs.Child) {
 	journal := options.JournalMode
 	db := filepath.Join(partDir, "lab.db")
 	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
@@ -46,31 +174,32 @@ func prepareIn(ctx context.Context, lab *procs.Lab, partDir string, options proc
 	options.Path = db
 	holder := lab.SpawnSQL("holder", options)
 	contender := lab.SpawnSQL("contender", options)
-	fmt.Printf("INFO: holder pid %d, contender pid %d\n", holder.Pid, contender.Pid)
+	tables.infoProcesses.Row(part, holder.Name, holder.Pid)
+	tables.infoProcesses.Row(part, contender.Name, contender.Pid)
 	return db, holder, contender
 }
 
-func kernelHolders(lab *procs.Lab, view procs.LockView, rangeName string, want map[int]string, claim string) {
+func kernelHolders(lab *recorder, view procs.LockView, rangeName string, want map[int]string, claim string) {
 	if !view.ProcListed {
 		return
 	}
 	lab.Check(maps.Equal(view.ProcHolders(rangeName), want), claim)
 }
 
-func kernelNone(lab *procs.Lab, view procs.LockView, claim string) {
+func kernelNone(lab *recorder, view procs.LockView, claim string) {
 	if !view.ProcListed {
 		return
 	}
 	lab.Check(len(view.Proc) == 0, claim)
 }
 
-func finalRows(ctx context.Context, lab *procs.Lab, db, journal string) procs.Inspection {
+func finalRows(ctx context.Context, lab *recorder, db, journal string) procs.Inspection {
 	lab.StopChildren()
 	inspection, err := procs.InspectDatabase(ctx, db, journal, rowsQuery)
 	if err != nil {
 		lab.Fatal("inspect", err)
 	}
-	fmt.Printf("after both processes closed: integrity_check %s; %s\n", inspection.Integrity, inspection.Values[0])
+	tables.finalState.Row(part, inspection.Integrity, inspection.Values[0])
 	return inspection
 }
 
@@ -78,9 +207,8 @@ func finalRows(ctx context.Context, lab *procs.Lab, db, journal string) procs.In
 // the database file drops RESERVED and SHARED, admits a second writer whose
 // COMMIT returns SQLITE_OK, and causes the holder's later COMMIT to overwrite
 // the page and fail with SQLITE_IOERR_DELETE_NOENT (5898, src/os_unix.c:6842-6847).
-func rollbackMode(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Println("== A. rollback mode (journal_mode=delete): the write lock is a byte-range lock on the database file")
+func rollbackMode(ctx context.Context, lab *recorder, dir string) {
+	part = "A"
 	db, holder, contender := prepare(ctx, lab, dir, sqlitex.JournalDelete)
 	ranges := procs.DatabaseLockRanges()
 	lab.Must(holder, "begin", "immediate")
@@ -120,9 +248,8 @@ func rollbackMode(ctx context.Context, lab *procs.Lab, dir string) {
 // -shm drops all -shm locks, admits the contender, and sends the holder's
 // COMMIT (on WAL_READ_LOCK(0)) into walRestartLog -> walTryBeginRead retries
 // until SQLITE_PROTOCOL (15, src/wal.c:2963, 3053-3056, 3261-3265, 3875-3915).
-func walMode(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Println("== B. WAL mode: the write lock is a byte-range lock on the -shm file")
+func walMode(ctx context.Context, lab *recorder, dir string) {
+	part = "B"
 	db, holder, contender := prepare(ctx, lab, dir, sqlitex.JournalWAL)
 	shm := db + "-shm"
 	shmRanges, dbRanges := procs.ShmLockRanges(), procs.DatabaseLockRanges()
@@ -174,9 +301,8 @@ func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 // runs when pWal->readLock == 0 (src/wal.c:3879), the holder skips the header
 // check after the stray close of -shm, writes its frames over the contender's,
 // and both COMMITs return SQLITE_OK while the contender's row silently vanishes.
-func walWithFrames(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Println("== C. WAL mode, the WAL already holding a commit no checkpoint has copied (wal_autocheckpoint=0): a stray close of -shm only")
+func walWithFrames(ctx context.Context, lab *recorder, dir string) {
+	part = "C"
 	db, holder, contender := prepareIn(ctx, lab, filepath.Join(dir, "wal-with-frames"), procs.SQLOptions{JournalMode: sqlitex.JournalWAL})
 	shm := db + "-shm"
 	shmRanges := procs.ShmLockRanges()
@@ -209,9 +335,8 @@ func walWithFrames(ctx context.Context, lab *procs.Lab, dir string) {
 // sqlite3WalClose (src/wal.c:2507-2571) closes as the last connection and unlinks
 // -wal and -shm; the holder then commits SQLITE_OK into its unlinked -wal fd and
 // only the holder's row survives.
-func walContenderExits(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Println("== D. WAL mode as in B, but the second process closes its connection and exits before the holder commits")
+func walContenderExits(ctx context.Context, lab *recorder, dir string) {
+	part = "D"
 	db, holder, contender := prepareIn(ctx, lab, filepath.Join(dir, "wal-contender-exits"), procs.SQLOptions{JournalMode: sqlitex.JournalWAL})
 	lab.Must(holder, "begin", "immediate")
 	lab.Must(holder, "exec", "INSERT INTO lab VALUES (1, 'holder')")
@@ -222,13 +347,13 @@ func walContenderExits(ctx context.Context, lab *procs.Lab, dir string) {
 	if err := contender.Stop(); err != nil {
 		lab.Fatal("stop contender", err)
 	}
-	fmt.Printf("contender closed its connection and exited cleanly; then %s is %s and %s is %s\n",
-		filepath.Base(db)+"-wal", presence(db+"-wal"), filepath.Base(db)+"-shm", presence(db+"-shm"))
+	tables.files.Row(1, part, "after the contender exited", filepath.Base(db)+"-wal", presence(db+"-wal"))
+	tables.files.Row(2, part, "after the contender exited", filepath.Base(db)+"-shm", presence(db+"-shm"))
 	lab.Check(presence(db+"-wal") == "gone" && presence(db+"-shm") == "gone",
 		"seeing no other process's locks, the second process closed as the last connection and deleted -wal and -shm")
 	holderCommit := lab.Do(holder, "commit")
 	lab.Check(holderCommit.OK(), "the holder's COMMIT returns SQLITE_OK")
-	fmt.Printf("after the holder's commit: %s is %s\n", filepath.Base(db)+"-wal", presence(db+"-wal"))
+	tables.files.Row(3, part, "after the holder's commit", filepath.Base(db)+"-wal", presence(db+"-wal"))
 	lab.Check(presence(db+"-wal") == "gone", "no -wal file exists under that name: the holder wrote its commit into the deleted file it still had open")
 	inspection := finalRows(ctx, lab, db, sqlitex.JournalWAL)
 	lab.Check(inspection.Integrity == "ok" && inspection.Values[0] == "1 row(s): holder",
@@ -267,10 +392,13 @@ func main() {
 	if !procs.ProcLocksSupported {
 		trace.PrintLinuxOnly("the /proc/locks listing (the fcntl F_GETLK probe and every behavioural check still run)", packagePath)
 	}
-	lab := procs.NewLab(os.Stdout)
+	set = results.MustOpen(dir)
+	openTables()
+	tables.infoRun.Row(sqlitex.DisplayPath(dir), runtime.GOOS)
+	lab := newRecorder()
 	rollbackMode(ctx, lab, dir)
 	walMode(ctx, lab, dir)
 	walWithFrames(ctx, lab, dir)
 	walContenderExits(ctx, lab, dir)
-	lab.Report("LOCKS BELONG TO THE PROCESS")
+	set.Finish("LOCKS BELONG TO THE PROCESS")
 }

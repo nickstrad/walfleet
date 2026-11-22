@@ -1,0 +1,12 @@
+cycle,part,wal,segment,first_position,last_position,first_frame,last_frame,generation,first_user_version,last_user_version,before_sha256,after_sha256,checkpoint_busy,checkpoint_log,checkpointed,every_frame_copied
+1,A,new WAL generation after the shipper's full checkpoint,segments/000000000003,3,3,1,18,#1,3,3,69490a2dc9c1980f,329eb15614fee435,false,18,18,true
+2,A,new WAL generation after the shipper's full checkpoint,segments/000000000004,4,5,1,36,#2,4,5,329eb15614fee435,4078a0bbc3758ed2,false,36,36,true
+3,A,new WAL generation after the shipper's full checkpoint,segments/000000000006,6,6,1,22,#3,6,6,4078a0bbc3758ed2,2d7996f5c596c99e,false,22,22,true
+4,A,new WAL generation after the shipper's full checkpoint,segments/000000000007,7,9,1,62,#4,7,9,2d7996f5c596c99e,ca22a3f016ee31e4,false,62,62,true
+5,A,new WAL generation after the shipper's full checkpoint,segments/000000000010,10,10,1,17,#5,10,10,ca22a3f016ee31e4,044c77909ad64db8,false,17,17,true
+6,A,new WAL generation after the shipper's full checkpoint,segments/000000000011,11,12,1,44,#6,11,12,044c77909ad64db8,649990133c619869,false,44,44,true
+7,A,new WAL generation after the shipper's full checkpoint,segments/000000000013,13,13,1,22,#7,13,13,649990133c619869,cf469938e5222774,false,22,22,true
+8,A,new WAL generation after the shipper's full checkpoint,segments/000000000014,14,14,1,18,#8,14,14,cf469938e5222774,e7f84f8b8cd28ab5,false,18,18,true
+9,B,discontinuity: the WAL header changed while the shipper held no read mark,,,,,,,,,,,false,13,13,true
+10,B,new WAL generation after the shipper's full checkpoint,segments/000000000016,16,16,1,25,#10,18,18,4a1f971701e2b5cd,055a4f7a088f1c76,false,25,25,true
+11,B,new WAL generation after the shipper's full checkpoint,segments/000000000017,17,18,1,36,#11,19,20,055a4f7a088f1c76,e769f5c3b1663de2,false,36,36,true

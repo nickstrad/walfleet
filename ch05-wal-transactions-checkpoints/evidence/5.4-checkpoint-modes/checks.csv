@@ -1,0 +1,13 @@
+seq,part,status,claim
+1,A,ok,"with no reader, PASSIVE, FULL and RESTART all copy every frame and report busy=0"
+2,A,ok,TRUNCATE with no reader reports 0/0/0 and leaves a zero-length -wal
+3,A,ok,PASSIVE with a reader behind copies up to the reader's frame and still reports busy=0
+4,A,ok,"FULL, RESTART and TRUNCATE with a reader behind copy the same frames, then report busy=1"
+5,A,ok,a reader whose snapshot is the end of the WAL does not limit PASSIVE or FULL
+6,A,ok,RESTART and TRUNCATE copy everything but report busy=1 while any reader is still using the WAL
+7,A,ok,"TRUNCATE restarts the wal-index at once: shm salt-1 + 1, mxFrame 0"
+8,A,ok,"PASSIVE, FULL and RESTART change neither salt nor the WAL size: the restart happens at the next write"
+9,A,ok,the next write restarts the WAL exactly when the checkpoint had copied every frame (or TRUNCATE emptied it); otherwise it appends with the same salts
+10,A,ok,"when the writer itself restarts the WAL at its next write, the new header has salt-1 + 1 and checkpoint sequence + 1"
+11,A,ok,"after another connection's TRUNCATE, the writer's next WAL header has new random salts and the writer's own checkpoint sequence (0): the sequence is per connection"
+12,B,ok,"when the connection that ran TRUNCATE writes next, the new WAL header has salt-1 + 1 and checkpoint sequence + 1"

@@ -1,0 +1,10 @@
+seq,part,step,journal_mode,synchronous,sequence,journaled_pages,record_writes,db_page_writes,syncs,sync_targets
+1,D,3,delete,FULL,"journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-unlink",7,21,18,4,t.db-journal . t.db-journal t.db
+2,D,3,delete,NORMAL,"journal-header, journal-record x21, journal-count, journal-sync, dir-sync, db-page x18, db-sync, journal-unlink",7,21,18,3,t.db-journal . t.db
+3,D,3,delete,OFF,"journal-header, journal-record x21, db-page x18, journal-unlink",7,21,18,0,
+4,D2,1,delete,FULL,"journal-header, journal-record x12, journal-sync, dir-sync, journal-count, journal-sync, db-page x22, db-sync, journal-unlink",4,12,22,4,t.db-journal . t.db-journal t.db
+5,D2,1,delete,NORMAL,"journal-header, journal-record x12, journal-count, journal-sync, dir-sync, db-page x22, db-sync, journal-unlink",4,12,22,3,t.db-journal . t.db
+6,D2,1,delete,OFF,"journal-header, journal-record x12, db-page x22, journal-unlink",4,12,22,0,
+7,F,3,delete,FULL,"journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-unlink",7,21,18,4,t.db-journal . t.db-journal t.db
+8,F,3,truncate,FULL,"journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-truncate, journal-sync",7,21,18,5,t.db-journal . t.db-journal t.db t.db-journal
+9,F,3,persist,FULL,"journal-header, journal-record x21, journal-sync, dir-sync, journal-count, journal-sync, db-page x18, db-sync, journal-zero-header, journal-sync",7,21,18,5,t.db-journal . t.db-journal t.db t.db-journal

@@ -16,6 +16,9 @@
 // store-durable acknowledgements (kept) and an unshipped local-durable
 // acknowledgement (lost on takeover). Every command step is cross-checked
 // against the model and against the standing descriptor and memory bounds.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 10.1
 package main
 
 import (
@@ -35,12 +38,12 @@ import (
 	"github.com/nickstrad/walfleet/internal/connmgr"
 	"github.com/nickstrad/walfleet/internal/rangefs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 var (
-	failures   []string
 	depth      = flag.Int("depth", 16, "exhaustive search depth of the model")
 	seed       = flag.Uint64("seed", 1, "seed of the scheduler's action order and random walks")
 	walks      = flag.Int("walks", 2000, "seeded random walks past the exhaustive depth")
@@ -60,13 +63,34 @@ func init() {
 	flag.IntVar(&process.Capacity, "capacity", 4, "databases a node keeps open")
 }
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 10.1" runs both.
+// part labels the claims made while a part runs.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		settings, modelRuns, modelTraces, steps, modelSteps, closes, problems, slots, catalog, acks, infoRun, infoBounds *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+)
+
+func openTables() {
+	tables.settings = set.Table("settings", "seq", "name", "value")
+	tables.modelRuns = set.Table("model_runs", "seq", "model", "role", "depth", "seed", "interleavings", "distinct_states", "violating", "walks", "walk_steps", "walk_violating", "violation")
+	tables.modelTraces = set.Table("model_traces", "model", "step_no", "action", "outcome")
+	tables.steps = set.Table("steps", "step", "node", "command", "reply", "descriptors", "model_agrees")
+	tables.modelSteps = set.Table("model_steps", "step", "database", "seq", "action", "outcome")
+	tables.closes = set.Table("closes", "node", "reply", "summary")
+	tables.problems = set.Table("problems", "seq", "kind", "line")
+	tables.slots = set.Table("slots", "database", "source", "first", "last", "epoch", "kind")
+	tables.catalog = set.Table("catalog", "database", "owner", "epoch", "last_shipped", "schema_version", "location", "restored_position", "restored_state", "file_equals_store")
+	tables.acks = set.Table("acks", "seq", "database", "mode", "epoch", "user_version", "position", "in_store")
+	tables.infoRun = set.Table("info_run", "name", "value")
+	tables.infoBounds = set.Table("info_bounds", "step", "node", "bounds")
+}
+
+func check(ok bool, claim string) {
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -74,18 +98,25 @@ func fatal(what string, err error) {
 	os.Exit(1)
 }
 
+func setting(name string, value any) {
+	settingSeq++
+	tables.settings.Row(settingSeq, name, value)
+}
+
+var settingSeq, modelSeq int
+
 func partA() {
-	fmt.Println("\n== A. the ownership model, every interleaving up to a bounded depth ==")
-	fmt.Printf("model: %d nodes, one database, the catalog's epoch counter, a store of position slots with put-if-absent; actions per node: claim, fence, fence-with-stale-list, write, ship, crash, restart, restart-with-stale-list; at most %d epochs, and a node's local commits stop at stream position %d (the bound counts positions across all epochs and fences, not commits per node)\n", model.Nodes, model.MaxEpoch, model.MaxLocal)
-	fmt.Println("invariants after every step: no two epochs accepted for overlapping positions; no epoch accepted after a newer one was; no accepted object overwritten")
+	part = "A"
+	setting("model_nodes", model.Nodes)
+	setting("model_max_epoch", model.MaxEpoch)
+	setting("model_max_local_position", model.MaxLocal)
+	setting("model_seed", *seed)
 	under, err := model.ParseMutant(*mutant)
 	if err != nil {
 		fatal("-mutant", err)
 	}
 	report := model.Explore(under, *depth, *seed, *walks, *walkLength)
-	fmt.Printf("%s, depth %d, seed %d: %d interleavings explored, %d distinct states, %d interleavings violate an invariant\n", report.Mutant, report.Depth, *seed, report.Interleavings, report.States, report.Violating)
-	fmt.Printf("seeded random walks: %d walks, %d steps, %d reached a violation\n", report.Walks, report.WalkSteps, report.WalkViolating)
-	printTrace(report)
+	recordModel(report, "under test")
 	check(report.Violating == 0 && report.WalkViolating == 0 && report.Shortest == nil, fmt.Sprintf("model %s: no interleaving up to depth %d and no random walk lets a fenced epoch get a commit accepted", report.Mutant, *depth))
 	// Self-tests: disable each half of the fencing rule in turn so the
 	// experiment proves the checker can fail when either guarantee is missing.
@@ -94,19 +125,23 @@ func partA() {
 			continue
 		}
 		self := model.Explore(m, *depth, *seed, 0, 0)
-		fmt.Printf("self-test %s: %d of %d interleavings violate an invariant\n", m, self.Violating, self.Interleavings)
-		printTrace(self)
+		recordModel(self, "self-test")
 		check(self.Violating > 0 && self.Shortest != nil, fmt.Sprintf("self-test: with %s the checker finds the violation", m))
 	}
 }
 
-func printTrace(report model.Report) {
-	if report.Shortest == nil {
-		return
+// recordModel writes one exploration and its shortest violating interleaving,
+// whose lines model.Explore formats as "%2d. %-28s %s" (step, action, outcome).
+func recordModel(report model.Report, role string) {
+	modelSeq++
+	var violation any
+	if report.Shortest != nil {
+		violation = report.Violation
 	}
-	fmt.Printf("  shortest violating interleaving (%d steps): %s\n", len(report.Shortest), report.Violation)
-	for _, line := range report.Shortest {
-		fmt.Println("    " + line)
+	tables.modelRuns.Row(modelSeq, report.Mutant, role, report.Depth, *seed, report.Interleavings, report.States, report.Violating, report.Walks, report.WalkSteps, report.WalkViolating, violation)
+	for i, line := range report.Shortest {
+		_, rest, _ := strings.Cut(line, ". ")
+		tables.modelTraces.Row(report.Mutant, i+1, strings.TrimSpace(rest[:min(28, len(rest))]), strings.TrimSpace(rest[min(28, len(rest)):]))
 	}
 }
 
@@ -186,9 +221,8 @@ func startNode(ctx context.Context, work, name, fault string) *node.Process {
 	return p
 }
 
-func partB(ctx context.Context, store *s3store.Store) {
-	fmt.Println("\n== B. the stale-owner scenario on two service processes against the S3 store ==")
-	work := sqlitex.MustWorkDir("10.1")
+func partB(ctx context.Context, store *s3store.Store, work string) {
+	part = "B"
 	if _, err := store.Wipe(ctx); err != nil {
 		fatal("wipe the store prefix", err)
 	}
@@ -199,6 +233,8 @@ func partB(ctx context.Context, store *s3store.Store) {
 		}
 	}
 	fmt.Printf("INFO: store %s, work directory %s\n", store.Endpoint, shown)
+	tables.infoRun.Row("store endpoint", store.Endpoint)
+	tables.infoRun.Row("work directory", shown)
 	cat, err := catalog.Open(ctx, filepath.Join(work, "catalog.db"))
 	if err != nil {
 		fatal("catalog", err)
@@ -209,9 +245,15 @@ func partB(ctx context.Context, store *s3store.Store) {
 			fatal("register", err)
 		}
 	}
-	fmt.Printf("store: bucket %s, prefix %s; catalog: %s registered with %s; nodes a and b share the catalog; each keeps at most %d databases open\n",
-		store.Bucket, store.Prefix, strings.Join(databases, ", "), node.PlatformSettings(), process.Capacity)
-	fmt.Println("node b's store wrapper hides the newest slot from its first listing (fault stale-list:/log/:1)")
+	setting("bucket", store.Bucket)
+	setting("prefix", store.Prefix)
+	setting("databases", strings.Join(databases, " "))
+	for _, pragma := range strings.Fields(node.PlatformSettings().String()) {
+		name, value, _ := strings.Cut(pragma, "=")
+		setting(name, value)
+	}
+	setting("open_databases_per_node", process.Capacity)
+	setting("fault_on_node_b", "stale-list:/log/:1")
 	nodes := map[string]*node.Process{"a": startNode(ctx, work, "a", ""), "b": startNode(ctx, work, "b", "stale-list:/log/:1")}
 	states := map[string]model.State{}
 	for _, id := range databases {
@@ -221,8 +263,8 @@ func partB(ctx context.Context, store *s3store.Store) {
 	var problems, overBounds []string
 	commands, agreed, sampled := 0, 0, 0
 	for i, s := range scenario {
-		fmt.Printf("step %d: node %s: %s\n", i+1, s.node, s.command)
 		var reply node.Reply
+		var descriptors any
 		switch s.command {
 		case "kill":
 			if err := nodes[s.node].Kill(); err != nil {
@@ -234,14 +276,18 @@ func partB(ctx context.Context, store *s3store.Store) {
 			if reply, err = nodes[s.node].Send(s.command); err != nil {
 				fatal("send", err)
 			}
-			fmt.Println("  " + reply.Line)
-			fmt.Printf("INFO: %s %s\n", s.node, reply.Bounds)
+			tables.infoBounds.Row(i+1, s.node, reply.Bounds)
+			var n int
+			if _, err := fmt.Sscanf(reply.Bounds, "bounds descriptors=%d", &n); err == nil {
+				descriptors = n
+			}
 			sampled++
 			problems = append(problems, reply.Problems...)
 			if !reply.WithinBounds() {
 				overBounds = append(overBounds, reply.Bounds)
 			}
 		}
+		var modelAgrees any
 		for _, id := range databases {
 			if _, ok := s.model[id]; !ok {
 				continue
@@ -250,8 +296,8 @@ func partB(ctx context.Context, store *s3store.Store) {
 			if err != nil {
 				fatal("script", err)
 			}
-			var outcomes, shown []string
-			for _, a := range actions {
+			var outcomes []string
+			for j, a := range actions {
 				next, outcome, enabled := model.Step(states[id], model.Correct, a)
 				if !enabled {
 					outcome = "refused: not enabled"
@@ -259,18 +305,22 @@ func partB(ctx context.Context, store *s3store.Store) {
 					states[id] = next
 				}
 				outcomes = append(outcomes, outcome)
-				shown = append(shown, a.String()+": "+outcome)
+				tables.modelSteps.Row(i+1, id, j+1, a.String(), outcome)
 			}
-			fmt.Printf("  model %s: %s\n", id, strings.Join(shown, "; "))
 			if reply.Line != "" {
 				commands++
-				if agrees(reply.Line, outcomes) {
+				ok := agrees(reply.Line, outcomes)
+				modelAgrees = ok
+				if ok {
 					agreed++
-				} else {
-					fmt.Println("  the model DISAGREES with this step")
 				}
 			}
 		}
+		var line any
+		if reply.Line != "" {
+			line = reply.Line
+		}
+		tables.steps.Row(i+1, s.node, s.command, line, descriptors, modelAgrees)
 		var a ack
 		if n, _ := fmt.Sscanf(reply.Line, "ok write %s %s acknowledged at epoch %d, user_version %d,", &a.database, &a.mode, &a.epoch, &a.userVersion); n == 4 {
 			a.mode = node.AckMode(strings.TrimSuffix(string(a.mode), ":"))
@@ -288,30 +338,39 @@ func partB(ctx context.Context, store *s3store.Store) {
 		if err != nil {
 			fatal("close node "+name, err)
 		}
-		fmt.Printf("node %s: %s; %s\n", name, reply.Line, reply.Summary)
+		tables.closes.Row(name, reply.Line, reply.Summary)
 		sampled++
 		problems = append(problems, reply.Problems...)
 		if !reply.WithinBounds() {
 			overBounds = append(overBounds, reply.Bounds)
 		}
 	}
-	for _, problem := range problems {
-		fmt.Println("problem: " + problem)
-	}
-	for _, line := range overBounds {
-		fmt.Println("over bounds: " + line)
-	}
+	recordProblems(problems, overBounds)
 	check(len(problems) == 0, "no node reported a problem (a failed final ship, an eviction that did not leave the shipped state at rest, an I/O error)")
 	check(len(overBounds) == 0, fmt.Sprintf("after each of the %d commands the node's descriptors and memory stayed within the standing bounds", sampled))
 	verify(ctx, store, cat, work, states, acks)
 }
 
+func recordProblems(problems, overBounds []string) {
+	seq := 0
+	for _, kind := range []struct {
+		name  string
+		lines []string
+	}{{"problem", problems}, {"over bounds", overBounds}} {
+		for _, line := range kind.lines {
+			seq++
+			tables.problems.Row(seq, kind.name, line)
+		}
+	}
+}
+
 func verify(ctx context.Context, store *s3store.Store, cat *catalog.Catalog, work string, states map[string]model.State, acks []ack) {
+	ackSeq := 0
 	hashes, err := recipe.Default().StepHashes(ctx)
 	if err != nil {
 		fatal("step hashes", err)
 	}
-	fmt.Println("\nthe store after the run (read back from S3), and the model's store after the same steps:")
+	part = "C"
 	for _, id := range databases {
 		chain, restorable, err := fence.Audit(ctx, store, id)
 		if err != nil {
@@ -320,8 +379,16 @@ func verify(ctx context.Context, store *s3store.Store, cat *catalog.Catalog, wor
 		var slots []string
 		for _, slot := range chain {
 			slots = append(slots, fmt.Sprintf("positions %d-%d epoch %d %s", slot.First, slot.Last, slot.Epoch, slot.Kind))
+			tables.slots.Row(id, "store", slot.First, slot.Last, slot.Epoch, slot.Kind)
 		}
-		fmt.Printf("%s store: %s\n%s model: %s\n", id, strings.Join(slots, "; "), id, strings.Join(states[id].ChainLines(), "; "))
+		for _, line := range states[id].ChainLines() {
+			var first, last, epoch int64
+			var kind string
+			if _, err := fmt.Sscanf(line, "positions %d-%d epoch %d %s", &first, &last, &epoch, &kind); err != nil {
+				fatal("model chain", err)
+			}
+			tables.slots.Row(id, "model", first, last, epoch, kind)
+		}
 		// Require len(restorable.Damaged) == 0 in addition to RestoreAt(last):
 		// a damaged segment before a newer snapshot would not affect restoring
 		// the latest position, but would break point-in-time auditability.
@@ -340,14 +407,13 @@ func verify(ctx context.Context, store *s3store.Store, cat *catalog.Catalog, wor
 		if err != nil {
 			fatal("catalog "+id, err)
 		}
-		fmt.Printf("%s catalog: owner %s, epoch %d, last shipped %d, schema version %d, location %s; restore of position %d: %s\n",
-			id, record.Owner, record.Epoch, record.LastShipped, record.SchemaVersion, record.Location, last.Last, match)
 		check(record.Epoch == last.Epoch && record.LastShipped == last.Last && record.SchemaVersion == match.Step && match.Found() && (match.Exact || recipe.ChangeCountersAgree(image)),
 			id+": the catalog names the newest epoch and the last stored position, and the restored state is a recipe state")
 		status, err := connmgr.CheckAtRest(filepath.Join(work, record.Owner, id+".db"))
 		if err != nil {
 			fatal("at rest", err)
 		}
+		tables.catalog.Row(id, record.Owner, record.Epoch, record.LastShipped, record.SchemaVersion, record.Location, last.Last, match, status.AtRest && status.SHA256 == walship.SHA256Hex(image))
 		check(status.AtRest && status.SHA256 == walship.SHA256Hex(image), id+": the owner's closed local file is byte-identical (E1) to the state rebuilt from the store")
 		for _, a := range acks {
 			if a.database != id {
@@ -361,7 +427,12 @@ func verify(ctx context.Context, store *s3store.Store, cat *catalog.Catalog, wor
 					}
 				}
 			}
-			fmt.Printf("%s %s acknowledgement at epoch %d of user_version %d: in the store %t\n", id, a.mode, a.epoch, a.userVersion, found)
+			ackSeq++
+			var position any
+			if a.mode == node.StoreDurable {
+				position = a.position
+			}
+			tables.acks.Row(ackSeq, id, a.mode, a.epoch, a.userVersion, position, found)
 			if a.mode == node.StoreDurable {
 				check(found, fmt.Sprintf("%s: the store-durable acknowledgement of user_version %d is stored at position %d by epoch %d", id, a.userVersion, a.position, a.epoch))
 			} else {
@@ -391,13 +462,12 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	work := sqlitex.MustWorkDir("10.1")
+	set = results.MustOpen(work)
+	openTables()
 	partA()
 	if !*modelOnly {
-		partB(ctx, store)
+		partB(ctx, store, work)
 	}
-	if len(failures) > 0 {
-		fmt.Printf("\n%d check(s) FAILED\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("\nall checks passed")
+	set.Finish("ONE WRITER")
 }

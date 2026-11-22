@@ -1,0 +1,18 @@
+seq,part,status,claim
+1,A,ok,two runs of the recipe give manifests identical line for line
+2,B,ok,sha256 of the rebuild equals sha256 of the original
+3,B,ok,"the rebuild is the recipe's state after step 30, byte for byte"
+4,B,ok,SQLite opens the rebuild and integrity_check returns ok
+5,B,ok,opening the rebuild with SQLite and closing it changed nothing and left no side files
+6,B,ok,the manifest comparison names the first differing page (page 1: the header changes on every recipe step)
+7,C,ok,"C1: the rebuild is refused naming ""page 100: missing"", and no output file is written"
+8,C,ok,"C2: the rebuild is refused naming ""page 50: listed twice"", and no output file is written"
+9,C,ok,"C3: the rebuild is refused naming ""page 121: out of order"", and no output file is written"
+10,C,ok,"C4: the rebuild is refused naming ""capture page 200:"", and no output file is written"
+11,C,ok,"C5: the rebuild is refused naming ""capture page 7:"", and no output file is written"
+12,D,ok,D1: the capture is refused: the -wal holds committed frames
+13,D,ok,D1: a page capture taken from the file alone would have lost the committed UPDATE
+14,D,ok,"D1: once at rest, the capture includes the UPDATE (the file changed at the checkpoint)"
+15,D,ok,D2: the capture is refused: a hot -journal exists
+16,D,ok,D2: the file alone holds part of an uncommitted transaction; a capture of it would be torn
+17,D,ok,"D2: after SQLite rolled the hot journal back, the file is byte-identical to its state before the transaction"

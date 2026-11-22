@@ -1,0 +1,151 @@
+case_no,seq,label,owner,epoch,store_end,store_end_epoch,store_end_kind,node_a,node_b
+1,1,after recovery,b,2,5,2,snapshot,not owner,"owner at epoch 2, writable"
+2,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+2,2,after recovery,b,2,6,2,snapshot,not owner,"owner at epoch 2, writable"
+3,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+3,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+3,3,after recovery,b,2,6,2,snapshot,not owner,"owner at epoch 2, writable"
+4,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+4,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+4,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+4,4,after recovery,b,2,6,2,snapshot,not owner,"owner at epoch 2, writable"
+5,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+5,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+5,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+5,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+5,5,after recovery,b,2,6,2,snapshot,not owner,"owner at epoch 2, writable"
+6,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+6,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+6,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+6,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+6,5,after step 5,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+6,6,after recovery,b,2,6,2,snapshot,not owner,"owner at epoch 2, writable"
+7,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+7,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+7,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+7,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+7,5,after step 5,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+7,6,after step 6,b,2,6,2,snapshot,"owner at epoch 1, sealed","owner at epoch 2, writable"
+7,7,after recovery,b,2,7,2,segment,not owner,"owner at epoch 2, writable"
+8,1,after recovery,a,3,5,3,snapshot,"owner at epoch 3, writable",not owner
+9,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+9,2,after recovery,a,3,6,3,snapshot,"owner at epoch 3, writable",not owner
+10,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+10,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+10,3,after recovery,a,3,6,3,snapshot,"owner at epoch 3, writable",not owner
+11,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+11,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+11,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+11,4,after recovery,a,3,6,3,snapshot,"owner at epoch 3, writable",not owner
+12,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+12,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+12,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+12,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+12,5,after recovery,a,3,6,3,snapshot,"owner at epoch 3, writable",not owner
+13,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+13,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+13,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+13,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+13,5,after step 5,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+13,6,after recovery,b,2,6,2,snapshot,not owner,"owner at epoch 2, writable"
+14,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+14,2,after recovery,b,2,5,2,snapshot,not owner,"owner at epoch 2, writable"
+15,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+15,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+15,3,after recovery,b,2,5,2,snapshot,not owner,"owner at epoch 2, writable"
+16,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+16,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+16,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+16,4,after step 4,b,2,5,1,segment,down,not owner
+16,5,after step 5,b,2,5,1,segment,down,not owner
+16,6,after step 6,b,2,6,2,snapshot,down,"owner at epoch 2, writable"
+16,7,after recovery,b,2,7,2,segment,not owner,"owner at epoch 2, writable"
+17,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+17,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+17,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+17,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+17,5,after step 5,b,2,5,1,segment,"owner at epoch 1, sealed",down
+17,6,after recovery,b,2,6,2,snapshot,not owner,"owner at epoch 2, writable"
+18,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+18,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+18,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+18,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+18,5,after step 5,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+18,6,after step 6,b,2,6,2,snapshot,"owner at epoch 1, sealed","owner at epoch 2, writable"
+18,7,after step 7,b,2,7,2,segment,not owner,down
+18,8,after recovery,b,2,7,2,segment,not owner,"owner at epoch 2, writable"
+19,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+19,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+19,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+19,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+19,5,after step 5,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+19,6,after step 6,b,2,6,2,snapshot,"owner at epoch 1, sealed","owner at epoch 2, writable"
+19,7,after recovery,b,2,7,2,segment,not owner,"owner at epoch 2, writable"
+20,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+20,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+20,3,after recovery,a,3,5,3,snapshot,"owner at epoch 3, writable",not owner
+21,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+21,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+21,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+21,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+21,5,after step 5,b,2,5,1,segment,"owner at epoch 1, sealed",down
+21,6,after recovery,a,3,6,3,snapshot,"owner at epoch 3, writable",not owner
+22,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+22,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+22,3,after recovery,b,2,5,2,snapshot,not owner,"owner at epoch 2, writable"
+23,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+23,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+23,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+23,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+23,5,after step 5,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+23,6,after recovery,b,2,6,2,snapshot,not owner,"owner at epoch 2, writable"
+24,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+24,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+24,3,after recovery,b,2,6,2,snapshot,not owner,"owner at epoch 2, writable"
+25,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+25,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+25,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+25,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+25,5,after step 5,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+25,6,after recovery,b,2,6,2,snapshot,not owner,"owner at epoch 2, writable"
+26,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+26,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+26,3,after recovery,b,2,5,2,snapshot,not owner,"owner at epoch 2, writable"
+27,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+27,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+27,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+27,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+27,5,after step 5,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+27,6,after recovery,b,2,6,2,snapshot,not owner,"owner at epoch 2, writable"
+28,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+28,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+28,3,after recovery,b,2,6,2,snapshot,not owner,"owner at epoch 2, writable"
+29,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+29,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+29,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+29,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+29,5,after step 5,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+29,6,after recovery,b,2,6,2,snapshot,not owner,"owner at epoch 2, writable"
+30,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+30,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+30,3,after recovery,a,3,5,3,snapshot,"owner at epoch 3, writable",not owner
+31,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+31,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+31,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+31,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+31,5,after step 5,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+31,6,after recovery,a,3,6,3,snapshot,"owner at epoch 3, writable",not owner
+32,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+32,2,after step 2,b,2,3,1,segment,"owner at epoch 1, sealed",not owner
+32,3,after step 3,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+32,4,after step 4,b,2,5,1,segment,"owner at epoch 1, sealed",not owner
+32,5,after step 5,b,2,5,1,segment,"owner at epoch 1, sealed",down
+32,6,after recovery,a,3,6,3,snapshot,"owner at epoch 3, writable",not owner
+0,1,after step 1,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+0,2,after step 2,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+0,3,after step 3,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+0,4,after step 4,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+0,5,after step 5,b,2,3,1,segment,"owner at epoch 1, writable",not owner
+0,6,after step 6,b,2,3,1,segment,"owner at epoch 1, writable","owner at epoch 2, writable"
+0,7,after step 7,b,2,not one lineage,,,"owner at epoch 1, writable","owner at epoch 2, writable"
+0,8,after recovery,b,2,not one lineage,,,"owner at epoch 1, writable","owner at epoch 2, writable"

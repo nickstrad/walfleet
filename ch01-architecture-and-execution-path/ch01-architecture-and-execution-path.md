@@ -12,27 +12,20 @@
 
 > **How to run the experiments**
 >
-> - **Prerequisites:** Go 1.26 (`go.mod` specifies `go 1.26.0`). On Linux, `strace` is required for syscall tracing; on macOS, use the Docker `lab` container below.
-> - **Fetch the pinned SQLite source tree** into `_src/sqlite-3.53.4` (or point `SQLITE_SRC` at an existing checkout of tag `version-3.53.4`):
+> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to start the runner from the host. Build the `lab` image once, from the repository root:
 >   ```text
->   go run ./cmd/course fetch-source
+>   docker compose build lab
 >   ```
-> - **Build the pinned C tools** (`sqlite3`, `showwal`, `dbhash`) into `_tools/bin/` for experiments that invoke the C CLI:
+>   The image already contains the pinned SQLite `3.53.4` source tree, the C tools (`sqlite3`, `showwal`, `dbhash`), `strace`, and the DuckDB CLI that presents the results.
+> - **Run the experiments** from the repository root. Each command starts the `lab` container, runs the experiment in it, and prints its walkthrough; add `-i` (`go run ./cmd/course run -i 1.2`) to stay in DuckDB afterwards with the tables loaded:
 >   ```text
->   go run ./cmd/course build-tools
+>   go run ./cmd/course run 1.1
+>   go run ./cmd/course run 1.2
+>   go run ./cmd/course run 1.3
 >   ```
-> - **Run the experiments** from the repository root:
->   ```text
->   go run ./ch01-architecture-and-execution-path/experiments/1.1-pin-check
->   go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert
->   go run ./ch01-architecture-and-execution-path/experiments/1.3-recipe-rebuild
->   ```
->   Scratch databases are written under `_work/1.2/` and `_work/1.3/`, which are git-ignored and safe to delete.
-> - **Linux-only experiments on macOS:** Parts marked **Linux only** (in this chapter, the `strace`, twin check, `ANALYZE` limit, and `-vfstrace` sections of Experiment 1.2) are skipped on non-Linux hosts and run in full inside the repository's Linux container:
->   ```text
->   docker compose run --rm lab go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert
->   ```
->   All captured evidence, syscall traces, and VFS traces in this chapter were measured on Linux (`linux/amd64`, Go 1.26.8, `strace` 6.8, ext4) and verified inside the Debian `lab` container. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and vetted only; the non-Linux fallback path of Experiment 1.2 was not run on macOS.
+>   In the container, scratch databases and tables are written under `/work/1.1/`, `/work/1.2/`, and `/work/1.3/` (the `lab-work` volume); run directly, under `_work/1.1/`, `_work/1.2/`, and `_work/1.3/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert`). Run this way it prints only its verdict and leaves its tables under `_work/1.2/results/`; it needs the C CLI on the host (`go run ./cmd/course fetch-source`, then `go run ./cmd/course build-tools`), and on macOS it skips the parts marked **Linux only** (in this chapter, the `strace`, twin check, `ANALYZE` limit, and `-vfstrace` sections of Experiment 1.2).
+> - **Measured platform:** The stored evidence in this chapter, including the syscall and VFS traces, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). The checked values are identical to the earlier `linux/amd64` capture. What differs between the two machines (the CLI's path and its optional compile options, and the sync syscall the CLI uses) is run-dependent and not part of the stored evidence.
 
 ---
 
@@ -115,10 +108,10 @@ Before tracing that `INSERT`, the course verifies the exact SQLite builds it run
 ### Experiment 1.1 — Pin check (`1.1-pin-check`)
 
 - **Claim:** Both SQLite builds used by the course—the `modernc.org/sqlite` Go driver and the `sqlite3` C CLI—are SQLite 3.53.4 at the pinned Fossil check-in, include the required page-inspection virtual tables (`sqlite_dbpage`, which exposes raw pages, and `dbstat`, which reports per-page B-tree statistics) and upstream's WAL sync default (`DEFAULT_WAL_SYNCHRONOUS=2`, meaning `FULL`), and agree on all 15 listed file-format and I/O compile options.
-- **Evidence form:** `EXACT` (all lines except `INFO:` lines must match on every run).
-- **Run command** (requires the pinned CLI via `go run ./cmd/course build-tools` if not already on `PATH`):
+- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./ch01-architecture-and-execution-path/experiments/1.1-pin-check
+  go run ./cmd/course run 1.1
   ```
 
 <!-- include: experiments/1.1-pin-check/main.go -->
@@ -127,9 +120,10 @@ Before tracing that `INSERT`, the course verifies the exact SQLite builds it run
 // modernc.org/sqlite Go driver and the pinned sqlite3 C CLI—run the pinned
 // SQLite 3.53.4 check-in and share the required compile-time options.
 //
-// Run from the repo root:
+// It prints only its verdict; the measurements go to CSV tables that
+// report.sql presents:
 //
-//	go run ./ch01-architecture-and-execution-path/experiments/1.1-pin-check
+//	go run ./cmd/course run 1.1
 package main
 
 import (
@@ -142,6 +136,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/sqlite"
 )
@@ -174,17 +169,6 @@ var fileFormatAndIOOptions = []string{
 	"MAX_MMAP_SIZE",
 	"MAX_PAGE_SIZE",
 	"TEMP_STORE",
-}
-
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
 }
 
 func fatal(what string, err error) {
@@ -256,31 +240,42 @@ func main() {
 	// non-zero if the linked build does not match sqlite/PIN.
 	sqlitex.MustPinCheck(ctx, db)
 
-	fmt.Printf("pin: release %s, tag %s, git %s, fossil %s\n", pin.Release, pin.Tag, pin.GitCommit, pin.FossilID)
+	set := results.MustOpen(sqlitex.MustWorkDir("1.1"))
+	pinTable := set.Table("pin", "field", "value")
+	pinTable.Row("release", pin.Release)
+	pinTable.Row("tag", pin.Tag)
+	pinTable.Row("git", pin.GitCommit)
+	pinTable.Row("fossil", pin.FossilID)
+	pinTable.Row("source_id", pin.SourceID)
+	versions := set.Table("versions", "seq", "item", "found", "pinned")
+	versionSeq := 0
+	version := func(item, found, pinned string) {
+		versionSeq++
+		versions.Row(versionSeq, item, found, pinned)
+	}
+
 	driverVersion := moduleVersion(pin.DriverModule)
 	libcVersion := moduleVersion(pin.LibcModule)
-	fmt.Printf("driver module linked: %s %s\n", pin.DriverModule, driverVersion)
-	fmt.Printf("libc module linked:   %s %s\n", pin.LibcModule, libcVersion)
-	check(driverVersion == pin.DriverVersion, fmt.Sprintf("the linked driver is %s %s", pin.DriverModule, pin.DriverVersion))
-	check(libcVersion == pin.LibcVersion, fmt.Sprintf("the linked libc is %s %s", pin.LibcModule, pin.LibcVersion))
+	version("driver module "+pin.DriverModule, driverVersion, pin.DriverVersion)
+	version("libc module "+pin.LibcModule, libcVersion, pin.LibcVersion)
+	set.Check("A", driverVersion == pin.DriverVersion, fmt.Sprintf("the linked driver is %s %s", pin.DriverModule, pin.DriverVersion))
+	set.Check("A", libcVersion == pin.LibcVersion, fmt.Sprintf("the linked libc is %s %s", pin.LibcModule, pin.LibcVersion))
 
-	var version string
-	if err := db.QueryRowContext(ctx, "SELECT sqlite_version()").Scan(&version); err != nil {
+	var driverRelease, driverSourceID string
+	if err := db.QueryRowContext(ctx, "SELECT sqlite_version(), sqlite_source_id()").Scan(&driverRelease, &driverSourceID); err != nil {
 		fatal("sqlite_version", err)
 	}
-	fmt.Printf("driver sqlite_version(): %s\n", version)
-	check(version == pin.Release, "the driver reports release "+pin.Release)
+	version("driver sqlite_version()", driverRelease, pin.Release)
+	version("driver sqlite_source_id()", driverSourceID, pin.SourceID)
+	set.Check("A", driverRelease == pin.Release, "the driver reports release "+pin.Release)
 
 	options, err := driverOptions(ctx, db)
 	if err != nil {
 		fatal("compile_options", err)
 	}
-	fmt.Printf("driver compile options (%d):\n", len(options))
-	for _, option := range options {
-		fmt.Printf("  %s\n", option)
-	}
-	for _, required := range requiredOptions {
-		check(slices.Contains(options, required), "the driver is compiled with "+required)
+	driverTable := set.Table("driver_options", "seq", "option")
+	for i, option := range options {
+		driverTable.Row(i+1, option)
 	}
 
 	// Smoke-test both page-inspection virtual tables on a 2-page database
@@ -295,49 +290,38 @@ func main() {
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM dbstat").Scan(&dbstatRows); err != nil {
 		fatal("dbstat", err)
 	}
-	fmt.Printf("driver sqlite_dbpage rows: %d; dbstat rows: %d\n", dbpagePages, dbstatRows)
-	check(dbpagePages == 2 && dbstatRows == 2, "sqlite_dbpage and dbstat answer queries in the driver (2 pages: schema and table t)")
+	vtabs := set.Table("vtab_rows", "build", "vtab", "rows")
+	vtabs.Row("driver", "sqlite_dbpage", dbpagePages)
+	vtabs.Row("driver", "dbstat", dbstatRows)
 
+	required := set.Table("required_options", "option", "in_driver", "in_cli")
 	cli, err := sqlitex.LocateCLI(ctx)
 	if err != nil {
 		fmt.Printf("sqlite3 CLI: %v\n", err)
-		failures = append(failures, "the pinned sqlite3 CLI is available")
-		finish()
+		for _, option := range requiredOptions {
+			required.Row(option, slices.Contains(options, option), nil)
+		}
+		set.Check("B", false, "the pinned sqlite3 CLI is available")
+		set.Finish("PIN CHECK")
 		return
 	}
 	fmt.Println(cli.PinLine())
-	fmt.Printf("INFO: CLI %s (%s)\n", displayPath(cli.Path), cli.Origin)
 	out, err := cli.Exec(ctx, ":memory:", "SELECT sqlite_version();\nPRAGMA compile_options;\n")
 	if err != nil {
 		fatal("CLI compile_options", err)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	cliVersion, cliOptions := lines[0], lines[1:]
-	fmt.Printf("CLI sqlite_version(): %s\n", cliVersion)
-	check(cliVersion == pin.Release, "the CLI reports release "+pin.Release)
-	for _, required := range requiredOptions {
-		check(slices.Contains(cliOptions, required), "the CLI is compiled with "+required)
+	version("CLI sqlite_version()", cliVersion, pin.Release)
+	version("CLI sqlite_source_id()", cli.SourceID, pin.SourceID)
+	for _, option := range requiredOptions {
+		required.Row(option, slices.Contains(options, option), slices.Contains(cliOptions, option))
 	}
 
-	fmt.Println("file-format and I/O options, driver | CLI:")
-	same := true
-	for _, name := range fileFormatAndIOOptions {
-		driverValue, inDriver := findOption(options, name)
-		cliValue, inCLI := findOption(cliOptions, name)
-		if !inDriver {
-			driverValue = "(absent)"
-		}
-		if !inCLI {
-			cliValue = "(absent)"
-		}
-		mark := "same"
-		if driverValue != cliValue {
-			mark = "DIFFERENT"
-			same = false
-		}
-		fmt.Printf("  %-27s %-32s | %-32s %s\n", name, driverValue, cliValue, mark)
-	}
-	check(same, "the driver and the CLI agree on every file-format and I/O compile option listed")
+	// The CLI build varies between machines, so everything that depends on its
+	// path or its full option list goes in info tables.
+	infoCLI := set.Table("info_cli", "path", "origin")
+	infoCLI.Row(displayPath(cli.Path), cli.Origin)
 	var onlyDriver, onlyCLI []string
 	for _, option := range options {
 		if !slices.Contains(cliOptions, option) {
@@ -349,19 +333,35 @@ func main() {
 			onlyCLI = append(onlyCLI, option)
 		}
 	}
-	// Report build-specific differences on INFO lines so EXACT evidence stays
-	// portable between the system CLI and the ./configure build-tools CLI.
-	fmt.Printf("INFO: compile options only in the driver: %s\n", strings.Join(onlyDriver, " "))
-	fmt.Printf("INFO: compile options only in this CLI: %s\n", strings.Join(onlyCLI, " "))
-	finish()
-}
+	infoOnly := set.Table("info_option_differences", "side", "options")
+	infoOnly.Row("only in the driver", strings.Join(onlyDriver, " "))
+	infoOnly.Row("only in this CLI", strings.Join(onlyCLI, " "))
 
-func finish() {
-	if len(failures) > 0 {
-		fmt.Printf("PIN CHECK FAILED: %d claim(s) do not hold: %s\n", len(failures), strings.Join(failures, "; "))
-		os.Exit(1)
+	for _, option := range requiredOptions {
+		set.Check("A", slices.Contains(options, option), "the driver is compiled with "+option)
 	}
-	fmt.Println("PIN CHECK OK")
+	set.Check("A", dbpagePages == 2 && dbstatRows == 2, "sqlite_dbpage and dbstat answer queries in the driver (2 pages: schema and table t)")
+	set.Check("B", cliVersion == pin.Release, "the CLI reports release "+pin.Release)
+	for _, option := range requiredOptions {
+		set.Check("B", slices.Contains(cliOptions, option), "the CLI is compiled with "+option)
+	}
+
+	formatTable := set.Table("format_options", "name", "driver", "cli", "same")
+	same := true
+	for _, name := range fileFormatAndIOOptions {
+		driverValue, inDriver := findOption(options, name)
+		cliValue, inCLI := findOption(cliOptions, name)
+		if !inDriver {
+			driverValue = "(absent)"
+		}
+		if !inCLI {
+			cliValue = "(absent)"
+		}
+		formatTable.Row(name, driverValue, cliValue, driverValue == cliValue)
+		same = same && driverValue == cliValue
+	}
+	set.Check("B", same, "the driver and the CLI agree on every file-format and I/O compile option listed")
+	set.Finish("PIN CHECK")
 }
 
 func displayPath(path string) string {
@@ -380,117 +380,268 @@ func displayPath(path string) string {
 }
 ```
 
-Captured output (`evidence/1.1-pin-check.txt`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/1.1-pin-check/report.sql -->
+```sql
+-- Walkthrough of experiment 1.1. Run it with:
+--   go run ./cmd/course run 1.1        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   pin                 one row per field of sqlite/PIN
+--   versions            one row per version the experiment compared with the pin
+--   driver_options      one row per compile option of the Go driver (PRAGMA compile_options)
+--   vtab_rows           rows that sqlite_dbpage and dbstat return in the driver
+--   required_options    one row per compile option that later labs depend on
+--   format_options      one row per file-format or I/O option: driver value, CLI value
+--   checks              every claim the experiment asserted (the runner lists it last)
+-- info_cli and info_option_differences hold the CLI path and the build-specific
+-- option differences; info.sql shows them.
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  1.1  Do the Go driver and the sqlite3 CLI run the pinned SQLite?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'The course uses two SQLite builds: the modernc.org/sqlite Go driver and a'
+.print 'sqlite3 command-line shell. Both must be the pinned check-in and agree on'
+.print 'the options that change the file format.'
+
+.print
+.print '── A. The pin and the driver ───────────────────────────────────────────'
+.print
+.print 'A1. The pin (sqlite/PIN) that every experiment checks first:'
+
+SELECT field, value FROM pin ORDER BY field;
+
+.print
+.print 'A2. What is linked or reported, against what the pin says. Each row'
+.print 'should show the same text in both columns (source ids are cut after 12 hex digits; A1 has them in full):'
+
+SELECT item,
+       regexp_replace(found, '([0-9a-f]{12})[0-9a-f]{52}', '\1...')  AS found,
+       regexp_replace(pinned, '([0-9a-f]{12})[0-9a-f]{52}', '\1...') AS pinned,
+       found = pinned AS match
+FROM versions ORDER BY seq;
+
+.print
+.print 'A3. The compile options of the driver. The three that later labs need'
+.print 'are sqlite_dbpage and dbstat (page inspection) and the FULL sync default in WAL mode:'
+
+SELECT o.option, o.option IN (SELECT option FROM driver_options) AS present
+FROM required_options o
+ORDER BY o.option;
+
+.print
+.print 'A4. The full list of driver options (the last seq is the count):'
+
+SELECT seq, option FROM driver_options ORDER BY seq;
+
+.print
+.print 'A5. Both page-inspection virtual tables answer in the driver. The probe'
+.print 'database has 2 pages: page 1 for sqlite_schema and page 2 for table t.'
+
+SELECT vtab, rows FROM vtab_rows ORDER BY vtab;
+
+.print
+.print '── B. The CLI against the driver ───────────────────────────────────────'
+.print
+.print 'B1. The CLI has the same required options (in_cli should be true too):'
+
+SELECT option, in_driver, in_cli FROM required_options ORDER BY option;
+
+.print
+.print 'B2. The options that govern the file format, cache, mmap and sync defaults'
+.print 'must be identical in both builds:'
+
+SELECT name, driver, cli, CASE WHEN same THEN 'same' ELSE 'DIFFERENT' END AS verdict
+FROM format_options ORDER BY name;
+```
+
+`course run` also prints the run-dependent values of this machine, which are not part of the stored evidence: the path of the CLI it used and the compile options that only one of the two builds has.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/1.1-pin-check/`](evidence/1.1-pin-check/), and `go run ./cmd/course check evidence ch01` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/1.1-pin-check.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-pin: release 3.53.4, tag version-3.53.4, git b09c88c14082339b66c7b7158d609a771e64ca69, fossil bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc
-driver module linked: modernc.org/sqlite v1.60.1
-libc module linked:   modernc.org/libc v1.77.1
-check ok: the linked driver is modernc.org/sqlite v1.60.1
-check ok: the linked libc is modernc.org/libc v1.77.1
-driver sqlite_version(): 3.53.4
-check ok: the driver reports release 3.53.4
-driver compile options (56):
-  ATOMIC_INTRINSICS=1
-  COMPILER=gcc-12.2.0
-  DEFAULT_AUTOVACUUM
-  DEFAULT_CACHE_SIZE=-2000
-  DEFAULT_FILE_FORMAT=4
-  DEFAULT_JOURNAL_SIZE_LIMIT=-1
-  DEFAULT_MEMSTATUS=0
-  DEFAULT_MMAP_SIZE=0
-  DEFAULT_PAGE_SIZE=4096
-  DEFAULT_PCACHE_INITSZ=20
-  DEFAULT_RECURSIVE_TRIGGERS
-  DEFAULT_SECTOR_SIZE=4096
-  DEFAULT_SYNCHRONOUS=2
-  DEFAULT_WAL_AUTOCHECKPOINT=1000
-  DEFAULT_WAL_SYNCHRONOUS=2
-  DEFAULT_WORKER_THREADS=0
-  DIRECT_OVERFLOW_READ
-  DISABLE_INTRINSIC
-  ENABLE_COLUMN_METADATA
-  ENABLE_DBPAGE_VTAB
-  ENABLE_DBSTAT_VTAB
-  ENABLE_FTS5
-  ENABLE_GEOPOLY
-  ENABLE_MATH_FUNCTIONS
-  ENABLE_MEMORY_MANAGEMENT
-  ENABLE_OFFSET_SQL_FUNC
-  ENABLE_PREUPDATE_HOOK
-  ENABLE_RBU
-  ENABLE_RTREE
-  ENABLE_SESSION
-  ENABLE_SNAPSHOT
-  ENABLE_STAT4
-  ENABLE_UNLOCK_NOTIFY
-  LIKE_DOESNT_MATCH_BLOBS
-  MALLOC_SOFT_LIMIT=1024
-  MAX_ATTACHED=10
-  MAX_COLUMN=2000
-  MAX_COMPOUND_SELECT=500
-  MAX_DEFAULT_PAGE_SIZE=8192
-  MAX_EXPR_DEPTH=1000
-  MAX_FUNCTION_ARG=1000
-  MAX_LENGTH=1000000000
-  MAX_LIKE_PATTERN_LENGTH=50000
-  MAX_MMAP_SIZE=0x7fff0000
-  MAX_PAGE_COUNT=0xfffffffe
-  MAX_PAGE_SIZE=65536
-  MAX_SQL_LENGTH=1000000000
-  MAX_TRIGGER_DEPTH=1000
-  MAX_VARIABLE_NUMBER=32766
-  MAX_VDBE_OP=250000000
-  MAX_WORKER_THREADS=8
-  MUTEX_PTHREADS
-  SOUNDEX
-  SYSTEM_MALLOC
-  TEMP_STORE=1
-  THREADSAFE=1
-check ok: the driver is compiled with ENABLE_DBPAGE_VTAB
-check ok: the driver is compiled with ENABLE_DBSTAT_VTAB
-check ok: the driver is compiled with DEFAULT_WAL_SYNCHRONOUS=2
-driver sqlite_dbpage rows: 2; dbstat rows: 2
-check ok: sqlite_dbpage and dbstat answer queries in the driver (2 pages: schema and table t)
-sqlite3 CLI sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: CLI /usr/local/bin/sqlite3 (PATH)
-CLI sqlite_version(): 3.53.4
-check ok: the CLI reports release 3.53.4
-check ok: the CLI is compiled with ENABLE_DBPAGE_VTAB
-check ok: the CLI is compiled with ENABLE_DBSTAT_VTAB
-check ok: the CLI is compiled with DEFAULT_WAL_SYNCHRONOUS=2
-file-format and I/O options, driver | CLI:
-  DEFAULT_AUTOVACUUM          DEFAULT_AUTOVACUUM               | DEFAULT_AUTOVACUUM               same
-  DEFAULT_CACHE_SIZE          DEFAULT_CACHE_SIZE=-2000         | DEFAULT_CACHE_SIZE=-2000         same
-  DEFAULT_FILE_FORMAT         DEFAULT_FILE_FORMAT=4            | DEFAULT_FILE_FORMAT=4            same
-  DEFAULT_JOURNAL_SIZE_LIMIT  DEFAULT_JOURNAL_SIZE_LIMIT=-1    | DEFAULT_JOURNAL_SIZE_LIMIT=-1    same
-  DEFAULT_MMAP_SIZE           DEFAULT_MMAP_SIZE=0              | DEFAULT_MMAP_SIZE=0              same
-  DEFAULT_PAGE_SIZE           DEFAULT_PAGE_SIZE=4096           | DEFAULT_PAGE_SIZE=4096           same
-  DEFAULT_PCACHE_INITSZ       DEFAULT_PCACHE_INITSZ=20         | DEFAULT_PCACHE_INITSZ=20         same
-  DEFAULT_SECTOR_SIZE         DEFAULT_SECTOR_SIZE=4096         | DEFAULT_SECTOR_SIZE=4096         same
-  DEFAULT_SYNCHRONOUS         DEFAULT_SYNCHRONOUS=2            | DEFAULT_SYNCHRONOUS=2            same
-  DEFAULT_WAL_AUTOCHECKPOINT  DEFAULT_WAL_AUTOCHECKPOINT=1000  | DEFAULT_WAL_AUTOCHECKPOINT=1000  same
-  DEFAULT_WAL_SYNCHRONOUS     DEFAULT_WAL_SYNCHRONOUS=2        | DEFAULT_WAL_SYNCHRONOUS=2        same
-  DIRECT_OVERFLOW_READ        DIRECT_OVERFLOW_READ             | DIRECT_OVERFLOW_READ             same
-  MAX_MMAP_SIZE               MAX_MMAP_SIZE=0x7fff0000         | MAX_MMAP_SIZE=0x7fff0000         same
-  MAX_PAGE_SIZE               MAX_PAGE_SIZE=65536              | MAX_PAGE_SIZE=65536              same
-  TEMP_STORE                  TEMP_STORE=1                     | TEMP_STORE=1                     same
-check ok: the driver and the CLI agree on every file-format and I/O compile option listed
-INFO: compile options only in the driver: COMPILER=gcc-12.2.0 DEFAULT_MEMSTATUS=0 DISABLE_INTRINSIC ENABLE_COLUMN_METADATA ENABLE_GEOPOLY ENABLE_MEMORY_MANAGEMENT ENABLE_PREUPDATE_HOOK ENABLE_RBU ENABLE_SESSION ENABLE_SNAPSHOT ENABLE_STAT4 ENABLE_UNLOCK_NOTIFY LIKE_DOESNT_MATCH_BLOBS SOUNDEX
-INFO: compile options only in this CLI: COMPILER=gcc-13.3.0 DQS=0 ENABLE_BYTECODE_VTAB ENABLE_EXPLAIN_COMMENTS ENABLE_FTS3 ENABLE_FTS4 ENABLE_PERCENTILE ENABLE_STMTVTAB ENABLE_UNKNOWN_SQL_FUNCTION STRICT_SUBTYPE
-PIN CHECK OK
+
+════════════════════════════════════════════════════════════════════════
+  1.1  Do the Go driver and the sqlite3 CLI run the pinned SQLite?
+════════════════════════════════════════════════════════════════════════
+
+The course uses two SQLite builds: the modernc.org/sqlite Go driver and a
+sqlite3 command-line shell. Both must be the pinned check-in and agree on
+the options that change the file format.
+
+── A. The pin and the driver ───────────────────────────────────────────
+
+A1. The pin (sqlite/PIN) that every experiment checks first:
+┌───────────┬──────────────────────────────────────────────────────────────────────────────────────┐
+│   field   │                                        value                                         │
+├───────────┼──────────────────────────────────────────────────────────────────────────────────────┤
+│ fossil    │ bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc                     │
+│ git       │ b09c88c14082339b66c7b7158d609a771e64ca69                                             │
+│ release   │ 3.53.4                                                                               │
+│ source_id │ 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc │
+│ tag       │ version-3.53.4                                                                       │
+└───────────┴──────────────────────────────────────────────────────────────────────────────────────┘
+
+A2. What is linked or reported, against what the pin says. Each row
+should show the same text in both columns (source ids are cut after 12 hex digits; A1 has them in full):
+┌──────────────────────────────────┬─────────────────────────────────────┬─────────────────────────────────────┬───────┐
+│               item               │                found                │               pinned                │ match │
+├──────────────────────────────────┼─────────────────────────────────────┼─────────────────────────────────────┼───────┤
+│ driver module modernc.org/sqlite │ v1.60.1                             │ v1.60.1                             │ true  │
+│ libc module modernc.org/libc     │ v1.77.1                             │ v1.77.1                             │ true  │
+│ driver sqlite_version()          │ 3.53.4                              │ 3.53.4                              │ true  │
+│ driver sqlite_source_id()        │ 2026-07-24 19:02:57 bf7c7f300318... │ 2026-07-24 19:02:57 bf7c7f300318... │ true  │
+│ CLI sqlite_version()             │ 3.53.4                              │ 3.53.4                              │ true  │
+│ CLI sqlite_source_id()           │ 2026-07-24 19:02:57 bf7c7f300318... │ 2026-07-24 19:02:57 bf7c7f300318... │ true  │
+└──────────────────────────────────┴─────────────────────────────────────┴─────────────────────────────────────┴───────┘
+
+A3. The compile options of the driver. The three that later labs need
+are sqlite_dbpage and dbstat (page inspection) and the FULL sync default in WAL mode:
+┌───────────────────────────┬─────────┐
+│          option           │ present │
+├───────────────────────────┼─────────┤
+│ DEFAULT_WAL_SYNCHRONOUS=2 │ true    │
+│ ENABLE_DBPAGE_VTAB        │ true    │
+│ ENABLE_DBSTAT_VTAB        │ true    │
+└───────────────────────────┴─────────┘
+
+A4. The full list of driver options (the last seq is the count):
+┌─────┬─────────────────────────────────┐
+│ seq │             option              │
+├─────┼─────────────────────────────────┤
+│ 1   │ ATOMIC_INTRINSICS=1             │
+│ 2   │ COMPILER=gcc-12.2.0             │
+│ 3   │ DEFAULT_AUTOVACUUM              │
+│ 4   │ DEFAULT_CACHE_SIZE=-2000        │
+│ 5   │ DEFAULT_FILE_FORMAT=4           │
+│ 6   │ DEFAULT_JOURNAL_SIZE_LIMIT=-1   │
+│ 7   │ DEFAULT_MEMSTATUS=0             │
+│ 8   │ DEFAULT_MMAP_SIZE=0             │
+│ 9   │ DEFAULT_PAGE_SIZE=4096          │
+│ 10  │ DEFAULT_PCACHE_INITSZ=20        │
+│ 11  │ DEFAULT_RECURSIVE_TRIGGERS      │
+│ 12  │ DEFAULT_SECTOR_SIZE=4096        │
+│ 13  │ DEFAULT_SYNCHRONOUS=2           │
+│ 14  │ DEFAULT_WAL_AUTOCHECKPOINT=1000 │
+│ 15  │ DEFAULT_WAL_SYNCHRONOUS=2       │
+│ 16  │ DEFAULT_WORKER_THREADS=0        │
+│ 17  │ DIRECT_OVERFLOW_READ            │
+│ 18  │ DISABLE_INTRINSIC               │
+│ 19  │ ENABLE_COLUMN_METADATA          │
+│ 20  │ ENABLE_DBPAGE_VTAB              │
+│ 21  │ ENABLE_DBSTAT_VTAB              │
+│ 22  │ ENABLE_FTS5                     │
+│ 23  │ ENABLE_GEOPOLY                  │
+│ 24  │ ENABLE_MATH_FUNCTIONS           │
+│ 25  │ ENABLE_MEMORY_MANAGEMENT        │
+│ 26  │ ENABLE_OFFSET_SQL_FUNC          │
+│ 27  │ ENABLE_PREUPDATE_HOOK           │
+│ 28  │ ENABLE_RBU                      │
+│ 29  │ ENABLE_RTREE                    │
+│ 30  │ ENABLE_SESSION                  │
+│ 31  │ ENABLE_SNAPSHOT                 │
+│ 32  │ ENABLE_STAT4                    │
+│ 33  │ ENABLE_UNLOCK_NOTIFY            │
+│ 34  │ LIKE_DOESNT_MATCH_BLOBS         │
+│ 35  │ MALLOC_SOFT_LIMIT=1024          │
+│ 36  │ MAX_ATTACHED=10                 │
+│ 37  │ MAX_COLUMN=2000                 │
+│ 38  │ MAX_COMPOUND_SELECT=500         │
+│ 39  │ MAX_DEFAULT_PAGE_SIZE=8192      │
+│ 40  │ MAX_EXPR_DEPTH=1000             │
+│ 41  │ MAX_FUNCTION_ARG=1000           │
+│ 42  │ MAX_LENGTH=1000000000           │
+│ 43  │ MAX_LIKE_PATTERN_LENGTH=50000   │
+│ 44  │ MAX_MMAP_SIZE=0x7fff0000        │
+│ 45  │ MAX_PAGE_COUNT=0xfffffffe       │
+│ 46  │ MAX_PAGE_SIZE=65536             │
+│ 47  │ MAX_SQL_LENGTH=1000000000       │
+│ 48  │ MAX_TRIGGER_DEPTH=1000          │
+│ 49  │ MAX_VARIABLE_NUMBER=32766       │
+│ 50  │ MAX_VDBE_OP=250000000           │
+│ 51  │ MAX_WORKER_THREADS=8            │
+│ 52  │ MUTEX_PTHREADS                  │
+│ 53  │ SOUNDEX                         │
+│ 54  │ SYSTEM_MALLOC                   │
+│ 55  │ TEMP_STORE=1                    │
+│ 56  │ THREADSAFE=1                    │
+└─────┴─────────────────────────────────┘
+
+A5. Both page-inspection virtual tables answer in the driver. The probe
+database has 2 pages: page 1 for sqlite_schema and page 2 for table t.
+┌───────────────┬──────┐
+│     vtab      │ rows │
+├───────────────┼──────┤
+│ dbstat        │ 2    │
+│ sqlite_dbpage │ 2    │
+└───────────────┴──────┘
+
+── B. The CLI against the driver ───────────────────────────────────────
+
+B1. The CLI has the same required options (in_cli should be true too):
+┌───────────────────────────┬───────────┬────────┐
+│          option           │ in_driver │ in_cli │
+├───────────────────────────┼───────────┼────────┤
+│ DEFAULT_WAL_SYNCHRONOUS=2 │ true      │ true   │
+│ ENABLE_DBPAGE_VTAB        │ true      │ true   │
+│ ENABLE_DBSTAT_VTAB        │ true      │ true   │
+└───────────────────────────┴───────────┴────────┘
+
+B2. The options that govern the file format, cache, mmap and sync defaults
+must be identical in both builds:
+┌────────────────────────────┬─────────────────────────────────┬─────────────────────────────────┬─────────┐
+│            name            │             driver              │               cli               │ verdict │
+├────────────────────────────┼─────────────────────────────────┼─────────────────────────────────┼─────────┤
+│ DEFAULT_AUTOVACUUM         │ DEFAULT_AUTOVACUUM              │ DEFAULT_AUTOVACUUM              │ same    │
+│ DEFAULT_CACHE_SIZE         │ DEFAULT_CACHE_SIZE=-2000        │ DEFAULT_CACHE_SIZE=-2000        │ same    │
+│ DEFAULT_FILE_FORMAT        │ DEFAULT_FILE_FORMAT=4           │ DEFAULT_FILE_FORMAT=4           │ same    │
+│ DEFAULT_JOURNAL_SIZE_LIMIT │ DEFAULT_JOURNAL_SIZE_LIMIT=-1   │ DEFAULT_JOURNAL_SIZE_LIMIT=-1   │ same    │
+│ DEFAULT_MMAP_SIZE          │ DEFAULT_MMAP_SIZE=0             │ DEFAULT_MMAP_SIZE=0             │ same    │
+│ DEFAULT_PAGE_SIZE          │ DEFAULT_PAGE_SIZE=4096          │ DEFAULT_PAGE_SIZE=4096          │ same    │
+│ DEFAULT_PCACHE_INITSZ      │ DEFAULT_PCACHE_INITSZ=20        │ DEFAULT_PCACHE_INITSZ=20        │ same    │
+│ DEFAULT_SECTOR_SIZE        │ DEFAULT_SECTOR_SIZE=4096        │ DEFAULT_SECTOR_SIZE=4096        │ same    │
+│ DEFAULT_SYNCHRONOUS        │ DEFAULT_SYNCHRONOUS=2           │ DEFAULT_SYNCHRONOUS=2           │ same    │
+│ DEFAULT_WAL_AUTOCHECKPOINT │ DEFAULT_WAL_AUTOCHECKPOINT=1000 │ DEFAULT_WAL_AUTOCHECKPOINT=1000 │ same    │
+│ DEFAULT_WAL_SYNCHRONOUS    │ DEFAULT_WAL_SYNCHRONOUS=2       │ DEFAULT_WAL_SYNCHRONOUS=2       │ same    │
+│ DIRECT_OVERFLOW_READ       │ DIRECT_OVERFLOW_READ            │ DIRECT_OVERFLOW_READ            │ same    │
+│ MAX_MMAP_SIZE              │ MAX_MMAP_SIZE=0x7fff0000        │ MAX_MMAP_SIZE=0x7fff0000        │ same    │
+│ MAX_PAGE_SIZE              │ MAX_PAGE_SIZE=65536             │ MAX_PAGE_SIZE=65536             │ same    │
+│ TEMP_STORE                 │ TEMP_STORE=1                    │ TEMP_STORE=1                    │ same    │
+└────────────────────────────┴─────────────────────────────────┴─────────────────────────────────┴─────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the linked driver is modernc.org/sqlite v1.60.1
+A  ✓  the linked libc is modernc.org/libc v1.77.1
+A  ✓  the driver reports release 3.53.4
+A  ✓  the driver is compiled with ENABLE_DBPAGE_VTAB
+A  ✓  the driver is compiled with ENABLE_DBSTAT_VTAB
+A  ✓  the driver is compiled with DEFAULT_WAL_SYNCHRONOUS=2
+A  ✓  sqlite_dbpage and dbstat answer queries in the driver (2 pages: schema and table t)
+B  ✓  the CLI reports release 3.53.4
+B  ✓  the CLI is compiled with ENABLE_DBPAGE_VTAB
+B  ✓  the CLI is compiled with ENABLE_DBSTAT_VTAB
+B  ✓  the CLI is compiled with DEFAULT_WAL_SYNCHRONOUS=2
+B  ✓  the driver and the CLI agree on every file-format and I/O compile option listed
+
+12 of 12 claims hold
+
+Experiment verdict: PIN CHECK OK
 ```
 
 **Reading the evidence:**
 
-- **Lines 1–8 (pin and linked modules).** Line 1 prints `sqlite_source_id()` from an in-memory database opened through `database/sql` and verifies it against `sqlite/PIN`. Lines 3–6 read Go's compiled-in `runtime/debug.ReadBuildInfo()` rather than `go.mod`, proving the binary linked `modernc.org/sqlite v1.60.1` and `modernc.org/libc v1.77.1`, and lines 7–8 confirm `sqlite_version()` returns `3.53.4`.
-- **Lines 9–68 (driver compile options).** `PRAGMA compile_options` reports 56 options in the Go driver. Lines 66–68 verify the three options later labs depend on: `ENABLE_DBPAGE_VTAB`, `ENABLE_DBSTAT_VTAB`, and `DEFAULT_WAL_SYNCHRONOUS=2`.
-- **Lines 69–70 (virtual table smoke test).** After creating table `t` and inserting one row, both `sqlite_dbpage` and `dbstat` return 2 rows: page 1 (`sqlite_schema`) and page 2 (table `t`).
-- **Lines 71–77 (C CLI check).** `sqlitex.LocateCLI` finds the pinned C `sqlite3` binary (line 72 is an `INFO:` line because its path depends on whether the host uses a system binary or `_tools/bin/sqlite3`). Its source ID, version, and three required options match the pin.
-- **Lines 78–94 (file-format and I/O parity).** Both builds agree on all 15 options controlling page size (`4096`), default cache size (`-2000`, meaning 2,000 KiB), mmap default (`0`), and sync defaults (`2` = `FULL`).
-- **Lines 95–96 (`INFO:` optional feature differences).** The two builds differ on optional features not in that 15-option table. The Go driver enables `ENABLE_STAT4` and `ENABLE_SNAPSHOT` (compiled into the translated C even though the Go API does not expose `sqlite3_snapshot_*`), while this CLI enables `ENABLE_BYTECODE_VTAB`, `ENABLE_STMTVTAB`, and `ENABLE_EXPLAIN_COMMENTS` (so `bytecode()` and `sqlite_stmt` exist only in the CLI). Most optional flags do not touch storage, but `ENABLE_STAT4` changes on-disk tables whenever `ANALYZE` (SQLite's query-planner statistics command) runs—a boundary Experiment 1.2 measures directly.
+- **A1–A2 (pin and linked modules).** The driver's `sqlite_source_id()`, read from an in-memory database opened through `database/sql`, is verified against `sqlite/PIN` (A1 shows the pin in full). The module rows of A2 read Go's compiled-in `runtime/debug.ReadBuildInfo()` rather than `go.mod`, proving the binary linked `modernc.org/sqlite v1.60.1` and `modernc.org/libc v1.77.1`, and the `sqlite_version()` rows confirm `3.53.4`.
+- **A3–A4 (driver compile options).** `PRAGMA compile_options` reports 56 options in the Go driver (A4). A3 verifies the three options later labs depend on: `ENABLE_DBPAGE_VTAB`, `ENABLE_DBSTAT_VTAB`, and `DEFAULT_WAL_SYNCHRONOUS=2`.
+- **A5 (virtual table smoke test).** After creating table `t` and inserting one row, both `sqlite_dbpage` and `dbstat` return 2 rows: page 1 (`sqlite_schema`) and page 2 (table `t`).
+- **A2 and B1 (C CLI check).** `sqlitex.LocateCLI` finds the pinned C `sqlite3` binary (its path is run-dependent, printed by `course run` and not stored, because it depends on whether the host uses a system binary or the built tools). Its source ID and version (A2) and three required options (B1) match the pin.
+- **B2 (file-format and I/O parity).** Both builds agree on all 15 options controlling page size (`4096`), default cache size (`-2000`, meaning 2,000 KiB), mmap default (`0`), and sync defaults (`2` = `FULL`).
+- **Optional feature differences (run-dependent, printed by `course run`).** The two builds differ on optional features not in that 15-option table. The Go driver enables `ENABLE_STAT4` and `ENABLE_SNAPSHOT` (compiled into the translated C even though the Go API does not expose `sqlite3_snapshot_*`), while this CLI enables `ENABLE_BYTECODE_VTAB`, `ENABLE_STMTVTAB`, and `ENABLE_EXPLAIN_COMMENTS` (so `bytecode()` and `sqlite_stmt` exist only in the CLI). Most optional flags do not touch storage, but `ENABLE_STAT4` changes on-disk tables whenever `ANALYZE` (SQLite's query-planner statistics command) runs—a boundary Experiment 1.2 measures directly.
 
 ---
 
@@ -569,15 +720,12 @@ Behavior differences across SQLite releases relevant to this chapter (sources: [
   - In WAL mode, the commit makes zero writes to `t.db` and writes only the 32-byte WAL header at offset 0 of the new `t.db-wal`, followed by a 24-byte frame header and 4,096-byte page image per changed page.
   - For SQL statements whose behavior does not depend on compile options differing between the two builds, `modernc.org/sqlite` and the C CLI issue the same writes, syncs, reads, locks, opens, unlinks, and closes in the same order and leave byte-identical files, differing only in extra `fcntl(F_SETFD)` calls issued by `modernc.org/libc`'s musl-derived `open()`.
   - Where compile options do differ (`ENABLE_STAT4` on `ANALYZE`), the two builds diverge and write different files.
-- **Evidence form:** `EXACT` (all lines except `INFO:` lines).
-- **Platform:** **Linux only** for `strace`, the twin check, its `ANALYZE` limit, and the `-vfstrace` merged trace. On macOS, running the experiment directly does not require the C CLI: it prints `EXPLAIN`, a `LINUX-ONLY:` line, and the changed page hashes with their expected-page checks (`[1 2]` in rollback mode, `[2]` in WAL mode) and exits 0. Run the full experiment on macOS via Docker:
-  ```text
-  docker compose run --rm lab go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert
-  ```
+- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
+- **Platform:** **Linux only** for `strace`, the twin check, its `ANALYZE` limit, and the `-vfstrace` merged trace; `course run` runs it in the Linux `lab` container, so it runs in full on any host. On macOS, running the experiment package directly (`go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert`) does not require the C CLI: it prints a `LINUX-ONLY:` line, records `EXPLAIN` and the changed page hashes with their expected-page checks (`[1 2]` in rollback mode, `[2]` in WAL mode), and exits 0.
 - **Why kept:** this is the one place the course earns the right to use a translated driver. Everything after relies on it.
-- **Run command** (Linux):
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert
+  go run ./cmd/course run 1.2
   ```
 
 <!-- include: experiments/1.2-one-insert/main.go -->
@@ -589,10 +737,10 @@ Behavior differences across SQLite releases relevant to this chapter (sources: [
 // driver against the C CLI, and demonstrates the twin check's compile-option
 // limit with ANALYZE (ENABLE_STAT4).
 //
-// Run from the repo root (Linux for strace; on macOS run inside Docker via
-// docker compose run --rm lab go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert):
+// It prints only its verdict; the measurements go to CSV tables that
+// report.sql presents (Linux for strace; on macOS the runner uses Docker):
 //
-//	go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert
+//	go run ./cmd/course run 1.2
 package main
 
 import (
@@ -609,6 +757,7 @@ import (
 	"strings"
 
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 )
@@ -626,16 +775,36 @@ const (
 	dbName         = "t.db"
 )
 
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables. part labels the claims of the part
+// that is running: A the EXPLAIN listing, B rollback mode, C WAL mode, D the
+// ANALYZE limit of the twin check.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		explain, runs, pageChanges, goSyscalls, cliSyscalls, walFrames, fileHashes, phases, phaseEvents, analyze *results.Table
+		infoRun, infoSync, infoRandomness                                                                        *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+)
+
+func openTables() {
+	tables.explain = set.Table("explain_ops", "addr", "opcode", "p1", "p2", "p3", "p4", "p5")
+	tables.runs = set.Table("runs", "mode", "base_pages", "base_sha256")
+	tables.pageChanges = set.Table("page_changes", "mode", "page", "before_sha256", "after_sha256")
+	tables.goSyscalls = set.Table("go_syscalls", "mode", "seq", "call", "norm")
+	tables.cliSyscalls = set.Table("cli_syscalls", "mode", "seq", "norm")
+	tables.walFrames = set.Table("wal_frames", "mode", "frame_no", "page", "commit_size")
+	tables.fileHashes = set.Table("file_hashes", "mode", "what", "sha256")
+	tables.phases = set.Table("phases", "mode", "phase_no", "statement", "opcode", "call_path")
+	tables.phaseEvents = set.Table("phase_events", "mode", "phase_no", "seq", "kind", "nested", "text")
+	tables.analyze = set.Table("analyze_runs", "stage", "build", "sha256", "stat4_compiled", "stat_tables")
+	tables.infoRun = set.Table("info_run", "key", "value")
+	tables.infoSync = set.Table("info_sync", "mode", "go_driver", "cli", "cli_path")
+	tables.infoRandomness = set.Table("info_randomness", "mode", "phase_no", "vfs_call")
 }
+
+func check(ok bool, claim string) { set.Check(part, ok, claim) }
 
 func fatal(what string, err error) {
 	fmt.Printf("FATAL %s: %v\n", what, err)
@@ -746,12 +915,7 @@ func changedPages(before, after []string) []int {
 	return changed
 }
 
-func short(hash string) string {
-	if hash == "" {
-		return "(none)"
-	}
-	return hash[:16]
-}
+func short(hash string) string { return hash[:16] }
 
 // printExplain queries SQLite's bytecode listing for insertSQL, which
 // sqlite3Step produces via sqlite3VdbeList (src/vdbeapi.c:863-865).
@@ -766,8 +930,6 @@ func printExplain(ctx context.Context, path string) {
 		fatal("EXPLAIN", err)
 	}
 	defer rows.Close()
-	fmt.Printf("EXPLAIN %s\n", insertSQL)
-	fmt.Printf("  %-4s %-14s %4s %4s %4s %-12s %s\n", "addr", "opcode", "p1", "p2", "p3", "p4", "p5")
 	for rows.Next() {
 		var addr, p1, p2, p3, p5 int
 		var opcode string
@@ -775,7 +937,11 @@ func printExplain(ctx context.Context, path string) {
 		if err := rows.Scan(&addr, &opcode, &p1, &p2, &p3, &p4, &p5, &comment); err != nil {
 			fatal("EXPLAIN scan", err)
 		}
-		fmt.Printf("  %-4d %-14s %4d %4d %4d %-12s %d\n", addr, opcode, p1, p2, p3, p4.String, p5)
+		var p4Value any
+		if p4.Valid && p4.String != "" {
+			p4Value = p4.String
+		}
+		tables.explain.Row(addr, opcode, p1, p2, p3, p4Value, p5)
 	}
 	if err := rows.Err(); err != nil {
 		fatal("EXPLAIN", err)
@@ -979,27 +1145,6 @@ func isSync(call trace.Syscall) bool {
 	return syncName(call.Name)
 }
 
-func compareLists(label string, goList, cliList []string) bool {
-	if slices.Equal(goList, cliList) {
-		fmt.Printf("twin %s: identical (%d calls)\n", label, len(goList))
-		return true
-	}
-	fmt.Printf("twin %s: DIFFERENT (Go %d calls, CLI %d calls)\n", label, len(goList), len(cliList))
-	for i := range max(len(goList), len(cliList)) {
-		var g, c string
-		if i < len(goList) {
-			g = goList[i]
-		}
-		if i < len(cliList) {
-			c = cliList[i]
-		}
-		if g != c {
-			fmt.Printf("  #%d Go: %-50s CLI: %s\n", i+1, g, c)
-		}
-	}
-	return false
-}
-
 func syncCallNames(calls []trace.Syscall) string {
 	var names []string
 	for _, call := range calls {
@@ -1011,6 +1156,7 @@ func syncCallNames(calls []trace.Syscall) string {
 }
 
 type phase struct {
+	no        int
 	from, to  string
 	statement string
 	opcode    string
@@ -1026,9 +1172,9 @@ func phases(mode string) []phase {
 		commitPath = "sqlite3VdbeHalt -> vdbeCommit -> sqlite3BtreeCommitPhaseOne -> sqlite3PagerCommitPhaseOne -> pagerWalFrames -> sqlite3WalFrames"
 	}
 	return []phase{
-		{"1", "2", "BEGIN IMMEDIATE", "OP_Transaction", "sqlite3BtreeBeginTrans -> sqlite3PagerSharedLock, sqlite3PagerBegin"},
-		{"2", "3", insertSQL, "OP_Insert", insertPath},
-		{"3", "4", "COMMIT", "OP_AutoCommit (OP_Halt in an autocommit INSERT)", commitPath},
+		{1, "1", "2", "BEGIN IMMEDIATE", "OP_Transaction", "sqlite3BtreeBeginTrans -> sqlite3PagerSharedLock, sqlite3PagerBegin"},
+		{2, "2", "3", insertSQL, "OP_Insert", insertPath},
+		{3, "3", "4", "COMMIT", "OP_AutoCommit (OP_Halt in an autocommit INSERT)", commitPath},
 	}
 }
 
@@ -1099,8 +1245,7 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	}
 	path := filepath.Join(dir, dbName)
 	createMarkers(dir, "1", "2", "3", "4")
-	title := map[string]string{sqlitex.JournalDelete: "rollback journal (journal_mode=delete)", sqlitex.JournalWAL: "write-ahead log (journal_mode=wal, the platform default)"}[mode]
-	fmt.Printf("\n== %s ==\n", title)
+	part = map[string]string{sqlitex.JournalDelete: "B", sqlitex.JournalWAL: "C"}[mode]
 
 	createBase(ctx, path, mode)
 	before := pageHashes(ctx, path, mode)
@@ -1108,7 +1253,8 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	if err != nil {
 		fatal("hash", err)
 	}
-	fmt.Printf("base: table t with 1 row, %d pages, sha256 %s\n", len(before), short(baseHash))
+	tables.runs.Row(mode, len(before), short(baseHash))
+	tables.fileHashes.Row(mode, "base", short(baseHash))
 
 	// On non-Linux hosts, strace is unavailable; still run the INSERT in
 	// process so the reader sees which pages changed.
@@ -1128,7 +1274,7 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 		}
 		after := pageHashes(ctx, path, mode)
 		changed := changedPages(before, after)
-		printChanged(before, after, changed)
+		recordChanged(mode, before, after, changed)
 		checkChangedPages(mode, changed)
 		return
 	}
@@ -1153,16 +1299,16 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 		fatal("hash", err)
 	}
 	changed := changedPages(before, after)
-	printChanged(before, after, changed)
+	recordChanged(mode, before, after, changed)
 	checkChangedPages(mode, changed)
 
+	tables.fileHashes.Row(mode, "go_insert", short(goFileHash))
 	goCalls, err := segmentCalls(goRun.Log.Calls, dir, "1", "2")
 	if err != nil {
 		fatal("Go segment", err)
 	}
-	fmt.Printf("Go driver (modernc), file syscalls of the INSERT (%d):\n", len(goCalls))
-	for _, call := range goCalls {
-		fmt.Printf("  %s\n", call)
+	for i, call := range goCalls {
+		tables.goSyscalls.Row(mode, i+1, printed(call), normalized(call))
 	}
 
 	dbWrites := 0
@@ -1176,7 +1322,6 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 			if call.Offset%pageSize != 0 || call.Length != pageSize || !slices.Contains(changed, page) {
 				offsetsMatch = false
 			}
-			fmt.Printf("  db write at offset %d = (page %d - 1) * %d\n", call.Offset, page, pageSize)
 		}
 	}
 	if mode == sqlitex.JournalDelete {
@@ -1196,7 +1341,7 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 		frames := parseChildFrames(goRun.Stdout)
 		var framePages []int
 		for _, frame := range frames {
-			fmt.Printf("  WAL frame %d: page %d, commit size %d, header at offset %d, page image at offset %d\n", frame.Index, frame.Page, frame.CommitSize, walHeaderSize+(frame.Index-1)*(walFrameHeader+pageSize), walHeaderSize+(frame.Index-1)*(walFrameHeader+pageSize)+walFrameHeader)
+			tables.walFrames.Row(mode, frame.Index, frame.Page, frame.CommitSize)
 			framePages = append(framePages, int(frame.Page))
 		}
 		var walWrites []string
@@ -1238,20 +1383,17 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	if err != nil {
 		fatal("CLI segment", err)
 	}
-	fmt.Printf("C CLI, file syscalls of the same INSERT (%d, open/openat shown as open, fsync/fdatasync as sync):\n", len(cliCalls))
-	for _, line := range normalizedAll(cliCalls, nil) {
-		fmt.Printf("  %s\n", line)
+	tables.fileHashes.Row(mode, "cli_insert", short(cliFileHash))
+	for i, line := range normalizedAll(cliCalls, nil) {
+		tables.cliSyscalls.Row(mode, i+1, line)
 	}
-	fmt.Printf("INFO: sync syscall used: Go driver %s, CLI %s (%s)\n", syncCallNames(goCalls), syncCallNames(cliCalls), displayPath(cli.Path))
-	writesSame := compareLists("writes (file, offset, length, order)", normalizedAll(goCalls, isWrite), normalizedAll(cliCalls, isWrite))
-	syncsSame := compareLists("syncs (file, order)", normalizedAll(goCalls, isSync), normalizedAll(cliCalls, isSync))
+	tables.infoSync.Row(mode, syncCallNames(goCalls), syncCallNames(cliCalls), displayPath(cli.Path))
+	writesSame := slices.Equal(normalizedAll(goCalls, isWrite), normalizedAll(cliCalls, isWrite))
+	syncsSame := slices.Equal(normalizedAll(goCalls, isSync), normalizedAll(cliCalls, isSync))
 	goSyncs := normalizedAll(goCalls, isSync)
 	check(writesSame && syncsSame && len(goSyncs) > 0, "twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order")
-	goCloexec := normalizedAll(goCalls, isCloexecFcntl)
-	cliCloexec := normalizedAll(cliCalls, isCloexecFcntl)
-	fmt.Printf("twin difference: fcntl F_SETFD calls, Go driver %d [%s], CLI %d [%s]\n", len(goCloexec), strings.Join(goCloexec, "; "), len(cliCloexec), strings.Join(cliCloexec, "; "))
 	notCloexec := func(call trace.Syscall) bool { return !isCloexecFcntl(call) }
-	allSame := compareLists("every other file syscall (opens, reads, writes, syncs, locks, unlinks, closes)", normalizedAll(goCalls, notCloexec), normalizedAll(cliCalls, notCloexec))
+	allSame := slices.Equal(normalizedAll(goCalls, notCloexec), normalizedAll(cliCalls, notCloexec))
 	check(allSame, "apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)")
 	check(goFileHash == cliFileHash && goFileHash != baseHash, fmt.Sprintf("the database file after the INSERT is byte-identical from both builds (sha256 %s)", short(goFileHash)))
 
@@ -1274,8 +1416,7 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	if err != nil {
 		fatal("hash", err)
 	}
-	fmt.Println("call path, measured: the C CLI with -vfstrace under strace runs BEGIN IMMEDIATE; INSERT; COMMIT with a marker between statements.")
-	fmt.Println("Each phase lists the VFS calls (VFS) and the syscalls each one made (SYS, indented under its VFS call).")
+	tables.fileHashes.Row(mode, "cli_split", short(splitFileHash))
 	var concatenated []trace.Syscall
 	for _, p := range phases(mode) {
 		segment, err := mergedSegment(merged, dir, p.from, p.to)
@@ -1283,30 +1424,24 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 			fatal("merged segment", err)
 		}
 		concatenated = append(concatenated, segment.calls...)
-		fmt.Printf("phase %s | opcode %s | %s\n", p.statement, p.opcode, p.path)
-		vfsCount := 0
+		tables.phases.Row(mode, p.no, p.statement, p.opcode, p.path)
+		seq := 0
 		for _, event := range segment.events {
 			switch event.Kind {
 			case trace.EventVFS:
 				if event.VFS.Method == "xRandomness" {
 					// Different CLI builds seed SQLite's PRNG at different
 					// points, so keep xRandomness on an INFO line.
-					fmt.Printf("INFO: phase %s: VFS %s (SQLite seeds its PRNG on first use; this CLI build first needs randomness here)\n", p.statement, vfsLine(*event.VFS, dir))
+					tables.infoRandomness.Row(mode, p.no, vfsLine(*event.VFS, dir))
 					continue
 				}
-				vfsCount++
-				fmt.Printf("  VFS %s\n", vfsLine(*event.VFS, dir))
+				seq++
+				tables.phaseEvents.Row(mode, p.no, seq, "VFS", false, vfsLine(*event.VFS, dir))
 			case trace.EventSyscall:
 				relative := trace.RelativeTo(dir, []trace.Syscall{*event.Syscall})[0]
-				indent := "  "
-				if event.Enclosed >= 0 {
-					indent = "      "
-				}
-				fmt.Printf("%sSYS %s\n", indent, normalized(relative))
+				seq++
+				tables.phaseEvents.Row(mode, p.no, seq, "SYS", event.Enclosed >= 0, normalized(relative))
 			}
-		}
-		if vfsCount == 0 {
-			fmt.Println("  (no VFS calls)")
 		}
 	}
 	check(slices.Equal(normalizedAll(concatenated, nil), normalizedAll(cliCalls, nil)), "the three phases together make exactly the file syscalls of the autocommit INSERT (so the per-opcode split above is the INSERT's own I/O)")
@@ -1349,18 +1484,25 @@ func expectedFreshWALWrites(frames []walFrame) []string {
 	return want
 }
 
-func printChanged(before, after []string, changed []int) {
-	fmt.Printf("pages changed by the INSERT (sha256 of each page through sqlite_dbpage, before -> after): %v\n", changed)
+func recordChanged(mode string, before, after []string, changed []int) {
 	for _, page := range changed {
-		var b, a string
+		var b, a any
 		if page <= len(before) {
-			b = before[page-1]
+			b = short(before[page-1])
 		}
 		if page <= len(after) {
-			a = after[page-1]
+			a = short(after[page-1])
 		}
-		fmt.Printf("  page %d: %s -> %s\n", page, short(b), short(a))
+		tables.pageChanges.Row(mode, page, b, a)
 	}
+}
+
+// printed renders a syscall as strace shows it, with open/openat and
+// unlink/unlinkat spelled alike: which one libc calls depends on the platform.
+func printed(call trace.Syscall) string {
+	text := call.String()
+	text = strings.Replace(text, "openat ", "open ", 1)
+	return strings.Replace(text, "unlinkat ", "unlink ", 1)
 }
 
 func main() {
@@ -1375,7 +1517,9 @@ func main() {
 	if err != nil {
 		fatal("work dir", err)
 	}
-	fmt.Printf("INFO: work dir %s\n", displayPath(base))
+	set = results.MustOpen(work)
+	openTables()
+	tables.infoRun.Row("work dir", displayPath(base))
 	var cli sqlitex.CLI
 	haveCLI := false
 	if trace.Supported {
@@ -1385,10 +1529,12 @@ func main() {
 			fmt.Println(cli.PinLine())
 		} else {
 			fmt.Printf("sqlite3 CLI: unavailable: %v\n", cliErr)
-			failures = append(failures, "the pinned sqlite3 CLI is available")
+			part = "setup"
+			check(false, "the pinned sqlite3 CLI is available")
 		}
 	}
 
+	part = "A"
 	explainPath := filepath.Join(base, "explain.db")
 	createBase(ctx, explainPath, sqlitex.JournalDelete)
 	printExplain(ctx, explainPath)
@@ -1403,12 +1549,7 @@ func main() {
 		twinLimitAnalyze(ctx, base, cli)
 	}
 
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("ONE INSERT FAILED: %d claim(s) do not hold: %s\n", len(failures), strings.Join(failures, "; "))
-		os.Exit(1)
-	}
-	fmt.Println("ONE INSERT OK")
+	set.Finish("ONE INSERT")
 }
 
 const (
@@ -1448,7 +1589,7 @@ func statTables(ctx context.Context, path string) []string {
 // the ENABLE_STAT4-enabled Go driver but only sqlite_stat1 in the CLI, so the
 // resulting database files diverge.
 func twinLimitAnalyze(ctx context.Context, base string, cli sqlitex.CLI) {
-	fmt.Println("\n== a limit of the twin check: compile options that change file contents ==")
+	part = "D"
 	dir := filepath.Join(base, "analyze")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		fatal("mkdir", err)
@@ -1479,7 +1620,8 @@ func twinLimitAnalyze(ctx context.Context, base string, cli sqlitex.CLI) {
 	if err != nil {
 		fatal("hash", err)
 	}
-	fmt.Printf("base: table s with 100 rows and index s_by_k, built twice by the Go driver, sha256 %s and %s\n", short(baseGo), short(baseCLI))
+	tables.analyze.Row("base", "go.db", short(baseGo), nil, nil)
+	tables.analyze.Row("base", "cli.db", short(baseCLI), nil, nil)
 
 	db, err := sqlitex.Open(ctx, goPath, o)
 	if err != nil {
@@ -1518,9 +1660,8 @@ func twinLimitAnalyze(ctx context.Context, base string, cli sqlitex.CLI) {
 		fatal("hash", err)
 	}
 	goTables, cliTables := statTables(ctx, goPath), statTables(ctx, cliPath)
-	fmt.Printf("ENABLE_STAT4 compiled in: Go driver %d, CLI %d\n", goStat4, cliStat4)
-	fmt.Printf("after ANALYZE: Go driver file sha256 %s, statistics tables %v\n", short(goHash), goTables)
-	fmt.Printf("after ANALYZE: C CLI file sha256 %s, statistics tables %v\n", short(cliHash), cliTables)
+	tables.analyze.Row("after ANALYZE", "go.db", short(goHash), goStat4, strings.Join(goTables, " "))
+	tables.analyze.Row("after ANALYZE", "cli.db", short(cliHash), cliStat4, strings.Join(cliTables, " "))
 	check(baseGo == baseCLI, "both copies start byte-identical")
 	if goStat4 == 1 && cliStat4 == 0 {
 		check(goHash != cliHash && slices.Contains(goTables, "sqlite_stat4") && !slices.Contains(cliTables, "sqlite_stat4"),
@@ -1546,299 +1687,783 @@ func displayPath(path string) string {
 }
 ```
 
-Captured output (`evidence/1.2-one-insert.txt`, measured on Linux):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/1.2-one-insert/report.sql -->
+```sql
+-- Walkthrough of experiment 1.2. Run it with:
+--   go run ./cmd/course run 1.2        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   explain_ops      one row per VDBE opcode of EXPLAIN INSERT
+--   runs             one row per journal mode: the base database before the INSERT
+--   page_changes     one row per page the INSERT changed, by mode (sha256 prefix before and after)
+--   go_syscalls      one row per file syscall of the Go driver's INSERT, in order
+--   cli_syscalls     one row per file syscall of the C CLI's INSERT, in order (normalized)
+--   wal_frames       one row per frame the WAL mode commit appended
+--   file_hashes      one row per database file whose bytes were hashed after a run
+--   phases           one row per split statement (BEGIN IMMEDIATE, INSERT, COMMIT) of the CLI run
+--   phase_events     one row per VFS call or syscall inside a phase, in order
+--   analyze_runs     one row per database file of the ANALYZE limit
+--   checks           every claim the experiment asserted (the runner lists it last)
+-- info_run, info_sync and info_randomness hold values that depend on the machine
+-- or the CLI build; info.sql shows them.
+
+CREATE TEMP VIEW calls AS
+SELECT 'go' AS build, mode, seq, norm FROM go_syscalls
+UNION ALL
+SELECT 'cli', mode, seq, norm FROM cli_syscalls;
+
+CREATE TEMP VIEW twin_categories AS
+SELECT 1 AS ord, 'writes (file, offset, length, order)' AS category, * FROM calls
+WHERE split_part(norm, ' ', 1) IN ('pwrite64', 'write', 'ftruncate')
+UNION ALL
+SELECT 2, 'syncs (file, order)', * FROM calls WHERE split_part(norm, ' ', 1) = 'sync'
+UNION ALL
+SELECT 3, 'every call except fcntl F_SETFD', * FROM calls WHERE norm NOT LIKE 'fcntl % F_SETFD%'
+UNION ALL
+SELECT 4, 'fcntl F_SETFD only', * FROM calls WHERE norm LIKE 'fcntl % F_SETFD%';
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  1.2  What does one committed INSERT do, layer by layer?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'One INSERT of the row (2, "two") into table t(id, v), which already holds'
+.print 'one row (2 pages: page 1 for sqlite_schema, page 2 for t), followed down the'
+.print 'layers: VDBE bytecode, the B-tree pages it changes, the file syscalls of the'
+.print 'Go driver (modernc, traced with strace), the same INSERT in the C sqlite3 CLI'
+.print '(the twin check), and the CLI with -vfstrace, which names the VFS call behind'
+.print 'each syscall. Parts B and C do this in rollback-journal and in WAL mode;'
+.print 'part D shows where the twin check stops being valid.'
+
+.print
+.print '── A. The bytecode ─────────────────────────────────────────────────────'
+.print
+.print 'A1. EXPLAIN of the INSERT. OpenWrite opens the table b-tree (root page 2);'
+.print 'MakeRecord builds the row; Insert (p5=49) puts it in the leaf; Transaction'
+.print 'at addr 14 is where the write lock is taken.'
+
+SELECT addr, opcode, p1, p2, p3, p4, p5 FROM explain_ops ORDER BY addr;
+
+.print
+.print '── B. Rollback journal (journal_mode=delete) ───────────────────────────'
+.print
+.print 'B1. The base database, and the pages the INSERT changed (sha256 prefix of'
+.print 'each page, read through sqlite_dbpage before and after).'
+.print 'Page 1 changes too: the change counter in its header.'
+
+SELECT r.mode, r.base_pages AS pages_before, r.base_sha256 AS file_sha256,
+       p.page, p.before_sha256, p.after_sha256
+FROM runs r JOIN page_changes p USING (mode)
+WHERE mode = 'delete'
+ORDER BY p.page;
+
+.print
+.print 'B2. The file syscalls the Go driver made for the INSERT, in order'
+.print '(open/openat and unlink/unlinkat are written open and unlink; "= fd" stands'
+.print 'for the descriptor number, which varies):'
+
+SELECT seq, call FROM go_syscalls WHERE mode = 'delete' ORDER BY seq;
+
+.print
+.print 'B3. Where the bytes land. Each pwrite64 on t.db is one whole page at'
+.print 'offset (page - 1) * 4096; the pages written are the pages that changed:'
+
+SELECT call, CAST(regexp_extract(norm, 'off=(\d+)', 1) AS INTEGER) AS file_offset,
+       CAST(regexp_extract(norm, 'off=(\d+)', 1) AS INTEGER) // 4096 + 1 AS page,
+       CAST(regexp_extract(norm, 'len=(\d+)', 1) AS INTEGER) AS length
+FROM go_syscalls
+WHERE mode = 'delete' AND split_part(norm, ' ', 1) = 'pwrite64' AND split_part(norm, ' ', 2) = 't.db'
+ORDER BY seq;
+
+.print
+.print 'B4. The C CLI runs the same INSERT under strace. Its syscalls, normalized'
+.print '(open/openat as open, fsync/fdatasync as sync); read and write lengths are'
+.print 'kept, so a short transfer would show:'
+
+SELECT seq, norm FROM cli_syscalls WHERE mode = 'delete' ORDER BY seq;
+
+.print
+.print 'B5. The twin check: the Go driver and the CLI compared category by category.'
+.print 'Writes and syncs must be identical, and so must every call apart from the'
+.print 'fcntl(F_SETFD) that the libc of modernc adds after each O_CLOEXEC open:'
+
+SELECT category,
+       count(*) FILTER (build = 'go')  AS go_calls,
+       count(*) FILTER (build = 'cli') AS cli_calls,
+       CASE WHEN ord = 4 THEN NULL
+            ELSE list(norm ORDER BY seq) FILTER (build = 'go') = list(norm ORDER BY seq) FILTER (build = 'cli')
+       END AS identical
+FROM twin_categories
+WHERE mode = 'delete'
+GROUP BY ord, category
+ORDER BY ord;
+
+.print
+.print 'The F_SETFD calls only the Go driver makes:'
+
+SELECT seq, call FROM go_syscalls WHERE mode = 'delete' AND call LIKE 'fcntl % F_SETFD%' ORDER BY seq;
+
+.print
+.print 'B6. The database file after each run, as a hash. The Go driver and the CLI'
+.print 'must leave the same bytes, and the INSERT split into three statements must'
+.print 'leave the same bytes as the autocommit INSERT:'
+
+SELECT what, sha256 FROM file_hashes WHERE mode = 'delete'
+ORDER BY CASE what WHEN 'base' THEN 1 WHEN 'go_insert' THEN 2 WHEN 'cli_insert' THEN 3 ELSE 4 END;
+
+.print
+.print 'B7. The measured call path. The CLI runs BEGIN IMMEDIATE; INSERT; COMMIT with'
+.print 'a marker file opened between the statements, so each VFS call and syscall is'
+.print 'assigned to the statement that caused it. SYS lines indented under a VFS line'
+.print 'are the syscalls that VFS call made. xRandomness calls are left out (info.sql).'
+
+SELECT p.phase_no AS phase, p.statement, p.opcode
+FROM phases p WHERE mode = 'delete' ORDER BY p.phase_no;
+
+.print
+.print 'The C functions behind each statement, outermost first:'
+
+SELECT phase_no AS phase, unnest(range(1, len(steps) + 1)) AS n, unnest(steps) AS c_function
+FROM (SELECT phase_no, string_split(call_path, ' -> ') AS steps FROM phases WHERE mode = 'delete')
+ORDER BY phase, n;
+
+.print
+.print 'The calls of each statement, in order:'
+
+SELECT phase_no AS phase, kind, repeat('    ', CAST(nested AS INTEGER)) || text AS call
+FROM phase_events WHERE mode = 'delete' ORDER BY phase_no, seq;
+
+.print
+.print 'The three phases together make exactly the syscalls of the autocommit INSERT:'
+
+SELECT (SELECT list(text ORDER BY phase_no, seq) FROM phase_events WHERE mode = 'delete' AND kind = 'SYS')
+     = (SELECT list(norm ORDER BY seq) FROM cli_syscalls WHERE mode = 'delete') AS same_syscalls;
+
+.print
+.print '── C. Write-ahead log (journal_mode=wal, the default) ──────────────────'
+.print
+.print 'C1. The base database, and the pages the INSERT changed (sha256 prefix of'
+.print 'each page, read through sqlite_dbpage before and after).'
+.print 'Page 1 is not written, so its change counter stays.'
+
+SELECT r.mode, r.base_pages AS pages_before, r.base_sha256 AS file_sha256,
+       p.page, p.before_sha256, p.after_sha256
+FROM runs r JOIN page_changes p USING (mode)
+WHERE mode = 'wal'
+ORDER BY p.page;
+
+.print
+.print 'C2. The file syscalls the Go driver made for the INSERT, in order'
+.print '(open/openat and unlink/unlinkat are written open and unlink; "= fd" stands'
+.print 'for the descriptor number, which varies):'
+
+SELECT seq, call FROM go_syscalls WHERE mode = 'wal' ORDER BY seq;
+
+.print
+.print 'C3. Where the bytes land. The commit writes nothing to t.db itself; it'
+.print 'appends one frame per changed page to t.db-wal after a 32-byte WAL header.'
+.print 'The frame table is read from the -wal file by the traced child; offsets are'
+.print '32 + (frame - 1) * 4120 for the 24-byte frame header, then +24 for the page:'
+
+SELECT (SELECT count(*) FROM go_syscalls
+        WHERE mode = 'wal' AND split_part(norm, ' ', 1) = 'pwrite64' AND split_part(norm, ' ', 2) = 't.db')
+         AS pwrites_on_t_db;
+
+SELECT frame_no AS frame, page, commit_size,
+       32 + (frame_no - 1) * 4120      AS header_at,
+       32 + (frame_no - 1) * 4120 + 24 AS page_image_at
+FROM wal_frames WHERE mode = 'wal' ORDER BY frame_no;
+
+.print
+.print 'C4. The C CLI runs the same INSERT under strace. Its syscalls, normalized'
+.print '(open/openat as open, fsync/fdatasync as sync); read and write lengths are'
+.print 'kept, so a short transfer would show:'
+
+SELECT seq, norm FROM cli_syscalls WHERE mode = 'wal' ORDER BY seq;
+
+.print
+.print 'C5. The twin check: the Go driver and the CLI compared category by category.'
+.print 'Writes and syncs must be identical, and so must every call apart from the'
+.print 'fcntl(F_SETFD) that the libc of modernc adds after each O_CLOEXEC open:'
+
+SELECT category,
+       count(*) FILTER (build = 'go')  AS go_calls,
+       count(*) FILTER (build = 'cli') AS cli_calls,
+       CASE WHEN ord = 4 THEN NULL
+            ELSE list(norm ORDER BY seq) FILTER (build = 'go') = list(norm ORDER BY seq) FILTER (build = 'cli')
+       END AS identical
+FROM twin_categories
+WHERE mode = 'wal'
+GROUP BY ord, category
+ORDER BY ord;
+
+.print
+.print 'The F_SETFD calls only the Go driver makes:'
+
+SELECT seq, call FROM go_syscalls WHERE mode = 'wal' AND call LIKE 'fcntl % F_SETFD%' ORDER BY seq;
+
+.print
+.print 'C6. The database file after each run, as a hash. The Go driver and the CLI'
+.print 'must leave the same bytes, and the INSERT split into three statements must'
+.print 'leave the same bytes as the autocommit INSERT:'
+
+SELECT what, sha256 FROM file_hashes WHERE mode = 'wal'
+ORDER BY CASE what WHEN 'base' THEN 1 WHEN 'go_insert' THEN 2 WHEN 'cli_insert' THEN 3 ELSE 4 END;
+
+.print
+.print 'C7. The measured call path. The CLI runs BEGIN IMMEDIATE; INSERT; COMMIT with'
+.print 'a marker file opened between the statements, so each VFS call and syscall is'
+.print 'assigned to the statement that caused it. SYS lines indented under a VFS line'
+.print 'are the syscalls that VFS call made. xRandomness calls are left out (info.sql).'
+
+SELECT p.phase_no AS phase, p.statement, p.opcode
+FROM phases p WHERE mode = 'wal' ORDER BY p.phase_no;
+
+.print
+.print 'The C functions behind each statement, outermost first:'
+
+SELECT phase_no AS phase, unnest(range(1, len(steps) + 1)) AS n, unnest(steps) AS c_function
+FROM (SELECT phase_no, string_split(call_path, ' -> ') AS steps FROM phases WHERE mode = 'wal')
+ORDER BY phase, n;
+
+.print
+.print 'The calls of each statement, in order:'
+
+SELECT phase_no AS phase, kind, repeat('    ', CAST(nested AS INTEGER)) || text AS call
+FROM phase_events WHERE mode = 'wal' ORDER BY phase_no, seq;
+
+.print
+.print 'The three phases together make exactly the syscalls of the autocommit INSERT:'
+
+SELECT (SELECT list(text ORDER BY phase_no, seq) FROM phase_events WHERE mode = 'wal' AND kind = 'SYS')
+     = (SELECT list(norm ORDER BY seq) FROM cli_syscalls WHERE mode = 'wal') AS same_syscalls;
+
+.print
+.print '── D. A limit of the twin check ────────────────────────────────────────'
+.print
+.print 'The twin check assumes both builds write the same bytes, which holds only'
+.print 'if their compile options agree. The driver is compiled with ENABLE_STAT4'
+.print 'and this CLI is not. Two copies of a 100-row indexed table start byte for'
+.print 'byte identical; the Go driver and the CLI each run ANALYZE on one copy:'
+
+SELECT stage, build AS file, sha256, stat4_compiled, stat_tables
+FROM analyze_runs
+ORDER BY stage = 'base' DESC, build;
+```
+
+`course run` also prints the run-dependent values, which are not part of the stored evidence: the work directory, the sync syscall each build used (`fsync` or `fdatasync`), and the VFS calls where the CLI first asks for randomness.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/1.2-one-insert/`](evidence/1.2-one-insert/), and `go run ./cmd/course check evidence ch01` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/1.2-one-insert.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/1.2
-sqlite3 CLI sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-EXPLAIN INSERT INTO t(id, v) VALUES(2, 'two')
-  addr opcode           p1   p2   p3 p4           p5
-  0    Init              0   14    0              0
-  1    OpenWrite         0    2    0 2            0
-  2    SoftNull          2    0    0              0
-  3    String8           0    3    0 two          0
-  4    Integer           2    1    0              0
-  5    NotNull           1    7    0              0
-  6    NewRowid          0    1    0              0
-  7    MustBeInt         1    0    0              0
-  8    HaltIfNull     1299    2    3 t.v          1
-  9    NotExists         0   11    1              0
-  10   Halt           1555    2    0 t.id         2
-  11   MakeRecord        2    2    4 DB           0
-  12   Insert            0    4    1 t            49
-  13   Halt              0    0    0              0
-  14   Transaction       0    1    1 0            1
-  15   Goto              0    1    0              0
 
-== rollback journal (journal_mode=delete) ==
-base: table t with 1 row, 2 pages, sha256 0aec0e95a3f65e0c
-pages changed by the INSERT (sha256 of each page through sqlite_dbpage, before -> after): [1 2]
-  page 1: bb133eb73b58bce5 -> 0ba56047337c7717
-  page 2: 5d68aacbd116afe8 -> b21207c95d70a25b
-check ok: the INSERT changes page 1 (the change counter in the header) and page 2 (table t's leaf): [1 2]
-Go driver (modernc), file syscalls of the INSERT (33):
-  fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1 = 0
-  fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0
-  fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1 = 0
-  pread64 t.db off=24 len=16 = 16
-  fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1 = 0
-  pread64 t.db off=4096 len=4096 = 4096
-  open t.db-journal O_RDWR|O_CREAT|O_LARGEFILE|O_NOFOLLOW|O_CLOEXEC = fd
-  fcntl t.db-journal F_SETFD = 0
-  pwrite64 t.db-journal off=0 len=512 = 512
-  pwrite64 t.db-journal off=512 len=4 = 4
-  pwrite64 t.db-journal off=516 len=4096 = 4096
-  pwrite64 t.db-journal off=4612 len=4 = 4
-  fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1 = 0
-  fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510 = 0
-  pwrite64 t.db-journal off=4616 len=4 = 4
-  pwrite64 t.db-journal off=4620 len=4096 = 4096
-  pwrite64 t.db-journal off=8716 len=4 = 4
-  pread64 t.db-journal off=9216 len=8 = 0
-  fsync t.db-journal = 0
-  open . O_RDONLY|O_LARGEFILE|O_CLOEXEC = fd
-  fcntl . F_SETFD = 0
-  fsync . = 0
-  close . = 0
-  pwrite64 t.db-journal off=0 len=12 = 12
-  fsync t.db-journal = 0
-  pwrite64 t.db off=0 len=4096 = 4096
-  pwrite64 t.db off=4096 len=4096 = 4096
-  fsync t.db = 0
-  close t.db-journal = 0
-  unlink t.db-journal = 0
-  fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0
-  fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2 = 0
-  fcntl t.db F_SETLK F_UNLCK start=0 len=0 = 0
-  db write at offset 0 = (page 1 - 1) * 4096
-  db write at offset 4096 = (page 2 - 1) * 4096
-check ok: rollback mode: each pwrite64 on t.db is one whole page at offset (page-1)*4096, and the pages written are exactly the changed pages [1 2]
-C CLI, file syscalls of the same INSERT (31, open/openat shown as open, fsync/fdatasync as sync):
-  fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
-  fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
-  fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
-  pread64 t.db off=24 len=16
-  fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
-  pread64 t.db off=4096 len=4096
-  open t.db-journal
-  pwrite64 t.db-journal off=0 len=512
-  pwrite64 t.db-journal off=512 len=4
-  pwrite64 t.db-journal off=516 len=4096
-  pwrite64 t.db-journal off=4612 len=4
-  fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
-  fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
-  pwrite64 t.db-journal off=4616 len=4
-  pwrite64 t.db-journal off=4620 len=4096
-  pwrite64 t.db-journal off=8716 len=4
-  pread64 t.db-journal off=9216 len=8 = 0
-  sync t.db-journal
-  open .
-  sync .
-  close .
-  pwrite64 t.db-journal off=0 len=12
-  sync t.db-journal
-  pwrite64 t.db off=0 len=4096
-  pwrite64 t.db off=4096 len=4096
-  sync t.db
-  close t.db-journal
-  unlink t.db-journal
-  fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
-  fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
-  fcntl t.db F_SETLK F_UNLCK start=0 len=0
-INFO: sync syscall used: Go driver fsync, CLI fsync (/usr/local/bin/sqlite3)
-twin writes (file, offset, length, order): identical (10 calls)
-twin syncs (file, order): identical (4 calls)
-check ok: twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order
-twin difference: fcntl F_SETFD calls, Go driver 2 [fcntl t.db-journal F_SETFD; fcntl . F_SETFD], CLI 0 []
-twin every other file syscall (opens, reads, writes, syncs, locks, unlinks, closes): identical (31 calls)
-check ok: apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)
-check ok: the database file after the INSERT is byte-identical from both builds (sha256 47bae5ed0c8207f2)
-call path, measured: the C CLI with -vfstrace under strace runs BEGIN IMMEDIATE; INSERT; COMMIT with a marker between statements.
-Each phase lists the VFS calls (VFS) and the syscalls each one made (SYS, indented under its VFS call).
-phase BEGIN IMMEDIATE | opcode OP_Transaction | sqlite3BtreeBeginTrans -> sqlite3PagerSharedLock, sqlite3PagerBegin
-  VFS xLock(t.db,SHARED) -> SQLITE_OK
-      SYS fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
-      SYS fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
-      SYS fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
-  VFS xAccess("t.db-journal",0) -> SQLITE_OK, out=0
-  VFS xRead(t.db,n=16,ofst=24) -> SQLITE_OK
-      SYS pread64 t.db off=24 len=16
-  VFS xAccess("t.db-wal",0) -> SQLITE_OK, out=0
-  VFS xFileSize(t.db) -> SQLITE_OK, size=8192
-  VFS xLock(t.db,RESERVED) -> SQLITE_OK
-      SYS fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
-phase INSERT INTO t(id, v) VALUES(2, 'two') | opcode OP_Insert | sqlite3BtreeInsert -> sqlite3PagerWrite
-  VFS xRead(t.db,n=4096,ofst=4096) -> SQLITE_OK
-      SYS pread64 t.db off=4096 len=4096
-  VFS xFileControl(t.db,HAS_MOVED) -> SQLITE_OK, 0
-  SYS open t.db-journal
-  VFS xOpen(t.db-journal,flags=0x806) -> SQLITE_OK
-  VFS xDeviceCharacteristics(t.db) -> 0x00009000
-  VFS xWrite(t.db-journal,n=512,ofst=0) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=0 len=512
-  VFS xWrite(t.db-journal,n=4,ofst=512) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=512 len=4
-  VFS xWrite(t.db-journal,n=4096,ofst=516) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=516 len=4096
-  VFS xWrite(t.db-journal,n=4,ofst=4612) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=4612 len=4
-phase COMMIT | opcode OP_AutoCommit (OP_Halt in an autocommit INSERT) | sqlite3VdbeHalt -> vdbeCommit -> sqlite3BtreeCommitPhaseOne/PhaseTwo -> sqlite3PagerCommitPhaseOne/PhaseTwo
-  VFS xLock(t.db,EXCLUSIVE) -> SQLITE_OK
-      SYS fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
-      SYS fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
-  VFS xWrite(t.db-journal,n=4,ofst=4616) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=4616 len=4
-  VFS xWrite(t.db-journal,n=4096,ofst=4620) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=4620 len=4096
-  VFS xWrite(t.db-journal,n=4,ofst=8716) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=8716 len=4
-  VFS xDeviceCharacteristics(t.db) -> 0x00009000
-  VFS xRead(t.db-journal,n=8,ofst=9216) -> SQLITE_IOERR_SHORT_READ
-      SYS pread64 t.db-journal off=9216 len=8 = 0
-  VFS xSync(t.db-journal,FULL) -> 0
-      SYS sync t.db-journal
-      SYS open .
-      SYS sync .
-      SYS close .
-  VFS xWrite(t.db-journal,n=12,ofst=0) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=0 len=12
-  VFS xSync(t.db-journal,FULL) -> 0
-      SYS sync t.db-journal
-  VFS xWrite(t.db,n=4096,ofst=0) -> SQLITE_OK
-      SYS pwrite64 t.db off=0 len=4096
-  VFS xWrite(t.db,n=4096,ofst=4096) -> SQLITE_OK
-      SYS pwrite64 t.db off=4096 len=4096
-  VFS xFileControl(t.db,SYNC) -> SQLITE_NOTFOUND
-  VFS xSync(t.db,FULL) -> 0
-      SYS sync t.db
-  VFS xClose(t.db-journal) -> SQLITE_OK
-      SYS close t.db-journal
-  VFS xDelete("t.db-journal",0) -> SQLITE_OK
-      SYS unlink t.db-journal
-  VFS xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
-  VFS xUnlock(t.db,SHARED) -> SQLITE_OK
-      SYS fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
-      SYS fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
-  VFS xDeviceCharacteristics(t.db) -> 0x00009000
-  VFS xUnlock(t.db,NONE) -> SQLITE_OK
-      SYS fcntl t.db F_SETLK F_UNLCK start=0 len=0
-check ok: the three phases together make exactly the file syscalls of the autocommit INSERT (so the per-opcode split above is the INSERT's own I/O)
-check ok: BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT
+════════════════════════════════════════════════════════════════════════
+  1.2  What does one committed INSERT do, layer by layer?
+════════════════════════════════════════════════════════════════════════
 
-== write-ahead log (journal_mode=wal, the platform default) ==
-base: table t with 1 row, 2 pages, sha256 5de4f3aefd26bcea
-pages changed by the INSERT (sha256 of each page through sqlite_dbpage, before -> after): [2]
-  page 2: 5d68aacbd116afe8 -> b21207c95d70a25b
-check ok: the INSERT changes only page 2 (table t's leaf); page 1 is not written, so its change counter stays: [2]
-Go driver (modernc), file syscalls of the INSERT (18):
-  fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1 = 0
-  fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1 = 0
-  pread64 t.db off=4096 len=4096 = 4096
-  fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1 = 0
-  fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1 = 0
-  fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0
-  fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1 = 0
-  pwrite64 t.db-wal off=0 len=32 = 32
-  fsync t.db-wal = 0
-  open . O_RDONLY|O_LARGEFILE|O_CLOEXEC = fd
-  fcntl . F_SETFD = 0
-  fsync . = 0
-  close . = 0
-  pwrite64 t.db-wal off=32 len=24 = 24
-  pwrite64 t.db-wal off=56 len=4096 = 4096
-  fsync t.db-wal = 0
-  fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1 = 0
-  fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0
-check ok: WAL mode: the commit writes nothing to t.db itself (database-file pwrite64 calls during the INSERT: 0)
-  WAL frame 1: page 2, commit size 2, header at offset 32, page image at offset 56
-check ok: WAL mode: the commit writes the 32-byte WAL header at offset 0 of the new t.db-wal, then one frame per changed page [2] (frame header 24 bytes, then the page at offset 32 + (frame-1)*4120 + 24), and nothing else; the last frame carries the commit size
-C CLI, file syscalls of the same INSERT (17, open/openat shown as open, fsync/fdatasync as sync):
-  fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1
-  fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1
-  pread64 t.db off=4096 len=4096
-  fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1
-  fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1
-  fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1
-  fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1
-  pwrite64 t.db-wal off=0 len=32
-  sync t.db-wal
-  open .
-  sync .
-  close .
-  pwrite64 t.db-wal off=32 len=24
-  pwrite64 t.db-wal off=56 len=4096
-  sync t.db-wal
-  fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1
-  fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1
-INFO: sync syscall used: Go driver fsync, CLI fsync (/usr/local/bin/sqlite3)
-twin writes (file, offset, length, order): identical (3 calls)
-twin syncs (file, order): identical (3 calls)
-check ok: twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order
-twin difference: fcntl F_SETFD calls, Go driver 1 [fcntl . F_SETFD], CLI 0 []
-twin every other file syscall (opens, reads, writes, syncs, locks, unlinks, closes): identical (17 calls)
-check ok: apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)
-check ok: the database file after the INSERT is byte-identical from both builds (sha256 1afce8154bf3124c)
-call path, measured: the C CLI with -vfstrace under strace runs BEGIN IMMEDIATE; INSERT; COMMIT with a marker between statements.
-Each phase lists the VFS calls (VFS) and the syscalls each one made (SYS, indented under its VFS call).
-phase BEGIN IMMEDIATE | opcode OP_Transaction | sqlite3BtreeBeginTrans -> sqlite3PagerSharedLock, sqlite3PagerBegin
-  VFS xShmBarrier(t.db)
-  VFS xShmLock(t.db,ofst=3(READ0),n=1,LOCK|SHARED) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1
-  VFS xShmBarrier(t.db)
-  VFS xFileSize(t.db) -> SQLITE_OK, size=8192
-  VFS xShmLock(t.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1
-phase INSERT INTO t(id, v) VALUES(2, 'two') | opcode OP_Insert | sqlite3BtreeInsert -> sqlite3PagerWrite
-  VFS xRead(t.db,n=4096,ofst=4096) -> SQLITE_OK
-      SYS pread64 t.db off=4096 len=4096
-phase COMMIT | opcode OP_AutoCommit (OP_Halt in an autocommit INSERT) | sqlite3VdbeHalt -> vdbeCommit -> sqlite3BtreeCommitPhaseOne -> sqlite3PagerCommitPhaseOne -> pagerWalFrames -> sqlite3WalFrames
-  VFS xShmLock(t.db,ofst=3(READ0),n=1,UNLOCK|SHARED) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1
-  VFS xShmLock(t.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1
-  VFS xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1
-  VFS xShmLock(t.db,ofst=4(READ1),n=1,LOCK|SHARED) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1
-  VFS xShmBarrier(t.db)
-  VFS xWrite(t.db-wal,n=32,ofst=0) -> SQLITE_OK
-      SYS pwrite64 t.db-wal off=0 len=32
-  VFS xSync(t.db-wal,FULL) -> 0
-      SYS sync t.db-wal
-      SYS open .
-      SYS sync .
-      SYS close .
-  VFS xWrite(t.db-wal,n=24,ofst=32) -> SQLITE_OK
-      SYS pwrite64 t.db-wal off=32 len=24
-  VFS xWrite(t.db-wal,n=4096,ofst=56) -> SQLITE_OK
-      SYS pwrite64 t.db-wal off=56 len=4096
-  VFS xSync(t.db-wal,FULL) -> 0
-      SYS sync t.db-wal
-  VFS xShmBarrier(t.db)
-  VFS xShmLock(t.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1
-  VFS xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
-  VFS xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|SHARED) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1
-check ok: the three phases together make exactly the file syscalls of the autocommit INSERT (so the per-opcode split above is the INSERT's own I/O)
-check ok: BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT
+One INSERT of the row (2, "two") into table t(id, v), which already holds
+one row (2 pages: page 1 for sqlite_schema, page 2 for t), followed down the
+layers: VDBE bytecode, the B-tree pages it changes, the file syscalls of the
+Go driver (modernc, traced with strace), the same INSERT in the C sqlite3 CLI
+(the twin check), and the CLI with -vfstrace, which names the VFS call behind
+each syscall. Parts B and C do this in rollback-journal and in WAL mode;
+part D shows where the twin check stops being valid.
 
-== a limit of the twin check: compile options that change file contents ==
-base: table s with 100 rows and index s_by_k, built twice by the Go driver, sha256 cd808b1713871cd6 and cd808b1713871cd6
-ENABLE_STAT4 compiled in: Go driver 1, CLI 0
-after ANALYZE: Go driver file sha256 2f6ce76122bda45c, statistics tables [sqlite_stat1 sqlite_stat4]
-after ANALYZE: C CLI file sha256 490d8405dea7402c, statistics tables [sqlite_stat1]
-check ok: both copies start byte-identical
-check ok: twin check limit: the driver is compiled with ENABLE_STAT4 and this CLI is not, so the same ANALYZE writes a sqlite_stat4 table only in the driver and the two files differ
+── A. The bytecode ─────────────────────────────────────────────────────
 
-ONE INSERT OK
+A1. EXPLAIN of the INSERT. OpenWrite opens the table b-tree (root page 2);
+MakeRecord builds the row; Insert (p5=49) puts it in the leaf; Transaction
+at addr 14 is where the write lock is taken.
+┌──────┬─────────────┬──────┬────┬────┬──────┬────┐
+│ addr │   opcode    │  p1  │ p2 │ p3 │  p4  │ p5 │
+├──────┼─────────────┼──────┼────┼────┼──────┼────┤
+│ 0    │ Init        │ 0    │ 14 │ 0  │      │ 0  │
+│ 1    │ OpenWrite   │ 0    │ 2  │ 0  │ 2    │ 0  │
+│ 2    │ SoftNull    │ 2    │ 0  │ 0  │      │ 0  │
+│ 3    │ String8     │ 0    │ 3  │ 0  │ two  │ 0  │
+│ 4    │ Integer     │ 2    │ 1  │ 0  │      │ 0  │
+│ 5    │ NotNull     │ 1    │ 7  │ 0  │      │ 0  │
+│ 6    │ NewRowid    │ 0    │ 1  │ 0  │      │ 0  │
+│ 7    │ MustBeInt   │ 1    │ 0  │ 0  │      │ 0  │
+│ 8    │ HaltIfNull  │ 1299 │ 2  │ 3  │ t.v  │ 1  │
+│ 9    │ NotExists   │ 0    │ 11 │ 1  │      │ 0  │
+│ 10   │ Halt        │ 1555 │ 2  │ 0  │ t.id │ 2  │
+│ 11   │ MakeRecord  │ 2    │ 2  │ 4  │ DB   │ 0  │
+│ 12   │ Insert      │ 0    │ 4  │ 1  │ t    │ 49 │
+│ 13   │ Halt        │ 0    │ 0  │ 0  │      │ 0  │
+│ 14   │ Transaction │ 0    │ 1  │ 1  │ 0    │ 1  │
+│ 15   │ Goto        │ 0    │ 1  │ 0  │      │ 0  │
+└──────┴─────────────┴──────┴────┴────┴──────┴────┘
+
+── B. Rollback journal (journal_mode=delete) ───────────────────────────
+
+B1. The base database, and the pages the INSERT changed (sha256 prefix of
+each page, read through sqlite_dbpage before and after).
+Page 1 changes too: the change counter in its header.
+┌────────┬──────────────┬──────────────────┬──────┬──────────────────┬──────────────────┐
+│  mode  │ pages_before │   file_sha256    │ page │  before_sha256   │   after_sha256   │
+├────────┼──────────────┼──────────────────┼──────┼──────────────────┼──────────────────┤
+│ delete │ 2            │ 0aec0e95a3f65e0c │ 1    │ bb133eb73b58bce5 │ 0ba56047337c7717 │
+│ delete │ 2            │ 0aec0e95a3f65e0c │ 2    │ 5d68aacbd116afe8 │ b21207c95d70a25b │
+└────────┴──────────────┴──────────────────┴──────┴──────────────────┴──────────────────┘
+
+B2. The file syscalls the Go driver made for the INSERT, in order
+(open/openat and unlink/unlinkat are written open and unlink; "= fd" stands
+for the descriptor number, which varies):
+┌─────┬────────────────────────────────────────────────────────────────────────┐
+│ seq │                                  call                                  │
+├─────┼────────────────────────────────────────────────────────────────────────┤
+│ 1   │ fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1 = 0                  │
+│ 2   │ fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0                │
+│ 3   │ fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1 = 0                  │
+│ 4   │ pread64 t.db off=24 len=16 = 16                                        │
+│ 5   │ fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1 = 0                  │
+│ 6   │ pread64 t.db off=4096 len=4096 = 4096                                  │
+│ 7   │ open t.db-journal O_RDWR|O_CREAT|O_LARGEFILE|O_NOFOLLOW|O_CLOEXEC = fd │
+│ 8   │ fcntl t.db-journal F_SETFD = 0                                         │
+│ 9   │ pwrite64 t.db-journal off=0 len=512 = 512                              │
+│ 10  │ pwrite64 t.db-journal off=512 len=4 = 4                                │
+│ 11  │ pwrite64 t.db-journal off=516 len=4096 = 4096                          │
+│ 12  │ pwrite64 t.db-journal off=4612 len=4 = 4                               │
+│ 13  │ fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1 = 0                  │
+│ 14  │ fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510 = 0                │
+│ 15  │ pwrite64 t.db-journal off=4616 len=4 = 4                               │
+│ 16  │ pwrite64 t.db-journal off=4620 len=4096 = 4096                         │
+│ 17  │ pwrite64 t.db-journal off=8716 len=4 = 4                               │
+│ 18  │ pread64 t.db-journal off=9216 len=8 = 0                                │
+│ 19  │ fsync t.db-journal = 0                                                 │
+│ 20  │ open . O_RDONLY|O_LARGEFILE|O_CLOEXEC = fd                             │
+│ 21  │ fcntl . F_SETFD = 0                                                    │
+│ 22  │ fsync . = 0                                                            │
+│ 23  │ close . = 0                                                            │
+│ 24  │ pwrite64 t.db-journal off=0 len=12 = 12                                │
+│ 25  │ fsync t.db-journal = 0                                                 │
+│ 26  │ pwrite64 t.db off=0 len=4096 = 4096                                    │
+│ 27  │ pwrite64 t.db off=4096 len=4096 = 4096                                 │
+│ 28  │ fsync t.db = 0                                                         │
+│ 29  │ close t.db-journal = 0                                                 │
+│ 30  │ unlink t.db-journal = 0                                                │
+│ 31  │ fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0                │
+│ 32  │ fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2 = 0                  │
+│ 33  │ fcntl t.db F_SETLK F_UNLCK start=0 len=0 = 0                           │
+└─────┴────────────────────────────────────────────────────────────────────────┘
+
+B3. Where the bytes land. Each pwrite64 on t.db is one whole page at
+offset (page - 1) * 4096; the pages written are the pages that changed:
+┌────────────────────────────────────────┬─────────────┬──────┬────────┐
+│                  call                  │ file_offset │ page │ length │
+├────────────────────────────────────────┼─────────────┼──────┼────────┤
+│ pwrite64 t.db off=0 len=4096 = 4096    │ 0           │ 1    │ 4096   │
+│ pwrite64 t.db off=4096 len=4096 = 4096 │ 4096        │ 2    │ 4096   │
+└────────────────────────────────────────┴─────────────┴──────┴────────┘
+
+B4. The C CLI runs the same INSERT under strace. Its syscalls, normalized
+(open/openat as open, fsync/fdatasync as sync); read and write lengths are
+kept, so a short transfer would show:
+┌─────┬─────────────────────────────────────────────────────┐
+│ seq │                        norm                         │
+├─────┼─────────────────────────────────────────────────────┤
+│ 1   │ fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1   │
+│ 2   │ fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 │
+│ 3   │ fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1   │
+│ 4   │ pread64 t.db off=24 len=16                          │
+│ 5   │ fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1   │
+│ 6   │ pread64 t.db off=4096 len=4096                      │
+│ 7   │ open t.db-journal                                   │
+│ 8   │ pwrite64 t.db-journal off=0 len=512                 │
+│ 9   │ pwrite64 t.db-journal off=512 len=4                 │
+│ 10  │ pwrite64 t.db-journal off=516 len=4096              │
+│ 11  │ pwrite64 t.db-journal off=4612 len=4                │
+│ 12  │ fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1   │
+│ 13  │ fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510 │
+│ 14  │ pwrite64 t.db-journal off=4616 len=4                │
+│ 15  │ pwrite64 t.db-journal off=4620 len=4096             │
+│ 16  │ pwrite64 t.db-journal off=8716 len=4                │
+│ 17  │ pread64 t.db-journal off=9216 len=8 = 0             │
+│ 18  │ sync t.db-journal                                   │
+│ 19  │ open .                                              │
+│ 20  │ sync .                                              │
+│ 21  │ close .                                             │
+│ 22  │ pwrite64 t.db-journal off=0 len=12                  │
+│ 23  │ sync t.db-journal                                   │
+│ 24  │ pwrite64 t.db off=0 len=4096                        │
+│ 25  │ pwrite64 t.db off=4096 len=4096                     │
+│ 26  │ sync t.db                                           │
+│ 27  │ close t.db-journal                                  │
+│ 28  │ unlink t.db-journal                                 │
+│ 29  │ fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 │
+│ 30  │ fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2   │
+│ 31  │ fcntl t.db F_SETLK F_UNLCK start=0 len=0            │
+└─────┴─────────────────────────────────────────────────────┘
+
+B5. The twin check: the Go driver and the CLI compared category by category.
+Writes and syncs must be identical, and so must every call apart from the
+fcntl(F_SETFD) that the libc of modernc adds after each O_CLOEXEC open:
+┌──────────────────────────────────────┬──────────┬───────────┬───────────┐
+│               category               │ go_calls │ cli_calls │ identical │
+├──────────────────────────────────────┼──────────┼───────────┼───────────┤
+│ writes (file, offset, length, order) │ 10       │ 10        │ true      │
+│ syncs (file, order)                  │ 4        │ 4         │ true      │
+│ every call except fcntl F_SETFD      │ 31       │ 31        │ true      │
+│ fcntl F_SETFD only                   │ 2        │ 0         │           │
+└──────────────────────────────────────┴──────────┴───────────┴───────────┘
+
+The F_SETFD calls only the Go driver makes:
+┌─────┬────────────────────────────────┐
+│ seq │              call              │
+├─────┼────────────────────────────────┤
+│ 8   │ fcntl t.db-journal F_SETFD = 0 │
+│ 21  │ fcntl . F_SETFD = 0            │
+└─────┴────────────────────────────────┘
+
+B6. The database file after each run, as a hash. The Go driver and the CLI
+must leave the same bytes, and the INSERT split into three statements must
+leave the same bytes as the autocommit INSERT:
+┌────────────┬──────────────────┐
+│    what    │      sha256      │
+├────────────┼──────────────────┤
+│ base       │ 0aec0e95a3f65e0c │
+│ go_insert  │ 47bae5ed0c8207f2 │
+│ cli_insert │ 47bae5ed0c8207f2 │
+│ cli_split  │ 47bae5ed0c8207f2 │
+└────────────┴──────────────────┘
+
+B7. The measured call path. The CLI runs BEGIN IMMEDIATE; INSERT; COMMIT with
+a marker file opened between the statements, so each VFS call and syscall is
+assigned to the statement that caused it. SYS lines indented under a VFS line
+are the syscalls that VFS call made. xRandomness calls are left out (info.sql).
+┌───────┬───────────────────────────────────────┬─────────────────────────────────────────────────┐
+│ phase │               statement               │                     opcode                      │
+├───────┼───────────────────────────────────────┼─────────────────────────────────────────────────┤
+│ 1     │ BEGIN IMMEDIATE                       │ OP_Transaction                                  │
+│ 2     │ INSERT INTO t(id, v) VALUES(2, 'two') │ OP_Insert                                       │
+│ 3     │ COMMIT                                │ OP_AutoCommit (OP_Halt in an autocommit INSERT) │
+└───────┴───────────────────────────────────────┴─────────────────────────────────────────────────┘
+
+The C functions behind each statement, outermost first:
+┌───────┬───┬───────────────────────────────────────────┐
+│ phase │ n │                c_function                 │
+├───────┼───┼───────────────────────────────────────────┤
+│ 1     │ 1 │ sqlite3BtreeBeginTrans                    │
+│ 1     │ 2 │ sqlite3PagerSharedLock, sqlite3PagerBegin │
+│ 2     │ 1 │ sqlite3BtreeInsert                        │
+│ 2     │ 2 │ sqlite3PagerWrite                         │
+│ 3     │ 1 │ sqlite3VdbeHalt                           │
+│ 3     │ 2 │ vdbeCommit                                │
+│ 3     │ 3 │ sqlite3BtreeCommitPhaseOne/PhaseTwo       │
+│ 3     │ 4 │ sqlite3PagerCommitPhaseOne/PhaseTwo       │
+└───────┴───┴───────────────────────────────────────────┘
+
+The calls of each statement, in order:
+┌───────┬──────┬──────────────────────────────────────────────────────────────┐
+│ phase │ kind │                             call                             │
+├───────┼──────┼──────────────────────────────────────────────────────────────┤
+│ 1     │ VFS  │ xLock(t.db,SHARED) -> SQLITE_OK                              │
+│ 1     │ SYS  │     fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1        │
+│ 1     │ SYS  │     fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510      │
+│ 1     │ SYS  │     fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1        │
+│ 1     │ VFS  │ xAccess("t.db-journal",0) -> SQLITE_OK, out=0                │
+│ 1     │ VFS  │ xRead(t.db,n=16,ofst=24) -> SQLITE_OK                        │
+│ 1     │ SYS  │     pread64 t.db off=24 len=16                               │
+│ 1     │ VFS  │ xAccess("t.db-wal",0) -> SQLITE_OK, out=0                    │
+│ 1     │ VFS  │ xFileSize(t.db) -> SQLITE_OK, size=8192                      │
+│ 1     │ VFS  │ xLock(t.db,RESERVED) -> SQLITE_OK                            │
+│ 1     │ SYS  │     fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1        │
+│ 2     │ VFS  │ xRead(t.db,n=4096,ofst=4096) -> SQLITE_OK                    │
+│ 2     │ SYS  │     pread64 t.db off=4096 len=4096                           │
+│ 2     │ VFS  │ xFileControl(t.db,HAS_MOVED) -> SQLITE_OK, 0                 │
+│ 2     │ SYS  │ open t.db-journal                                            │
+│ 2     │ VFS  │ xOpen(t.db-journal,flags=0x806) -> SQLITE_OK                 │
+│ 2     │ VFS  │ xDeviceCharacteristics(t.db) -> 0x00009000                   │
+│ 2     │ VFS  │ xWrite(t.db-journal,n=512,ofst=0) -> SQLITE_OK               │
+│ 2     │ SYS  │     pwrite64 t.db-journal off=0 len=512                      │
+│ 2     │ VFS  │ xWrite(t.db-journal,n=4,ofst=512) -> SQLITE_OK               │
+│ 2     │ SYS  │     pwrite64 t.db-journal off=512 len=4                      │
+│ 2     │ VFS  │ xWrite(t.db-journal,n=4096,ofst=516) -> SQLITE_OK            │
+│ 2     │ SYS  │     pwrite64 t.db-journal off=516 len=4096                   │
+│ 2     │ VFS  │ xWrite(t.db-journal,n=4,ofst=4612) -> SQLITE_OK              │
+│ 2     │ SYS  │     pwrite64 t.db-journal off=4612 len=4                     │
+│ 3     │ VFS  │ xLock(t.db,EXCLUSIVE) -> SQLITE_OK                           │
+│ 3     │ SYS  │     fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1        │
+│ 3     │ SYS  │     fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510      │
+│ 3     │ VFS  │ xWrite(t.db-journal,n=4,ofst=4616) -> SQLITE_OK              │
+│ 3     │ SYS  │     pwrite64 t.db-journal off=4616 len=4                     │
+│ 3     │ VFS  │ xWrite(t.db-journal,n=4096,ofst=4620) -> SQLITE_OK           │
+│ 3     │ SYS  │     pwrite64 t.db-journal off=4620 len=4096                  │
+│ 3     │ VFS  │ xWrite(t.db-journal,n=4,ofst=8716) -> SQLITE_OK              │
+│ 3     │ SYS  │     pwrite64 t.db-journal off=8716 len=4                     │
+│ 3     │ VFS  │ xDeviceCharacteristics(t.db) -> 0x00009000                   │
+│ 3     │ VFS  │ xRead(t.db-journal,n=8,ofst=9216) -> SQLITE_IOERR_SHORT_READ │
+│ 3     │ SYS  │     pread64 t.db-journal off=9216 len=8 = 0                  │
+│ 3     │ VFS  │ xSync(t.db-journal,FULL) -> 0                                │
+│ 3     │ SYS  │     sync t.db-journal                                        │
+│ 3     │ SYS  │     open .                                                   │
+│ 3     │ SYS  │     sync .                                                   │
+│ 3     │ SYS  │     close .                                                  │
+│ 3     │ VFS  │ xWrite(t.db-journal,n=12,ofst=0) -> SQLITE_OK                │
+│ 3     │ SYS  │     pwrite64 t.db-journal off=0 len=12                       │
+│ 3     │ VFS  │ xSync(t.db-journal,FULL) -> 0                                │
+│ 3     │ SYS  │     sync t.db-journal                                        │
+│ 3     │ VFS  │ xWrite(t.db,n=4096,ofst=0) -> SQLITE_OK                      │
+│ 3     │ SYS  │     pwrite64 t.db off=0 len=4096                             │
+│ 3     │ VFS  │ xWrite(t.db,n=4096,ofst=4096) -> SQLITE_OK                   │
+│ 3     │ SYS  │     pwrite64 t.db off=4096 len=4096                          │
+│ 3     │ VFS  │ xFileControl(t.db,SYNC) -> SQLITE_NOTFOUND                   │
+│ 3     │ VFS  │ xSync(t.db,FULL) -> 0                                        │
+│ 3     │ SYS  │     sync t.db                                                │
+│ 3     │ VFS  │ xClose(t.db-journal) -> SQLITE_OK                            │
+│ 3     │ SYS  │     close t.db-journal                                       │
+│ 3     │ VFS  │ xDelete("t.db-journal",0) -> SQLITE_OK                       │
+│ 3     │ SYS  │     unlink t.db-journal                                      │
+│ 3     │ VFS  │ xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND        │
+│ 3     │ VFS  │ xUnlock(t.db,SHARED) -> SQLITE_OK                            │
+│ 3     │ SYS  │     fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510      │
+│ 3     │ SYS  │     fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2        │
+│ 3     │ VFS  │ xDeviceCharacteristics(t.db) -> 0x00009000                   │
+│ 3     │ VFS  │ xUnlock(t.db,NONE) -> SQLITE_OK                              │
+│ 3     │ SYS  │     fcntl t.db F_SETLK F_UNLCK start=0 len=0                 │
+└───────┴──────┴──────────────────────────────────────────────────────────────┘
+
+The three phases together make exactly the syscalls of the autocommit INSERT:
+┌───────────────┐
+│ same_syscalls │
+├───────────────┤
+│ true          │
+└───────────────┘
+
+── C. Write-ahead log (journal_mode=wal, the default) ──────────────────
+
+C1. The base database, and the pages the INSERT changed (sha256 prefix of
+each page, read through sqlite_dbpage before and after).
+Page 1 is not written, so its change counter stays.
+┌──────┬──────────────┬──────────────────┬──────┬──────────────────┬──────────────────┐
+│ mode │ pages_before │   file_sha256    │ page │  before_sha256   │   after_sha256   │
+├──────┼──────────────┼──────────────────┼──────┼──────────────────┼──────────────────┤
+│ wal  │ 2            │ 5de4f3aefd26bcea │ 2    │ 5d68aacbd116afe8 │ b21207c95d70a25b │
+└──────┴──────────────┴──────────────────┴──────┴──────────────────┴──────────────────┘
+
+C2. The file syscalls the Go driver made for the INSERT, in order
+(open/openat and unlink/unlinkat are written open and unlink; "= fd" stands
+for the descriptor number, which varies):
+┌─────┬────────────────────────────────────────────────────┐
+│ seq │                        call                        │
+├─────┼────────────────────────────────────────────────────┤
+│ 1   │ fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1 = 0 │
+│ 2   │ fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1 = 0 │
+│ 3   │ pread64 t.db off=4096 len=4096 = 4096              │
+│ 4   │ fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1 = 0 │
+│ 5   │ fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1 = 0 │
+│ 6   │ fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0 │
+│ 7   │ fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1 = 0 │
+│ 8   │ pwrite64 t.db-wal off=0 len=32 = 32                │
+│ 9   │ fsync t.db-wal = 0                                 │
+│ 10  │ open . O_RDONLY|O_LARGEFILE|O_CLOEXEC = fd         │
+│ 11  │ fcntl . F_SETFD = 0                                │
+│ 12  │ fsync . = 0                                        │
+│ 13  │ close . = 0                                        │
+│ 14  │ pwrite64 t.db-wal off=32 len=24 = 24               │
+│ 15  │ pwrite64 t.db-wal off=56 len=4096 = 4096           │
+│ 16  │ fsync t.db-wal = 0                                 │
+│ 17  │ fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1 = 0 │
+│ 18  │ fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0 │
+└─────┴────────────────────────────────────────────────────┘
+
+C3. Where the bytes land. The commit writes nothing to t.db itself; it
+appends one frame per changed page to t.db-wal after a 32-byte WAL header.
+The frame table is read from the -wal file by the traced child; offsets are
+32 + (frame - 1) * 4120 for the 24-byte frame header, then +24 for the page:
+┌─────────────────┐
+│ pwrites_on_t_db │
+├─────────────────┤
+│ 0               │
+└─────────────────┘
+┌───────┬──────┬─────────────┬───────────┬───────────────┐
+│ frame │ page │ commit_size │ header_at │ page_image_at │
+├───────┼──────┼─────────────┼───────────┼───────────────┤
+│ 1     │ 2    │ 2           │ 32        │ 56            │
+└───────┴──────┴─────────────┴───────────┴───────────────┘
+
+C4. The C CLI runs the same INSERT under strace. Its syscalls, normalized
+(open/openat as open, fsync/fdatasync as sync); read and write lengths are
+kept, so a short transfer would show:
+┌─────┬────────────────────────────────────────────────┐
+│ seq │                      norm                      │
+├─────┼────────────────────────────────────────────────┤
+│ 1   │ fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1 │
+│ 2   │ fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1 │
+│ 3   │ pread64 t.db off=4096 len=4096                 │
+│ 4   │ fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1 │
+│ 5   │ fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1 │
+│ 6   │ fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 │
+│ 7   │ fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1 │
+│ 8   │ pwrite64 t.db-wal off=0 len=32                 │
+│ 9   │ sync t.db-wal                                  │
+│ 10  │ open .                                         │
+│ 11  │ sync .                                         │
+│ 12  │ close .                                        │
+│ 13  │ pwrite64 t.db-wal off=32 len=24                │
+│ 14  │ pwrite64 t.db-wal off=56 len=4096              │
+│ 15  │ sync t.db-wal                                  │
+│ 16  │ fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1 │
+│ 17  │ fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 │
+└─────┴────────────────────────────────────────────────┘
+
+C5. The twin check: the Go driver and the CLI compared category by category.
+Writes and syncs must be identical, and so must every call apart from the
+fcntl(F_SETFD) that the libc of modernc adds after each O_CLOEXEC open:
+┌──────────────────────────────────────┬──────────┬───────────┬───────────┐
+│               category               │ go_calls │ cli_calls │ identical │
+├──────────────────────────────────────┼──────────┼───────────┼───────────┤
+│ writes (file, offset, length, order) │ 3        │ 3         │ true      │
+│ syncs (file, order)                  │ 3        │ 3         │ true      │
+│ every call except fcntl F_SETFD      │ 17       │ 17        │ true      │
+│ fcntl F_SETFD only                   │ 1        │ 0         │           │
+└──────────────────────────────────────┴──────────┴───────────┴───────────┘
+
+The F_SETFD calls only the Go driver makes:
+┌─────┬─────────────────────┐
+│ seq │        call         │
+├─────┼─────────────────────┤
+│ 11  │ fcntl . F_SETFD = 0 │
+└─────┴─────────────────────┘
+
+C6. The database file after each run, as a hash. The Go driver and the CLI
+must leave the same bytes, and the INSERT split into three statements must
+leave the same bytes as the autocommit INSERT:
+┌────────────┬──────────────────┐
+│    what    │      sha256      │
+├────────────┼──────────────────┤
+│ base       │ 5de4f3aefd26bcea │
+│ go_insert  │ 1afce8154bf3124c │
+│ cli_insert │ 1afce8154bf3124c │
+│ cli_split  │ 1afce8154bf3124c │
+└────────────┴──────────────────┘
+
+C7. The measured call path. The CLI runs BEGIN IMMEDIATE; INSERT; COMMIT with
+a marker file opened between the statements, so each VFS call and syscall is
+assigned to the statement that caused it. SYS lines indented under a VFS line
+are the syscalls that VFS call made. xRandomness calls are left out (info.sql).
+┌───────┬───────────────────────────────────────┬─────────────────────────────────────────────────┐
+│ phase │               statement               │                     opcode                      │
+├───────┼───────────────────────────────────────┼─────────────────────────────────────────────────┤
+│ 1     │ BEGIN IMMEDIATE                       │ OP_Transaction                                  │
+│ 2     │ INSERT INTO t(id, v) VALUES(2, 'two') │ OP_Insert                                       │
+│ 3     │ COMMIT                                │ OP_AutoCommit (OP_Halt in an autocommit INSERT) │
+└───────┴───────────────────────────────────────┴─────────────────────────────────────────────────┘
+
+The C functions behind each statement, outermost first:
+┌───────┬───┬───────────────────────────────────────────┐
+│ phase │ n │                c_function                 │
+├───────┼───┼───────────────────────────────────────────┤
+│ 1     │ 1 │ sqlite3BtreeBeginTrans                    │
+│ 1     │ 2 │ sqlite3PagerSharedLock, sqlite3PagerBegin │
+│ 2     │ 1 │ sqlite3BtreeInsert                        │
+│ 2     │ 2 │ sqlite3PagerWrite                         │
+│ 3     │ 1 │ sqlite3VdbeHalt                           │
+│ 3     │ 2 │ vdbeCommit                                │
+│ 3     │ 3 │ sqlite3BtreeCommitPhaseOne                │
+│ 3     │ 4 │ sqlite3PagerCommitPhaseOne                │
+│ 3     │ 5 │ pagerWalFrames                            │
+│ 3     │ 6 │ sqlite3WalFrames                          │
+└───────┴───┴───────────────────────────────────────────┘
+
+The calls of each statement, in order:
+┌───────┬──────┬────────────────────────────────────────────────────────────────┐
+│ phase │ kind │                              call                              │
+├───────┼──────┼────────────────────────────────────────────────────────────────┤
+│ 1     │ VFS  │ xShmBarrier(t.db)                                              │
+│ 1     │ VFS  │ xShmLock(t.db,ofst=3(READ0),n=1,LOCK|SHARED) -> SQLITE_OK      │
+│ 1     │ SYS  │     fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1             │
+│ 1     │ VFS  │ xShmBarrier(t.db)                                              │
+│ 1     │ VFS  │ xFileSize(t.db) -> SQLITE_OK, size=8192                        │
+│ 1     │ VFS  │ xShmLock(t.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK   │
+│ 1     │ SYS  │     fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1             │
+│ 2     │ VFS  │ xRead(t.db,n=4096,ofst=4096) -> SQLITE_OK                      │
+│ 2     │ SYS  │     pread64 t.db off=4096 len=4096                             │
+│ 3     │ VFS  │ xShmLock(t.db,ofst=3(READ0),n=1,UNLOCK|SHARED) -> SQLITE_OK    │
+│ 3     │ SYS  │     fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1             │
+│ 3     │ VFS  │ xShmLock(t.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK   │
+│ 3     │ SYS  │     fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1             │
+│ 3     │ VFS  │ xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK │
+│ 3     │ SYS  │     fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1             │
+│ 3     │ VFS  │ xShmLock(t.db,ofst=4(READ1),n=1,LOCK|SHARED) -> SQLITE_OK      │
+│ 3     │ SYS  │     fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1             │
+│ 3     │ VFS  │ xShmBarrier(t.db)                                              │
+│ 3     │ VFS  │ xWrite(t.db-wal,n=32,ofst=0) -> SQLITE_OK                      │
+│ 3     │ SYS  │     pwrite64 t.db-wal off=0 len=32                             │
+│ 3     │ VFS  │ xSync(t.db-wal,FULL) -> 0                                      │
+│ 3     │ SYS  │     sync t.db-wal                                              │
+│ 3     │ SYS  │     open .                                                     │
+│ 3     │ SYS  │     sync .                                                     │
+│ 3     │ SYS  │     close .                                                    │
+│ 3     │ VFS  │ xWrite(t.db-wal,n=24,ofst=32) -> SQLITE_OK                     │
+│ 3     │ SYS  │     pwrite64 t.db-wal off=32 len=24                            │
+│ 3     │ VFS  │ xWrite(t.db-wal,n=4096,ofst=56) -> SQLITE_OK                   │
+│ 3     │ SYS  │     pwrite64 t.db-wal off=56 len=4096                          │
+│ 3     │ VFS  │ xSync(t.db-wal,FULL) -> 0                                      │
+│ 3     │ SYS  │     sync t.db-wal                                              │
+│ 3     │ VFS  │ xShmBarrier(t.db)                                              │
+│ 3     │ VFS  │ xShmLock(t.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK │
+│ 3     │ SYS  │     fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1             │
+│ 3     │ VFS  │ xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND          │
+│ 3     │ VFS  │ xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|SHARED) -> SQLITE_OK    │
+│ 3     │ SYS  │     fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1             │
+└───────┴──────┴────────────────────────────────────────────────────────────────┘
+
+The three phases together make exactly the syscalls of the autocommit INSERT:
+┌───────────────┐
+│ same_syscalls │
+├───────────────┤
+│ true          │
+└───────────────┘
+
+── D. A limit of the twin check ────────────────────────────────────────
+
+The twin check assumes both builds write the same bytes, which holds only
+if their compile options agree. The driver is compiled with ENABLE_STAT4
+and this CLI is not. Two copies of a 100-row indexed table start byte for
+byte identical; the Go driver and the CLI each run ANALYZE on one copy:
+┌───────────────┬────────┬──────────────────┬────────────────┬───────────────────────────┐
+│     stage     │  file  │      sha256      │ stat4_compiled │        stat_tables        │
+├───────────────┼────────┼──────────────────┼────────────────┼───────────────────────────┤
+│ base          │ cli.db │ cd808b1713871cd6 │                │                           │
+│ base          │ go.db  │ cd808b1713871cd6 │                │                           │
+│ after ANALYZE │ cli.db │ 490d8405dea7402c │ 0              │ sqlite_stat1              │
+│ after ANALYZE │ go.db  │ 2f6ce76122bda45c │ 1              │ sqlite_stat1 sqlite_stat4 │
+└───────────────┴────────┴──────────────────┴────────────────┴───────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+B  ✓  the INSERT changes page 1 (the change counter in the header) and page 2 (table t's leaf): [1 2]
+B  ✓  rollback mode: each pwrite64 on t.db is one whole page at offset (page-1)*4096, and the pages written are exactly the changed pages [1 2]
+B  ✓  twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order
+B  ✓  apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)
+B  ✓  the database file after the INSERT is byte-identical from both builds (sha256 47bae5ed0c8207f2)
+B  ✓  the three phases together make exactly the file syscalls of the autocommit INSERT (so the per-opcode split above is the INSERT's own I/O)
+B  ✓  BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT
+C  ✓  the INSERT changes only page 2 (table t's leaf); page 1 is not written, so its change counter stays: [2]
+C  ✓  WAL mode: the commit writes nothing to t.db itself (database-file pwrite64 calls during the INSERT: 0)
+C  ✓  WAL mode: the commit writes the 32-byte WAL header at offset 0 of the new t.db-wal, then one frame per changed page [2] (frame header 24 bytes, then the page at offset 32 + (frame-1)*4120 + 24), and nothing else; the last frame carries the commit size
+C  ✓  twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order
+C  ✓  apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)
+C  ✓  the database file after the INSERT is byte-identical from both builds (sha256 1afce8154bf3124c)
+C  ✓  the three phases together make exactly the file syscalls of the autocommit INSERT (so the per-opcode split above is the INSERT's own I/O)
+C  ✓  BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT
+D  ✓  both copies start byte-identical
+D  ✓  twin check limit: the driver is compiled with ENABLE_STAT4 and this CLI is not, so the same ANALYZE writes a sqlite_stat4 table only in the driver and the two files differ
+
+17 of 17 claims hold
+
+Experiment verdict: ONE INSERT OK
 ```
 
 **Reading the evidence:**
 
-1. **The `EXPLAIN` bytecode listing (lines 4–21).** Each row is one VDBE instruction: `addr` (instruction index), `opcode`, and operands `p1`–`p5`. Execution starts at `0 Init 0 14`, jumps to `14 Transaction 0 1 1 0 1` (write transaction `p2=1` on `p1=0` `main`, checking schema cookie `p3=1` because `p5=1`), and jumps to `1` via `15 Goto 0 1`:
+1. **The `EXPLAIN` bytecode listing (A1).** Each row is one VDBE instruction: `addr` (instruction index), `opcode`, and operands `p1`–`p5`. Execution starts at `0 Init 0 14`, jumps to `14 Transaction 0 1 1 0 1` (write transaction `p2=1` on `p1=0` `main`, checking schema cookie `p3=1` because `p5=1`), and jumps to `1` via `15 Goto 0 1`:
    - `1 OpenWrite 0 2 0 2` opens write cursor `0` on root page `2` (table `t`, 2 columns).
    - `2 SoftNull 2`, `3 String8 0 3 0 two`, and `4 Integer 2 1` load `r2=NULL` (the `INTEGER PRIMARY KEY` column lives in the rowid, not inside the record payload), `r3='two'`, and rowid `r1=2`.
    - `5 NotNull 1 7` skips `6 NewRowid` because rowid `2` is explicit.
@@ -1847,27 +2472,27 @@ ONE INSERT OK
    - `12 Insert 0 4 1 t 49` inserts `r4` with rowid `r1` through cursor `0`. Flag `p5=49` is `1 + 16 + 32` (`OPFLAG_NCHANGE | OPFLAG_USESEEKRESULT | OPFLAG_LASTROWID`): reuse the seek position from `NotExists`, increment the change count, and update `last_insert_rowid`.
    - `13 Halt` enters `sqlite3VdbeHalt`, which commits the autocommit transaction.
 
-2. **Rollback mode (`journal_mode=delete`, lines 23–105).**
-   - **Changed pages (lines 25–28):** `[1 2]`. Page 2 changed because row 2 was inserted into table `t`'s leaf page. Page 1 changed because a rollback-mode commit increments the 4-byte file change counter (bytes 24–27) and version-valid-for field (bytes 92–95).
-   - **Database writes (lines 55–56, 63–65):** `pwrite64 t.db off=0 len=4096` equals `(page 1 - 1) * 4096`, and `off=4096 len=4096` equals `(page 2 - 1) * 4096`. Every write to `t.db` is one whole page, matching `[1 2]` exactly.
-   - **Syncs (lines 48, 51, 54, 57):** 4 syncs in order: `fsync t.db-journal`, `fsync .` (makes the new journal directory entry durable), `fsync t.db-journal` (after writing the 12-byte journal header with the page count), and `fsync t.db`.
-   - **Errors and short reads (lines 47 and 83):** `normalized` keeps errno on failed calls and byte counts on short transfers, so SQLite's probe past end-of-file prints `pread64 t.db-journal off=9216 len=8 = 0` in both builds.
-   - **Twin check (lines 98–105):** 33 Go syscalls vs 31 CLI syscalls. Writes (10), syncs (4), all 31 non-`F_SETFD` calls, and the closed at-rest database file (`47bae5ed0c8207f2`, distinct from base `0aec0e95a3f65e0c`) are identical. The sole difference (line 102) is two `fcntl(..., F_SETFD)` calls from `modernc.org/libc v1.77.1`: its musl-derived `open()` calls `fcntl(fd, F_SETFD, FD_CLOEXEC)` after `O_CLOEXEC`, whereas `os_unix.c`'s `robust_open` ([`src/os_unix.c:867-869`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L867-L869)) skips `F_SETFD` when `O_CLOEXEC` is defined. `./configure`-built CLIs also call `fdatasync` where the Go driver and system CLI call `fsync`, and `openat` vs `open` varies by libc; the experiment normalizes those pairs and records the raw sync syscall on line 98 (`INFO:`).
+2. **Rollback mode (`journal_mode=delete`, section B).**
+   - **Changed pages (B1):** `[1 2]`. Page 2 changed because row 2 was inserted into table `t`'s leaf page. Page 1 changed because a rollback-mode commit increments the 4-byte file change counter (bytes 24–27) and version-valid-for field (bytes 92–95).
+   - **Database writes (B2, B3):** `pwrite64 t.db off=0 len=4096` equals `(page 1 - 1) * 4096`, and `off=4096 len=4096` equals `(page 2 - 1) * 4096`. Every write to `t.db` is one whole page, matching `[1 2]` exactly.
+   - **Syncs (B2):** 4 syncs in order: `fsync t.db-journal`, `fsync .` (makes the new journal directory entry durable), `fsync t.db-journal` (after writing the 12-byte journal header with the page count), and `fsync t.db`.
+   - **Errors and short reads (B2 and B4):** `normalized` keeps errno on failed calls and byte counts on short transfers, so SQLite's probe past end-of-file prints `pread64 t.db-journal off=9216 len=8 = 0` in both builds.
+   - **Twin check (B5–B6):** 33 Go syscalls vs 31 CLI syscalls. Writes (10), syncs (4), all 31 non-`F_SETFD` calls, and the closed at-rest database file (`47bae5ed0c8207f2`, distinct from base `0aec0e95a3f65e0c`) are identical. The sole difference (B5, listed below its table) is two `fcntl(..., F_SETFD)` calls from `modernc.org/libc v1.77.1`: its musl-derived `open()` calls `fcntl(fd, F_SETFD, FD_CLOEXEC)` after `O_CLOEXEC`, whereas `os_unix.c`'s `robust_open` ([`src/os_unix.c:867-869`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L867-L869)) skips `F_SETFD` when `O_CLOEXEC` is defined. `./configure`-built CLIs also call `fdatasync` where the Go driver and system CLI call `fsync`, and `openat` vs `open` varies by libc; the experiment normalizes those pairs and records the raw sync syscall in a run-dependent `info` table that `course run` prints.
 
-3. **WAL mode (`journal_mode=wal`, the platform default, lines 178–230).**
-   - **Changed pages (lines 180–182):** `[2]` only. Page 1 is untouched during this `INSERT`, so its change counter does not move.
-   - **WAL writes vs database writes (lines 191–204):** Zero `pwrite64` calls hit `t.db` (line 202). Because closing the base database (`5de4f3aefd26bcea`) checkpointed and removed its WAL, this `INSERT` creates a fresh WAL: it writes the 32-byte WAL header (`t.db-wal off=0 len=32`), syncs `t.db-wal` and `.`, appends frame 1's 24-byte header (`off=32 len=24`) and page 2's 4,096-byte image (`off=56 len=4096`), and syncs `t.db-wal`. Reading `t.db-wal` before `db.Close()` confirms `WAL frame 1: page 2, commit size 2` (line 203), and line 204 verifies the exact write list with nothing extra.
-   - **Syncs (lines 192, 195, 199):** 3 syncs total (`t.db-wal`, `.`, `t.db-wal`). The first two pay for creating the fresh WAL header and directory entry; only the third is the per-commit sync at `synchronous=FULL`.
-   - **Twin check (lines 223–230):** 18 Go syscalls vs 17 CLI syscalls (the single extra call is `fcntl . F_SETFD`, line 227). Writes (3), syncs (3), all 17 other syscalls, and the closed at-rest database file (`1afce8154bf3124c`) are identical.
-   - **Marker files and `xRandomness`:** Both processes bracket statements by opening empty marker files (`marker-1`, `marker-2`, and so on) because CLI stdout is buffered; an `open`/`openat` syscall marks the exact statement boundary in `strace`. Some CLI builds call `VFS xRandomness` here on their first PRNG use (to seed a journal nonce or WAL salts); the experiment prints that on an `INFO:` line so `EXACT` output matches across both the installed CLI and the `build-tools` CLI.
+3. **WAL mode (`journal_mode=wal`, the platform default, section C).**
+   - **Changed pages (C1):** `[2]` only. Page 1 is untouched during this `INSERT`, so its change counter does not move.
+   - **WAL writes vs database writes (C2–C3):** Zero `pwrite64` calls hit `t.db` (C3). Because closing the base database (`5de4f3aefd26bcea`) checkpointed and removed its WAL, this `INSERT` creates a fresh WAL: it writes the 32-byte WAL header (`t.db-wal off=0 len=32`), syncs `t.db-wal` and `.`, appends frame 1's 24-byte header (`off=32 len=24`) and page 2's 4,096-byte image (`off=56 len=4096`), and syncs `t.db-wal`. Reading `t.db-wal` before `db.Close()` confirms frame 1 holds page 2 with commit size 2 (C3's frame table), and a check verifies the exact write list with nothing extra.
+   - **Syncs (C2):** 3 syncs total (`t.db-wal`, `.`, `t.db-wal`). The first two pay for creating the fresh WAL header and directory entry; only the third is the per-commit sync at `synchronous=FULL`.
+   - **Twin check (C5–C6):** 18 Go syscalls vs 17 CLI syscalls (the single extra call is `fcntl . F_SETFD`, listed in C5). Writes (3), syncs (3), all 17 other syscalls, and the closed at-rest database file (`1afce8154bf3124c`) are identical.
+   - **Marker files and `xRandomness`:** Both processes bracket statements by opening empty marker files (`marker-1`, `marker-2`, and so on) because CLI stdout is buffered; an `open`/`openat` syscall marks the exact statement boundary in `strace`. Some CLI builds call `VFS xRandomness` here on their first PRNG use (to seed a journal nonce or WAL salts); the experiment records that call in a run-dependent `info` table (printed by `course run`, not stored), so the stored evidence matches across both the installed CLI and the `build-tools` CLI.
 
-4. **A limit of the twin check: `ANALYZE` and `ENABLE_STAT4` (lines 276–282).** Starting from two byte-identical copies (`cd808b1713871cd6`) of a 100-row table `s` with index `s_by_k`, `ANALYZE` in the Go driver (`ENABLE_STAT4 = 1`) creates `[sqlite_stat1 sqlite_stat4]` (`2f6ce76122bda45c`), while the C CLI (`ENABLE_STAT4 = 0`) creates only `[sqlite_stat1]` (`490d8405dea7402c`). Twin parity holds only for statements whose behavior does not depend on compile options differing between the two builds.
+4. **A limit of the twin check: `ANALYZE` and `ENABLE_STAT4` (section D).** Starting from two byte-identical copies (`cd808b1713871cd6`) of a 100-row table `s` with index `s_by_k`, `ANALYZE` in the Go driver (`ENABLE_STAT4 = 1`) creates `[sqlite_stat1 sqlite_stat4]` (`2f6ce76122bda45c`), while the C CLI (`ENABLE_STAT4 = 0`) creates only `[sqlite_stat1]` (`490d8405dea7402c`). Twin parity holds only for statements whose behavior does not depend on compile options differing between the two builds.
 
 ---
 
 ## 4. Timeline
 
-The third run per mode in Experiment 1.2 splits the autocommit `INSERT` into `BEGIN IMMEDIATE;`, `INSERT INTO t(id, v) VALUES(2, 'two');`, and `COMMIT;` under the C CLI's `-vfstrace` plus `strace`. Lines 175–176 and 273–274 of `evidence/1.2-one-insert.txt` prove that the three phases concatenated execute the exact same syscalls and leave the exact same database bytes as the single autocommit `INSERT`. That ties each VFS call and kernel syscall by measurement to the opcode that caused it: `BEGIN IMMEDIATE` isolates `OP_Transaction`, `INSERT` isolates `OP_Insert`, and `COMMIT` isolates `OP_AutoCommit` → `sqlite3VdbeHalt` → `vdbeCommit` (the same path `OP_Halt` takes in an autocommit `INSERT`).
+The third run per mode in Experiment 1.2 splits the autocommit `INSERT` into `BEGIN IMMEDIATE;`, `INSERT INTO t(id, v) VALUES(2, 'two');`, and `COMMIT;` under the C CLI's `-vfstrace` plus `strace`. Sections B6–B7 and C6–C7 of `evidence/1.2-one-insert.txt` prove that the three phases concatenated execute the exact same syscalls and leave the exact same database bytes as the single autocommit `INSERT`. That ties each VFS call and kernel syscall by measurement to the opcode that caused it: `BEGIN IMMEDIATE` isolates `OP_Transaction`, `INSERT` isolates `OP_Insert`, and `COMMIT` isolates `OP_AutoCommit` → `sqlite3VdbeHalt` → `vdbeCommit` (the same path `OP_Halt` takes in an autocommit `INSERT`).
 
 ### 4.1 Rollback mode (`journal_mode=delete`)
 
@@ -2880,11 +3505,11 @@ func (r Recipe) writeHashCache(path string, hashes []FileHashes) error {
 
 - **Claim:** A database built by a fixed, seeded workload with explicit settings is reproducible to the exact byte (**E1**), so the recipe `(seed, step count, journal mode)` is a complete saved state with a unique SHA-256 hash after every step *k*. Breaking the determinism rules breaks byte equality in specific, measurable ways (Section 6).
 - **Capture / Rebuild / Verified at:** Capture = recipe `(seed=1, steps=30, journal_mode=wal)`. Rebuild = run the recipe into an empty file. Proven equal at **E1 (bytes)**.
-- **Evidence form:** `EXACT` (all lines except `INFO:` lines).
+- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
 - **Platform:** Portable (runs natively on Linux and macOS without `strace`).
-- **Run command:**
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./ch01-architecture-and-execution-path/experiments/1.3-recipe-rebuild
+  go run ./cmd/course run 1.3
   ```
 
 <!-- include: experiments/1.3-recipe-rebuild/main.go -->
@@ -2896,9 +3521,10 @@ func (r Recipe) writeHashCache(path string, hashes []FileHashes) error {
 // which determinism rules are required and where SQLite's behavior differs
 // between WAL and rollback modes.
 //
-// Run from the repo root (portable; no strace needed):
+// It prints only its verdict; the measurements go to CSV tables that
+// report.sql presents (portable; no strace needed):
 //
-//	go run ./ch01-architecture-and-execution-path/experiments/1.3-recipe-rebuild
+//	go run ./cmd/course run 1.3
 package main
 
 import (
@@ -2912,6 +3538,7 @@ import (
 	"time"
 
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -2922,16 +3549,56 @@ const (
 	secondsTries = 3
 )
 
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables. part labels the claims of the part
+// that is running: A the rebuild, B broken variants 1-5, C sessions, D the
+// rolled-back savepoint.
+var (
+	set        *results.Set
+	part       string
+	comparison int
+	tables     struct {
+		recipe, plan, runs, stepHashes, lookup, comparisons, unusedPages *results.Table
+		infoRun, infoHashes                                              *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+)
+
+func openTables() {
+	tables.recipe = set.Table("recipe", "key", "value")
+	tables.plan = set.Table("plan", "step", "schema", "inserts", "updates", "deletes", "indexes")
+	tables.runs = set.Table("runs", "mode", "run", "path", "pages", "sha256")
+	tables.stepHashes = set.Table("step_hashes", "mode", "step", "run1_sha256", "run2_sha256", "cached_sha256")
+	tables.lookup = set.Table("lookup", "built_to_step", "matched_step", "exact")
+	tables.comparisons = set.Table("comparisons", "seq", "id", "what", "equal", "size_a", "size_b", "differing_pages", "page1_bytes")
+	tables.unusedPages = set.Table("unused_pages", "id", "page", "bytes_differing", "bytes_outside_unused", "kind")
+	tables.infoRun = set.Table("info_run", "key", "value")
+	tables.infoHashes = set.Table("info_hashes", "name", "run", "sha256")
 }
+
+func check(ok bool, claim string) { set.Check(part, ok, claim) }
+
+// record writes one file comparison; id is the number of the variant in report.sql.
+func record(id, what string, d fileDiff) {
+	comparison++
+	tables.comparisons.Row(comparison, id, what, d.Equal, d.SizeA, d.SizeB, joinInts(d.DifferingPages), joinInts(d.Page1Bytes))
+}
+
+// recordUnused writes where the differing bytes of a comparison sit.
+func recordUnused(id string, report unusedReport) {
+	for _, page := range report.Pages {
+		tables.unusedPages.Row(id, page.Page, page.Count, page.InUse, page.Kind)
+	}
+}
+
+func joinInts(values []int) string {
+	text := make([]string, len(values))
+	for i, v := range values {
+		text[i] = fmt.Sprint(v)
+	}
+	return strings.Join(text, " ")
+}
+
+func infoHash(name, run, sha string) { tables.infoHashes.Row(name, run, sha) }
 
 func fatal(what string, err error) {
 	fmt.Printf("FATAL %s: %v\n", what, err)
@@ -2943,30 +3610,6 @@ type fileDiff struct {
 	SizeA, SizeB   int
 	DifferingPages []int
 	Page1Bytes     []int
-}
-
-func (d fileDiff) String() string {
-	if d.Equal {
-		return "identical"
-	}
-	if len(d.DifferingPages) == 0 {
-		return fmt.Sprintf("differ: sizes %d and %d bytes", d.SizeA, d.SizeB)
-	}
-	text := fmt.Sprintf("differ: first differing page %d, %d page(s) differ %v", d.DifferingPages[0], len(d.DifferingPages), limitPages(d.DifferingPages))
-	if d.SizeA != d.SizeB {
-		text += fmt.Sprintf(", sizes %d and %d pages", d.SizeA/pageSize, d.SizeB/pageSize)
-	}
-	if len(d.Page1Bytes) > 0 {
-		text += fmt.Sprintf(", page 1 bytes %v", d.Page1Bytes)
-	}
-	return text
-}
-
-func limitPages(pages []int) string {
-	if len(pages) <= 8 {
-		return fmt.Sprint(pages)
-	}
-	return fmt.Sprintf("%v...", pages[:8])
 }
 
 // compareFiles compares two closed database files page by page (1-based) and
@@ -3129,7 +3772,8 @@ func runTwice(ctx context.Context, r recipe.Recipe, dir string, v variant) fileD
 		applyStatementsInSession(ctx, r, path, v.pragmas, v.statement...)
 	}
 	d := compareFiles(a, b)
-	fmt.Printf("INFO: %s sha256 run 1 %s, run 2 %s\n", v.name, hashOf(a).Exact, hashOf(b).Exact)
+	infoHash(v.name, "run 1", hashOf(a).Exact)
+	infoHash(v.name, "run 2", hashOf(b).Exact)
 	return d
 }
 
@@ -3150,12 +3794,14 @@ func timestampVariant(ctx context.Context, r recipe.Recipe, dir string) (sameSec
 		applyStatementsInSession(ctx, r, a, nil, statement)
 		applyStatementsInSession(ctx, r, b, nil, statement)
 		if time.Now().Unix() != started {
-			fmt.Printf("INFO: timestamp attempt %d crossed a second boundary; retrying\n", attempt+1)
+			tables.infoRun.Row(fmt.Sprintf("timestamp attempt %d", attempt+1), "crossed a second boundary; retried")
 			continue
 		}
 		waitForNextSecond()
 		applyStatementsInSession(ctx, r, c, nil, statement)
-		fmt.Printf("INFO: timestamp sha256 run 1 %s, run 2 %s, run 3 %s\n", hashOf(a).Exact, hashOf(b).Exact, hashOf(c).Exact)
+		infoHash("timestamp", "run 1", hashOf(a).Exact)
+		infoHash("timestamp", "run 2", hashOf(b).Exact)
+		infoHash("timestamp", "run 3", hashOf(c).Exact)
 		return compareFiles(a, b), compareFiles(a, c)
 	}
 	fatal("timestamp variant", fmt.Errorf("could not run two inserts inside one wall-clock second in %d attempts", secondsTries))
@@ -3225,7 +3871,8 @@ func batchVariant(ctx context.Context, r recipe.Recipe, dir, secureDelete string
 			fatal("at rest", err)
 		}
 	}
-	fmt.Printf("INFO: batches %s sha256 one-per-step %s, merged %s\n", label, hashOf(a).Exact, hashOf(b).Exact)
+	infoHash("batches "+label, "one per step", hashOf(a).Exact)
+	infoHash("batches "+label, "merged", hashOf(b).Exact)
 	d := compareFiles(a, b)
 	return d, classifyDifferences(a, b, d)
 }
@@ -3358,9 +4005,17 @@ func unusedBytes(data []byte, page int, fl freelist) ([]bool, string, error) {
 	return unused, "b-tree page, unallocated space and freeblocks", nil
 }
 
+// differingPage describes one page whose bytes differ: how many bytes, what
+// kind of page it is in the two files, and how many of the bytes are outside
+// unused space.
+type differingPage struct {
+	Page, Count, InUse int
+	Kind               string
+}
+
 type unusedReport struct {
 	OnlyUnused    bool
-	Kinds         []string
+	Pages         []differingPage
 	LeafPages     []int
 	FreelistPages []int
 }
@@ -3389,7 +4044,7 @@ func classifyImages(dataA, dataB []byte, d fileDiff) unusedReport {
 	freeB, errB := readFreelist(dataB)
 	if errA != nil || errB != nil {
 		report.OnlyUnused = false
-		report.Kinds = append(report.Kinds, fmt.Sprintf("freelist unreadable: %v / %v", errA, errB))
+		report.Pages = append(report.Pages, differingPage{Kind: fmt.Sprintf("freelist unreadable: %v / %v", errA, errB)})
 		return report
 	}
 	for _, page := range d.DifferingPages {
@@ -3397,7 +4052,7 @@ func classifyImages(dataA, dataB []byte, d fileDiff) unusedReport {
 		unusedB, kindB, errB := unusedBytes(dataB, page, freeB)
 		if errA != nil || errB != nil {
 			report.OnlyUnused = false
-			report.Kinds = append(report.Kinds, fmt.Sprintf("page %d: unparseable (%v / %v)", page, errA, errB))
+			report.Pages = append(report.Pages, differingPage{Page: page, Kind: fmt.Sprintf("unparseable (%v / %v)", errA, errB)})
 			continue
 		}
 		base := (page - 1) * pageSize
@@ -3421,10 +4076,7 @@ func classifyImages(dataA, dataB []byte, d fileDiff) unusedReport {
 		if kindB != kindA {
 			kind = kindA + " / " + kindB
 		}
-		if inUse > 0 {
-			kind += fmt.Sprintf("; %d of these bytes are outside unused space", inUse)
-		}
-		report.Kinds = append(report.Kinds, fmt.Sprintf("page %d: %d bytes (%s)", page, count, kind))
+		report.Pages = append(report.Pages, differingPage{Page: page, Count: count, InUse: inUse, Kind: kind})
 	}
 	return report
 }
@@ -3466,19 +4118,25 @@ func main() {
 	if err != nil {
 		fatal("work dir", err)
 	}
-	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
+	set = results.MustOpen(work)
+	openTables()
+	tables.infoRun.Row("work dir", displayPath(dir))
 
 	r := recipe.Default()
-	fmt.Printf("recipe: %s (index created at step %d, settings: %s; %s)\n", r, recipe.IndexStep, r.SQLiteOptions().File, r.SQLiteOptions().Conn)
+	tables.recipe.Row("recipe", r.String())
+	tables.recipe.Row("index_step", recipe.IndexStep)
+	tables.recipe.Row("file_settings", r.SQLiteOptions().File)
+	tables.recipe.Row("conn_settings", r.SQLiteOptions().Conn)
 	plan, err := r.Plan()
 	if err != nil {
 		fatal("plan", err)
 	}
 	for _, s := range plan {
-		fmt.Printf("  %s\n", s.Summary())
+		counts := s.Counts()
+		tables.plan.Row(s.Number, counts.Schema, counts.Inserts, counts.Updates, counts.Deletes, counts.Indexes)
 	}
 
-	fmt.Println("\n== R0: rebuild the recipe twice ==")
+	part = "A"
 	if err := os.MkdirAll(filepath.Join(dir, "run-1"), 0o755); err != nil {
 		fatal("mkdir", err)
 	}
@@ -3489,15 +4147,11 @@ func main() {
 	second := filepath.Join(dir, "run-2", "elsewhere", "another-name.db")
 	started := time.Now()
 	firstHashes := rebuild(ctx, r, first)
-	fmt.Printf("INFO: one build of %d steps took %s\n", r.Steps, time.Since(started).Round(time.Millisecond))
+	tables.infoRun.Row("one build", fmt.Sprintf("%d steps took %s", r.Steps, time.Since(started).Round(time.Millisecond)))
 	secondHashes := rebuild(ctx, r, second)
-	fmt.Printf("run 1 (run-1/recipe.db): %d pages, sha256 %s\n", pages(first), hashOf(first).Exact)
-	fmt.Printf("run 2 (run-2/elsewhere/another-name.db): %d pages, sha256 %s\n", pages(second), hashOf(second).Exact)
+	tables.runs.Row(r.JournalMode, 1, "run-1/recipe.db", pages(first), hashOf(first).Exact)
+	tables.runs.Row(r.JournalMode, 2, "run-2/elsewhere/another-name.db", pages(second), hashOf(second).Exact)
 	check(hashOf(first) == hashOf(second), "two builds of the recipe in different directories under different names are byte-identical")
-	fmt.Println("per-step state hashes (sha256 of the closed file after step k):")
-	for k, h := range firstHashes {
-		fmt.Printf("  step %2d %s\n", k, h.Exact)
-	}
 	check(slices.Equal(firstHashes, secondHashes), fmt.Sprintf("the per-step hash lists of the two runs are identical (%d states)", len(firstHashes)))
 	distinct := map[string]bool{}
 	for _, h := range firstHashes {
@@ -3508,6 +4162,9 @@ func main() {
 	if err != nil {
 		fatal("step hashes", err)
 	}
+	for k, h := range firstHashes {
+		tables.stepHashes.Row(r.JournalMode, k, h.Exact, secondHashes[k].Exact, cached[k].Exact)
+	}
 	check(slices.Equal(cached, firstHashes), "recipe.StepHashes (the cached list later chapters use) equals the list just built")
 	middle := filepath.Join(dir, "run-1", "to-step-12.db")
 	if err := r.Build(ctx, middle, 12); err != nil {
@@ -3517,7 +4174,7 @@ func main() {
 	if err != nil {
 		fatal("match", err)
 	}
-	fmt.Printf("lookup: a database built to step 12 is %s\n", match)
+	tables.lookup.Row(12, match.Step, match.Exact)
 	check(match == recipe.Match{Step: 12, Exact: true}, "recipe.MatchStep names the step a database equals")
 
 	deleteRecipe := r.WithJournalMode(sqlitex.JournalDelete)
@@ -3525,55 +4182,53 @@ func main() {
 	deleteB := filepath.Join(dir, "run-2", "recipe-delete.db")
 	deleteHashesA := rebuild(ctx, deleteRecipe, deleteA)
 	deleteHashesB := rebuild(ctx, deleteRecipe, deleteB)
-	fmt.Printf("same recipe in rollback mode (journal_mode=delete): sha256 %s\n", hashOf(deleteA).Exact)
+	tables.runs.Row(deleteRecipe.JournalMode, 1, "run-1/recipe-delete.db", pages(deleteA), hashOf(deleteA).Exact)
+	tables.runs.Row(deleteRecipe.JournalMode, 2, "run-2/recipe-delete.db", pages(deleteB), hashOf(deleteB).Exact)
+	for k := range deleteHashesA {
+		tables.stepHashes.Row(deleteRecipe.JournalMode, k, deleteHashesA[k].Exact, deleteHashesB[k].Exact, nil)
+	}
 	check(slices.Equal(deleteHashesA, deleteHashesB), "the rollback-mode recipe also rebuilds byte for byte at every step")
-	modes := compareFiles(first, deleteA)
-	fmt.Printf("WAL build vs rollback build of the same recipe: %s\n", modes)
+	record("0", "WAL build vs rollback build of the same recipe", compareFiles(first, deleteA))
 
-	fmt.Printf("\n== broken variants: recipe to step %d, then one extra transaction, each run twice into fresh files ==\n", variantBase)
+	part = "B"
 	randomDiff := runTwice(ctx, r, dir, variant{
 		name:      "random",
 		rule:      "no SQL random()",
 		statement: []string{"INSERT INTO events(id, account_id, kind, amount, note) VALUES(900001, 1, 'fee', random(), 'random')"},
 	})
-	fmt.Printf("1. SQL random() in a value: %s\n", randomDiff)
+	record("1", "SQL random() in a value", randomDiff)
 	check(!randomDiff.Equal, "SQL random() makes two runs differ")
 
 	sameSecond, nextSecond := timestampVariant(ctx, r, dir)
-	fmt.Printf("2. current_timestamp in a value, two runs inside one wall-clock second: %s\n", sameSecond)
-	fmt.Printf("   current_timestamp in a value, third run one second later: %s\n", nextSecond)
+	record("2a", "current_timestamp, two runs inside one wall-clock second", sameSecond)
+	record("2b", "current_timestamp, third run one second later", nextSecond)
 	check(sameSecond.Equal && !nextSecond.Equal, "current_timestamp makes runs differ once the wall clock's second changes (its resolution is one second, so two fast runs can still match)")
 
 	unordered := "INSERT INTO archive(account_id, amount) SELECT account_id, amount FROM events WHERE amount > 0"
 	ordered := unordered + " ORDER BY id"
 	createArchive := "CREATE TABLE archive(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, amount INTEGER NOT NULL)"
 	unorderedSame := runTwice(ctx, r, dir, variant{name: "unordered", statement: []string{createArchive, unordered}})
-	fmt.Printf("3. INSERT ... SELECT without ORDER BY (rowids from scan order), same plan twice: %s\n", unorderedSame)
+	record("3a", "INSERT ... SELECT without ORDER BY, same plan twice", unorderedSame)
 	unorderedPlan := runTwiceWithPlanChange(ctx, r, dir, "unordered-plan", createArchive, unordered)
-	fmt.Printf("   the same statement, run 2 with a different scan order (PRAGMA reverse_unordered_selects=ON): %s\n", unorderedPlan)
+	record("3b", "same statement, run 2 with reverse_unordered_selects=ON", unorderedPlan)
 	orderedPlan := runTwiceWithPlanChange(ctx, r, dir, "ordered-plan", createArchive, ordered)
-	fmt.Printf("   with ORDER BY id, run 2 with reverse_unordered_selects=ON: %s\n", orderedPlan)
+	record("3c", "with ORDER BY id, run 2 with reverse_unordered_selects=ON", orderedPlan)
 	check(unorderedSame.Equal, "FINDING: an unordered INSERT ... SELECT run twice on the same build with the same plan gives identical files")
 	check(!unorderedPlan.Equal && orderedPlan.Equal, "an unordered INSERT ... SELECT changes the file when the scan order changes; ORDER BY removes the dependence")
 
 	batchesWAL, _ := batchVariant(ctx, r, dir, "ON")
-	fmt.Printf("4. steps 0-%d on one connection, steps 2+3 and 4+5 each committed as one transaction instead of two:\n", variantBase)
-	fmt.Printf("   WAL mode, recipe settings (secure_delete=ON): %s\n", batchesWAL)
+	record("4a", "WAL, recipe settings (secure_delete=ON)", batchesWAL)
 	batchesWALOff, unusedWALOff := batchVariant(ctx, r, dir, "OFF")
-	fmt.Printf("   WAL mode, secure_delete=OFF: %s\n", batchesWALOff)
-	for _, kind := range unusedWALOff.Kinds {
-		fmt.Printf("     %s\n", kind)
-	}
+	record("4b", "WAL, secure_delete=OFF", batchesWALOff)
+	recordUnused("4b", unusedWALOff)
 	batchesDelete, _ := batchVariant(ctx, deleteRecipe, dir, "ON")
-	fmt.Printf("   rollback mode, secure_delete=ON: %s\n", batchesDelete)
+	record("4c", "rollback, secure_delete=ON", batchesDelete)
 	check(batchesWAL.Equal, "FINDING: in WAL mode on one connection with secure_delete=ON, different transaction batches give identical files")
 	check(!batchesWALOff.Equal && unusedWALOff.OnlyUnused, "with secure_delete=OFF different batches differ, and only in bytes no cell uses (stale content left in unallocated space, freeblocks or freelist pages)")
 	check(onlyChangeCounter(batchesDelete), "in rollback mode different batches differ, and with secure_delete=ON only in the change counter (it counts commits)")
 	fastVsOn, fastVsOnUnused := secureDeleteFastVariant(ctx, r, dir)
-	fmt.Printf("   WAL mode, one transaction per step, secure_delete=FAST vs secure_delete=ON: %s\n", fastVsOn)
-	for _, kind := range fastVsOnUnused.Kinds {
-		fmt.Printf("     %s\n", kind)
-	}
+	record("4d", "WAL, one transaction per step: secure_delete=FAST vs ON", fastVsOn)
+	recordUnused("4d", fastVsOnUnused)
 	check(!fastVsOn.Equal && fastVsOnUnused.OnlyUnused && slices.Equal(fastVsOnUnused.FreelistPages, fastVsOn.DifferingPages), "secure_delete=FAST is not ON: on the same history FAST leaves old bytes in the unused space of freelist pages that ON zeroes")
 
 	rowidDiff := runTwice(ctx, r, dir, variant{
@@ -3584,42 +4239,32 @@ func main() {
 			"INSERT INTO tickets(label) VALUES('next')",
 		},
 	})
-	fmt.Printf("5. an insert without an id after rowid %s (SQLite picks a random unused rowid): %s\n", maxRowid, rowidDiff)
+	record("5", "insert without an id after the maximum rowid", rowidDiff)
 	check(!rowidDiff.Equal, "rowid assignment past the maximum rowid makes two runs differ")
 
-	fmt.Println("\n== a source of variation the outline did not list: connection sessions ==")
+	part = "C"
 	walSessions := sessionVariant(ctx, r, dir)
 	deleteSessions := sessionVariant(ctx, deleteRecipe, dir)
 	walSessionsNoPage1 := sessionsWithoutPage1(ctx, r, dir)
-	fmt.Printf("6. WAL mode, steps 0-%d one connection per step vs one connection for all steps: %s\n", variantBase, walSessions)
-	fmt.Printf("   rollback mode, the same comparison: %s\n", deleteSessions)
+	record("6a", "WAL, one connection per step vs one for all steps", walSessions)
+	record("6b", "rollback, the same comparison", deleteSessions)
 	check(onlyChangeCounter(walSessions), "FINDING: in WAL mode the number of connection sessions changes the file, and only the change counter (bytes 24-27 and 92-95)")
 	check(deleteSessions.Equal, "in rollback mode the number of connection sessions does not change the file")
-	fmt.Printf("   WAL mode, recipe to step %d, then %d commits that never write page 1, one connection per commit vs one connection for all: %s\n", variantBase, page1UntouchedCommits, walSessionsNoPage1)
+	record("6c", fmt.Sprintf("WAL, %d commits that never write page 1: one connection each vs one for all", page1UntouchedCommits), walSessionsNoPage1)
 	check(walSessionsNoPage1.Equal, "in WAL mode only a commit that writes page 1 writes the change counter: sessions whose commits never touch page 1 leave the file identical")
 
-	fmt.Println("\n== a source of variation the outline did not list: rolled-back work inside a committed transaction ==")
+	part = "D"
 	walAborted, walAbortedUnused := abortedSavepointVariant(ctx, r, dir)
 	deleteAborted, deleteAbortedUnused := abortedSavepointVariant(ctx, deleteRecipe, dir)
-	fmt.Printf("7. recipe to step %d, then one transaction committing one INSERT; run 2 first inserts %d documents of %d bytes inside a SAVEPOINT and rolls back to it\n", variantBase, abortedDocuments, abortedDocumentBytes)
-	fmt.Printf("   WAL mode, secure_delete=ON: %s\n", walAborted)
-	for _, kind := range walAbortedUnused.Kinds {
-		fmt.Printf("     %s\n", kind)
-	}
-	fmt.Printf("   rollback mode, secure_delete=ON: %s\n", deleteAborted)
-	for _, kind := range deleteAbortedUnused.Kinds {
-		fmt.Printf("     %s\n", kind)
-	}
+	record("7a", "WAL, secure_delete=ON", walAborted)
+	recordUnused("7a", walAbortedUnused)
+	record("7b", "rollback, secure_delete=ON", deleteAborted)
+	recordUnused("7b", deleteAbortedUnused)
 	walRest := slices.DeleteFunc(slices.Clone(walAborted.DifferingPages), func(page int) bool { return page == 1 })
 	check(!walAborted.Equal && onlyCounterBytes(walAborted.Page1Bytes) && len(walRest) > 0 && slices.Equal(walRest, walAbortedUnused.LeafPages), "WAL mode: a rolled-back SAVEPOINT changes the committed file even with secure_delete=ON: reused freelist leaf pages keep the rolled-back bytes, and page 1's change counter moves")
 	check(!deleteAborted.Equal && deleteAbortedUnused.OnlyUnused && slices.Equal(deleteAbortedUnused.LeafPages, deleteAborted.DifferingPages), "rollback mode: a rolled-back SAVEPOINT leaves the rolled-back bytes in reused freelist leaf pages (secure_delete=ON does not clear them)")
 
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("RECIPE REBUILD FAILED: %d claim(s) do not hold: %s\n", len(failures), strings.Join(failures, "; "))
-		os.Exit(1)
-	}
-	fmt.Println("RECIPE REBUILD OK")
+	set.Finish("RECIPE REBUILD")
 }
 
 const touchAccountSQL = "UPDATE accounts SET balance = balance + 1 WHERE id = 1"
@@ -3664,7 +4309,8 @@ func sessionsWithoutPage1(ctx context.Context, r recipe.Recipe, dir string) file
 	if err := recipe.CheckAtRest(oneSession); err != nil {
 		fatal("at rest", err)
 	}
-	fmt.Printf("INFO: page1-untouched sha256 one-per-commit %s, one-for-all %s\n", hashOf(perSession).Exact, hashOf(oneSession).Exact)
+	infoHash("page1-untouched", "one per commit", hashOf(perSession).Exact)
+	infoHash("page1-untouched", "one for all", hashOf(oneSession).Exact)
 	return compareFiles(perSession, oneSession)
 }
 
@@ -3689,7 +4335,8 @@ func abortedSavepointVariant(ctx context.Context, r recipe.Recipe, dir string) (
 	applyStatementsInSession(ctx, r, clean, nil, committedEventSQL)
 	insertDocuments := fmt.Sprintf("WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < %d) INSERT INTO documents(id, account_id, title, body) SELECT 900000 + i, 1, 'aborted', unhex(replace(hex(zeroblob(%d)), '00', 'AB')) FROM n", abortedDocuments-1, abortedDocumentBytes)
 	applyStatementsInSession(ctx, r, aborted, nil, "SAVEPOINT aborted", insertDocuments, "ROLLBACK TO aborted", "RELEASE aborted", committedEventSQL)
-	fmt.Printf("INFO: savepoint %s sha256 never-run %s, rolled-back %s\n", r.JournalMode, hashOf(clean).Exact, hashOf(aborted).Exact)
+	infoHash("savepoint "+r.JournalMode, "never run", hashOf(clean).Exact)
+	infoHash("savepoint "+r.JournalMode, "rolled back", hashOf(aborted).Exact)
 	d := compareFiles(clean, aborted)
 	return d, classifyDifferences(clean, aborted, d)
 }
@@ -3720,193 +4367,526 @@ func displayPath(path string) string {
 }
 ```
 
-Captured output (`evidence/1.3-recipe-rebuild.txt`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/1.3-recipe-rebuild/report.sql -->
+```sql
+-- Walkthrough of experiment 1.3. Run it with:
+--   go run ./cmd/course run 1.3        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   recipe        the recipe and its settings, one row per key
+--   plan          one row per step: how many statements of each kind it runs
+--   runs          one row per rebuild of the recipe, by journal mode
+--   step_hashes   one row per step and mode: sha256 of the closed file after the step
+--   lookup        the step that a database built to step 12 is matched to
+--   comparisons   one row per pair of files compared (id is the variant number below)
+--   unused_pages  one row per differing page of the comparisons that look at the bytes
+--   checks        every claim the experiment asserted (the runner lists it last)
+-- info_run and info_hashes hold timings, paths and the hashes of runs that differ;
+-- info.sql shows them.
+
+CREATE TEMP VIEW diffs AS
+SELECT seq, id, what, equal,
+       CASE WHEN equal THEN 'identical' ELSE 'differ' END AS result,
+       TRY_CAST(split_part(differing_pages, ' ', 1) AS INTEGER) AS first_page,
+       CASE WHEN differing_pages IS NULL THEN 0 ELSE len(string_split(differing_pages, ' ')) END AS pages_differ,
+       differing_pages, page1_bytes,
+       CASE WHEN size_a = size_b THEN CAST(size_a // 4096 AS VARCHAR)
+            ELSE (size_a // 4096) || ' vs ' || (size_b // 4096) END AS file_pages
+FROM comparisons;
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  1.3  Does rebuilding the recipe give the same bytes, and what breaks it?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'The seeded recipe builds a database in 30 steps from a fixed seed. Part A'
+.print 'builds it twice, in different directories under different names, and'
+.print 'compares the files after every step. Parts B to D then add one source of'
+.print 'variation at a time to the recipe at step 6 and compare two runs: random()'
+.print 'and the clock, scan order, transaction batches, secure_delete, the rowid'
+.print 'past the maximum, connection sessions and a rolled-back SAVEPOINT.'
+.print
+.print 'The recipe and its settings:'
+
+SELECT key, value FROM recipe WHERE key IN ('recipe', 'index_step') ORDER BY key;
+
+SELECT key AS settings, unnest(range(1, len(parts) + 1)) AS n, unnest(parts) AS setting
+FROM (SELECT key, string_split(value, ' ') AS parts FROM recipe WHERE key LIKE '%settings')
+ORDER BY key, n;
+
+.print
+.print 'What each step does (statements by kind; step 0 creates the three tables):'
+
+SELECT step, schema, inserts, updates, deletes, indexes FROM plan ORDER BY step;
+
+.print
+.print '── A. Rebuild the recipe twice ─────────────────────────────────────────'
+.print
+.print 'A1. Run 1 and run 2 build the recipe in different directories under'
+.print 'different names. Per mode, the two files must have the same hash:'
+
+SELECT mode, run, path, pages, sha256 FROM runs ORDER BY mode DESC, run;
+
+.print
+.print 'A2. The hash of the closed file after every step. Each step must leave a'
+.print 'different file (a hash names one step), run 2 must repeat run 1 at every step'
+.print 'and, in WAL mode, the cached list (recipe.StepHashes) must match as well.'
+.print 'The second table lists the first 16 hex digits of every state; the CSV has all 64:'
+
+SELECT mode, count(*) AS states, count(DISTINCT run1_sha256) AS distinct_hashes,
+       bool_and(run1_sha256 = run2_sha256) AS run2_same,
+       bool_and(run1_sha256 = cached_sha256) AS cached_same
+FROM step_hashes GROUP BY mode ORDER BY mode DESC;
+
+SELECT w.step, left(w.run1_sha256, 16) AS wal_sha256_prefix, left(d.run1_sha256, 16) AS delete_sha256_prefix
+FROM step_hashes w JOIN step_hashes d USING (step)
+WHERE w.mode = 'wal' AND d.mode = 'delete'
+ORDER BY w.step;
+
+.print
+.print 'A3. A database built to step 12 is found again from its bytes alone:'
+
+SELECT built_to_step, matched_step, exact AS exact_bytes FROM lookup;
+
+.print
+.print 'A4. The two journal modes build different files from the same recipe, but'
+.print 'only page 1 differs. Bytes 18 and 19 are the file-format write and read'
+.print 'versions (2 for WAL, 1 for rollback); 27 and 95 are the low bytes of the'
+.print 'change counter and of version-valid-for:'
+
+SELECT id, result, first_page, pages_differ, page1_bytes, file_pages, what FROM diffs WHERE id = '0' ORDER BY seq;
+
+.print
+.print '── B. One extra transaction after step 6 ──────────────────────────────'
+.print
+.print 'Each variant builds the recipe to step 6, runs one more transaction, and'
+.print 'does it twice into fresh files. Rules 1 to 5 are the determinism rules'
+.print 'these variants test.'
+.print
+.print 'B1. SQL random() (1) and the clock (2). current_timestamp has a one-second'
+.print 'resolution, so two runs inside one second match and a run one second later'
+.print 'does not:'
+
+SELECT id, result, what FROM diffs WHERE id IN ('1', '2a', '2b') ORDER BY seq;
+
+SELECT id, first_page, pages_differ, differing_pages, file_pages FROM diffs WHERE id IN ('1', '2a', '2b') ORDER BY seq;
+
+.print
+.print 'B2. INSERT ... SELECT (3) takes its rowids from scan order. The same plan'
+.print 'twice gives the same file; a different scan order changes the file, and'
+.print 'ORDER BY id removes the dependence:'
+
+SELECT id, result, what FROM diffs WHERE id LIKE '3%' ORDER BY seq;
+
+SELECT id, first_page, pages_differ, differing_pages, file_pages FROM diffs WHERE id LIKE '3%' ORDER BY seq;
+
+.print
+.print 'B3. Transaction batches (4). Steps 0-6 on one connection, with steps 2+3 and'
+.print '4+5 each committed as one transaction instead of two. 4d compares two'
+.print 'one-transaction-per-step builds that differ only in secure_delete.'
+
+SELECT id, result, what FROM diffs WHERE id LIKE '4%' ORDER BY seq;
+
+SELECT id, first_page, pages_differ, differing_pages, page1_bytes, file_pages FROM diffs WHERE id LIKE '4%' ORDER BY seq;
+
+.print
+.print 'B4. Where the bytes differ in 4b (secure_delete=OFF: stale content left in'
+.print 'unused space) and 4d (FAST leaves old bytes in freelist pages that ON zeroes).'
+.print 'bytes_outside_unused counts differing bytes that sit in live data:'
+
+SELECT id, page, bytes_differing, bytes_outside_unused, kind FROM unused_pages WHERE id LIKE '4%' ORDER BY id, page;
+
+.print
+.print 'B5. A rowid past the maximum (5): SQLite picks a random unused rowid:'
+
+SELECT id, result, first_page, pages_differ, differing_pages, what FROM diffs WHERE id = '5' ORDER BY seq;
+
+.print
+.print '── C. Connection sessions ──────────────────────────────────────────────'
+.print
+.print 'C1. Steps 0-6 with one connection per step against one connection for all'
+.print 'steps (6a, 6b). In WAL mode the change counter differs, and only it; in'
+.print 'rollback mode nothing differs. 6c: three commits that never write page 1'
+.print 'leave the files identical, because only a commit that writes page 1 writes'
+.print 'the change counter.'
+
+SELECT id, result, what FROM diffs WHERE id LIKE '6%' ORDER BY seq;
+
+SELECT id, first_page, pages_differ, differing_pages, page1_bytes, file_pages FROM diffs WHERE id LIKE '6%' ORDER BY seq;
+
+.print
+.print '── D. Rolled-back work inside a committed transaction ──────────────────'
+.print
+.print 'D1. Run 2 first inserts 10 documents of 12000 bytes inside a SAVEPOINT and'
+.print 'rolls back to it, then commits the same INSERT as run 1. Freelist pages that'
+.print 'the committed insert reuses keep the rolled-back bytes, even with'
+.print 'secure_delete=ON:'
+
+SELECT id, result, what FROM diffs WHERE id LIKE '7%' ORDER BY seq;
+
+SELECT id, first_page, pages_differ, differing_pages, page1_bytes, file_pages FROM diffs WHERE id LIKE '7%' ORDER BY seq;
+
+SELECT id, page, bytes_differing, bytes_outside_unused, kind FROM unused_pages WHERE id LIKE '7%' ORDER BY id, page;
+```
+
+`course run` also prints the run-dependent values, which are not part of the stored evidence: the work directory, how long one build took, and the sha256 of the variant files whose bytes differ between runs (`random()`, the clock, the rowid).
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/1.3-recipe-rebuild/`](evidence/1.3-recipe-rebuild/), and `go run ./cmd/course check evidence ch01` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/1.3-recipe-rebuild.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/1.3
-recipe: seed=1 steps=30 journal_mode=wal (index created at step 5, settings: page_size=4096 auto_vacuum=NONE encoding=UTF-8 application_id=1397836120 user_version=0 journal_mode=wal; synchronous=FULL foreign_keys=ON secure_delete=ON cache_size=-2000 wal_autocheckpoint=1000 busy_timeout=5000ms)
-  step 0: schema=3 inserts=0 updates=0 deletes=0 indexes=0
-  step 1: schema=0 inserts=65 updates=6 deletes=0 indexes=0
-  step 2: schema=0 inserts=65 updates=3 deletes=0 indexes=0
-  step 3: schema=0 inserts=53 updates=5 deletes=5 indexes=0
-  step 4: schema=0 inserts=48 updates=6 deletes=1 indexes=0
-  step 5: schema=0 inserts=39 updates=5 deletes=0 indexes=1
-  step 6: schema=0 inserts=52 updates=3 deletes=10 indexes=0
-  step 7: schema=0 inserts=46 updates=4 deletes=0 indexes=0
-  step 8: schema=0 inserts=60 updates=2 deletes=1 indexes=0
-  step 9: schema=0 inserts=53 updates=4 deletes=5 indexes=0
-  step 10: schema=0 inserts=57 updates=5 deletes=0 indexes=0
-  step 11: schema=0 inserts=50 updates=4 deletes=0 indexes=0
-  step 12: schema=0 inserts=42 updates=5 deletes=11 indexes=0
-  step 13: schema=0 inserts=50 updates=5 deletes=0 indexes=0
-  step 14: schema=0 inserts=58 updates=4 deletes=0 indexes=0
-  step 15: schema=0 inserts=49 updates=3 deletes=9 indexes=0
-  step 16: schema=0 inserts=48 updates=5 deletes=1 indexes=0
-  step 17: schema=0 inserts=67 updates=5 deletes=0 indexes=0
-  step 18: schema=0 inserts=44 updates=6 deletes=7 indexes=0
-  step 19: schema=0 inserts=54 updates=3 deletes=0 indexes=0
-  step 20: schema=0 inserts=40 updates=3 deletes=1 indexes=0
-  step 21: schema=0 inserts=45 updates=6 deletes=5 indexes=0
-  step 22: schema=0 inserts=48 updates=5 deletes=0 indexes=0
-  step 23: schema=0 inserts=50 updates=3 deletes=0 indexes=0
-  step 24: schema=0 inserts=39 updates=4 deletes=7 indexes=0
-  step 25: schema=0 inserts=49 updates=5 deletes=0 indexes=0
-  step 26: schema=0 inserts=56 updates=3 deletes=0 indexes=0
-  step 27: schema=0 inserts=39 updates=4 deletes=9 indexes=0
-  step 28: schema=0 inserts=61 updates=5 deletes=1 indexes=0
-  step 29: schema=0 inserts=44 updates=4 deletes=0 indexes=0
-  step 30: schema=0 inserts=67 updates=4 deletes=9 indexes=0
 
-== R0: rebuild the recipe twice ==
-INFO: one build of 30 steps took 792ms
-run 1 (run-1/recipe.db): 270 pages, sha256 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74
-run 2 (run-2/elsewhere/another-name.db): 270 pages, sha256 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74
-check ok: two builds of the recipe in different directories under different names are byte-identical
-per-step state hashes (sha256 of the closed file after step k):
-  step  0 7470585af706eb3de499f126d74bdc98396e1e9853ee11643e2e85f61ef0cdb9
-  step  1 6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924
-  step  2 69490a2dc9c1980f70afed4f5830799677937b011bde64c3110f823273389a06
-  step  3 329eb15614fee4358f812e8d6a6de68d94290293ca299a1dfaf330b376075743
-  step  4 e6aa5f4e37fde0bec12117bbf43aaaab9ae3c2a4658ac08f62232ea53392bc3b
-  step  5 4078a0bbc3758ed2c3dfb9940680976d78095f60bcb3ecf02337daddb400dfd0
-  step  6 2d7996f5c596c99e89eb92668f4f21d7ed16c02c070ea5a908e96ead99d414ff
-  step  7 7d8ae978254856c015f1013bf6d30327b4794698e16173acf34ce855580817ae
-  step  8 f27921ff12ecd673f0324f01e5a137662b3ac90468c82a2d67c01c3937c60029
-  step  9 ca22a3f016ee31e4b931389762f5f81853955dbf7dc474a7cf69299242706100
-  step 10 044c77909ad64db80354ff810692fab25d4a4d3762e37c6b224db38d92694373
-  step 11 6ced94850b7f17c89188ed4204039ea37f7c068cd856599e048ee9125f1cf55a
-  step 12 649990133c61986974c4381e8ac21e47901c900ed2092fc2f6a1f4af2ce94d67
-  step 13 cf469938e5222774d468c99a3077c4fb5da52b52fadf2209e8f8de53c4529a35
-  step 14 e7f84f8b8cd28ab54ec7070180962525131963e7405bf78849280e889319fc60
-  step 15 52519800be453b8441a0e85177720f26696494d2bfdb8a95a7751bba36113711
-  step 16 a672af8472ba30db9d772a74d770e51308eac909f7bbddec05547df6def83b85
-  step 17 4a1f971701e2b5cd8f8d1728f3455ddf2740bf60d235ee34131706f5ad5f6f37
-  step 18 055a4f7a088f1c7644a6cf6d01b3d5be28dadd7d1db2d3868ee2dd37ddf10f82
-  step 19 e57cb4d4d450456a89a051eada1dded6452f5f8c0edd967dced5aec486d58805
-  step 20 e769f5c3b1663de2ea40fdfa8d787b2ef9538e2db2797c3d6c23097616d90945
-  step 21 a965f7823f589a7b849f556324e456d8a6f31bfed438e577ea277108ef171080
-  step 22 3b125736931aa27cbf8da8b2384070b6a2d36ae5b953f631b83275fc6210e4fc
-  step 23 92a22043ecd9caafbfbf70d54b0d14c672d579aa0dfe14b8c54d4e6057a1340f
-  step 24 46cb974cc3fe3c9eaa09a41a846beba23663cb067429062496e6c38c8c016d3a
-  step 25 d0996ac06958dd0c8134783b28ebe6ec2ffa862929ca06c1f79a8f0b654fe396
-  step 26 13bd55ed7dc6a4353a8a57da2d8001eae83335e9d8f3990a7d349fccab93d80e
-  step 27 f1eba6ade98188aab20f91e2b2b493703ca1b752b1ef79b543d744bd86b6f8c6
-  step 28 c7df2bec238b874e0c8b75a63268fcced2362eff11dd7ab579e556282a6fa61d
-  step 29 d1c0ab40c89015537992199e56aaa7ebe35049b65a21ad00809a52c0be003a0b
-  step 30 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74
-check ok: the per-step hash lists of the two runs are identical (31 states)
-check ok: every step leaves a different file, so a hash names exactly one step
-check ok: recipe.StepHashes (the cached list later chapters use) equals the list just built
-lookup: a database built to step 12 is step 12 (exact bytes)
-check ok: recipe.MatchStep names the step a database equals
-same recipe in rollback mode (journal_mode=delete): sha256 0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57
-check ok: the rollback-mode recipe also rebuilds byte for byte at every step
-WAL build vs rollback build of the same recipe: differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [18 19 27 95]
+════════════════════════════════════════════════════════════════════════
+  1.3  Does rebuilding the recipe give the same bytes, and what breaks it?
+════════════════════════════════════════════════════════════════════════
 
-== broken variants: recipe to step 6, then one extra transaction, each run twice into fresh files ==
-INFO: random sha256 run 1 3f43fbf252fe772596ad60d293d7ea996ab736c9566952af8d835b292ce86909, run 2 b5e3b209fa48e8849d51c6b5196c317aa2d150cceb2c4e0e14bcdebbfe8bc9f6
-1. SQL random() in a value: differ: first differing page 59, 1 page(s) differ [59]
-check ok: SQL random() makes two runs differ
-INFO: timestamp sha256 run 1 72f9b8b17796cb3161c8c663eabf852d431397175b38d25c59c32148c5a6542d, run 2 72f9b8b17796cb3161c8c663eabf852d431397175b38d25c59c32148c5a6542d, run 3 cf27091b103d740d1e49d2ec86b28ec4bedee04aecf44d6837da9ac35ec932e4
-2. current_timestamp in a value, two runs inside one wall-clock second: identical
-   current_timestamp in a value, third run one second later: differ: first differing page 59, 1 page(s) differ [59]
-check ok: current_timestamp makes runs differ once the wall clock's second changes (its resolution is one second, so two fast runs can still match)
-INFO: unordered sha256 run 1 073f75d26ea8b7496e87e0a0629b15fa1f8227a2264ed1dfd83857cbd2014934, run 2 073f75d26ea8b7496e87e0a0629b15fa1f8227a2264ed1dfd83857cbd2014934
-3. INSERT ... SELECT without ORDER BY (rowids from scan order), same plan twice: identical
-   the same statement, run 2 with a different scan order (PRAGMA reverse_unordered_selects=ON): differ: first differing page 29, 1 page(s) differ [29]
-   with ORDER BY id, run 2 with reverse_unordered_selects=ON: identical
-check ok: FINDING: an unordered INSERT ... SELECT run twice on the same build with the same plan gives identical files
-check ok: an unordered INSERT ... SELECT changes the file when the scan order changes; ORDER BY removes the dependence
-INFO: batches wal-secure-delete-on sha256 one-per-step 7f0afb01e63c55dd8aee74d9decfb6ac1ee14fc9329cc2b9aa79dbd2853e8841, merged 7f0afb01e63c55dd8aee74d9decfb6ac1ee14fc9329cc2b9aa79dbd2853e8841
-4. steps 0-6 on one connection, steps 2+3 and 4+5 each committed as one transaction instead of two:
-   WAL mode, recipe settings (secure_delete=ON): identical
-INFO: batches wal-secure-delete-off sha256 one-per-step 66275210a293663b2aa81d5aa0f7e57a92fefdb5fc0b53063a64899807fafe24, merged cd4078b5d267a2388bbb4c3da65d844f863955c3af3ea35ebad5ad516cc9d375
-   WAL mode, secure_delete=OFF: differ: first differing page 24, 2 page(s) differ [24 28]
-     page 24: 357 bytes (b-tree page, unallocated space and freeblocks)
-     page 28: 1207 bytes (b-tree page, unallocated space and freeblocks)
-INFO: batches delete-secure-delete-on sha256 one-per-step 575d9182d7fb04693ee2c9b68711b568851d3ebd3617bcd50cb443c8582b0aa8, merged f5f792baf06711182a7cc105ef079f2b1328b0c968bec0cb5df9b475674e0d95
-   rollback mode, secure_delete=ON: differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [27 95]
-check ok: FINDING: in WAL mode on one connection with secure_delete=ON, different transaction batches give identical files
-check ok: with secure_delete=OFF different batches differ, and only in bytes no cell uses (stale content left in unallocated space, freeblocks or freelist pages)
-check ok: in rollback mode different batches differ, and with secure_delete=ON only in the change counter (it counts commits)
-INFO: batches wal-secure-delete-fast sha256 one-per-step c70c03e0801ba6505e410bed031c6c20a7d6a155275102961d58295191c634b0, merged c70c03e0801ba6505e410bed031c6c20a7d6a155275102961d58295191c634b0
-   WAL mode, one transaction per step, secure_delete=FAST vs secure_delete=ON: differ: first differing page 29, 3 page(s) differ [29 36 37]
-     page 29: 4079 bytes (freelist leaf page)
-     page 36: 4067 bytes (freelist trunk page, bytes after the leaf list)
-     page 37: 4078 bytes (freelist leaf page)
-check ok: secure_delete=FAST is not ON: on the same history FAST leaves old bytes in the unused space of freelist pages that ON zeroes
-INFO: rowid sha256 run 1 aeada78bf8108d06fe68930a74da54cbb701bb2f10068769c74798712c55b0b0, run 2 0d3552f984f93139b216b4ed3a44c0330f595e21195ec1ff95193e697afdb346
-5. an insert without an id after rowid 9223372036854775807 (SQLite picks a random unused rowid): differ: first differing page 29, 1 page(s) differ [29]
-check ok: rowid assignment past the maximum rowid makes two runs differ
+The seeded recipe builds a database in 30 steps from a fixed seed. Part A
+builds it twice, in different directories under different names, and
+compares the files after every step. Parts B to D then add one source of
+variation at a time to the recipe at step 6 and compare two runs: random()
+and the clock, scan order, transaction batches, secure_delete, the rowid
+past the maximum, connection sessions and a rolled-back SAVEPOINT.
 
-== a source of variation the outline did not list: connection sessions ==
-INFO: page1-untouched sha256 one-per-commit 3be0cc6f304da7158723b63e0f17bdc2e91837e0d39221f7224fdef91af275a2, one-for-all 3be0cc6f304da7158723b63e0f17bdc2e91837e0d39221f7224fdef91af275a2
-6. WAL mode, steps 0-6 one connection per step vs one connection for all steps: differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [27 95]
-   rollback mode, the same comparison: identical
-check ok: FINDING: in WAL mode the number of connection sessions changes the file, and only the change counter (bytes 24-27 and 92-95)
-check ok: in rollback mode the number of connection sessions does not change the file
-   WAL mode, recipe to step 6, then 3 commits that never write page 1, one connection per commit vs one connection for all: identical
-check ok: in WAL mode only a commit that writes page 1 writes the change counter: sessions whose commits never touch page 1 leave the file identical
+The recipe and its settings:
+┌────────────┬──────────────────────────────────┐
+│    key     │              value               │
+├────────────┼──────────────────────────────────┤
+│ index_step │ 5                                │
+│ recipe     │ seed=1 steps=30 journal_mode=wal │
+└────────────┴──────────────────────────────────┘
+┌───────────────┬───┬───────────────────────────┐
+│   settings    │ n │          setting          │
+├───────────────┼───┼───────────────────────────┤
+│ conn_settings │ 1 │ synchronous=FULL          │
+│ conn_settings │ 2 │ foreign_keys=ON           │
+│ conn_settings │ 3 │ secure_delete=ON          │
+│ conn_settings │ 4 │ cache_size=-2000          │
+│ conn_settings │ 5 │ wal_autocheckpoint=1000   │
+│ conn_settings │ 6 │ busy_timeout=5000ms       │
+│ file_settings │ 1 │ page_size=4096            │
+│ file_settings │ 2 │ auto_vacuum=NONE          │
+│ file_settings │ 3 │ encoding=UTF-8            │
+│ file_settings │ 4 │ application_id=1397836120 │
+│ file_settings │ 5 │ user_version=0            │
+│ file_settings │ 6 │ journal_mode=wal          │
+└───────────────┴───┴───────────────────────────┘
 
-== a source of variation the outline did not list: rolled-back work inside a committed transaction ==
-INFO: savepoint wal sha256 never-run f4d051654dbbff5e532b65f049385252dc4ff188f8a2aab50166ce0ed2ce2ba0, rolled-back 2e97dc78909aca485fce61adcef1af5cc57a6c19543e4148e07ff4e1c7da3b45
-INFO: savepoint delete sha256 never-run 0e6c5435b1d6ff1baed4562465ad0525b1e173713d0ab0a269eb7fe413ce9d86, rolled-back bf30bffe6771b77812d06882c34b1804bed0730f8aaad99227533bb693999ddf
-7. recipe to step 6, then one transaction committing one INSERT; run 2 first inserts 10 documents of 12000 bytes inside a SAVEPOINT and rolls back to it
-   WAL mode, secure_delete=ON: differ: first differing page 1, 3 page(s) differ [1 29 37], page 1 bytes [27 95]
-     page 1: 2 bytes (b-tree page, unallocated space and freeblocks; 2 of these bytes are outside unused space)
-     page 29: 4092 bytes (freelist leaf page)
-     page 37: 4093 bytes (freelist leaf page)
-   rollback mode, secure_delete=ON: differ: first differing page 29, 2 page(s) differ [29 37]
-     page 29: 4092 bytes (freelist leaf page)
-     page 37: 4093 bytes (freelist leaf page)
-check ok: WAL mode: a rolled-back SAVEPOINT changes the committed file even with secure_delete=ON: reused freelist leaf pages keep the rolled-back bytes, and page 1's change counter moves
-check ok: rollback mode: a rolled-back SAVEPOINT leaves the rolled-back bytes in reused freelist leaf pages (secure_delete=ON does not clear them)
+What each step does (statements by kind; step 0 creates the three tables):
+┌──────┬────────┬─────────┬─────────┬─────────┬─────────┐
+│ step │ schema │ inserts │ updates │ deletes │ indexes │
+├──────┼────────┼─────────┼─────────┼─────────┼─────────┤
+│ 0    │ 3      │ 0       │ 0       │ 0       │ 0       │
+│ 1    │ 0      │ 65      │ 6       │ 0       │ 0       │
+│ 2    │ 0      │ 65      │ 3       │ 0       │ 0       │
+│ 3    │ 0      │ 53      │ 5       │ 5       │ 0       │
+│ 4    │ 0      │ 48      │ 6       │ 1       │ 0       │
+│ 5    │ 0      │ 39      │ 5       │ 0       │ 1       │
+│ 6    │ 0      │ 52      │ 3       │ 10      │ 0       │
+│ 7    │ 0      │ 46      │ 4       │ 0       │ 0       │
+│ 8    │ 0      │ 60      │ 2       │ 1       │ 0       │
+│ 9    │ 0      │ 53      │ 4       │ 5       │ 0       │
+│ 10   │ 0      │ 57      │ 5       │ 0       │ 0       │
+│ 11   │ 0      │ 50      │ 4       │ 0       │ 0       │
+│ 12   │ 0      │ 42      │ 5       │ 11      │ 0       │
+│ 13   │ 0      │ 50      │ 5       │ 0       │ 0       │
+│ 14   │ 0      │ 58      │ 4       │ 0       │ 0       │
+│ 15   │ 0      │ 49      │ 3       │ 9       │ 0       │
+│ 16   │ 0      │ 48      │ 5       │ 1       │ 0       │
+│ 17   │ 0      │ 67      │ 5       │ 0       │ 0       │
+│ 18   │ 0      │ 44      │ 6       │ 7       │ 0       │
+│ 19   │ 0      │ 54      │ 3       │ 0       │ 0       │
+│ 20   │ 0      │ 40      │ 3       │ 1       │ 0       │
+│ 21   │ 0      │ 45      │ 6       │ 5       │ 0       │
+│ 22   │ 0      │ 48      │ 5       │ 0       │ 0       │
+│ 23   │ 0      │ 50      │ 3       │ 0       │ 0       │
+│ 24   │ 0      │ 39      │ 4       │ 7       │ 0       │
+│ 25   │ 0      │ 49      │ 5       │ 0       │ 0       │
+│ 26   │ 0      │ 56      │ 3       │ 0       │ 0       │
+│ 27   │ 0      │ 39      │ 4       │ 9       │ 0       │
+│ 28   │ 0      │ 61      │ 5       │ 1       │ 0       │
+│ 29   │ 0      │ 44      │ 4       │ 0       │ 0       │
+│ 30   │ 0      │ 67      │ 4       │ 9       │ 0       │
+└──────┴────────┴─────────┴─────────┴─────────┴─────────┘
 
-RECIPE REBUILD OK
+── A. Rebuild the recipe twice ─────────────────────────────────────────
+
+A1. Run 1 and run 2 build the recipe in different directories under
+different names. Per mode, the two files must have the same hash:
+┌────────┬─────┬─────────────────────────────────┬───────┬──────────────────────────────────────────────────────────────────┐
+│  mode  │ run │              path               │ pages │                              sha256                              │
+├────────┼─────┼─────────────────────────────────┼───────┼──────────────────────────────────────────────────────────────────┤
+│ wal    │ 1   │ run-1/recipe.db                 │ 270   │ 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74 │
+│ wal    │ 2   │ run-2/elsewhere/another-name.db │ 270   │ 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74 │
+│ delete │ 1   │ run-1/recipe-delete.db          │ 270   │ 0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57 │
+│ delete │ 2   │ run-2/recipe-delete.db          │ 270   │ 0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57 │
+└────────┴─────┴─────────────────────────────────┴───────┴──────────────────────────────────────────────────────────────────┘
+
+A2. The hash of the closed file after every step. Each step must leave a
+different file (a hash names one step), run 2 must repeat run 1 at every step
+and, in WAL mode, the cached list (recipe.StepHashes) must match as well.
+The second table lists the first 16 hex digits of every state; the CSV has all 64:
+┌────────┬────────┬─────────────────┬───────────┬─────────────┐
+│  mode  │ states │ distinct_hashes │ run2_same │ cached_same │
+├────────┼────────┼─────────────────┼───────────┼─────────────┤
+│ wal    │ 31     │ 31              │ true      │ true        │
+│ delete │ 31     │ 31              │ true      │             │
+└────────┴────────┴─────────────────┴───────────┴─────────────┘
+┌──────┬───────────────────┬──────────────────────┐
+│ step │ wal_sha256_prefix │ delete_sha256_prefix │
+├──────┼───────────────────┼──────────────────────┤
+│ 0    │ 7470585af706eb3d  │ e551bbfca2c05cd9     │
+│ 1    │ 6d8cfc77d5f514b2  │ 6207fb74284d25e8     │
+│ 2    │ 69490a2dc9c1980f  │ b8a0bd0796442099     │
+│ 3    │ 329eb15614fee435  │ 0ef90bd0e64af1e3     │
+│ 4    │ e6aa5f4e37fde0be  │ b4a4adf14dbe4826     │
+│ 5    │ 4078a0bbc3758ed2  │ 704dd8125826662d     │
+│ 6    │ 2d7996f5c596c99e  │ 575d9182d7fb0469     │
+│ 7    │ 7d8ae978254856c0  │ c4574af084896634     │
+│ 8    │ f27921ff12ecd673  │ 20bf39d8a49cf840     │
+│ 9    │ ca22a3f016ee31e4  │ ecf8f6d400de9601     │
+│ 10   │ 044c77909ad64db8  │ ade615114d37b8dc     │
+│ 11   │ 6ced94850b7f17c8  │ 67f0fa2bb53de1ba     │
+│ 12   │ 649990133c619869  │ 239d48653ebbd393     │
+│ 13   │ cf469938e5222774  │ ce74350fd7e57b7f     │
+│ 14   │ e7f84f8b8cd28ab5  │ 08ed8fb6eb9befea     │
+│ 15   │ 52519800be453b84  │ 8fe1be42a8e27b29     │
+│ 16   │ a672af8472ba30db  │ fc65fbb4f7617732     │
+│ 17   │ 4a1f971701e2b5cd  │ ea538ee4b2f31442     │
+│ 18   │ 055a4f7a088f1c76  │ 443f6584e34022e7     │
+│ 19   │ e57cb4d4d450456a  │ d14c21fe37761265     │
+│ 20   │ e769f5c3b1663de2  │ 95258618e9e31028     │
+│ 21   │ a965f7823f589a7b  │ bf6c17cf88f35e54     │
+│ 22   │ 3b125736931aa27c  │ 88534c0275b2ff71     │
+│ 23   │ 92a22043ecd9caaf  │ 6fed2ab1918e3b14     │
+│ 24   │ 46cb974cc3fe3c9e  │ 9acc88a8e8868779     │
+│ 25   │ d0996ac06958dd0c  │ ac55f82d5457478d     │
+│ 26   │ 13bd55ed7dc6a435  │ 9d9bf656076f8c1b     │
+│ 27   │ f1eba6ade98188aa  │ e53e8aeb3871210d     │
+│ 28   │ c7df2bec238b874e  │ ee008d3d9d9ddccd     │
+│ 29   │ d1c0ab40c8901553  │ 752f34c38f1c7f76     │
+│ 30   │ 24aa158fdf713808  │ 0b5b4111fb994632     │
+└──────┴───────────────────┴──────────────────────┘
+
+A3. A database built to step 12 is found again from its bytes alone:
+┌───────────────┬──────────────┬─────────────┐
+│ built_to_step │ matched_step │ exact_bytes │
+├───────────────┼──────────────┼─────────────┤
+│ 12            │ 12           │ true        │
+└───────────────┴──────────────┴─────────────┘
+
+A4. The two journal modes build different files from the same recipe, but
+only page 1 differs. Bytes 18 and 19 are the file-format write and read
+versions (2 for WAL, 1 for rollback); 27 and 95 are the low bytes of the
+change counter and of version-valid-for:
+┌────┬────────┬────────────┬──────────────┬─────────────┬────────────┬────────────────────────────────────────────────┐
+│ id │ result │ first_page │ pages_differ │ page1_bytes │ file_pages │                      what                      │
+├────┼────────┼────────────┼──────────────┼─────────────┼────────────┼────────────────────────────────────────────────┤
+│ 0  │ differ │ 1          │ 1            │ 18 19 27 95 │ 270        │ WAL build vs rollback build of the same recipe │
+└────┴────────┴────────────┴──────────────┴─────────────┴────────────┴────────────────────────────────────────────────┘
+
+── B. One extra transaction after step 6 ──────────────────────────────
+
+Each variant builds the recipe to step 6, runs one more transaction, and
+does it twice into fresh files. Rules 1 to 5 are the determinism rules
+these variants test.
+
+B1. SQL random() (1) and the clock (2). current_timestamp has a one-second
+resolution, so two runs inside one second match and a run one second later
+does not:
+┌────┬───────────┬──────────────────────────────────────────────────────────┐
+│ id │  result   │                           what                           │
+├────┼───────────┼──────────────────────────────────────────────────────────┤
+│ 1  │ differ    │ SQL random() in a value                                  │
+│ 2a │ identical │ current_timestamp, two runs inside one wall-clock second │
+│ 2b │ differ    │ current_timestamp, third run one second later            │
+└────┴───────────┴──────────────────────────────────────────────────────────┘
+┌────┬────────────┬──────────────┬─────────────────┬────────────┐
+│ id │ first_page │ pages_differ │ differing_pages │ file_pages │
+├────┼────────────┼──────────────┼─────────────────┼────────────┤
+│ 1  │ 59         │ 1            │ 59              │ 60         │
+│ 2a │            │ 0            │                 │ 60         │
+│ 2b │ 59         │ 1            │ 59              │ 60         │
+└────┴────────────┴──────────────┴─────────────────┴────────────┘
+
+B2. INSERT ... SELECT (3) takes its rowids from scan order. The same plan
+twice gives the same file; a different scan order changes the file, and
+ORDER BY id removes the dependence:
+┌────┬───────────┬───────────────────────────────────────────────────────────┐
+│ id │  result   │                           what                            │
+├────┼───────────┼───────────────────────────────────────────────────────────┤
+│ 3a │ identical │ INSERT ... SELECT without ORDER BY, same plan twice       │
+│ 3b │ differ    │ same statement, run 2 with reverse_unordered_selects=ON   │
+│ 3c │ identical │ with ORDER BY id, run 2 with reverse_unordered_selects=ON │
+└────┴───────────┴───────────────────────────────────────────────────────────┘
+┌────┬────────────┬──────────────┬─────────────────┬────────────┐
+│ id │ first_page │ pages_differ │ differing_pages │ file_pages │
+├────┼────────────┼──────────────┼─────────────────┼────────────┤
+│ 3a │            │ 0            │                 │ 60         │
+│ 3b │ 29         │ 1            │ 29              │ 60         │
+│ 3c │            │ 0            │                 │ 60         │
+└────┴────────────┴──────────────┴─────────────────┴────────────┘
+
+B3. Transaction batches (4). Steps 0-6 on one connection, with steps 2+3 and
+4+5 each committed as one transaction instead of two. 4d compares two
+one-transaction-per-step builds that differ only in secure_delete.
+┌────┬───────────┬─────────────────────────────────────────────────────────┐
+│ id │  result   │                          what                           │
+├────┼───────────┼─────────────────────────────────────────────────────────┤
+│ 4a │ identical │ WAL, recipe settings (secure_delete=ON)                 │
+│ 4b │ differ    │ WAL, secure_delete=OFF                                  │
+│ 4c │ differ    │ rollback, secure_delete=ON                              │
+│ 4d │ differ    │ WAL, one transaction per step: secure_delete=FAST vs ON │
+└────┴───────────┴─────────────────────────────────────────────────────────┘
+┌────┬────────────┬──────────────┬─────────────────┬─────────────┬────────────┐
+│ id │ first_page │ pages_differ │ differing_pages │ page1_bytes │ file_pages │
+├────┼────────────┼──────────────┼─────────────────┼─────────────┼────────────┤
+│ 4a │            │ 0            │                 │             │ 60         │
+│ 4b │ 24         │ 2            │ 24 28           │             │ 60         │
+│ 4c │ 1          │ 1            │ 1               │ 27 95       │ 60         │
+│ 4d │ 29         │ 3            │ 29 36 37        │             │ 60         │
+└────┴────────────┴──────────────┴─────────────────┴─────────────┴────────────┘
+
+B4. Where the bytes differ in 4b (secure_delete=OFF: stale content left in
+unused space) and 4d (FAST leaves old bytes in freelist pages that ON zeroes).
+bytes_outside_unused counts differing bytes that sit in live data:
+┌────┬──────┬─────────────────┬──────────────────────┬────────────────────────────────────────────────┐
+│ id │ page │ bytes_differing │ bytes_outside_unused │                      kind                      │
+├────┼──────┼─────────────────┼──────────────────────┼────────────────────────────────────────────────┤
+│ 4b │ 24   │ 357             │ 0                    │ b-tree page, unallocated space and freeblocks  │
+│ 4b │ 28   │ 1207            │ 0                    │ b-tree page, unallocated space and freeblocks  │
+│ 4d │ 29   │ 4079            │ 0                    │ freelist leaf page                             │
+│ 4d │ 36   │ 4067            │ 0                    │ freelist trunk page, bytes after the leaf list │
+│ 4d │ 37   │ 4078            │ 0                    │ freelist leaf page                             │
+└────┴──────┴─────────────────┴──────────────────────┴────────────────────────────────────────────────┘
+
+B5. A rowid past the maximum (5): SQLite picks a random unused rowid:
+┌────┬────────┬────────────┬──────────────┬─────────────────┬──────────────────────────────────────────────┐
+│ id │ result │ first_page │ pages_differ │ differing_pages │                     what                     │
+├────┼────────┼────────────┼──────────────┼─────────────────┼──────────────────────────────────────────────┤
+│ 5  │ differ │ 29         │ 1            │ 29              │ insert without an id after the maximum rowid │
+└────┴────────┴────────────┴──────────────┴─────────────────┴──────────────────────────────────────────────┘
+
+── C. Connection sessions ──────────────────────────────────────────────
+
+C1. Steps 0-6 with one connection per step against one connection for all
+steps (6a, 6b). In WAL mode the change counter differs, and only it; in
+rollback mode nothing differs. 6c: three commits that never write page 1
+leave the files identical, because only a commit that writes page 1 writes
+the change counter.
+┌────┬───────────┬────────────────────────────────────────────────────────────────────────────┐
+│ id │  result   │                                    what                                    │
+├────┼───────────┼────────────────────────────────────────────────────────────────────────────┤
+│ 6a │ differ    │ WAL, one connection per step vs one for all steps                          │
+│ 6b │ identical │ rollback, the same comparison                                              │
+│ 6c │ identical │ WAL, 3 commits that never write page 1: one connection each vs one for all │
+└────┴───────────┴────────────────────────────────────────────────────────────────────────────┘
+┌────┬────────────┬──────────────┬─────────────────┬─────────────┬────────────┐
+│ id │ first_page │ pages_differ │ differing_pages │ page1_bytes │ file_pages │
+├────┼────────────┼──────────────┼─────────────────┼─────────────┼────────────┤
+│ 6a │ 1          │ 1            │ 1               │ 27 95       │ 60         │
+│ 6b │            │ 0            │                 │             │ 60         │
+│ 6c │            │ 0            │                 │             │ 60         │
+└────┴────────────┴──────────────┴─────────────────┴─────────────┴────────────┘
+
+── D. Rolled-back work inside a committed transaction ──────────────────
+
+D1. Run 2 first inserts 10 documents of 12000 bytes inside a SAVEPOINT and
+rolls back to it, then commits the same INSERT as run 1. Freelist pages that
+the committed insert reuses keep the rolled-back bytes, even with
+secure_delete=ON:
+┌────┬────────┬────────────────────────────┐
+│ id │ result │            what            │
+├────┼────────┼────────────────────────────┤
+│ 7a │ differ │ WAL, secure_delete=ON      │
+│ 7b │ differ │ rollback, secure_delete=ON │
+└────┴────────┴────────────────────────────┘
+┌────┬────────────┬──────────────┬─────────────────┬─────────────┬────────────┐
+│ id │ first_page │ pages_differ │ differing_pages │ page1_bytes │ file_pages │
+├────┼────────────┼──────────────┼─────────────────┼─────────────┼────────────┤
+│ 7a │ 1          │ 3            │ 1 29 37         │ 27 95       │ 60         │
+│ 7b │ 29         │ 2            │ 29 37           │             │ 60         │
+└────┴────────────┴──────────────┴─────────────────┴─────────────┴────────────┘
+┌────┬──────┬─────────────────┬──────────────────────┬───────────────────────────────────────────────┐
+│ id │ page │ bytes_differing │ bytes_outside_unused │                     kind                      │
+├────┼──────┼─────────────────┼──────────────────────┼───────────────────────────────────────────────┤
+│ 7a │ 1    │ 2               │ 2                    │ b-tree page, unallocated space and freeblocks │
+│ 7a │ 29   │ 4092            │ 0                    │ freelist leaf page                            │
+│ 7a │ 37   │ 4093            │ 0                    │ freelist leaf page                            │
+│ 7b │ 29   │ 4092            │ 0                    │ freelist leaf page                            │
+│ 7b │ 37   │ 4093            │ 0                    │ freelist leaf page                            │
+└────┴──────┴─────────────────┴──────────────────────┴───────────────────────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  two builds of the recipe in different directories under different names are byte-identical
+A  ✓  the per-step hash lists of the two runs are identical (31 states)
+A  ✓  every step leaves a different file, so a hash names exactly one step
+A  ✓  recipe.StepHashes (the cached list later chapters use) equals the list just built
+A  ✓  recipe.MatchStep names the step a database equals
+A  ✓  the rollback-mode recipe also rebuilds byte for byte at every step
+B  ✓  SQL random() makes two runs differ
+B  ✓  current_timestamp makes runs differ once the wall clock's second changes (its resolution is one second, so two fast runs can still match)
+B  ✓  FINDING: an unordered INSERT ... SELECT run twice on the same build with the same plan gives identical files
+B  ✓  an unordered INSERT ... SELECT changes the file when the scan order changes; ORDER BY removes the dependence
+B  ✓  FINDING: in WAL mode on one connection with secure_delete=ON, different transaction batches give identical files
+B  ✓  with secure_delete=OFF different batches differ, and only in bytes no cell uses (stale content left in unallocated space, freeblocks or freelist pages)
+B  ✓  in rollback mode different batches differ, and with secure_delete=ON only in the change counter (it counts commits)
+B  ✓  secure_delete=FAST is not ON: on the same history FAST leaves old bytes in the unused space of freelist pages that ON zeroes
+B  ✓  rowid assignment past the maximum rowid makes two runs differ
+C  ✓  FINDING: in WAL mode the number of connection sessions changes the file, and only the change counter (bytes 24-27 and 92-95)
+C  ✓  in rollback mode the number of connection sessions does not change the file
+C  ✓  in WAL mode only a commit that writes page 1 writes the change counter: sessions whose commits never touch page 1 leave the file identical
+D  ✓  WAL mode: a rolled-back SAVEPOINT changes the committed file even with secure_delete=ON: reused freelist leaf pages keep the rolled-back bytes, and page 1's change counter moves
+D  ✓  rollback mode: a rolled-back SAVEPOINT leaves the rolled-back bytes in reused freelist leaf pages (secure_delete=ON does not clear them)
+
+20 of 20 claims hold
+
+Experiment verdict: RECIPE REBUILD OK
 ```
 
-**Reading the R0 evidence (lines 1–80):**
+**Reading the R0 evidence (opening tables and section A):**
 
-- **Lines 3–34 (recipe plan).** Prints the persistent file settings, per-connection settings, and all 31 step summaries (step 0 with 3 `CREATE TABLE` statements; steps 1–30 with inserts, updates, periodic deletes, and the single `CREATE INDEX` at step 5).
-- **Lines 36–40 (two independent builds).** Building the 30-step WAL recipe into `run-1/recipe.db` and `run-2/elsewhere/another-name.db` takes under a second (`792ms`, `INFO:` line) and produces `270` pages (`1,105,920` bytes) with identical SHA-256 `24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74` (step 0: `7470585af706eb3de499f126d74bdc98396e1e9853ee11643e2e85f61ef0cdb9`). Directory path and file name do not enter the database bytes.
-- **Lines 41–77 (per-step hashes and lookup).** All 31 per-step hashes match identically between run 1 and run 2, all 31 are distinct, and `recipe.StepHashes` matches the fresh build. A separate database built to step 12 is identified by `recipe.MatchStep` as `step 12 (exact bytes)`.
-- **Lines 78–80 (WAL vs rollback).** The same recipe in rollback mode (`journal_mode=delete`) also rebuilds byte for byte at every step (`0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57`). Comparing the closed WAL file against the closed rollback file shows only 4 differing bytes in the entire `1,105,920`-byte database, all on page 1: bytes `18` and `19` (file format write/read versions: `2` for WAL vs `1` for rollback) and bytes `27` and `95` (the low byte of the 4-byte file change counter and version-valid-for field).
+- **Opening tables (recipe plan).** Show the persistent file settings, per-connection settings, and all 31 step summaries (step 0 with 3 `CREATE TABLE` statements; steps 1–30 with inserts, updates, periodic deletes, and the single `CREATE INDEX` at step 5).
+- **A1 (two independent builds).** Building the 30-step WAL recipe into `run-1/recipe.db` and `run-2/elsewhere/another-name.db` takes under a second (`792ms` in one run; the time is run-dependent, printed by `course run` and not stored) and produces `270` pages (`1,105,920` bytes) with identical SHA-256 `24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74` (step 0: `7470585af706eb3de499f126d74bdc98396e1e9853ee11643e2e85f61ef0cdb9`; A2 shows the first 16 hex digits of each step, and the stored table has all 64). Directory path and file name do not enter the database bytes.
+- **A2–A3 (per-step hashes and lookup).** All 31 per-step hashes match identically between run 1 and run 2, all 31 are distinct, and `recipe.StepHashes` matches the fresh build. A separate database built to step 12 is identified by `recipe.MatchStep` as step `12` with exact bytes.
+- **A1 and A4 (WAL vs rollback).** The same recipe in rollback mode (`journal_mode=delete`) also rebuilds byte for byte at every step (`0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57`). Comparing the closed WAL file against the closed rollback file shows only 4 differing bytes in the entire `1,105,920`-byte database, all on page 1: bytes `18` and `19` (file format write/read versions: `2` for WAL vs `1` for rollback) and bytes `27` and `95` (the low byte of the 4-byte file change counter and version-valid-for field).
 
 ---
 
 ## 6. Evidence and failure cases
 
-The second half of Experiment 1.3 (lines 82–139 of `evidence/1.3-recipe-rebuild.txt`) tests seven sources of physical variation against a 6-step WAL base database, plus two boundary checks (`secure_delete=FAST` vs `ON`, and WAL sessions whose commits never write page 1). Every test starts from fresh files and reports the first differing page (and differing page-1 byte offsets when page 1 changes). Three checks uncovered subtler behavior than a first guess predicts; the output marks those `FINDING:`.
+The second half of Experiment 1.3 (sections B–D of `evidence/1.3-recipe-rebuild.txt`) tests seven sources of physical variation against a 6-step WAL base database, plus two boundary checks (`secure_delete=FAST` vs `ON`, and WAL sessions whose commits never write page 1). Every test starts from fresh files and reports the first differing page (and differing page-1 byte offsets when page 1 changes). Three checks uncovered subtler behavior than a first guess predicts; the checks list marks those `FINDING:`.
 
-1. **SQL `random()` in a value (lines 83–85).** Inserting `random()` into `events.amount` makes run 1 and run 2 differ on page `59` (`1` page). SQLite's internal PRNG is seeded from the OS on first use, so any SQL `random()` or `randomblob()` breaks byte reproducibility.
-2. **`current_timestamp` and time zones (lines 86–89).** `current_timestamp` has one-second resolution. Two runs inside the same wall-clock second produce `identical` files (line 87); a third run after the second advances differs on page `59` (line 88). Fast tests can mask a clock dependency unless they span a second boundary. Environment-dependent modifiers sit in the same class: even on a fixed timestamp literal, SQLite's `'localtime'` modifier produces different bytes on page `59` under `TZ=UTC` versus `TZ=America/New_York` (`DET-08e`).
-3. **Unordered `INSERT ... SELECT` (lines 90–95).**
-   - Running `INSERT INTO archive(account_id, amount) SELECT account_id, amount FROM events WHERE amount > 0` twice on the same build with the same schema yields `identical` files (`FINDING`, lines 91 and 94), because the planner picks the same scan order both times and assigns rowids in that order.
-   - Setting `PRAGMA reverse_unordered_selects=ON` on run 2 reverses the scan order without changing query semantics, and the two files differ on page `29` (line 92). Adding an index, running `ANALYZE`, or upgrading SQLite can flip an unordered scan the same way.
-   - Adding `ORDER BY id` makes both files `identical` again even under `reverse_unordered_selects=ON` (line 93).
-4. **Transaction batching and `secure_delete` modes (lines 96–113).** Steps 0–6 run on one connection, comparing one transaction per step against merging steps `2+3` and `4+5` into single transactions (step 3 deletes rows inserted in step 2):
-   - **WAL mode, `secure_delete=ON` (recipe settings):** `identical` (`FINDING`, lines 98 and 105). One WAL connection does not increment the header change counter per commit, and `secure_delete=ON` zeroes freed bytes inside B-tree pages and on freed freelist pages.
-   - **WAL mode, `secure_delete=OFF`:** `differ: first differing page 24, 2 page(s) differ [24 28]` (lines 100–102): `357` bytes on page `24` and `1,207` bytes on page `28`, every byte inside unused space on B-tree leaf pages (the unallocated gap between the cell-pointer array and the cell content area, or freeblocks—not freelist pages). Without `secure_delete`, deleted cell payloads leave history-dependent stale bytes.
-   - **Rollback mode, `secure_delete=ON`:** `differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [27 95]` (lines 104 and 107), because rollback mode increments the change counter on every commit.
-   - **WAL mode, `secure_delete=FAST` vs `secure_delete=ON` (lines 108–113):** `secure_delete` must be strictly `ON`, not `FAST`. On the exact same one-transaction-per-step history, `FAST` differs from `ON` on 3 pages `[29 36 37]`: page `29` (`4,079` bytes, freelist leaf), page `36` (`4,067` bytes, freelist trunk bytes after the leaf list), and page `37` (`4,078` bytes, freelist leaf)—all in unused space. In [`freePage2` (`src/btree.c:6864-6874`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L6864-L6874), SQLite zeroes freed pages only when `BTS_SECURE_DELETE` (`ON`) is set; [`sqlite3BtreeSecureDelete` (`src/btree.c:3181-3194`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L3181-L3194) maps `FAST` to `BTS_OVERWRITE` only, which zeroes freed cell space inside B-tree pages while leaving old bytes on freed freelist pages. At full 30-step scale, `FAST` also makes 1-transaction vs 31-transaction batchings diverge again (`DET-05d`: `2` pages differ, first page `29`).
-5. **Omitting a rowid after the maximum 64-bit rowid `9223372036854775807` (lines 114–116).** Once a table holds rowid `9223372036854775807` (`2^63 - 1`), SQLite cannot increment past it and picks a random unused rowid for the next insert without an explicit id. The two runs differ on page `29`.
-6. **Connection sessions, page-1 writes, cache eviction, and pool churn in WAL mode (lines 118–125).**
-   - **Steps 0–6 (every step dirties page 1 via `PRAGMA user_version = k`):** one connection per step vs one connection for all 7 steps gives `differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [27 95]` in WAL mode (`FINDING`, lines 120 and 122), and `identical` in rollback mode (lines 121 and 123).
-   - **Commits that never write page 1 (lines 124–125):** starting from step 6, 3 commits of `UPDATE accounts SET balance = balance + 1 WHERE id = 1` with one connection per commit vs one connection for all three leave `identical` files even in WAL mode. [`pagerWalFrames` (`src/pager.c:3264`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3264) guards the counter write with `if( pList->pgno==1 ) pager_write_changecounter(pList)`. When page 1 is dirty, [`pager_write_changecounter` (`src/pager.c:3130-3143`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3130-L3143) writes `dbFileVers + 1` (line 3135), and `dbFileVers` is refreshed only when page 1 is read through `readDbPage` ([`src/pager.c:3109-3110`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3109-L3110))—either on a new connection or when page 1 is evicted from cache and reloaded.
+1. **SQL `random()` in a value (B1, variant 1).** Inserting `random()` into `events.amount` makes run 1 and run 2 differ on page `59` (`1` page). SQLite's internal PRNG is seeded from the OS on first use, so any SQL `random()` or `randomblob()` breaks byte reproducibility.
+2. **`current_timestamp` and time zones (B1, variants 2a–2b).** `current_timestamp` has one-second resolution. Two runs inside the same wall-clock second produce `identical` files (2a); a third run after the second advances differs on page `59` (2b). Fast tests can mask a clock dependency unless they span a second boundary. Environment-dependent modifiers sit in the same class: even on a fixed timestamp literal, SQLite's `'localtime'` modifier produces different bytes on page `59` under `TZ=UTC` versus `TZ=America/New_York` (`DET-08e`).
+3. **Unordered `INSERT ... SELECT` (B2).**
+   - Running `INSERT INTO archive(account_id, amount) SELECT account_id, amount FROM events WHERE amount > 0` twice on the same build with the same schema yields `identical` files (`FINDING`, 3a), because the planner picks the same scan order both times and assigns rowids in that order.
+   - Setting `PRAGMA reverse_unordered_selects=ON` on run 2 reverses the scan order without changing query semantics, and the two files differ on page `29` (3b). Adding an index, running `ANALYZE`, or upgrading SQLite can flip an unordered scan the same way.
+   - Adding `ORDER BY id` makes both files `identical` again even under `reverse_unordered_selects=ON` (3c).
+4. **Transaction batching and `secure_delete` modes (B3–B4).** Steps 0–6 run on one connection, comparing one transaction per step against merging steps `2+3` and `4+5` into single transactions (step 3 deletes rows inserted in step 2):
+   - **WAL mode, `secure_delete=ON` (recipe settings):** `identical` (`FINDING`, 4a). One WAL connection does not increment the header change counter per commit, and `secure_delete=ON` zeroes freed bytes inside B-tree pages and on freed freelist pages.
+   - **WAL mode, `secure_delete=OFF`:** `differ`, first differing page `24`, `2` pages differ (`24 28`) (4b in B3 and B4): `357` bytes on page `24` and `1,207` bytes on page `28`, every byte inside unused space on B-tree leaf pages (the unallocated gap between the cell-pointer array and the cell content area, or freeblocks—not freelist pages). Without `secure_delete`, deleted cell payloads leave history-dependent stale bytes.
+   - **Rollback mode, `secure_delete=ON`:** `differ`, first differing page `1`, `1` page differs, page 1 bytes `27 95` (4c), because rollback mode increments the change counter on every commit.
+   - **WAL mode, `secure_delete=FAST` vs `secure_delete=ON` (4d in B3 and B4):** `secure_delete` must be strictly `ON`, not `FAST`. On the exact same one-transaction-per-step history, `FAST` differs from `ON` on 3 pages `[29 36 37]`: page `29` (`4,079` bytes, freelist leaf), page `36` (`4,067` bytes, freelist trunk bytes after the leaf list), and page `37` (`4,078` bytes, freelist leaf)—all in unused space. In [`freePage2` (`src/btree.c:6864-6874`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L6864-L6874), SQLite zeroes freed pages only when `BTS_SECURE_DELETE` (`ON`) is set; [`sqlite3BtreeSecureDelete` (`src/btree.c:3181-3194`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L3181-L3194) maps `FAST` to `BTS_OVERWRITE` only, which zeroes freed cell space inside B-tree pages while leaving old bytes on freed freelist pages. At full 30-step scale, `FAST` also makes 1-transaction vs 31-transaction batchings diverge again (`DET-05d`: `2` pages differ, first page `29`).
+5. **Omitting a rowid after the maximum 64-bit rowid `9223372036854775807` (B5).** Once a table holds rowid `9223372036854775807` (`2^63 - 1`), SQLite cannot increment past it and picks a random unused rowid for the next insert without an explicit id. The two runs differ on page `29`.
+6. **Connection sessions, page-1 writes, cache eviction, and pool churn in WAL mode (C1).**
+   - **Steps 0–6 (every step dirties page 1 via `PRAGMA user_version = k`):** one connection per step vs one connection for all 7 steps gives `differ`, first differing page `1`, `1` page differs, page 1 bytes `27 95` in WAL mode (`FINDING`, 6a), and `identical` in rollback mode (6b).
+   - **Commits that never write page 1 (6c):** starting from step 6, 3 commits of `UPDATE accounts SET balance = balance + 1 WHERE id = 1` with one connection per commit vs one connection for all three leave `identical` files even in WAL mode. [`pagerWalFrames` (`src/pager.c:3264`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3264) guards the counter write with `if( pList->pgno==1 ) pager_write_changecounter(pList)`. When page 1 is dirty, [`pager_write_changecounter` (`src/pager.c:3130-3143`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3130-L3143) writes `dbFileVers + 1` (line 3135), and `dbFileVers` is refreshed only when page 1 is read through `readDbPage` ([`src/pager.c:3109-3110`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3109-L3110))—either on a new connection or when page 1 is evicted from cache and reloaded.
    - **Cache eviction and pool churn:** because page-1 eviction reloads `dbFileVers`, `PRAGMA cache_size=0` shifts only the WAL change counter deterministically from step 0 onward (`DET-02`: `walZero=cs=0(exact=false,masked=true)`, while all nine non-zero `cache_size` values tested—`1`, `2`, `5`, `10`, `50`, `-10`, `-100`, `-2000`, `-64000`—matched verbatim in WAL mode, and all ten matched in rollback mode). Likewise, leaving `SingleConnection=false` lets a concurrent read open a second pooled `database/sql` connection with its own `dbFileVers`, shifting page 1 bytes `27` and `95` (`DET-08d`, `masked=true`). Both `cache_size` and `SingleConnection=true` are part of the determinism contract.
-7. **Rolled-back `SAVEPOINT` inside a committed transaction (lines 127–139).** A **savepoint** is a named nested rollback point inside a larger transaction. Starting from step 6, one transaction commits one `INSERT` into `events`; run 2 first inserts `10` documents of `12,000` bytes (`0xAB`) inside `SAVEPOINT aborted`, executes `ROLLBACK TO aborted` and `RELEASE aborted`, and commits the same `INSERT`:
-   - **WAL mode, `secure_delete=ON` (lines 131–134, 138):** `differ: first differing page 1, 3 page(s) differ [1 29 37], page 1 bytes [27 95]`. Pages `29` (`4,092` bytes) and `37` (`4,093` bytes) are freelist leaf pages retaining bytes from the aborted inserts; page 1's change counter also moved because the aborted allocation dirtied page 1's freelist count.
-   - **Rollback mode, `secure_delete=ON` (lines 135–137, 139):** `differ: first differing page 29, 2 page(s) differ [29 37]`, leaving the same `4,092` and `4,093` bytes on those two freelist leaf pages.
+7. **Rolled-back `SAVEPOINT` inside a committed transaction (D1).** A **savepoint** is a named nested rollback point inside a larger transaction. Starting from step 6, one transaction commits one `INSERT` into `events`; run 2 first inserts `10` documents of `12,000` bytes (`0xAB`) inside `SAVEPOINT aborted`, executes `ROLLBACK TO aborted` and `RELEASE aborted`, and commits the same `INSERT`:
+   - **WAL mode, `secure_delete=ON` (7a):** `differ`, first differing page `1`, `3` pages differ (`1 29 37`), page 1 bytes `27 95`. Pages `29` (`4,092` bytes) and `37` (`4,093` bytes) are freelist leaf pages retaining bytes from the aborted inserts; page 1's change counter also moved because the aborted allocation dirtied page 1's freelist count.
+   - **Rollback mode, `secure_delete=ON` (7b):** `differ`, first differing page `29`, `2` pages differ (`29 37`), leaving the same `4,092` and `4,093` bytes on those two freelist leaf pages.
    - **Why:** when SQLite allocates a freelist leaf page, [`allocateBtreePage` (`src/btree.c:6740`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L6740) fetches it with `PAGER_GET_NOCONTENT`, skipping journaling of its prior content. `ROLLBACK TO` returns the page to the freelist but cannot restore bytes it never saved, and `secure_delete=ON` does not zero those rolled-back leaves. By contrast, rolling back an entire transaction (a failed `ApplyStep` hitting a primary-key conflict) leaves the closed database file byte-identical (`API-05`).
 
 ### Determinism rules verified by Experiment 1.3
 
 | Source of variation | Rule enforced in `internal/recipe` and `internal/sqlitex` | Evidence |
 | --- | --- | --- |
-| SQLite build & compile options | Pin driver and CLI to one Fossil check-in; verify `sqlite_source_id()`, linked modules, and storage-affecting compile options (e.g. `ENABLE_STAT4` if `ANALYZE` runs) | Exp 1.1; Exp 1.2 (`ANALYZE` limit, lines 276–282); header bytes 96–99 |
-| Persistent & per-connection PRAGMAs (including `cache_size`) | Set `page_size`, `auto_vacuum`, `encoding`, `application_id`, `journal_mode` at creation; set `synchronous`, `foreign_keys`, `secure_delete`, `cache_size` (non-zero), `wal_autocheckpoint`, `busy_timeout` on every open | Exp 1.3 lines 3, 78–80; `DET-02` (`cache_size=0` shifts WAL counter) |
+| SQLite build & compile options | Pin driver and CLI to one Fossil check-in; verify `sqlite_source_id()`, linked modules, and storage-affecting compile options (e.g. `ENABLE_STAT4` if `ANALYZE` runs) | Exp 1.1; Exp 1.2 (`ANALYZE` limit, section D); header bytes 96–99 |
+| Persistent & per-connection PRAGMAs (including `cache_size`) | Set `page_size`, `auto_vacuum`, `encoding`, `application_id`, `journal_mode` at creation; set `synchronous`, `foreign_keys`, `secure_delete`, `cache_size` (non-zero), `wal_autocheckpoint`, `busy_timeout` on every open | Exp 1.3 opening tables, A4; `DET-02` (`cache_size=0` shifts WAL counter) |
 | Randomness | Generate values in Go from a seeded `math/rand/v2` PCG; ban SQL `random()` and `randomblob()` | Exp 1.3 Variant 1 (page 59 differs) |
 | Wall clock & time zone | Pass timestamps as bound parameters; ban `current_timestamp`, `date('now')`, and environment-dependent modifiers such as `'localtime'` | Exp 1.3 Variant 2 (page 59 differs after 1 s); `DET-08e` (`'localtime'` varies with `TZ`) |
 | Query-plan row order | Always add `ORDER BY` to `INSERT ... SELECT` | Exp 1.3 Variant 3 (page 29 differs under reversed scan; identical with `ORDER BY id`) |

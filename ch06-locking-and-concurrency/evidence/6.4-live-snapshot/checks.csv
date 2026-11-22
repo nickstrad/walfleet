@@ -1,0 +1,11 @@
+seq,part,status,claim
+1,B,ok,the capture's transaction sees recipe step 8
+2,B,ok,the capture's transaction saw step 8 from its first read to its last
+3,B,ok,the first checkpoint during the page capture copied WAL frames into the database file under the open transaction
+4,C,ok,"the second transaction sees step 11, the last commit"
+5,C,ok,the capture's transaction saw step 11 from its first read to its last
+6,C,ok,the checkpoint between the two halves wrote WAL frames into the database file while it was being copied
+7,C,ok,meanwhile the writer committed steps 9-13
+8,D,ok,the page capture passes integrity_check and its bytes equal the recipe run to exactly step 8 and checkpointed (E1)
+9,D,ok,"the file + -wal copy rebuilds to a recipe state at or after its transaction's snapshot (step 11): step 13, the last commit before the -wal was copied"
+10,D,ok,on its own the database-file copy is torn (it fails integrity_check or equals no recipe state); the -wal frames repair it

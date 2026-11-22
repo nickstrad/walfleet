@@ -1,0 +1,2 @@
+route,server,stat_request,read_request
+http,"an in-process HTTP server (net/http FileServer, which answers Range requests)",HEAD,GET with a Range header

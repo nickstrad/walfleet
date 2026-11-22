@@ -1,0 +1,4 @@
+row_id,blob_bytes,payload_bytes,local_bytes,overflow_pages,last_overflow_bytes
+1,4057,4061,4061,0,0
+2,4058,4062,489,1,3573
+3,8149,8153,4061,1,4092

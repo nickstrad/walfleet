@@ -2,9 +2,10 @@
 // modernc.org/sqlite Go driver and the pinned sqlite3 C CLI—run the pinned
 // SQLite 3.53.4 check-in and share the required compile-time options.
 //
-// Run from the repo root:
+// It prints only its verdict; the measurements go to CSV tables that
+// report.sql presents:
 //
-//	go run ./ch01-architecture-and-execution-path/experiments/1.1-pin-check
+//	go run ./cmd/course run 1.1
 package main
 
 import (
@@ -17,6 +18,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/sqlite"
 )
@@ -49,17 +51,6 @@ var fileFormatAndIOOptions = []string{
 	"MAX_MMAP_SIZE",
 	"MAX_PAGE_SIZE",
 	"TEMP_STORE",
-}
-
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
 }
 
 func fatal(what string, err error) {
@@ -131,31 +122,42 @@ func main() {
 	// non-zero if the linked build does not match sqlite/PIN.
 	sqlitex.MustPinCheck(ctx, db)
 
-	fmt.Printf("pin: release %s, tag %s, git %s, fossil %s\n", pin.Release, pin.Tag, pin.GitCommit, pin.FossilID)
+	set := results.MustOpen(sqlitex.MustWorkDir("1.1"))
+	pinTable := set.Table("pin", "field", "value")
+	pinTable.Row("release", pin.Release)
+	pinTable.Row("tag", pin.Tag)
+	pinTable.Row("git", pin.GitCommit)
+	pinTable.Row("fossil", pin.FossilID)
+	pinTable.Row("source_id", pin.SourceID)
+	versions := set.Table("versions", "seq", "item", "found", "pinned")
+	versionSeq := 0
+	version := func(item, found, pinned string) {
+		versionSeq++
+		versions.Row(versionSeq, item, found, pinned)
+	}
+
 	driverVersion := moduleVersion(pin.DriverModule)
 	libcVersion := moduleVersion(pin.LibcModule)
-	fmt.Printf("driver module linked: %s %s\n", pin.DriverModule, driverVersion)
-	fmt.Printf("libc module linked:   %s %s\n", pin.LibcModule, libcVersion)
-	check(driverVersion == pin.DriverVersion, fmt.Sprintf("the linked driver is %s %s", pin.DriverModule, pin.DriverVersion))
-	check(libcVersion == pin.LibcVersion, fmt.Sprintf("the linked libc is %s %s", pin.LibcModule, pin.LibcVersion))
+	version("driver module "+pin.DriverModule, driverVersion, pin.DriverVersion)
+	version("libc module "+pin.LibcModule, libcVersion, pin.LibcVersion)
+	set.Check("A", driverVersion == pin.DriverVersion, fmt.Sprintf("the linked driver is %s %s", pin.DriverModule, pin.DriverVersion))
+	set.Check("A", libcVersion == pin.LibcVersion, fmt.Sprintf("the linked libc is %s %s", pin.LibcModule, pin.LibcVersion))
 
-	var version string
-	if err := db.QueryRowContext(ctx, "SELECT sqlite_version()").Scan(&version); err != nil {
+	var driverRelease, driverSourceID string
+	if err := db.QueryRowContext(ctx, "SELECT sqlite_version(), sqlite_source_id()").Scan(&driverRelease, &driverSourceID); err != nil {
 		fatal("sqlite_version", err)
 	}
-	fmt.Printf("driver sqlite_version(): %s\n", version)
-	check(version == pin.Release, "the driver reports release "+pin.Release)
+	version("driver sqlite_version()", driverRelease, pin.Release)
+	version("driver sqlite_source_id()", driverSourceID, pin.SourceID)
+	set.Check("A", driverRelease == pin.Release, "the driver reports release "+pin.Release)
 
 	options, err := driverOptions(ctx, db)
 	if err != nil {
 		fatal("compile_options", err)
 	}
-	fmt.Printf("driver compile options (%d):\n", len(options))
-	for _, option := range options {
-		fmt.Printf("  %s\n", option)
-	}
-	for _, required := range requiredOptions {
-		check(slices.Contains(options, required), "the driver is compiled with "+required)
+	driverTable := set.Table("driver_options", "seq", "option")
+	for i, option := range options {
+		driverTable.Row(i+1, option)
 	}
 
 	// Smoke-test both page-inspection virtual tables on a 2-page database
@@ -170,49 +172,38 @@ func main() {
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM dbstat").Scan(&dbstatRows); err != nil {
 		fatal("dbstat", err)
 	}
-	fmt.Printf("driver sqlite_dbpage rows: %d; dbstat rows: %d\n", dbpagePages, dbstatRows)
-	check(dbpagePages == 2 && dbstatRows == 2, "sqlite_dbpage and dbstat answer queries in the driver (2 pages: schema and table t)")
+	vtabs := set.Table("vtab_rows", "build", "vtab", "rows")
+	vtabs.Row("driver", "sqlite_dbpage", dbpagePages)
+	vtabs.Row("driver", "dbstat", dbstatRows)
 
+	required := set.Table("required_options", "option", "in_driver", "in_cli")
 	cli, err := sqlitex.LocateCLI(ctx)
 	if err != nil {
 		fmt.Printf("sqlite3 CLI: %v\n", err)
-		failures = append(failures, "the pinned sqlite3 CLI is available")
-		finish()
+		for _, option := range requiredOptions {
+			required.Row(option, slices.Contains(options, option), nil)
+		}
+		set.Check("B", false, "the pinned sqlite3 CLI is available")
+		set.Finish("PIN CHECK")
 		return
 	}
 	fmt.Println(cli.PinLine())
-	fmt.Printf("INFO: CLI %s (%s)\n", displayPath(cli.Path), cli.Origin)
 	out, err := cli.Exec(ctx, ":memory:", "SELECT sqlite_version();\nPRAGMA compile_options;\n")
 	if err != nil {
 		fatal("CLI compile_options", err)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	cliVersion, cliOptions := lines[0], lines[1:]
-	fmt.Printf("CLI sqlite_version(): %s\n", cliVersion)
-	check(cliVersion == pin.Release, "the CLI reports release "+pin.Release)
-	for _, required := range requiredOptions {
-		check(slices.Contains(cliOptions, required), "the CLI is compiled with "+required)
+	version("CLI sqlite_version()", cliVersion, pin.Release)
+	version("CLI sqlite_source_id()", cli.SourceID, pin.SourceID)
+	for _, option := range requiredOptions {
+		required.Row(option, slices.Contains(options, option), slices.Contains(cliOptions, option))
 	}
 
-	fmt.Println("file-format and I/O options, driver | CLI:")
-	same := true
-	for _, name := range fileFormatAndIOOptions {
-		driverValue, inDriver := findOption(options, name)
-		cliValue, inCLI := findOption(cliOptions, name)
-		if !inDriver {
-			driverValue = "(absent)"
-		}
-		if !inCLI {
-			cliValue = "(absent)"
-		}
-		mark := "same"
-		if driverValue != cliValue {
-			mark = "DIFFERENT"
-			same = false
-		}
-		fmt.Printf("  %-27s %-32s | %-32s %s\n", name, driverValue, cliValue, mark)
-	}
-	check(same, "the driver and the CLI agree on every file-format and I/O compile option listed")
+	// The CLI build varies between machines, so everything that depends on its
+	// path or its full option list goes in info tables.
+	infoCLI := set.Table("info_cli", "path", "origin")
+	infoCLI.Row(displayPath(cli.Path), cli.Origin)
 	var onlyDriver, onlyCLI []string
 	for _, option := range options {
 		if !slices.Contains(cliOptions, option) {
@@ -224,19 +215,35 @@ func main() {
 			onlyCLI = append(onlyCLI, option)
 		}
 	}
-	// Report build-specific differences on INFO lines so EXACT evidence stays
-	// portable between the system CLI and the ./configure build-tools CLI.
-	fmt.Printf("INFO: compile options only in the driver: %s\n", strings.Join(onlyDriver, " "))
-	fmt.Printf("INFO: compile options only in this CLI: %s\n", strings.Join(onlyCLI, " "))
-	finish()
-}
+	infoOnly := set.Table("info_option_differences", "side", "options")
+	infoOnly.Row("only in the driver", strings.Join(onlyDriver, " "))
+	infoOnly.Row("only in this CLI", strings.Join(onlyCLI, " "))
 
-func finish() {
-	if len(failures) > 0 {
-		fmt.Printf("PIN CHECK FAILED: %d claim(s) do not hold: %s\n", len(failures), strings.Join(failures, "; "))
-		os.Exit(1)
+	for _, option := range requiredOptions {
+		set.Check("A", slices.Contains(options, option), "the driver is compiled with "+option)
 	}
-	fmt.Println("PIN CHECK OK")
+	set.Check("A", dbpagePages == 2 && dbstatRows == 2, "sqlite_dbpage and dbstat answer queries in the driver (2 pages: schema and table t)")
+	set.Check("B", cliVersion == pin.Release, "the CLI reports release "+pin.Release)
+	for _, option := range requiredOptions {
+		set.Check("B", slices.Contains(cliOptions, option), "the CLI is compiled with "+option)
+	}
+
+	formatTable := set.Table("format_options", "name", "driver", "cli", "same")
+	same := true
+	for _, name := range fileFormatAndIOOptions {
+		driverValue, inDriver := findOption(options, name)
+		cliValue, inCLI := findOption(cliOptions, name)
+		if !inDriver {
+			driverValue = "(absent)"
+		}
+		if !inCLI {
+			cliValue = "(absent)"
+		}
+		formatTable.Row(name, driverValue, cliValue, driverValue == cliValue)
+		same = same && driverValue == cliValue
+	}
+	set.Check("B", same, "the driver and the CLI agree on every file-format and I/O compile option listed")
+	set.Finish("PIN CHECK")
 }
 
 func displayPath(path string) string {

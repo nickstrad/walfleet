@@ -14,6 +14,9 @@
 // 3), and standing resource bounds. A final self-test runs the skip-fence
 // mutant (no seal and no store fence) to show two writable nodes appear and
 // the lineage audit catches it.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 10.3
 package main
 
 import (
@@ -23,6 +26,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/catalog"
@@ -30,6 +34,7 @@ import (
 	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/lab"
 	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
 	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/relocate"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walship"
 )
@@ -37,11 +42,10 @@ import (
 const id = "db-0001"
 
 var (
-	failures []string
-	mutant   = flag.String("mutant", "", "skip-fence: relocate without sealing the source and without the store fence")
-	only     = flag.Int("case", 0, "run only this case number (0 runs every case)")
-	role     = flag.String("role", "", "internal: run as a service node")
-	process  node.ProcessConfig
+	mutant  = flag.String("mutant", "", "skip-fence: relocate without sealing the source and without the store fence")
+	only    = flag.Int("case", 0, "run only this case number (0 runs every case)")
+	role    = flag.String("role", "", "internal: run as a service node")
+	process node.ProcessConfig
 )
 
 func init() {
@@ -54,13 +58,36 @@ func init() {
 	flag.BoolVar(&process.AckBeforePut, "ack-before-put", false, "internal: unused here")
 }
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 10.3" runs both.
+// part labels the claims made while a part runs.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		settings, steps, cases, boundaries, slots, failedInvariants, problems, infoRun *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	settingSeq int
+)
+
+func openTables() {
+	tables.settings = set.Table("settings", "seq", "name", "value")
+	tables.steps = set.Table("relocation_steps", "step", "name")
+	tables.cases = set.Table("cases", append([]string{"case_no"}, caseColumns...)...)
+	tables.boundaries = set.Table("boundaries", "case_no", "seq", "label", "owner", "epoch", "store_end", "store_end_epoch", "store_end_kind", "node_a", "node_b")
+	tables.slots = set.Table("slots", "case_no", "first", "last", "epoch", "kind")
+	tables.failedInvariants = set.Table("failed_invariants", "case_no", "invariant")
+	tables.problems = set.Table("problems", "seq", "kind", "line")
+	tables.infoRun = set.Table("info_run", "name", "value")
+}
+
+func setting(name string, value any) {
+	settingSeq++
+	tables.settings.Row(settingSeq, name, value)
+}
+
+func check(ok bool, claim string) {
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -87,27 +114,27 @@ func (c faultCase) interrupts() bool {
 	return !(c.kill == "b" && c.killAfter == relocate.Activate)
 }
 
-// String formats c's injected fault and recovery strategy for case headings.
-func (c faultCase) String() string {
-	var what string
+// describe returns c's injected fault, the node it hits, the step after which
+// it hits (0 for a store fault), and the recovery strategy.
+func (c faultCase) describe() (fault, faultNode string, after int, recovery string) {
 	switch {
 	case c.crashAfter != 0:
-		what = fmt.Sprintf("the coordinator crashes after step %s", c.crashAfter)
+		fault, after = "coordinator crash", int(c.crashAfter)
 	case c.kill != "":
-		what = fmt.Sprintf("node %s is killed after step %s", c.kill, c.killAfter)
+		fault, faultNode, after = "SIGKILL", c.kill, int(c.killAfter)
 	case c.fault != "":
-		what = fmt.Sprintf("store fault %s on node %s", c.fault, c.faultNode)
+		fault, faultNode = "store "+c.fault, c.faultNode
 	default:
-		what = "no fault"
+		fault = "no fault"
 	}
-	recovery := "resume"
+	recovery = "resume"
 	if c.rollback {
 		recovery = "roll back"
 	}
 	if c.staysDown {
 		recovery += fmt.Sprintf(" while node %s stays down", c.kill)
 	}
-	return what + "; recovery: " + recovery
+	return fault, faultNode, after, recovery
 }
 
 func cases() []faultCase {
@@ -134,13 +161,15 @@ func cases() []faultCase {
 }
 
 type run struct {
-	env           *lab.Env
-	skipFence     bool
-	nodes         map[string]*node.Process
-	acks          []node.Ack
-	refused       int
-	mostWritable  int
-	boundaryLines []string
+	env          *lab.Env
+	number       int
+	skipFence    bool
+	nodes        map[string]*node.Process
+	acks         []node.Ack
+	refused      int
+	mostWritable int
+	boundaries   int
+	row          map[string]any
 }
 
 func (r *run) remote(name string) node.Remote {
@@ -215,19 +244,20 @@ func (r *run) boundary(label string) {
 				writable++
 			}
 		}
-		states = append(states, name+" "+state)
+		states = append(states, state)
 	}
 	r.mostWritable = max(r.mostWritable, writable)
 	record, err := r.env.Catalog.Get(r.env.Ctx, id)
 	if err != nil {
 		fatal("catalog", err)
 	}
-	storeEnd := "the store is not one lineage"
+	var storeEnd, endEpoch, endKind any = "not one lineage", nil, nil
 	if chain, err := fence.Chain(r.env.Ctx, r.env.Store, id); err == nil && len(chain) > 0 {
 		end := chain[len(chain)-1]
-		storeEnd = fmt.Sprintf("store ends at position %d (epoch %d %s)", end.Last, end.Epoch, end.Kind)
+		storeEnd, endEpoch, endKind = end.Last, end.Epoch, end.Kind
 	}
-	r.boundaryLines = append(r.boundaryLines, fmt.Sprintf("%s: catalog owner %s epoch %d; %s; %s", label, record.Owner, record.Epoch, storeEnd, strings.Join(states, "; ")))
+	r.boundaries++
+	tables.boundaries.Row(r.number, r.boundaries, label, record.Owner, record.Epoch, storeEnd, endEpoch, endKind, states[0], states[1])
 	other := "a"
 	if record.Owner == "a" {
 		other = "b"
@@ -262,12 +292,32 @@ func describe(err error) string {
 	return "error: " + err.Error()
 }
 
+// caseColumns are the columns of the cases table after case_no.
+var caseColumns = []string{"fault", "fault_node", "after_step", "recovery", "run", "restarted", "stayed_down", "discard_error", "recovery_error", "outcome", "relocation_state", "relocation_step", "fence_point", "fence_point_sha256", "fence", "owner", "epoch", "audit_error", "newest_slot_epoch", "acknowledged", "store_durable", "refused", "final_user_version", "final_state", "most_writable", "holds"}
+
+// runCase runs one fault case and writes its row of the cases table; the
+// columns a case does not reach stay empty.
 func runCase(env *lab.Env, number int, c faultCase, skipFence bool) (bool, int) {
-	fmt.Printf("\ncase %d: %s\n", number, c)
 	if err := env.Reset([]string{id}); err != nil {
 		fatal("reset", err)
 	}
-	r := &run{env: env, nodes: map[string]*node.Process{}, skipFence: skipFence}
+	r := &run{env: env, number: number, nodes: map[string]*node.Process{}, skipFence: skipFence, row: map[string]any{}}
+	fault, faultNode, after, strategy := c.describe()
+	r.row["fault"], r.row["recovery"] = fault, strategy
+	if faultNode != "" {
+		r.row["fault_node"] = faultNode
+	}
+	if after != 0 {
+		r.row["after_step"] = after
+	}
+	defer func() {
+		r.row["most_writable"] = r.mostWritable
+		values := []any{number}
+		for _, column := range caseColumns {
+			values = append(values, r.row[column])
+		}
+		tables.cases.Row(values...)
+	}()
 	// Kill any remaining node process if recovery fails before verify stops them
 	// cleanly, so no child holds open files under _work/10.3/ across cases.
 	defer func() {
@@ -301,20 +351,24 @@ func runCase(env *lab.Env, number int, c faultCase, skipFence bool) (bool, int) 
 	result, err := coordinator.Run(env.Ctx, id, "a", "b")
 	interrupted := err != nil
 	if err != nil {
-		fmt.Printf("  run: %s\n", describe(err))
+		r.row["run"] = describe(err)
 	} else {
-		fmt.Printf("  run: finished without interruption (%s)\n", result.Outcome)
+		r.row["run"] = fmt.Sprintf("finished without interruption (%s)", result.Outcome)
 	}
+	var restarted []string
 	for _, name := range []string{"a", "b"} {
 		if c.staysDown && name == c.kill {
 			r.kill(name)
-			fmt.Printf("  node %s is down and stays down during the recovery\n", name)
+			r.row["stayed_down"] = name
 			continue
 		}
 		if !r.alive(name) {
-			fmt.Printf("  node %s is down; restarted\n", name)
+			restarted = append(restarted, name)
 			r.start(name, "")
 		}
+	}
+	if len(restarted) > 0 {
+		r.row["restarted"] = strings.Join(restarted, " ")
 	}
 	recovery := r.coordinator()
 	if interrupted && c.rollback {
@@ -323,25 +377,22 @@ func runCase(env *lab.Env, number int, c faultCase, skipFence bool) (bool, int) 
 		result, err = recovery.Resume(env.Ctx, id)
 	}
 	if err != nil && !errors.Is(err, relocate.ErrFenceInStore) {
-		fmt.Printf("  recovery: %v\n", err)
+		r.row["recovery_error"] = err.Error()
 		return false, r.mostWritable
 	}
 	if result.DiscardErr != nil {
-		fmt.Printf("  recovery: the destination did not discard its staged copy: %v\n", result.DiscardErr)
+		r.row["discard_error"] = result.DiscardErr.Error()
 	}
 	if c.staysDown {
-		fmt.Printf("  node %s restarted after the recovery\n", c.kill)
 		r.start(c.kill, "")
 	}
 	relocation, err := env.Catalog.GetRelocation(env.Ctx, id)
 	if err != nil {
 		fatal("relocation record", err)
 	}
-	fmt.Printf("  recovery: %s; relocation record: state %s, step %d; fence point: position %d sha256 %s, fence at position %d\n", result.Outcome, relocation.State, relocation.Step, result.Position, short(result.SHA256), result.Fence)
+	r.row["outcome"], r.row["relocation_state"], r.row["relocation_step"] = result.Outcome, relocation.State, relocation.Step
+	r.row["fence_point"], r.row["fence_point_sha256"], r.row["fence"] = result.Position, short(result.SHA256), result.Fence
 	r.boundary("after recovery")
-	for _, line := range r.boundaryLines {
-		fmt.Println("  " + line)
-	}
 	return r.verify(c, interrupted, result, relocation), r.mostWritable
 }
 
@@ -357,16 +408,15 @@ func (r *run) verify(c faultCase, interrupted bool, result relocate.Result, relo
 	if err != nil {
 		fatal("catalog", err)
 	}
+	r.row["owner"], r.row["epoch"] = record.Owner, record.Epoch
 	chain, restorable, err := fence.Audit(env.Ctx, env.Store, id)
 	if err != nil {
-		fmt.Printf("  the store does not hold one lineage: %v\n", err)
+		r.row["audit_error"] = err.Error()
 		return false
 	}
-	var slots []string
 	for _, slot := range chain {
-		slots = append(slots, fmt.Sprintf("%d-%d e%d %s", slot.First, slot.Last, slot.Epoch, slot.Kind))
+		tables.slots.Row(r.number, slot.First, slot.Last, slot.Epoch, slot.Kind)
 	}
-	fmt.Printf("  store: %s\n", strings.Join(slots, "; "))
 	last := chain[len(chain)-1]
 	restore := func(position int64) []byte {
 		image, err := fence.RestoreAt(restorable, position)
@@ -390,7 +440,7 @@ func (r *run) verify(c faultCase, interrupted bool, result relocate.Result, relo
 		fencePosition, fenceSHA = result.Position, result.SHA256
 	}
 	if fencePosition < 1 || result.Fence != fencePosition+1 {
-		fmt.Printf("  the recovery names fence point %d and fence %d\n", fencePosition, result.Fence)
+		tables.failedInvariants.Row(r.number, fmt.Sprintf("the recovery names fence point %d and fence %d", fencePosition, result.Fence))
 		return false
 	}
 	atFence, fenced := restore(fencePosition), restore(result.Fence)
@@ -413,8 +463,8 @@ func (r *run) verify(c faultCase, interrupted bool, result relocate.Result, relo
 	if err != nil {
 		fatal("owner file", err)
 	}
-	fmt.Printf("  final: catalog owner %s epoch %d, newest slot epoch %d; %d acknowledged (%d store-durable), %d refused; final user_version %d (%s); most writable nodes at any boundary %d\n",
-		record.Owner, record.Epoch, last.Epoch, len(r.acks), storeDurable, r.refused, finalState.UserVersion, finalState.Match, r.mostWritable)
+	r.row["newest_slot_epoch"], r.row["acknowledged"], r.row["store_durable"], r.row["refused"] = last.Epoch, len(r.acks), storeDurable, r.refused
+	r.row["final_user_version"], r.row["final_state"] = finalState.UserVersion, finalState.Match
 	parts := []struct {
 		ok   bool
 		what string
@@ -430,10 +480,11 @@ func (r *run) verify(c faultCase, interrupted bool, result relocate.Result, relo
 	ok := true
 	for _, part := range parts {
 		if !part.ok {
-			fmt.Println("  NOT: " + part.what)
+			tables.failedInvariants.Row(r.number, part.what)
 			ok = false
 		}
 	}
+	r.row["holds"] = ok
 	return ok
 }
 
@@ -460,46 +511,57 @@ func main() {
 		fatal("work directory", err)
 	}
 	defer env.Close()
+	set = results.MustOpen(env.Work)
+	openTables()
+	// env.Reset empties env.Work before every case, so the nodes work in a
+	// subdirectory and the tables in env.Work/results survive.
+	env.Work = filepath.Join(env.Work, "nodes")
+	env.Process.Work = env.Work
+	if err := os.MkdirAll(env.Work, 0o755); err != nil {
+		fatal("work directory", err)
+	}
 	fmt.Printf("INFO: store %s, work directory %s\n", store.Endpoint, env.ShownWork())
-	fmt.Printf("store: bucket %s, prefix %s; nodes a (source) and b (destination) share the catalog; settings %s\n", store.Bucket, store.Prefix, node.PlatformSettings())
-	fmt.Println("relocation steps:")
-	for _, step := range relocate.Steps() {
-		fmt.Printf("  %s\n", step)
-	}
-	fmt.Println("each case: a claims db-0001 and writes steps 1-2 store-durable and step 3 local-durable; at every step boundary the client writes store-durable to the node the catalog names and local-durable to the other; one fault per case; then resume or roll back")
+	tables.infoRun.Row("store endpoint", store.Endpoint)
+	tables.infoRun.Row("work directory", env.ShownWork())
+	setting("bucket", store.Bucket)
+	setting("prefix", store.Prefix)
 	if *mutant != "" {
-		fmt.Printf("mutant: %s\n", *mutant)
+		setting("mutant", *mutant)
 	}
-	passed, total := 0, 0
+	for _, pragma := range strings.Fields(node.PlatformSettings().String()) {
+		name, value, _ := strings.Cut(pragma, "=")
+		setting(name, value)
+	}
+	for _, step := range relocate.Steps() {
+		_, name, _ := strings.Cut(step.String(), " (")
+		tables.steps.Row(int(step), strings.TrimSuffix(name, ")"))
+	}
+	part = "A"
 	for i, c := range cases() {
 		if *only != 0 && *only != i+1 {
 			continue
 		}
-		total++
 		ok, _ := runCase(env, i+1, c, *mutant == "skip-fence")
 		check(ok, fmt.Sprintf("case %d: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present", i+1))
-		if ok {
-			passed++
-		}
 	}
-	fmt.Printf("\n%d of %d fault cases hold every invariant\n", passed, total)
 	if *mutant == "" && *only == 0 {
-		fmt.Println("\n== self-test: the same relocation without the seal and without the store fence ==")
+		part = "B"
 		_, writable := runCase(env, 0, faultCase{}, true)
 		check(writable >= 2, "self-test: without the fence the boundary check finds two writable nodes")
 	}
-	for _, problem := range env.Tracker.Problems {
-		fmt.Println("problem: " + problem)
-	}
-	for _, line := range env.Tracker.OverBounds {
-		fmt.Println("over bounds: " + line)
+	part = "C"
+	seq := 0
+	for _, kind := range []struct {
+		name  string
+		lines []string
+	}{{"problem", env.Tracker.Problems}, {"over bounds", env.Tracker.OverBounds}} {
+		for _, line := range kind.lines {
+			seq++
+			tables.problems.Row(seq, kind.name, line)
+		}
 	}
 	check(len(env.Tracker.OverBounds) == 0 && env.Tracker.Replies > 0, "after every command of every node process the descriptors and memory stayed within the standing bounds")
 	check(len(env.Tracker.Problems) == 0, "no node reported a problem")
-	fmt.Printf("INFO: %d node replies carried a bounds check\n", env.Tracker.Replies)
-	if len(failures) > 0 {
-		fmt.Printf("\n%d check(s) FAILED\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("\nall checks passed")
+	tables.infoRun.Row("node replies that carried a bounds check", env.Tracker.Replies)
+	set.Finish("INTERRUPTED RELOCATION")
 }

@@ -1,0 +1,3 @@
+journal,synchronous,seed,base_step,base_bytes,step,summary,marker_id
+wal,FULL,1,3,159744,4,step 4: schema=0 inserts=48 updates=6 deletes=1 indexes=0,153
+delete,FULL,1,3,159744,4,step 4: schema=0 inserts=48 updates=6 deletes=1 indexes=0,153

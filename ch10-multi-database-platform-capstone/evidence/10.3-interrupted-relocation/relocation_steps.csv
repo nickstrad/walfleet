@@ -1,0 +1,8 @@
+step,name
+1,fence the source: bump the epoch in the catalog
+2,seal the source
+3,ship the final segment and close the source at rest
+4,rebuild at the destination from the store
+5,verify the rebuilt hash against the source's
+6,activate: put the destination's fence in the store
+7,retire the source

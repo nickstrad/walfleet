@@ -1,43 +1,152 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: descriptor soft limit 1048576; each writer's bound 320
-INFO: store http://127.0.0.1:18333, work directory _work/big/10.4
-fleet: 2000 databases, 8 writer processes (each owns 250 and keeps at most 32 open), one checker process; store: bucket course-ch10b, prefix exp-10-4-2000/
-INFO: write stream took 3m38.433s
-write stream: every database claimed and given recipe steps 1-4, each acknowledged store-durable
-schema rollout: recipe step 5 (CREATE INDEX events_by_account ON events(account_id, id)) applied to 1000 of 2000 databases, then stopped
-INFO: rollout took 49.084s
-INFO: waiting for the checker's last concurrent pass took 45.288s
-INFO: the concurrent checker ran 15 passes over the store and rebuilt 33731 restore points while the writers ran
-check ok: every restore point the checker found while the writers ran rebuilt to a recipe state
-INFO: writer w1: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w2: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w3: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w4: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w5: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w6: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w7: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-INFO: writer w8: ok close; standing assertion: 1376 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
-quiesce: every writer closed; 2000 databases recorded after a TRUNCATE checkpoint (WAL frames found: 0)
-check ok: every database was at rest when quiesced: the writers' close left no WAL frame for the TRUNCATE checkpoint
-INFO: quiesce took 6.064s
-every local file deleted (0 files left under the writers' directories)
-check ok: the new node starts with empty disks
-INFO: rebuild of 2000 databases by 8 workers took 1m28.3s; standing assertion: 41 checks, descriptors above baseline <= 104 (3 x 3 connections x 8 open databases + 32 reserve), memory growth <= 50 MiB
-rebuild read 22000 objects in 2000 listings and wrote 2000 fence objects
-INFO: rebuild read 1538925284 bytes (769462 per database)
-rebuilt: 2000 of 2000 byte-identical (E1) to the sha256 recorded after the TRUNCATE checkpoint; 1000 at recipe step 4, 1000 at recipe step 5
-check ok: 2000 of 2000 rebuilt databases are byte-identical to the quiesced originals
-check ok: every rebuilt database is a recipe state whose schema version (user_version) is the one the catalog recorded and the last one acknowledged
-check ok: the rollout stopped halfway: databases are on the old schema (step 4) or the new one (step 5 with INDEX events_by_account ON events(account_id, id)), nothing else
-check ok: the rebuilding process stayed within the standing bounds
-INFO: final checker pass took 2m6.843s
-final checker pass: 2000 databases, 13000 restore points, 0 fail to rebuild
-INFO: the final pass read 1188042642 bytes, the store's whole content
-check ok: after the rebuild every published restore point of every database rebuilds to a recipe state
-check ok: the rebuild read each of the 11000 slots it found exactly twice (once to check the lineage, once to restore)
-INFO: checker: standing assertion: 17 checks, descriptors above baseline <= 32 (3 x 3 connections x 0 open databases + 32 reserve), memory growth <= 32 MiB
-check ok: no node reported a problem and every command was acknowledged
-check ok: after every command of every writer and checker command the descriptors and memory stayed within the standing bounds
-INFO: 11025 replies carried a bounds check; total runtime 9m11s
 
-all checks passed
+════════════════════════════════════════════════════════════════════════
+  10.4  Can the whole fleet be rebuilt from the store and the catalog?
+════════════════════════════════════════════════════════════════════════
+
+Writer processes own equal shares of the fleet and keep a bounded number
+of databases open. A separate checker process lists the store and rebuilds
+every published restore point in memory while the writers run. Then every
+writer closes, every local file is deleted, and fresh nodes rebuild the
+whole fleet from the S3 store and the catalog alone.
+┌───────────────────────────┬──────────────────────────────────────────────────────────┐
+│           name            │                          value                           │
+├───────────────────────────┼──────────────────────────────────────────────────────────┤
+│ databases                 │ 2000                                                     │
+│ writer_processes          │ 8                                                        │
+│ open_databases_per_writer │ 32                                                       │
+│ checker_processes         │ 1                                                        │
+│ checker_workers           │ 4                                                        │
+│ checker_pause             │ 1s                                                       │
+│ bucket                    │ course-ch10b                                             │
+│ prefix                    │ exp-10-4-2000/                                           │
+│ steps_before_rollout      │ 4                                                        │
+│ rollout_step              │ 5                                                        │
+│ rollout_sql               │ CREATE INDEX events_by_account ON events(account_id, id) │
+└───────────────────────────┴──────────────────────────────────────────────────────────┘
+
+── A. Write stream and a schema rollout stopped halfway ────────────────
+
+A1. Every database is claimed and given recipe steps 1-4, each write
+    acknowledged store-durable. Then recipe step 5 (the CREATE INDEX in
+    rollout_sql) is applied to the first half of the share of each writer,
+    and the rollout stops.
+┌────────┬───────────┬────────────┐
+│ writer │ databases │ rolled_out │
+├────────┼───────────┼────────────┤
+│ w1     │ 250       │ 125        │
+│ w2     │ 250       │ 125        │
+│ w3     │ 250       │ 125        │
+│ w4     │ 250       │ 125        │
+│ w5     │ 250       │ 125        │
+│ w6     │ 250       │ 125        │
+│ w7     │ 250       │ 125        │
+│ w8     │ 250       │ 125        │
+└────────┴───────────┴────────────┘
+┌───────────┬────────────┬────────────┐
+│ databases │ rolled_out │ per_writer │
+├───────────┼────────────┼────────────┤
+│ 2000      │ 1000       │ 250-250    │
+└───────────┴────────────┴────────────┘
+
+A2. Every restore point the checker found while the writers ran rebuilt to
+    a recipe state: no checker failure. How many passes it made depends on
+    timing; info_run has the count.
+┌─────────────────────┐
+│ concurrent_failures │
+├─────────────────────┤
+│ 0                   │
+└─────────────────────┘
+
+── B. Quiesce ──────────────────────────────────────────────────────────
+
+B1. Every writer closes. Each database is recorded (sha256, catalog row)
+    after a TRUNCATE checkpoint. The close of the writer already left no
+    WAL frame to checkpoint: the last close deletes -wal and -shm.
+┌────────────────────┬──────────────────┐
+│ databases_recorded │ wal_frames_found │
+├────────────────────┼──────────────────┤
+│ 2000               │ 0                │
+└────────────────────┴──────────────────┘
+
+── C. Rebuild from the store alone ─────────────────────────────────────
+
+C1. Every local file is deleted. One fresh node per worker claims its share
+    of the fleet and restores it from the store. A claim reads every slot
+    twice (once to check the lineage, once to restore) and writes one fence.
+┌───────────┬─────────┬──────────────────┬──────────┬──────────────┬───────────────────────┐
+│ databases │ workers │ local_files_left │ listings │ objects_read │ fence_objects_written │
+├───────────┼─────────┼──────────────────┼──────────┼──────────────┼───────────────────────┤
+│ 2000      │ 8       │ 0                │ 2000     │ 22000        │ 2000                  │
+└───────────┴─────────┴──────────────────┴──────────┴──────────────┴───────────────────────┘
+
+C2. The rebuilt databases: byte-identical (E1) to the sha256 recorded at
+    quiesce, and at the recipe step the catalog recorded and the writer last
+    acknowledged. Half are on the old schema (step 4), half on the new one
+    (step 5); nothing else. Each matches its recipe step file except the
+    change counter (bytes 24-27 and 92-95).
+┌─────────────┬─────────────────┬───────────┬────────────────┬───────────────┐
+│ recipe_step │ vs_recipe_file  │ databases │ byte_identical │ schema_agrees │
+├─────────────┼─────────────────┼───────────┼────────────────┼───────────────┤
+│ 4           │ counter differs │ 1000      │ 1000           │ 1000          │
+│ 5           │ counter differs │ 1000      │ 1000           │ 1000          │
+└─────────────┴─────────────────┴───────────┴────────────────┴───────────────┘
+
+C3. The stream positions each database reached in the store (last_shipped in
+    the catalog), by schema:
+┌─────────────┬──────────────┬───────────┐
+│ recipe_step │ last_shipped │ databases │
+├─────────────┼──────────────┼───────────┤
+│ 4           │ 5            │ 1000      │
+│ 5           │ 6            │ 1000      │
+└─────────────┴──────────────┴───────────┘
+
+C4. A few databases, for a closer look:
+┌──────────┬────────┬───────┬─────────┬──────────────┬─────────┬─────────────────┬────────────────┐
+│ database │ writer │ acked │ catalog │ last_shipped │ rebuilt │ vs_recipe_file  │ byte_identical │
+├──────────┼────────┼───────┼─────────┼──────────────┼─────────┼─────────────────┼────────────────┤
+│ db-0001  │ w1     │ 5     │ 5       │ 6            │ 5       │ counter differs │ true           │
+│ db-0002  │ w2     │ 5     │ 5       │ 6            │ 5       │ counter differs │ true           │
+│ db-0500  │ w4     │ 5     │ 5       │ 6            │ 5       │ counter differs │ true           │
+└──────────┴────────┴───────┴─────────┴──────────────┴─────────┴─────────────────┴────────────────┘
+
+── D. The final checker pass ───────────────────────────────────────────
+
+D1. After the rebuild, the checker rebuilds every published restore point
+    of every database. The slots the rebuild found are those restore points
+    minus the fences it wrote, and it read each of them exactly twice.
+┌───────────┬────────────────┬────────┬─────────────┬──────────────┬─────────────────┐
+│ databases │ restore_points │ failed │ slots_found │ objects_read │ each_read_twice │
+├───────────┼────────────────┼────────┼─────────────┼──────────────┼─────────────────┤
+│ 2000      │ 13000          │ 0      │ 11000       │ 22000        │ true            │
+└───────────┴────────────────┴────────┴─────────────┴──────────────┴─────────────────┘
+
+── E. Every process ────────────────────────────────────────────────────
+
+E1. Problems and over-bounds lines of the writers, the checker and the
+    rebuilding process. All counts are 0; any line would be listed in the
+    table problems.
+┌──────────┬─────────────┬─────────────────────┐
+│ problems │ over_bounds │ rebuild_over_bounds │
+├──────────┼─────────────┼─────────────────────┤
+│ 0        │ 0           │ 0                   │
+└──────────┴─────────────┴─────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  every restore point the checker found while the writers ran rebuilt to a recipe state
+B  ✓  every database was at rest when quiesced: the writers' close left no WAL frame for the TRUNCATE checkpoint
+C  ✓  the new node starts with empty disks
+C  ✓  2000 of 2000 rebuilt databases are byte-identical to the quiesced originals
+C  ✓  every rebuilt database is a recipe state whose schema version (user_version) is the one the catalog recorded and the last one acknowledged
+C  ✓  the rollout stopped halfway: databases are on the old schema (step 4) or the new one (step 5 with INDEX events_by_account ON events(account_id, id)), nothing else
+C  ✓  the rebuilding process stayed within the standing bounds
+D  ✓  after the rebuild every published restore point of every database rebuilds to a recipe state
+D  ✓  the rebuild read each of the 11000 slots it found exactly twice (once to check the lineage, once to restore)
+E  ✓  no node reported a problem and every command was acknowledged
+E  ✓  after every command of every writer and checker command the descriptors and memory stayed within the standing bounds
+
+11 of 11 claims hold
+
+Experiment verdict: REBUILD THE FLEET OK

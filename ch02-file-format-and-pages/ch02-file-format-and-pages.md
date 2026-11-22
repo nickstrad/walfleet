@@ -12,27 +12,21 @@
 
 > **How to run the experiments**
 >
-> - **Prerequisites:** Go 1.26 (`go.mod` specifies `go 1.26.0`).
-> - **Fetch the pinned SQLite source tree** into `_src/sqlite-3.53.4` (or point `SQLITE_SRC` at an existing checkout of tag `version-3.53.4`):
+> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to start the runner from the host. Build the `lab` image once, from the repository root:
 >   ```text
->   go run ./cmd/course fetch-source
+>   docker compose build lab
 >   ```
-> - **Build the pinned C tools** (`sqlite3`, `showwal`, `dbhash`) into `_tools/bin/` for Experiment 2.1's `.dbinfo` cross-check. If no `sqlite3` CLI is found anywhere, Experiment 2.1 still runs, prints `NO-CLI:`, and fills the `.dbinfo` column with `?`. If `$SQLITE3_BIN` names a missing path or any found CLI reports a different `sqlite_source_id()`, Experiment 2.1 fails with exit status 1:
+>   The image already contains the pinned SQLite `3.53.4` source tree, the C tools (`sqlite3`, `showwal`, `dbhash`; Experiment 2.1 uses the CLI's `.dbinfo` as a cross-check), `strace`, and the DuckDB CLI that presents the results.
+> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment in it, and prints its walkthrough; add `-i` (`go run ./cmd/course run -i 2.2`) to stay in DuckDB afterwards with the tables loaded:
 >   ```text
->   go run ./cmd/course build-tools
+>   go run ./cmd/course run 2.1
+>   go run ./cmd/course run 2.2
+>   go run ./cmd/course run 2.3
 >   ```
-> - **Run an experiment** from the repository root:
->   ```text
->   go run ./ch02-file-format-and-pages/experiments/2.1-header-and-what-a-commit-changes
->   go run ./ch02-file-format-and-pages/experiments/2.2-page-census
->   go run ./ch02-file-format-and-pages/experiments/2.3-page-manifest
->   ```
->   Scratch databases are written under `_work/2.1/`, `_work/2.2/`, and `_work/2.3/`, which are git-ignored and safe to delete.
-> - **Cross-platform notes and macOS:** Nothing in Chapter 2 is **Linux only** (no `strace`, no `/proc`). Experiment 2.2 part E creates and deletes a 1 GiB **sparse file** (a file whose unwritten middle is recorded as a hole rather than allocated as disk blocks: 196,608 bytes allocated on ext4 here; APFS on macOS also supports sparse files). On macOS, run the `go run` commands above directly or inside the repository's Linux container:
->   ```text
->   docker compose run --rm lab go run ./ch02-file-format-and-pages/experiments/2.1-header-and-what-a-commit-changes
->   ```
->   All captured evidence in this chapter was measured on Linux (`linux/amd64`, Go 1.26.8, ext4) and verified inside the Debian `lab` container. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and vetted only, not run.
+>   In the container, scratch databases and tables are written under `/work/2.1/`, `/work/2.2/`, and `/work/2.3/` (the `lab-work` volume); run directly, under `_work/2.1/`, `_work/2.2/`, and `_work/2.3/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch02-file-format-and-pages/experiments/2.2-page-census`). Run this way it prints only its verdict and leaves its tables under `_work/2.2/results/`. Experiment 2.1's `.dbinfo` cross-check then needs a CLI on the host (`go run ./cmd/course fetch-source`, then `go run ./cmd/course build-tools`). If no `sqlite3` CLI is found anywhere, Experiment 2.1 still runs, prints `NO-CLI:`, and fills the `.dbinfo` column with `?`. If `$SQLITE3_BIN` names a missing path or any found CLI reports a different `sqlite_source_id()`, Experiment 2.1 fails with exit status 1.
+> - **Cross-platform notes and macOS:** Nothing in Chapter 2 is **Linux only** (no `strace`, no `/proc`). Experiment 2.2 part E creates and deletes a 1 GiB **sparse file** (a file whose unwritten middle is recorded as a hole rather than allocated as disk blocks: 196,608 bytes allocated on ext4 in the earlier capture; APFS on macOS also supports sparse files). On macOS, the experiments also run directly on the host.
+> - **Measured platform:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). The checked values are identical to the earlier `linux/amd64` capture.
 
 ---
 
@@ -196,10 +190,10 @@ Behavior differences across SQLite releases relevant to the database file format
 ### Experiment 2.1 — Header and what a commit changes (`2.1-header-and-what-a-commit-changes`)
 
 - **Claim:** Plain Go without SQLite decodes all 23 fields of the 100-byte header and matches `PRAGMA` and the pinned CLI's `.dbinfo` on all 18 rows that have an oracle (`version-valid-for` has neither; on negative `user_version` or `application_id` values, `PRAGMA` and `internal/dbfile` decode signed `int32` while `.dbinfo` formats all 4-byte fields unsigned with `%u`). In rollback mode, every committed write transaction advances header bytes 24–27 and 92–95 by 1 in `.db`. In WAL mode, `.db` does not change until checkpoint; commits that do not dirty page 1 change no header byte anywhere; and commits that dirty page 1 write `dbFileVers + 1`, where `dbFileVers` refreshes whenever `readDbPage` reads page 1 into the page cache—holding at `base + 1` on one connection while page 1 stays cached (C1), and advancing when page 1 is re-read on a new connection (C3) or after `PRAGMA shrink_memory` (C4). The in-header page count (bytes 28–31) is trusted only when non-zero and bytes 24–27 equal bytes 92–95, and page size 65,536 is stored as `00 01` (`1`) in bytes 16–17.
-- **Evidence form:** `EXACT` (all lines except `INFO:` lines).
-- **Run command:**
+- **Evidence form:** `EXACT` (every stored table must match on every run).
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./ch02-file-format-and-pages/experiments/2.1-header-and-what-a-commit-changes
+  go run ./cmd/course run 2.1
   ```
 
 <!-- include: experiments/2.1-header-and-what-a-commit-changes/main.go -->
@@ -234,6 +228,7 @@ import (
 	"github.com/nickstrad/walfleet/internal/dbfile"
 	"github.com/nickstrad/walfleet/internal/equal"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 
@@ -245,15 +240,18 @@ const (
 	childReadHeader     = "child-read-header"
 )
 
-var failures []string
+var (
+	set     *results.Set
+	bases   *results.Table
+	events  *results.Table
+	changes *results.Table
+)
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
+func openTables(dir string) {
+	set = results.MustOpen(dir)
+	bases = set.Table("bases", "part", "name", "journal_mode", "built_to_step", "write_version", "read_version", "change_counter", "in_header_size", "file_pages")
+	events = set.Table("events", "seq", "part", "scenario", "event", "wal_state", "detail")
+	changes = set.Table("header_changes", "event_seq", "view", "byte_offset", "size", "field", "before_value", "after_value", "changed_bytes")
 }
 
 func fatal(what string, err error) {
@@ -340,8 +338,16 @@ func parse(raw []byte) dbfile.Header {
 	return must(dbfile.ParseHeader(raw))("parse header")
 }
 
-func changedFields(before, after []byte) []string {
-	var lines []string
+type change struct {
+	offset, size int
+	name         string
+	before       string
+	after        string
+	bytes        string
+}
+
+func changedFields(before, after []byte) []change {
+	var found []change
 	old, updated := parse(before).Fields(), parse(after).Fields()
 	for i, field := range old {
 		if bytes.Equal(before[field.Offset:field.Offset+field.Size], after[field.Offset:field.Offset+field.Size]) {
@@ -353,22 +359,39 @@ func changedFields(before, after []byte) []string {
 				offsets = append(offsets, strconv.Itoa(b))
 			}
 		}
-		span := fmt.Sprintf("bytes %d-%d", field.Offset, field.Offset+field.Size-1)
-		if field.Size == 1 {
-			span = fmt.Sprintf("byte %d", field.Offset)
-		}
-		lines = append(lines, fmt.Sprintf("%s %s: %s -> %s (changed bytes %s)", span, field.Name, field.Value, updated[i].Value, strings.Join(offsets, ",")))
+		found = append(found, change{field.Offset, field.Size, field.Name, field.Value, updated[i].Value, strings.Join(offsets, " ")})
 	}
-	if len(lines) == 0 {
-		lines = append(lines, "no header byte changed")
-	}
-	return lines
+	return found
 }
 
-func printChanges(prefix string, before, after []byte) {
-	for _, line := range changedFields(before, after) {
-		fmt.Printf("%s%s\n", prefix, line)
+var eventCount int
+
+// newEvent records one point in a scenario and returns its number.
+func newEvent(part, scenario, event, walState, detail string) int {
+	eventCount++
+	events.Row(eventCount, part, scenario, event, walState, detail)
+	return eventCount
+}
+
+// recordChanges writes the header fields that differ between two copies of
+// page 1; one row with no field says that no header byte changed.
+func recordChanges(event int, view string, before, after []byte) {
+	found := changedFields(before, after)
+	if len(found) == 0 {
+		changes.Row(event, view, nil, nil, nil, nil, nil, nil)
 	}
+	for _, c := range found {
+		changes.Row(event, view, c.offset, c.size, c.name, c.before, c.after, c.bytes)
+	}
+}
+
+// recordBase writes what a base database's header says before a scenario starts.
+func recordBase(part, name, mode string, steps int, path string) []byte {
+	header := readHeaderFromChild(path)
+	counter, _ := counters(header)
+	info := must(os.Stat(path))("stat " + name)
+	bases.Row(part, name, mode, steps, header[18], header[19], counter, binary.BigEndian.Uint32(header[28:32]), info.Size()/4096)
+	return header
 }
 
 func counters(raw []byte) (uint32, uint32) {
@@ -421,24 +444,22 @@ func parseDBInfo(text string) map[string]string {
 }
 
 func partA(ctx context.Context, dir string, cli *sqlitex.CLI) {
-	fmt.Println()
-	fmt.Println("== A. decode the header of the R0 database and compare every field with SQLite")
 	r := recipe.Default()
 	path := filepath.Join(dir, "r0.db")
 	if err := r.Build(ctx, path, r.Steps); err != nil {
 		fatal("build R0", err)
 	}
 	sum := must(equal.FileSHA256(path))("hash R0")
-	fmt.Printf("R0: %s, built to step %d; sha256 %s\n", r, r.Steps, sum)
 	f := must(dbfile.Open(path))("parse R0")
 	h := f.Header
 	pageCount, source := f.PageCount(), f.PageCountSource()
 	f.Close()
-	fmt.Println("the 100-byte header, decoded by internal/dbfile:")
+	set.Table("r0", "recipe", "built_to_step", "sha256", "page_count", "page_count_source", "in_header_size_valid").
+		Row(r, r.Steps, sum, pageCount, source, h.InHeaderSizeValid())
+	fields := set.Table("r0_header", "byte_offset", "size", "field", "value")
 	for _, field := range h.Fields() {
-		fmt.Printf("  %3d %2d  %-32s %s\n", field.Offset, field.Size, field.Name, field.Value)
+		fields.Row(field.Offset, field.Size, field.Name, field.Value)
 	}
-	fmt.Printf("page count %d, taken from the %s (in-header size valid: %v)\n", pageCount, source, h.InHeaderSizeValid())
 
 	// Open R0 through a normal read-write connection rather than mode=ro: a
 	// read-only connection cannot checkpoint and remove the -wal on close.
@@ -472,50 +493,45 @@ func partA(ctx context.Context, dir string, cli *sqlitex.CLI) {
 	if err := recipe.CheckAtRest(path); err != nil {
 		fatal("R0 after pragmas", err)
 	}
-	check(must(equal.FileSHA256(path))("rehash") == sum, "opening R0, reading the pragmas and closing left it byte-identical and at rest")
+	set.Check("A", must(equal.FileSHA256(path))("rehash") == sum, "opening R0, reading the pragmas and closing left it byte-identical and at rest")
 
 	dbinfo := map[string]string{}
-	cliStatus := "no pinned sqlite3 CLI found; the .dbinfo column is '?' and is not checked"
 	if cli != nil {
 		out, err := cli.Exec(ctx, path, ".dbinfo\n")
 		if err != nil {
 			fatal("CLI .dbinfo", err)
 		}
 		dbinfo = parseDBInfo(out)
-		cliStatus = "pinned sqlite3 CLI .dbinfo"
 	}
-	fmt.Printf("oracles: PRAGMA through the Go driver; %s\n", cliStatus)
-	fmt.Printf("  %-22s %-12s %-12s %-12s %s\n", "field", "ours", "PRAGMA", ".dbinfo", "match")
+	oracles := set.Table("oracles", "seq", "field", "ours", "pragma", "dbinfo")
 	allMatch := true
 	checked, unchecked := 0, 0
-	for _, row := range rows {
-		cliValue := "-"
-		if row.cliName != "" {
-			cliValue = "?"
-			if cli != nil {
-				cliValue = dbinfo[row.cliName]
-			}
+	for i, row := range rows {
+		var pragmaValue, cliValue any
+		if row.pragma != "-" {
+			pragmaValue = row.pragma
 		}
-		hasPragma, hasCLI := row.pragma != "-", cliValue != "-" && cliValue != "?"
-		verdict := "n/a"
+		if row.cliName != "" && cli != nil {
+			cliValue = dbinfo[row.cliName]
+		}
+		hasPragma, hasCLI := pragmaValue != nil, cliValue != nil
 		if hasPragma || hasCLI {
 			match := (!hasPragma || row.pragma == row.ours) && (!hasCLI || cliValue == row.ours)
 			allMatch = allMatch && match
-			verdict = fmt.Sprint(match)
 			checked++
 		} else {
 			unchecked++
 		}
-		fmt.Printf("  %-22s %-12s %-12s %-12s %s\n", row.name, row.ours, row.pragma, cliValue, verdict)
+		oracles.Row(i+1, row.name, row.ours, pragmaValue, cliValue)
 	}
-	oracles := "PRAGMA or .dbinfo"
+	oracleNames := "PRAGMA or .dbinfo"
 	if cli == nil {
-		oracles = "PRAGMA only, no CLI"
+		oracleNames = "PRAGMA only, no CLI"
 	}
-	check(allMatch && checked > 0, fmt.Sprintf("each of the %d decoded header fields that has an oracle here (%s) equals SQLite's own report of it; %d field(s) have none (n/a)", checked, oracles, unchecked))
-	check(h.SQLiteVersion == pinnedVersionNumber, fmt.Sprintf("bytes 96-99 read %d (the library that last wrote the file)", pinnedVersionNumber))
-	check(h.WALMode(), "bytes 18 and 19 are 2 and 2 in a WAL-mode file")
-	check(h.ChangeCountersAgree() && source == dbfile.PageCountFromHeader, "bytes 24-27 equal 92-95, so the in-header size at 28 is used")
+	set.Check("A", allMatch && checked > 0, fmt.Sprintf("each of the %d decoded header fields that has an oracle here (%s) equals SQLite's own report of it; %d field(s) have none (n/a)", checked, oracleNames, unchecked))
+	set.Check("A", h.SQLiteVersion == pinnedVersionNumber, fmt.Sprintf("bytes 96-99 read %d (the library that last wrote the file)", pinnedVersionNumber))
+	set.Check("A", h.WALMode(), "bytes 18 and 19 are 2 and 2 in a WAL-mode file")
+	set.Check("A", h.ChangeCountersAgree() && source == dbfile.PageCountFromHeader, "bytes 24-27 equal 92-95, so the in-header size at 28 is used")
 }
 
 func buildBase(ctx context.Context, dir, name, mode string, steps int) string {
@@ -527,12 +543,9 @@ func buildBase(ctx context.Context, dir, name, mode string, steps int) string {
 }
 
 func partB(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== B. rollback mode: what one commit changes in page 1 (the header)")
 	r := recipe.Default().WithJournalMode("delete")
 	base := buildBase(ctx, dir, "rollback-base.db", "delete", 27)
-	fmt.Println("base: rollback-mode recipe built to step 27, closed")
-	fmt.Println("B1. steps 28, 29, 30 on ONE connection; page 1 read from the database file after each commit:")
+	recordBase("B", "rollback-base.db", "delete", 27, base)
 	path := filepath.Join(dir, "rollback-one-connection.db")
 	copyFile(base, path)
 	before := readHeaderFromChild(path)
@@ -543,9 +556,8 @@ func partB(ctx context.Context, dir string) {
 			fatal("apply", err)
 		}
 		after := readHeaderFromChild(path)
-		check(bytes.Equal(after, logicalHeader(ctx, db)), fmt.Sprintf("after step %d the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)", step))
-		fmt.Printf("  commit of step %d:\n", step)
-		printChanges("    ", before, after)
+		set.Check("B", bytes.Equal(after, logicalHeader(ctx, db)), fmt.Sprintf("after step %d the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)", step))
+		recordChanges(newEvent("B", "B1", fmt.Sprintf("commit of step %d", step), walText(path), ""), "file vs previous", before, after)
 		oldCounter, oldValid := counters(before)
 		newCounter, newValid := counters(after)
 		advancedEveryCommit = advancedEveryCommit && newCounter == oldCounter+1 && newValid == oldValid+1 && newCounter == newValid
@@ -554,22 +566,16 @@ func partB(ctx context.Context, dir string) {
 	if err := db.Close(); err != nil {
 		fatal("close", err)
 	}
-	check(advancedEveryCommit, "rollback mode: bytes 24-27 and 92-95 each advance by exactly one per commit, on one connection")
+	set.Check("B", advancedEveryCommit, "rollback mode: bytes 24-27 and 92-95 each advance by exactly one per commit, on one connection")
 	final := readHeaderFromChild(path)
-	check(bytes.Equal(final, before), "closing the connection changed nothing in page 1")
+	set.Check("B", bytes.Equal(final, before), "closing the connection changed nothing in page 1")
 }
 
 func partC(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== C. WAL mode (the platform default): what changes in page 1, and when")
 	r := recipe.Default()
 	base := buildBase(ctx, dir, "wal-base.db", "wal", 27)
-	baseHeader := readHeaderFromChild(base)
+	baseHeader := recordBase("C", "wal-base.db", "wal", 27, base)
 	c0, _ := counters(baseHeader)
-	fmt.Printf("base: WAL-mode recipe built to step 27, closed; file change counter %d\n", c0)
-	fmt.Println("Two copies of page 1 are reported: 'current' = SQLite's view (sqlite_dbpage, WAL included); 'file' = the bytes in the database file (read by a child process).")
-
-	fmt.Println("C1. steps 28, 29, 30 on ONE connection (each step writes page 1: user_version):")
 	path := filepath.Join(dir, "wal-one-connection.db")
 	copyFile(base, path)
 	db := must(r.Open(ctx, path))("open")
@@ -582,26 +588,24 @@ func partC(ctx context.Context, dir string) {
 		}
 		current := logicalHeader(ctx, db)
 		file := readHeaderFromChild(path)
-		fmt.Printf("  commit of step %d (%s):\n", step, walText(path))
-		printChanges("    current vs previous commit: ", previous, current)
-		printChanges("    file vs base: ", baseHeader, file)
+		event := newEvent("C", "C1", fmt.Sprintf("commit of step %d", step), walText(path), "")
+		recordChanges(event, "current vs previous", previous, current)
+		recordChanges(event, "file vs base", baseHeader, file)
 		counter, valid := counters(current)
 		currentCounters = append(currentCounters, counter)
-		check(counter == valid, fmt.Sprintf("step %d: the current page 1 has 24-27 equal to 92-95 (%d)", step, counter))
+		set.Check("C", counter == valid, fmt.Sprintf("step %d: the current page 1 has 24-27 equal to 92-95 (%d)", step, counter))
 		fileUnchanged = fileUnchanged && bytes.Equal(file, baseHeader)
 		previous = current
 	}
-	check(currentCounters[0] == c0+1 && currentCounters[1] == c0+1 && currentCounters[2] == c0+1, fmt.Sprintf("WAL, one connection: every commit writes the same change counter %d (base + 1), it does not advance per commit", c0+1))
-	check(fileUnchanged, "WAL: the database file's page 1 does not change at commit; the new page 1 is a frame in the -wal")
+	set.Check("C", currentCounters[0] == c0+1 && currentCounters[1] == c0+1 && currentCounters[2] == c0+1, fmt.Sprintf("WAL, one connection: every commit writes the same change counter %d (base + 1), it does not advance per commit", c0+1))
+	set.Check("C", fileUnchanged, "WAL: the database file's page 1 does not change at commit; the new page 1 is a frame in the -wal")
 	if err := db.Close(); err != nil {
 		fatal("close", err)
 	}
 	afterClose := readHeaderFromChild(path)
-	fmt.Printf("  after the last connection closed (%s):\n", walText(path))
-	printChanges("    file vs base: ", baseHeader, afterClose)
-	check(bytes.Equal(afterClose, previous), "the checkpoint at close copied the current page 1 into the file")
+	recordChanges(newEvent("C", "C1", "after the last close", walText(path), ""), "file vs base", baseHeader, afterClose)
+	set.Check("C", bytes.Equal(afterClose, previous), "the checkpoint at close copied the current page 1 into the file")
 
-	fmt.Println("C2. three commits on ONE connection that do not touch page 1 (UPDATE one account balance):")
 	path = filepath.Join(dir, "wal-no-page1.db")
 	copyFile(base, path)
 	db = must(r.Open(ctx, path))("open")
@@ -615,8 +619,7 @@ func partC(ctx context.Context, dir string) {
 		}
 		affected := must(result.RowsAffected())("rows affected")
 		current := logicalHeader(ctx, db)
-		fmt.Printf("  commit %d (%s): ", i, walText(path))
-		printChanges("current vs base: ", start, current)
+		recordChanges(newEvent("C", "C2", fmt.Sprintf("UPDATE commit %d", i), walText(path), ""), "current vs base", start, current)
 		unchanged = unchanged && bytes.Equal(current, start)
 		eachWroteOneRowAndGrewWAL = eachWroteOneRowAndGrewWAL && affected == 1 && walSize(path) > previousWAL
 		previousWAL = walSize(path)
@@ -625,11 +628,10 @@ func partC(ctx context.Context, dir string) {
 		fatal("close", err)
 	}
 	afterClose = readHeaderFromChild(path)
-	check(eachWroteOneRowAndGrewWAL, "WAL: each of the three UPDATEs changed one row and appended frames to the -wal")
-	check(must(equal.FileSHA256(path))("hash") != must(equal.FileSHA256(base))("hash base"), "after the checkpoint at close the database file differs from the base")
-	check(unchanged && bytes.Equal(afterClose, baseHeader), "WAL: commits that do not write page 1 leave every header byte unchanged, even the change counter, before and after the checkpoint")
+	set.Check("C", eachWroteOneRowAndGrewWAL, "WAL: each of the three UPDATEs changed one row and appended frames to the -wal")
+	set.Check("C", must(equal.FileSHA256(path))("hash") != must(equal.FileSHA256(base))("hash base"), "after the checkpoint at close the database file differs from the base")
+	set.Check("C", unchanged && bytes.Equal(afterClose, baseHeader), "WAL: commits that do not write page 1 leave every header byte unchanged, even the change counter, before and after the checkpoint")
 
-	fmt.Println("C3. steps 28, 29, 30 each on a NEW connection while a second idle connection stays open (so closing a writer does not checkpoint):")
 	path = filepath.Join(dir, "wal-new-connections.db")
 	copyFile(base, path)
 	holder := must(r.Open(ctx, path))("open holder")
@@ -644,24 +646,22 @@ func partC(ctx context.Context, dir string) {
 			fatal("close writer", err)
 		}
 		current := logicalHeader(ctx, holder)
-		fmt.Printf("  step %d on its own connection (%s):\n", step, walText(path))
-		printChanges("    current vs previous commit: ", previous, current)
+		recordChanges(newEvent("C", "C3", fmt.Sprintf("step %d, new connection", step), walText(path), ""), "current vs previous", previous, current)
 		counter, _ := counters(current)
 		perSession = append(perSession, counter)
 		previous = current
 	}
 	file := readHeaderFromChild(path)
-	check(bytes.Equal(file, baseHeader), "WAL: with another connection open, the file's page 1 still equals the base after three commits")
-	check(perSession[0] == c0+1 && perSession[1] == c0+2 && perSession[2] == c0+3, "WAL: each new connection reads page 1 afresh and writes counter + 1, so the counter advances once per connection that writes page 1")
+	set.Check("C", bytes.Equal(file, baseHeader), "WAL: with another connection open, the file's page 1 still equals the base after three commits")
+	set.Check("C", perSession[0] == c0+1 && perSession[1] == c0+2 && perSession[2] == c0+3, "WAL: each new connection reads page 1 afresh and writes counter + 1, so the counter advances once per connection that writes page 1")
 	if err := holder.Close(); err != nil {
 		fatal("close holder", err)
 	}
-	check(bytes.Equal(readHeaderFromChild(path), previous) && walSize(path) == -1, "closing the last connection checkpointed page 1 into the file and removed the -wal")
+	set.Check("C", bytes.Equal(readHeaderFromChild(path), previous) && walSize(path) == -1, "closing the last connection checkpointed page 1 into the file and removed the -wal")
 
 	// Evicting page 1 from the connection's page cache before each commit forces
 	// readDbPage (src/pager.c:3093-3110) to refresh dbFileVers, proving that C1's
 	// constant counter is a page-cache effect rather than a per-connection rule.
-	fmt.Println("C4. steps 28, 29, 30 on ONE connection, with PRAGMA shrink_memory before each step (it drops unused pages, page 1 included, from the connection's cache):")
 	path = filepath.Join(dir, "wal-one-connection-shrink.db")
 	copyFile(base, path)
 	db = must(r.Open(ctx, path))("open")
@@ -675,8 +675,7 @@ func partC(ctx context.Context, dir string) {
 			fatal("apply", err)
 		}
 		current := logicalHeader(ctx, db)
-		fmt.Printf("  commit of step %d (%s):\n", step, walText(path))
-		printChanges("    current vs previous commit: ", previous, current)
+		recordChanges(newEvent("C", "C4", fmt.Sprintf("commit of step %d", step), walText(path), ""), "current vs previous", previous, current)
 		counter, _ := counters(current)
 		shrunk = append(shrunk, counter)
 		previous = current
@@ -684,16 +683,13 @@ func partC(ctx context.Context, dir string) {
 	if err := db.Close(); err != nil {
 		fatal("close", err)
 	}
-	check(shrunk[0] == c0+1 && shrunk[1] == c0+2 && shrunk[2] == c0+3, fmt.Sprintf("WAL, one connection, page 1 dropped from the cache before each commit: the counter advances once per commit (%d, %d, %d), so C1's constant counter comes from page 1 staying cached, not from the connection", c0+1, c0+2, c0+3))
+	set.Check("C", shrunk[0] == c0+1 && shrunk[1] == c0+2 && shrunk[2] == c0+3, fmt.Sprintf("WAL, one connection, page 1 dropped from the cache before each commit: the counter advances once per commit (%d, %d, %d), so C1's constant counter comes from page 1 staying cached, not from the connection", c0+1, c0+2, c0+3))
 }
 
 func partD(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== D. bytes 18-19: switching journal mode rewrites the header")
 	base := buildBase(ctx, dir, "switch.db", "delete", 3)
-	before := readHeaderFromChild(base)
-	fmt.Printf("base: rollback-mode recipe built to step 3; bytes 18,19 = %d,%d\n", before[18], before[19])
-	plain := func(statement string) {
+	before := recordBase("D", "switch.db", "delete", 3, base)
+	plain := func(statement string) int {
 		uri := must(sqlitex.FileURI(base, nil))("uri")
 		db := must(sql.Open("sqlite", uri))("open")
 		db.SetMaxOpenConns(1)
@@ -701,28 +697,27 @@ func partD(ctx context.Context, dir string) {
 		if err := db.Close(); err != nil {
 			fatal("close", err)
 		}
-		fmt.Printf("  %s -> %s; connection closed (%s)\n", statement, mode, walText(base))
+		return newEvent("D", "D", statement, walText(base), "returns "+mode)
 	}
-	plain("PRAGMA journal_mode=WAL")
+	event := plain("PRAGMA journal_mode=WAL")
 	afterWAL := readHeaderFromChild(base)
-	printChanges("    file vs before: ", before, afterWAL)
-	check(afterWAL[18] == 2 && afterWAL[19] == 2, "PRAGMA journal_mode=WAL sets bytes 18 and 19 to 2")
-	plain("PRAGMA journal_mode=DELETE")
+	recordChanges(event, "file vs before", before, afterWAL)
+	set.Check("D", afterWAL[18] == 2 && afterWAL[19] == 2, "PRAGMA journal_mode=WAL sets bytes 18 and 19 to 2")
+	event = plain("PRAGMA journal_mode=DELETE")
 	afterDelete := readHeaderFromChild(base)
-	printChanges("    file vs WAL: ", afterWAL, afterDelete)
-	check(afterDelete[18] == 1 && afterDelete[19] == 1, "PRAGMA journal_mode=DELETE sets bytes 18 and 19 back to 1")
+	recordChanges(event, "file vs WAL", afterWAL, afterDelete)
+	set.Check("D", afterDelete[18] == 1 && afterDelete[19] == 1, "PRAGMA journal_mode=DELETE sets bytes 18 and 19 back to 1")
 }
 
 func partE(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== E. the in-header size (bytes 28-31) is used only when bytes 24-27 equal 92-95")
 	// Part E tests lockBtree's in-header size rule (src/btree.c:3298-3302,
 	// 3405-3412) on rollback-mode copies opened read-only so SQLite does not
 	// repair or modify the edited files.
 	base := buildBase(ctx, dir, "size-base.db", "delete", 3)
 	image := must(os.ReadFile(base))("read")
 	filePages := len(image) / 4096
-	fmt.Printf("base: rollback-mode recipe built to step 3: %d pages in the file, in-header size %d\n", filePages, binary.BigEndian.Uint32(image[28:32]))
+	recordBase("E", "size-base.db", "delete", 3, base)
+	sizes := set.Table("size_variants", "variant", "description", "in_header_size", "counters_disagree", "ours", "sqlite")
 	variants := []struct {
 		name     string
 		size     uint32
@@ -756,23 +751,22 @@ func partE(ctx context.Context, dir string) {
 		if qerr != nil {
 			theirs = "error: " + qerr.Error()
 		}
-		fmt.Printf("  E%d %s:\n    ours:   page count %s\n    SQLite: page_count %s\n", i+1, v.name, ours, theirs)
+		sizes.Row(fmt.Sprintf("E%d", i+1), v.name, v.size, v.disagree, ours, theirs)
 		switch i {
 		case 0:
-			check(theirs == fmt.Sprint(filePages-1) && f != nil && f.PageCount() == filePages-1, "agreeing counters: SQLite and our parser both trust the in-header size")
+			set.Check("E", theirs == fmt.Sprint(filePages-1) && f != nil && f.PageCount() == filePages-1, "agreeing counters: SQLite and our parser both trust the in-header size")
 		case 1:
-			check(theirs == fmt.Sprint(filePages) && f != nil && f.PageCount() == filePages, "disagreeing counters: both ignore bytes 28-31 and use the file size")
+			set.Check("E", theirs == fmt.Sprint(filePages) && f != nil && f.PageCount() == filePages, "disagreeing counters: both ignore bytes 28-31 and use the file size")
 		case 2:
-			check(qerr != nil && strings.Contains(qerr.Error(), "malformed") && errors.Is(err, dbfile.ErrCorrupt), "an agreeing in-header size larger than the file is corruption to both")
+			set.Check("E", qerr != nil && strings.Contains(qerr.Error(), "malformed") && errors.Is(err, dbfile.ErrCorrupt), "an agreeing in-header size larger than the file is corruption to both")
 		case 3:
-			check(theirs == fmt.Sprint(filePages) && f != nil && f.PageCount() == filePages, "an in-header size of 0 is ignored by both")
+			set.Check("E", theirs == fmt.Sprint(filePages) && f != nil && f.PageCount() == filePages, "an in-header size of 0 is ignored by both")
 		}
 	}
 }
 
 func partF(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== F. page size is stored in bytes 16-17; 65536 does not fit in two bytes and is stored as 1")
+	sizes := set.Table("page_sizes", "requested", "byte16", "byte17", "stored", "decoded", "sqlite_reports")
 	for _, size := range []int{512, 4096, 65536} {
 		path := filepath.Join(dir, fmt.Sprintf("page-size-%d.db", size))
 		options := sqlitex.DefaultOptions()
@@ -788,12 +782,12 @@ func partF(ctx context.Context, dir string) {
 		}
 		raw := readHeaderFromChild(path)
 		h := parse(raw)
-		fmt.Printf("  PRAGMA page_size=%-5d bytes 16-17 = %02x %02x (stored %d), decoded %d, SQLite reports %s\n", size, raw[16], raw[17], binary.BigEndian.Uint16(raw[16:18]), h.PageSize, pragma)
+		sizes.Row(size, fmt.Sprintf("%02x", raw[16]), fmt.Sprintf("%02x", raw[17]), binary.BigEndian.Uint16(raw[16:18]), h.PageSize, pragma)
 		wantStored := uint16(size)
 		if size == 65536 {
 			wantStored = 1
 		}
-		check(h.PageSize == size && fmt.Sprint(h.PageSize) == pragma && binary.BigEndian.Uint16(raw[16:18]) == wantStored, fmt.Sprintf("page size %d is stored as %d and decodes to the size asked for and to what SQLite reports", size, wantStored))
+		set.Check("F", h.PageSize == size && fmt.Sprint(h.PageSize) == pragma && binary.BigEndian.Uint16(raw[16:18]) == wantStored, fmt.Sprintf("page size %d is stored as %d and decodes to the size asked for and to what SQLite reports", size, wantStored))
 	}
 }
 
@@ -804,6 +798,8 @@ func main() {
 	}
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
+	dir := sqlitex.MustWorkDir("2.1")
+	openTables(dir)
 	var cli *sqlitex.CLI
 	// Skip the .dbinfo oracle only when no CLI exists anywhere (ErrNoCLI); a
 	// missing explicit $SQLITE3_BIN or a CLI with the wrong pin fails the run.
@@ -816,9 +812,8 @@ func main() {
 	case errors.Is(err, sqlitex.ErrNoCLI):
 		fmt.Printf("NO-CLI: %v; the .dbinfo cross-check is skipped\n", err)
 	default:
-		check(false, fmt.Sprintf("the sqlite3 CLI that was found or named reports the pinned source id: %v", err))
+		set.Check("A", false, fmt.Sprintf("the sqlite3 CLI that was found or named reports the pinned source id: %v", err))
 	}
-	dir := sqlitex.MustWorkDir("2.1")
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
 	partA(ctx, dir, cli)
 	partB(ctx, dir)
@@ -826,15 +821,7 @@ func main() {
 	partD(ctx, dir)
 	partE(ctx, dir)
 	partF(ctx, dir)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("HEADER FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("HEADER OK")
+	set.Finish("HEADER")
 }
 
 func displayPath(path string) string {
@@ -853,246 +840,586 @@ func displayPath(path string) string {
 }
 ```
 
-Captured output (`evidence/2.1-header-and-what-a-commit-changes.txt`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/2.1-header-and-what-a-commit-changes/report.sql -->
+```sql
+-- Walkthrough of experiment 2.1. Run it with:
+--   go run ./cmd/course run 2.1        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   r0              part A: one row, the R0 database the header is decoded from
+--   r0_header       part A: one row per header field, as decoded by internal/dbfile
+--   oracles         part A: one row per field, with SQLite's own report of it (NULL: no oracle)
+--   bases           parts B-E: one row per base database a scenario starts from
+--   events          parts B-D: one row per commit, close or statement the header is read after
+--   header_changes  parts B-D: one row per header field that differs between two copies of page 1
+--                   (one row with no field: no header byte changed)
+--   size_variants   part E: one row per edited copy of a database, with both page counts
+--   page_sizes      part F: one row per page size
+--   checks          every claim the experiment asserted (the runner lists it last)
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  2.1  What is in the 100-byte header, and what does a commit change?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'The first 100 bytes of a database file are the header. The experiment'
+.print 'decodes it field by field with internal/dbfile and compares every field'
+.print 'with what SQLite itself reports. Then it reads page 1 after commits, in'
+.print 'rollback mode and in WAL mode, to see which header bytes move and when.'
+.print 'In WAL mode two copies of page 1 exist: "current" is the view of SQLite'
+.print '(sqlite_dbpage, WAL included) and "file" is the bytes in the database'
+.print 'file, read by a child process.'
+
+.print
+.print '── A. Decode the header of the R0 database ─────────────────────────────'
+.print
+.print 'A1. The R0 database: the recipe, the page count we derive and where it comes from.'
+
+SELECT recipe, sha256 FROM r0;
+
+SELECT page_count, page_count_source, in_header_size_valid FROM r0;
+
+.print
+.print 'A2. The 100 bytes, decoded by internal/dbfile.'
+
+SELECT byte_offset, size, field, value FROM r0_header ORDER BY byte_offset;
+
+.print
+.print 'A3. Every decoded field against SQLite: PRAGMA through the Go driver and the'
+.print '.dbinfo of the pinned sqlite3 CLI. "-" means that oracle does not report the field.'
+
+SELECT field,
+       ours,
+       coalesce(pragma, '-')                  AS pragma,
+       coalesce(CAST(dbinfo AS VARCHAR), '-') AS dbinfo,
+       CASE WHEN pragma IS NULL AND dbinfo IS NULL THEN 'n/a'
+            ELSE CAST((pragma IS NULL OR pragma = ours)
+                  AND (dbinfo IS NULL OR CAST(dbinfo AS VARCHAR) = ours) AS VARCHAR)
+       END                                    AS match
+FROM oracles
+ORDER BY seq;
+
+.print
+.print '── B. Rollback mode: what one commit changes in page 1 ─────────────────'
+.print
+.print 'B1. Steps 28, 29 and 30 on one connection; page 1 is read from the database'
+.print 'file after each commit. Each commit advances the file change counter (24-27)'
+.print 'and version-valid-for (92-95) by one, and moves the size, freelist and'
+.print 'user-version fields.'
+.print
+.print 'The base database, built to step 27 and closed:'
+
+SELECT name, journal_mode, built_to_step, write_version AS byte18, read_version AS byte19,
+       change_counter, in_header_size, file_pages
+FROM bases WHERE part = 'B' ORDER BY name;
+
+.print
+.print 'The header fields that differ from the page 1 before the commit:'
+
+SELECT e.event,
+       c.view,
+       CASE WHEN c.size = 1 THEN CAST(c.byte_offset AS VARCHAR)
+            ELSE c.byte_offset || '-' || (c.byte_offset + c.size - 1) END AS bytes,
+       coalesce(c.field, 'no header byte changed')               AS field,
+       c.before_value AS before,
+       c.after_value  AS after,
+       c.changed_bytes
+FROM header_changes c JOIN events e ON e.seq = c.event_seq
+WHERE e.part = 'B'
+ORDER BY c.event_seq, c.byte_offset;
+
+.print
+.print '── C. WAL mode (the platform default): what changes in page 1, and when ──'
+.print
+.print 'The base database, built to step 27 and closed:'
+
+SELECT name, journal_mode, built_to_step, write_version AS byte18, read_version AS byte19,
+       change_counter, in_header_size, file_pages
+FROM bases WHERE part = 'C' ORDER BY name;
+
+.print
+.print 'C1. Steps 28, 29, 30 on one connection; each step writes page 1 (user_version).'
+.print 'Look at the "current vs previous" rows: the change counter moves at step 28 and'
+.print 'then stays put, although page 1 is rewritten each time. The "file vs base"'
+.print 'rows show page 1 of the database file unchanged until the last connection'
+.print 'closes and the checkpoint copies the current page 1 into it.'
+.print
+.print 'The commits and the size of the -wal after each:'
+
+SELECT event, wal_state FROM events WHERE scenario = 'C1' ORDER BY seq;
+
+.print
+.print 'The header fields that differ, by view:'
+
+SELECT e.event,
+       c.view,
+       CASE WHEN c.size = 1 THEN CAST(c.byte_offset AS VARCHAR)
+            ELSE c.byte_offset || '-' || (c.byte_offset + c.size - 1) END AS bytes,
+       coalesce(c.field, 'no header byte changed')               AS field,
+       c.before_value AS before,
+       c.after_value  AS after,
+       c.changed_bytes
+FROM header_changes c JOIN events e ON e.seq = c.event_seq
+WHERE e.scenario = 'C1'
+ORDER BY c.event_seq, c.view, c.byte_offset;
+
+.print
+.print 'C2. Three commits on one connection that do not touch page 1 (UPDATE one'
+.print 'account balance). The -wal grows, the header does not change: not even the'
+.print 'change counter, before or after the checkpoint at close.'
+
+SELECT e.event, e.wal_state, c.view, coalesce(c.field, 'no header byte changed') AS field
+FROM header_changes c JOIN events e ON e.seq = c.event_seq
+WHERE e.scenario = 'C2'
+ORDER BY c.event_seq, c.byte_offset;
+
+.print
+.print 'C3. Steps 28, 29, 30, each on a new connection, while a second idle connection'
+.print 'stays open so that closing a writer does not checkpoint. Now the counter'
+.print 'advances at every step: each new connection reads page 1 afresh and writes'
+.print 'counter + 1.'
+
+SELECT e.event,
+       e.wal_state,
+       CASE WHEN c.size = 1 THEN CAST(c.byte_offset AS VARCHAR)
+            ELSE c.byte_offset || '-' || (c.byte_offset + c.size - 1) END AS bytes,
+       c.field,
+       c.before_value AS before,
+       c.after_value  AS after
+FROM header_changes c JOIN events e ON e.seq = c.event_seq
+WHERE e.scenario = 'C3'
+ORDER BY c.event_seq, c.byte_offset;
+
+.print
+.print 'C4. Steps 28, 29, 30 on one connection again, with PRAGMA shrink_memory before'
+.print 'each step. It drops page 1 from the cache of the connection, and the counter'
+.print 'advances once per commit: the constant counter of C1 comes from page 1 staying'
+.print 'cached, not from the connection.'
+
+SELECT e.event,
+       e.wal_state,
+       CASE WHEN c.size = 1 THEN CAST(c.byte_offset AS VARCHAR)
+            ELSE c.byte_offset || '-' || (c.byte_offset + c.size - 1) END AS bytes,
+       c.field,
+       c.before_value AS before,
+       c.after_value  AS after
+FROM header_changes c JOIN events e ON e.seq = c.event_seq
+WHERE e.scenario = 'C4'
+ORDER BY c.event_seq, c.byte_offset;
+
+.print
+.print '── D. Bytes 18-19: switching journal mode rewrites the header ──────────'
+.print
+.print 'The base database is in rollback mode, built to step 3. Each statement runs'
+.print 'on its own connection that is then closed, and no -wal file exists. The'
+.print 'table shows what the file header differs by afterwards.'
+
+SELECT name, journal_mode, built_to_step, write_version AS byte18, read_version AS byte19,
+       change_counter, in_header_size, file_pages
+FROM bases WHERE part = 'D' ORDER BY name;
+
+SELECT e.event,
+       e.detail,
+       c.view,
+       CASE WHEN c.size = 1 THEN CAST(c.byte_offset AS VARCHAR)
+            ELSE c.byte_offset || '-' || (c.byte_offset + c.size - 1) END AS bytes,
+       c.field,
+       c.before_value AS before,
+       c.after_value  AS after
+FROM header_changes c JOIN events e ON e.seq = c.event_seq
+WHERE e.part = 'D'
+ORDER BY c.event_seq, c.byte_offset;
+
+.print
+.print '── E. The in-header size (bytes 28-31) is used only when 24-27 equal 92-95 ──'
+.print
+.print 'Four edited copies of a rollback-mode database, opened read-only. The page'
+.print 'count of each according to our parser and to SQLite (PRAGMA page_count).'
+.print
+.print 'The base database, built to step 3:'
+
+SELECT name, journal_mode, built_to_step, change_counter, in_header_size, file_pages
+FROM bases WHERE part = 'E' ORDER BY name;
+
+SELECT variant, description, in_header_size
+FROM size_variants ORDER BY variant;
+
+.print
+.print 'The page count each of them reports:'
+
+SELECT variant, ours AS "our parser", sqlite AS "SQLite page_count"
+FROM size_variants ORDER BY variant;
+
+.print
+.print '── F. The page size lives in bytes 16-17; 65536 is stored as 1 ───────────'
+.print
+.print '65536 does not fit in two bytes. Each row is a new database created with'
+.print 'PRAGMA page_size = requested; bytes 16 and 17 are shown in hex.'
+
+SELECT requested, byte16, byte17, stored, decoded, sqlite_reports
+FROM page_sizes ORDER BY requested;
+```
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/2.1-header-and-what-a-commit-changes/`](evidence/2.1-header-and-what-a-commit-changes/), and `go run ./cmd/course check evidence ch02` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/2.1-header-and-what-a-commit-changes.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-sqlite3 CLI sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: CLI found via PATH
-INFO: work dir _work/2.1
 
-== A. decode the header of the R0 database and compare every field with SQLite
-R0: seed=1 steps=30 journal_mode=wal, built to step 30; sha256 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74
-the 100-byte header, decoded by internal/dbfile:
-    0 16  magic                            "SQLite format 3\x00"
-   16  2  page size                        4096
-   18  1  write version                    2
-   19  1  read version                     2
-   20  1  reserved bytes per page          0
-   21  1  max embedded payload fraction    64
-   22  1  min embedded payload fraction    32
-   23  1  leaf payload fraction            32
-   24  4  file change counter              32
-   28  4  database size in pages           270
-   32  4  first freelist trunk page        230
-   36  4  freelist page count              3
-   40  4  schema cookie                    4
-   44  4  schema format                    4
-   48  4  default cache size               0
-   52  4  largest root page (auto-vacuum)  0
-   56  4  text encoding                    1 (UTF-8)
-   60  4  user version                     30
-   64  4  incremental vacuum               0
-   68  4  application id                   1397836120
-   72 20  reserved for expansion           all zero
-   92  4  version-valid-for                32
-   96  4  SQLite version number            3053004 (3.53.4)
-page count 270, taken from the in-header size (in-header size valid: true)
-check ok: opening R0, reading the pragmas and closing left it byte-identical and at rest
-oracles: PRAGMA through the Go driver; pinned sqlite3 CLI .dbinfo
-  field                  ours         PRAGMA       .dbinfo      match
-  page size              4096         4096         4096         true
-  write version          2            -            2            true
-  read version           2            -            2            true
-  reserved bytes         0            -            0            true
-  file change counter    32           -            32           true
-  page count             270          270          270          true
-  freelist page count    3            3            3            true
-  schema cookie          4            4            4            true
-  schema format          4            -            4            true
-  default cache size     0            -            0            true
-  auto_vacuum            NONE         NONE         -            true
-  largest root page      0            -            0            true
-  incremental vacuum     0            -            0            true
-  text encoding          UTF-8        UTF-8        -            true
-  text encoding number   1            -            1            true
-  user version           30           30           30           true
-  application id         1397836120   1397836120   1397836120   true
-  version-valid-for      32           -            -            n/a
-  SQLite version number  3053004      -            3053004      true
-check ok: each of the 18 decoded header fields that has an oracle here (PRAGMA or .dbinfo) equals SQLite's own report of it; 1 field(s) have none (n/a)
-check ok: bytes 96-99 read 3053004 (the library that last wrote the file)
-check ok: bytes 18 and 19 are 2 and 2 in a WAL-mode file
-check ok: bytes 24-27 equal 92-95, so the in-header size at 28 is used
+════════════════════════════════════════════════════════════════════════
+  2.1  What is in the 100-byte header, and what does a commit change?
+════════════════════════════════════════════════════════════════════════
 
-== B. rollback mode: what one commit changes in page 1 (the header)
-base: rollback-mode recipe built to step 27, closed
-B1. steps 28, 29, 30 on ONE connection; page 1 read from the database file after each commit:
-check ok: after step 28 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
-  commit of step 28:
-    bytes 24-27 file change counter: 30 -> 31 (changed bytes 27)
-    bytes 28-31 database size in pages: 244 -> 251 (changed bytes 31)
-    bytes 32-35 first freelist trunk page: 82 -> 131 (changed bytes 35)
-    bytes 60-63 user version: 27 -> 28 (changed bytes 63)
-    bytes 92-95 version-valid-for: 30 -> 31 (changed bytes 95)
-check ok: after step 29 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
-  commit of step 29:
-    bytes 24-27 file change counter: 31 -> 32 (changed bytes 27)
-    bytes 28-31 database size in pages: 251 -> 259 (changed bytes 30,31)
-    bytes 32-35 first freelist trunk page: 131 -> 0 (changed bytes 35)
-    bytes 36-39 freelist page count: 1 -> 0 (changed bytes 39)
-    bytes 60-63 user version: 28 -> 29 (changed bytes 63)
-    bytes 92-95 version-valid-for: 31 -> 32 (changed bytes 95)
-check ok: after step 30 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
-  commit of step 30:
-    bytes 24-27 file change counter: 32 -> 33 (changed bytes 27)
-    bytes 28-31 database size in pages: 259 -> 270 (changed bytes 31)
-    bytes 32-35 first freelist trunk page: 0 -> 230 (changed bytes 35)
-    bytes 36-39 freelist page count: 0 -> 3 (changed bytes 39)
-    bytes 60-63 user version: 29 -> 30 (changed bytes 63)
-    bytes 92-95 version-valid-for: 32 -> 33 (changed bytes 95)
-check ok: rollback mode: bytes 24-27 and 92-95 each advance by exactly one per commit, on one connection
-check ok: closing the connection changed nothing in page 1
+The first 100 bytes of a database file are the header. The experiment
+decodes it field by field with internal/dbfile and compares every field
+with what SQLite itself reports. Then it reads page 1 after commits, in
+rollback mode and in WAL mode, to see which header bytes move and when.
+In WAL mode two copies of page 1 exist: "current" is the view of SQLite
+(sqlite_dbpage, WAL included) and "file" is the bytes in the database
+file, read by a child process.
 
-== C. WAL mode (the platform default): what changes in page 1, and when
-base: WAL-mode recipe built to step 27, closed; file change counter 29
-Two copies of page 1 are reported: 'current' = SQLite's view (sqlite_dbpage, WAL included); 'file' = the bytes in the database file (read by a child process).
-C1. steps 28, 29, 30 on ONE connection (each step writes page 1: user_version):
-  commit of step 28 (-wal 82432 bytes):
-    current vs previous commit: bytes 24-27 file change counter: 29 -> 30 (changed bytes 27)
-    current vs previous commit: bytes 28-31 database size in pages: 244 -> 251 (changed bytes 31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 82 -> 131 (changed bytes 35)
-    current vs previous commit: bytes 60-63 user version: 27 -> 28 (changed bytes 63)
-    current vs previous commit: bytes 92-95 version-valid-for: 29 -> 30 (changed bytes 95)
-    file vs base: no header byte changed
-check ok: step 28: the current page 1 has 24-27 equal to 92-95 (30)
-  commit of step 29 (-wal 156592 bytes):
-    current vs previous commit: bytes 28-31 database size in pages: 251 -> 259 (changed bytes 30,31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 131 -> 0 (changed bytes 35)
-    current vs previous commit: bytes 36-39 freelist page count: 1 -> 0 (changed bytes 39)
-    current vs previous commit: bytes 60-63 user version: 28 -> 29 (changed bytes 63)
-    file vs base: no header byte changed
-check ok: step 29: the current page 1 has 24-27 equal to 92-95 (30)
-  commit of step 30 (-wal 280192 bytes):
-    current vs previous commit: bytes 28-31 database size in pages: 259 -> 270 (changed bytes 31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 0 -> 230 (changed bytes 35)
-    current vs previous commit: bytes 36-39 freelist page count: 0 -> 3 (changed bytes 39)
-    current vs previous commit: bytes 60-63 user version: 29 -> 30 (changed bytes 63)
-    file vs base: no header byte changed
-check ok: step 30: the current page 1 has 24-27 equal to 92-95 (30)
-check ok: WAL, one connection: every commit writes the same change counter 30 (base + 1), it does not advance per commit
-check ok: WAL: the database file's page 1 does not change at commit; the new page 1 is a frame in the -wal
-  after the last connection closed (no -wal file):
-    file vs base: bytes 24-27 file change counter: 29 -> 30 (changed bytes 27)
-    file vs base: bytes 28-31 database size in pages: 244 -> 270 (changed bytes 30,31)
-    file vs base: bytes 32-35 first freelist trunk page: 82 -> 230 (changed bytes 35)
-    file vs base: bytes 36-39 freelist page count: 1 -> 3 (changed bytes 39)
-    file vs base: bytes 60-63 user version: 27 -> 30 (changed bytes 63)
-    file vs base: bytes 92-95 version-valid-for: 29 -> 30 (changed bytes 95)
-check ok: the checkpoint at close copied the current page 1 into the file
-C2. three commits on ONE connection that do not touch page 1 (UPDATE one account balance):
-  commit 1 (-wal 4152 bytes): current vs base: no header byte changed
-  commit 2 (-wal 8272 bytes): current vs base: no header byte changed
-  commit 3 (-wal 12392 bytes): current vs base: no header byte changed
-check ok: WAL: each of the three UPDATEs changed one row and appended frames to the -wal
-check ok: after the checkpoint at close the database file differs from the base
-check ok: WAL: commits that do not write page 1 leave every header byte unchanged, even the change counter, before and after the checkpoint
-C3. steps 28, 29, 30 each on a NEW connection while a second idle connection stays open (so closing a writer does not checkpoint):
-  step 28 on its own connection (-wal 82432 bytes):
-    current vs previous commit: bytes 24-27 file change counter: 29 -> 30 (changed bytes 27)
-    current vs previous commit: bytes 28-31 database size in pages: 244 -> 251 (changed bytes 31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 82 -> 131 (changed bytes 35)
-    current vs previous commit: bytes 60-63 user version: 27 -> 28 (changed bytes 63)
-    current vs previous commit: bytes 92-95 version-valid-for: 29 -> 30 (changed bytes 95)
-  step 29 on its own connection (-wal 156592 bytes):
-    current vs previous commit: bytes 24-27 file change counter: 30 -> 31 (changed bytes 27)
-    current vs previous commit: bytes 28-31 database size in pages: 251 -> 259 (changed bytes 30,31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 131 -> 0 (changed bytes 35)
-    current vs previous commit: bytes 36-39 freelist page count: 1 -> 0 (changed bytes 39)
-    current vs previous commit: bytes 60-63 user version: 28 -> 29 (changed bytes 63)
-    current vs previous commit: bytes 92-95 version-valid-for: 30 -> 31 (changed bytes 95)
-  step 30 on its own connection (-wal 280192 bytes):
-    current vs previous commit: bytes 24-27 file change counter: 31 -> 32 (changed bytes 27)
-    current vs previous commit: bytes 28-31 database size in pages: 259 -> 270 (changed bytes 31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 0 -> 230 (changed bytes 35)
-    current vs previous commit: bytes 36-39 freelist page count: 0 -> 3 (changed bytes 39)
-    current vs previous commit: bytes 60-63 user version: 29 -> 30 (changed bytes 63)
-    current vs previous commit: bytes 92-95 version-valid-for: 31 -> 32 (changed bytes 95)
-check ok: WAL: with another connection open, the file's page 1 still equals the base after three commits
-check ok: WAL: each new connection reads page 1 afresh and writes counter + 1, so the counter advances once per connection that writes page 1
-check ok: closing the last connection checkpointed page 1 into the file and removed the -wal
-C4. steps 28, 29, 30 on ONE connection, with PRAGMA shrink_memory before each step (it drops unused pages, page 1 included, from the connection's cache):
-  commit of step 28 (-wal 82432 bytes):
-    current vs previous commit: bytes 24-27 file change counter: 29 -> 30 (changed bytes 27)
-    current vs previous commit: bytes 28-31 database size in pages: 244 -> 251 (changed bytes 31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 82 -> 131 (changed bytes 35)
-    current vs previous commit: bytes 60-63 user version: 27 -> 28 (changed bytes 63)
-    current vs previous commit: bytes 92-95 version-valid-for: 29 -> 30 (changed bytes 95)
-  commit of step 29 (-wal 156592 bytes):
-    current vs previous commit: bytes 24-27 file change counter: 30 -> 31 (changed bytes 27)
-    current vs previous commit: bytes 28-31 database size in pages: 251 -> 259 (changed bytes 30,31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 131 -> 0 (changed bytes 35)
-    current vs previous commit: bytes 36-39 freelist page count: 1 -> 0 (changed bytes 39)
-    current vs previous commit: bytes 60-63 user version: 28 -> 29 (changed bytes 63)
-    current vs previous commit: bytes 92-95 version-valid-for: 30 -> 31 (changed bytes 95)
-  commit of step 30 (-wal 280192 bytes):
-    current vs previous commit: bytes 24-27 file change counter: 31 -> 32 (changed bytes 27)
-    current vs previous commit: bytes 28-31 database size in pages: 259 -> 270 (changed bytes 31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 0 -> 230 (changed bytes 35)
-    current vs previous commit: bytes 36-39 freelist page count: 0 -> 3 (changed bytes 39)
-    current vs previous commit: bytes 60-63 user version: 29 -> 30 (changed bytes 63)
-    current vs previous commit: bytes 92-95 version-valid-for: 31 -> 32 (changed bytes 95)
-check ok: WAL, one connection, page 1 dropped from the cache before each commit: the counter advances once per commit (30, 31, 32), so C1's constant counter comes from page 1 staying cached, not from the connection
+── A. Decode the header of the R0 database ─────────────────────────────
 
-== D. bytes 18-19: switching journal mode rewrites the header
-base: rollback-mode recipe built to step 3; bytes 18,19 = 1,1
-  PRAGMA journal_mode=WAL -> wal; connection closed (no -wal file)
-    file vs before: byte 18 write version: 1 -> 2 (changed bytes 18)
-    file vs before: byte 19 read version: 1 -> 2 (changed bytes 19)
-    file vs before: bytes 24-27 file change counter: 6 -> 7 (changed bytes 27)
-    file vs before: bytes 92-95 version-valid-for: 6 -> 7 (changed bytes 95)
-check ok: PRAGMA journal_mode=WAL sets bytes 18 and 19 to 2
-  PRAGMA journal_mode=DELETE -> delete; connection closed (no -wal file)
-    file vs WAL: byte 18 write version: 2 -> 1 (changed bytes 18)
-    file vs WAL: byte 19 read version: 2 -> 1 (changed bytes 19)
-    file vs WAL: bytes 24-27 file change counter: 7 -> 8 (changed bytes 27)
-    file vs WAL: bytes 92-95 version-valid-for: 7 -> 8 (changed bytes 95)
-check ok: PRAGMA journal_mode=DELETE sets bytes 18 and 19 back to 1
+A1. The R0 database: the recipe, the page count we derive and where it comes from.
+┌──────────────────────────────────┬──────────────────────────────────────────────────────────────────┐
+│              recipe              │                              sha256                              │
+├──────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ seed=1 steps=30 journal_mode=wal │ 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74 │
+└──────────────────────────────────┴──────────────────────────────────────────────────────────────────┘
+┌────────────┬───────────────────┬──────────────────────┐
+│ page_count │ page_count_source │ in_header_size_valid │
+├────────────┼───────────────────┼──────────────────────┤
+│ 270        │ in-header size    │ true                 │
+└────────────┴───────────────────┴──────────────────────┘
 
-== E. the in-header size (bytes 28-31) is used only when bytes 24-27 equal 92-95
-base: rollback-mode recipe built to step 3: 39 pages in the file, in-header size 39
-  E1 in-header size = file pages - 1, counters agree:
-    ours:   page count 38 (from in-header size)
-    SQLite: page_count 38
-check ok: agreeing counters: SQLite and our parser both trust the in-header size
-  E2 in-header size = file pages - 1, byte 95 changed so counters disagree:
-    ours:   page count 39 (from file size)
-    SQLite: page_count 39
-check ok: disagreeing counters: both ignore bytes 28-31 and use the file size
-  E3 in-header size = file pages + 5, counters agree:
-    ours:   page count error: in-header size larger than the file
-    SQLite: page_count error: database disk image is malformed (11)
-check ok: an agreeing in-header size larger than the file is corruption to both
-  E4 in-header size = 0, counters agree:
-    ours:   page count 39 (from file size)
-    SQLite: page_count 39
-check ok: an in-header size of 0 is ignored by both
+A2. The 100 bytes, decoded by internal/dbfile.
+┌─────────────┬──────┬─────────────────────────────────┬───────────────────────┐
+│ byte_offset │ size │              field              │         value         │
+├─────────────┼──────┼─────────────────────────────────┼───────────────────────┤
+│ 0           │ 16   │ magic                           │ "SQLite format 3\x00" │
+│ 16          │ 2    │ page size                       │ 4096                  │
+│ 18          │ 1    │ write version                   │ 2                     │
+│ 19          │ 1    │ read version                    │ 2                     │
+│ 20          │ 1    │ reserved bytes per page         │ 0                     │
+│ 21          │ 1    │ max embedded payload fraction   │ 64                    │
+│ 22          │ 1    │ min embedded payload fraction   │ 32                    │
+│ 23          │ 1    │ leaf payload fraction           │ 32                    │
+│ 24          │ 4    │ file change counter             │ 32                    │
+│ 28          │ 4    │ database size in pages          │ 270                   │
+│ 32          │ 4    │ first freelist trunk page       │ 230                   │
+│ 36          │ 4    │ freelist page count             │ 3                     │
+│ 40          │ 4    │ schema cookie                   │ 4                     │
+│ 44          │ 4    │ schema format                   │ 4                     │
+│ 48          │ 4    │ default cache size              │ 0                     │
+│ 52          │ 4    │ largest root page (auto-vacuum) │ 0                     │
+│ 56          │ 4    │ text encoding                   │ 1 (UTF-8)             │
+│ 60          │ 4    │ user version                    │ 30                    │
+│ 64          │ 4    │ incremental vacuum              │ 0                     │
+│ 68          │ 4    │ application id                  │ 1397836120            │
+│ 72          │ 20   │ reserved for expansion          │ all zero              │
+│ 92          │ 4    │ version-valid-for               │ 32                    │
+│ 96          │ 4    │ SQLite version number           │ 3053004 (3.53.4)      │
+└─────────────┴──────┴─────────────────────────────────┴───────────────────────┘
 
-== F. page size is stored in bytes 16-17; 65536 does not fit in two bytes and is stored as 1
-  PRAGMA page_size=512   bytes 16-17 = 02 00 (stored 512), decoded 512, SQLite reports 512
-check ok: page size 512 is stored as 512 and decodes to the size asked for and to what SQLite reports
-  PRAGMA page_size=4096  bytes 16-17 = 10 00 (stored 4096), decoded 4096, SQLite reports 4096
-check ok: page size 4096 is stored as 4096 and decodes to the size asked for and to what SQLite reports
-  PRAGMA page_size=65536 bytes 16-17 = 00 01 (stored 1), decoded 65536, SQLite reports 65536
-check ok: page size 65536 is stored as 1 and decodes to the size asked for and to what SQLite reports
+A3. Every decoded field against SQLite: PRAGMA through the Go driver and the
+.dbinfo of the pinned sqlite3 CLI. "-" means that oracle does not report the field.
+┌───────────────────────┬────────────┬────────────┬────────────┬───────┐
+│         field         │    ours    │   pragma   │   dbinfo   │ match │
+├───────────────────────┼────────────┼────────────┼────────────┼───────┤
+│ page size             │ 4096       │ 4096       │ 4096       │ true  │
+│ write version         │ 2          │ -          │ 2          │ true  │
+│ read version          │ 2          │ -          │ 2          │ true  │
+│ reserved bytes        │ 0          │ -          │ 0          │ true  │
+│ file change counter   │ 32         │ -          │ 32         │ true  │
+│ page count            │ 270        │ 270        │ 270        │ true  │
+│ freelist page count   │ 3          │ 3          │ 3          │ true  │
+│ schema cookie         │ 4          │ 4          │ 4          │ true  │
+│ schema format         │ 4          │ -          │ 4          │ true  │
+│ default cache size    │ 0          │ -          │ 0          │ true  │
+│ auto_vacuum           │ NONE       │ NONE       │ -          │ true  │
+│ largest root page     │ 0          │ -          │ 0          │ true  │
+│ incremental vacuum    │ 0          │ -          │ 0          │ true  │
+│ text encoding         │ UTF-8      │ UTF-8      │ -          │ true  │
+│ text encoding number  │ 1          │ -          │ 1          │ true  │
+│ user version          │ 30         │ 30         │ 30         │ true  │
+│ application id        │ 1397836120 │ 1397836120 │ 1397836120 │ true  │
+│ version-valid-for     │ 32         │ -          │ -          │ n/a   │
+│ SQLite version number │ 3053004    │ -          │ 3053004    │ true  │
+└───────────────────────┴────────────┴────────────┴────────────┴───────┘
 
-HEADER OK
+── B. Rollback mode: what one commit changes in page 1 ─────────────────
+
+B1. Steps 28, 29 and 30 on one connection; page 1 is read from the database
+file after each commit. Each commit advances the file change counter (24-27)
+and version-valid-for (92-95) by one, and moves the size, freelist and
+user-version fields.
+
+The base database, built to step 27 and closed:
+┌──────────────────┬──────────────┬───────────────┬────────┬────────┬────────────────┬────────────────┬────────────┐
+│       name       │ journal_mode │ built_to_step │ byte18 │ byte19 │ change_counter │ in_header_size │ file_pages │
+├──────────────────┼──────────────┼───────────────┼────────┼────────┼────────────────┼────────────────┼────────────┤
+│ rollback-base.db │ delete       │ 27            │ 1      │ 1      │ 30             │ 244            │ 244        │
+└──────────────────┴──────────────┴───────────────┴────────┴────────┴────────────────┴────────────────┴────────────┘
+
+The header fields that differ from the page 1 before the commit:
+┌───────────────────┬──────────────────┬───────┬───────────────────────────┬────────┬───────┬───────────────┐
+│       event       │       view       │ bytes │           field           │ before │ after │ changed_bytes │
+├───────────────────┼──────────────────┼───────┼───────────────────────────┼────────┼───────┼───────────────┤
+│ commit of step 28 │ file vs previous │ 24-27 │ file change counter       │ 30     │ 31    │ 27            │
+│ commit of step 28 │ file vs previous │ 28-31 │ database size in pages    │ 244    │ 251   │ 31            │
+│ commit of step 28 │ file vs previous │ 32-35 │ first freelist trunk page │ 82     │ 131   │ 35            │
+│ commit of step 28 │ file vs previous │ 60-63 │ user version              │ 27     │ 28    │ 63            │
+│ commit of step 28 │ file vs previous │ 92-95 │ version-valid-for         │ 30     │ 31    │ 95            │
+│ commit of step 29 │ file vs previous │ 24-27 │ file change counter       │ 31     │ 32    │ 27            │
+│ commit of step 29 │ file vs previous │ 28-31 │ database size in pages    │ 251    │ 259   │ 30 31         │
+│ commit of step 29 │ file vs previous │ 32-35 │ first freelist trunk page │ 131    │ 0     │ 35            │
+│ commit of step 29 │ file vs previous │ 36-39 │ freelist page count       │ 1      │ 0     │ 39            │
+│ commit of step 29 │ file vs previous │ 60-63 │ user version              │ 28     │ 29    │ 63            │
+│ commit of step 29 │ file vs previous │ 92-95 │ version-valid-for         │ 31     │ 32    │ 95            │
+│ commit of step 30 │ file vs previous │ 24-27 │ file change counter       │ 32     │ 33    │ 27            │
+│ commit of step 30 │ file vs previous │ 28-31 │ database size in pages    │ 259    │ 270   │ 31            │
+│ commit of step 30 │ file vs previous │ 32-35 │ first freelist trunk page │ 0      │ 230   │ 35            │
+│ commit of step 30 │ file vs previous │ 36-39 │ freelist page count       │ 0      │ 3     │ 39            │
+│ commit of step 30 │ file vs previous │ 60-63 │ user version              │ 29     │ 30    │ 63            │
+│ commit of step 30 │ file vs previous │ 92-95 │ version-valid-for         │ 32     │ 33    │ 95            │
+└───────────────────┴──────────────────┴───────┴───────────────────────────┴────────┴───────┴───────────────┘
+
+── C. WAL mode (the platform default): what changes in page 1, and when ──
+
+The base database, built to step 27 and closed:
+┌─────────────┬──────────────┬───────────────┬────────┬────────┬────────────────┬────────────────┬────────────┐
+│    name     │ journal_mode │ built_to_step │ byte18 │ byte19 │ change_counter │ in_header_size │ file_pages │
+├─────────────┼──────────────┼───────────────┼────────┼────────┼────────────────┼────────────────┼────────────┤
+│ wal-base.db │ wal          │ 27            │ 2      │ 2      │ 29             │ 244            │ 244        │
+└─────────────┴──────────────┴───────────────┴────────┴────────┴────────────────┴────────────────┴────────────┘
+
+C1. Steps 28, 29, 30 on one connection; each step writes page 1 (user_version).
+Look at the "current vs previous" rows: the change counter moves at step 28 and
+then stays put, although page 1 is rewritten each time. The "file vs base"
+rows show page 1 of the database file unchanged until the last connection
+closes and the checkpoint copies the current page 1 into it.
+
+The commits and the size of the -wal after each:
+┌──────────────────────┬───────────────────┐
+│        event         │     wal_state     │
+├──────────────────────┼───────────────────┤
+│ commit of step 28    │ -wal 82432 bytes  │
+│ commit of step 29    │ -wal 156592 bytes │
+│ commit of step 30    │ -wal 280192 bytes │
+│ after the last close │ no -wal file      │
+└──────────────────────┴───────────────────┘
+
+The header fields that differ, by view:
+┌──────────────────────┬─────────────────────┬───────┬───────────────────────────┬────────┬───────┬───────────────┐
+│        event         │        view         │ bytes │           field           │ before │ after │ changed_bytes │
+├──────────────────────┼─────────────────────┼───────┼───────────────────────────┼────────┼───────┼───────────────┤
+│ commit of step 28    │ current vs previous │ 24-27 │ file change counter       │ 29     │ 30    │ 27            │
+│ commit of step 28    │ current vs previous │ 28-31 │ database size in pages    │ 244    │ 251   │ 31            │
+│ commit of step 28    │ current vs previous │ 32-35 │ first freelist trunk page │ 82     │ 131   │ 35            │
+│ commit of step 28    │ current vs previous │ 60-63 │ user version              │ 27     │ 28    │ 63            │
+│ commit of step 28    │ current vs previous │ 92-95 │ version-valid-for         │ 29     │ 30    │ 95            │
+│ commit of step 28    │ file vs base        │       │ no header byte changed    │        │       │               │
+│ commit of step 29    │ current vs previous │ 28-31 │ database size in pages    │ 251    │ 259   │ 30 31         │
+│ commit of step 29    │ current vs previous │ 32-35 │ first freelist trunk page │ 131    │ 0     │ 35            │
+│ commit of step 29    │ current vs previous │ 36-39 │ freelist page count       │ 1      │ 0     │ 39            │
+│ commit of step 29    │ current vs previous │ 60-63 │ user version              │ 28     │ 29    │ 63            │
+│ commit of step 29    │ file vs base        │       │ no header byte changed    │        │       │               │
+│ commit of step 30    │ current vs previous │ 28-31 │ database size in pages    │ 259    │ 270   │ 31            │
+│ commit of step 30    │ current vs previous │ 32-35 │ first freelist trunk page │ 0      │ 230   │ 35            │
+│ commit of step 30    │ current vs previous │ 36-39 │ freelist page count       │ 0      │ 3     │ 39            │
+│ commit of step 30    │ current vs previous │ 60-63 │ user version              │ 29     │ 30    │ 63            │
+│ commit of step 30    │ file vs base        │       │ no header byte changed    │        │       │               │
+│ after the last close │ file vs base        │ 24-27 │ file change counter       │ 29     │ 30    │ 27            │
+│ after the last close │ file vs base        │ 28-31 │ database size in pages    │ 244    │ 270   │ 30 31         │
+│ after the last close │ file vs base        │ 32-35 │ first freelist trunk page │ 82     │ 230   │ 35            │
+│ after the last close │ file vs base        │ 36-39 │ freelist page count       │ 1      │ 3     │ 39            │
+│ after the last close │ file vs base        │ 60-63 │ user version              │ 27     │ 30    │ 63            │
+│ after the last close │ file vs base        │ 92-95 │ version-valid-for         │ 29     │ 30    │ 95            │
+└──────────────────────┴─────────────────────┴───────┴───────────────────────────┴────────┴───────┴───────────────┘
+
+C2. Three commits on one connection that do not touch page 1 (UPDATE one
+account balance). The -wal grows, the header does not change: not even the
+change counter, before or after the checkpoint at close.
+┌─────────────────┬──────────────────┬─────────────────┬────────────────────────┐
+│      event      │    wal_state     │      view       │         field          │
+├─────────────────┼──────────────────┼─────────────────┼────────────────────────┤
+│ UPDATE commit 1 │ -wal 4152 bytes  │ current vs base │ no header byte changed │
+│ UPDATE commit 2 │ -wal 8272 bytes  │ current vs base │ no header byte changed │
+│ UPDATE commit 3 │ -wal 12392 bytes │ current vs base │ no header byte changed │
+└─────────────────┴──────────────────┴─────────────────┴────────────────────────┘
+
+C3. Steps 28, 29, 30, each on a new connection, while a second idle connection
+stays open so that closing a writer does not checkpoint. Now the counter
+advances at every step: each new connection reads page 1 afresh and writes
+counter + 1.
+┌─────────────────────────┬───────────────────┬───────┬───────────────────────────┬────────┬───────┐
+│          event          │     wal_state     │ bytes │           field           │ before │ after │
+├─────────────────────────┼───────────────────┼───────┼───────────────────────────┼────────┼───────┤
+│ step 28, new connection │ -wal 82432 bytes  │ 24-27 │ file change counter       │ 29     │ 30    │
+│ step 28, new connection │ -wal 82432 bytes  │ 28-31 │ database size in pages    │ 244    │ 251   │
+│ step 28, new connection │ -wal 82432 bytes  │ 32-35 │ first freelist trunk page │ 82     │ 131   │
+│ step 28, new connection │ -wal 82432 bytes  │ 60-63 │ user version              │ 27     │ 28    │
+│ step 28, new connection │ -wal 82432 bytes  │ 92-95 │ version-valid-for         │ 29     │ 30    │
+│ step 29, new connection │ -wal 156592 bytes │ 24-27 │ file change counter       │ 30     │ 31    │
+│ step 29, new connection │ -wal 156592 bytes │ 28-31 │ database size in pages    │ 251    │ 259   │
+│ step 29, new connection │ -wal 156592 bytes │ 32-35 │ first freelist trunk page │ 131    │ 0     │
+│ step 29, new connection │ -wal 156592 bytes │ 36-39 │ freelist page count       │ 1      │ 0     │
+│ step 29, new connection │ -wal 156592 bytes │ 60-63 │ user version              │ 28     │ 29    │
+│ step 29, new connection │ -wal 156592 bytes │ 92-95 │ version-valid-for         │ 30     │ 31    │
+│ step 30, new connection │ -wal 280192 bytes │ 24-27 │ file change counter       │ 31     │ 32    │
+│ step 30, new connection │ -wal 280192 bytes │ 28-31 │ database size in pages    │ 259    │ 270   │
+│ step 30, new connection │ -wal 280192 bytes │ 32-35 │ first freelist trunk page │ 0      │ 230   │
+│ step 30, new connection │ -wal 280192 bytes │ 36-39 │ freelist page count       │ 0      │ 3     │
+│ step 30, new connection │ -wal 280192 bytes │ 60-63 │ user version              │ 29     │ 30    │
+│ step 30, new connection │ -wal 280192 bytes │ 92-95 │ version-valid-for         │ 31     │ 32    │
+└─────────────────────────┴───────────────────┴───────┴───────────────────────────┴────────┴───────┘
+
+C4. Steps 28, 29, 30 on one connection again, with PRAGMA shrink_memory before
+each step. It drops page 1 from the cache of the connection, and the counter
+advances once per commit: the constant counter of C1 comes from page 1 staying
+cached, not from the connection.
+┌───────────────────┬───────────────────┬───────┬───────────────────────────┬────────┬───────┐
+│       event       │     wal_state     │ bytes │           field           │ before │ after │
+├───────────────────┼───────────────────┼───────┼───────────────────────────┼────────┼───────┤
+│ commit of step 28 │ -wal 82432 bytes  │ 24-27 │ file change counter       │ 29     │ 30    │
+│ commit of step 28 │ -wal 82432 bytes  │ 28-31 │ database size in pages    │ 244    │ 251   │
+│ commit of step 28 │ -wal 82432 bytes  │ 32-35 │ first freelist trunk page │ 82     │ 131   │
+│ commit of step 28 │ -wal 82432 bytes  │ 60-63 │ user version              │ 27     │ 28    │
+│ commit of step 28 │ -wal 82432 bytes  │ 92-95 │ version-valid-for         │ 29     │ 30    │
+│ commit of step 29 │ -wal 156592 bytes │ 24-27 │ file change counter       │ 30     │ 31    │
+│ commit of step 29 │ -wal 156592 bytes │ 28-31 │ database size in pages    │ 251    │ 259   │
+│ commit of step 29 │ -wal 156592 bytes │ 32-35 │ first freelist trunk page │ 131    │ 0     │
+│ commit of step 29 │ -wal 156592 bytes │ 36-39 │ freelist page count       │ 1      │ 0     │
+│ commit of step 29 │ -wal 156592 bytes │ 60-63 │ user version              │ 28     │ 29    │
+│ commit of step 29 │ -wal 156592 bytes │ 92-95 │ version-valid-for         │ 30     │ 31    │
+│ commit of step 30 │ -wal 280192 bytes │ 24-27 │ file change counter       │ 31     │ 32    │
+│ commit of step 30 │ -wal 280192 bytes │ 28-31 │ database size in pages    │ 259    │ 270   │
+│ commit of step 30 │ -wal 280192 bytes │ 32-35 │ first freelist trunk page │ 0      │ 230   │
+│ commit of step 30 │ -wal 280192 bytes │ 36-39 │ freelist page count       │ 0      │ 3     │
+│ commit of step 30 │ -wal 280192 bytes │ 60-63 │ user version              │ 29     │ 30    │
+│ commit of step 30 │ -wal 280192 bytes │ 92-95 │ version-valid-for         │ 31     │ 32    │
+└───────────────────┴───────────────────┴───────┴───────────────────────────┴────────┴───────┘
+
+── D. Bytes 18-19: switching journal mode rewrites the header ──────────
+
+The base database is in rollback mode, built to step 3. Each statement runs
+on its own connection that is then closed, and no -wal file exists. The
+table shows what the file header differs by afterwards.
+┌───────────┬──────────────┬───────────────┬────────┬────────┬────────────────┬────────────────┬────────────┐
+│   name    │ journal_mode │ built_to_step │ byte18 │ byte19 │ change_counter │ in_header_size │ file_pages │
+├───────────┼──────────────┼───────────────┼────────┼────────┼────────────────┼────────────────┼────────────┤
+│ switch.db │ delete       │ 3             │ 1      │ 1      │ 6              │ 39             │ 39         │
+└───────────┴──────────────┴───────────────┴────────┴────────┴────────────────┴────────────────┴────────────┘
+┌────────────────────────────┬────────────────┬────────────────┬───────┬─────────────────────┬────────┬───────┐
+│           event            │     detail     │      view      │ bytes │        field        │ before │ after │
+├────────────────────────────┼────────────────┼────────────────┼───────┼─────────────────────┼────────┼───────┤
+│ PRAGMA journal_mode=WAL    │ returns wal    │ file vs before │ 18    │ write version       │ 1      │ 2     │
+│ PRAGMA journal_mode=WAL    │ returns wal    │ file vs before │ 19    │ read version        │ 1      │ 2     │
+│ PRAGMA journal_mode=WAL    │ returns wal    │ file vs before │ 24-27 │ file change counter │ 6      │ 7     │
+│ PRAGMA journal_mode=WAL    │ returns wal    │ file vs before │ 92-95 │ version-valid-for   │ 6      │ 7     │
+│ PRAGMA journal_mode=DELETE │ returns delete │ file vs WAL    │ 18    │ write version       │ 2      │ 1     │
+│ PRAGMA journal_mode=DELETE │ returns delete │ file vs WAL    │ 19    │ read version        │ 2      │ 1     │
+│ PRAGMA journal_mode=DELETE │ returns delete │ file vs WAL    │ 24-27 │ file change counter │ 7      │ 8     │
+│ PRAGMA journal_mode=DELETE │ returns delete │ file vs WAL    │ 92-95 │ version-valid-for   │ 7      │ 8     │
+└────────────────────────────┴────────────────┴────────────────┴───────┴─────────────────────┴────────┴───────┘
+
+── E. The in-header size (bytes 28-31) is used only when 24-27 equal 92-95 ──
+
+Four edited copies of a rollback-mode database, opened read-only. The page
+count of each according to our parser and to SQLite (PRAGMA page_count).
+
+The base database, built to step 3:
+┌──────────────┬──────────────┬───────────────┬────────────────┬────────────────┬────────────┐
+│     name     │ journal_mode │ built_to_step │ change_counter │ in_header_size │ file_pages │
+├──────────────┼──────────────┼───────────────┼────────────────┼────────────────┼────────────┤
+│ size-base.db │ delete       │ 3             │ 6              │ 39             │ 39         │
+└──────────────┴──────────────┴───────────────┴────────────────┴────────────────┴────────────┘
+┌─────────┬───────────────────────────────────────────────────────────────────────┬────────────────┐
+│ variant │                              description                              │ in_header_size │
+├─────────┼───────────────────────────────────────────────────────────────────────┼────────────────┤
+│ E1      │ in-header size = file pages - 1, counters agree                       │ 38             │
+│ E2      │ in-header size = file pages - 1, byte 95 changed so counters disagree │ 38             │
+│ E3      │ in-header size = file pages + 5, counters agree                       │ 44             │
+│ E4      │ in-header size = 0, counters agree                                    │ 0              │
+└─────────┴───────────────────────────────────────────────────────────────────────┴────────────────┘
+
+The page count each of them reports:
+┌─────────┬────────────────────────────────────────────┬──────────────────────────────────────────────┐
+│ variant │                 our parser                 │              SQLite page_count               │
+├─────────┼────────────────────────────────────────────┼──────────────────────────────────────────────┤
+│ E1      │ 38 (from in-header size)                   │ 38                                           │
+│ E2      │ 39 (from file size)                        │ 39                                           │
+│ E3      │ error: in-header size larger than the file │ error: database disk image is malformed (11) │
+│ E4      │ 39 (from file size)                        │ 39                                           │
+└─────────┴────────────────────────────────────────────┴──────────────────────────────────────────────┘
+
+── F. The page size lives in bytes 16-17; 65536 is stored as 1 ───────────
+
+65536 does not fit in two bytes. Each row is a new database created with
+PRAGMA page_size = requested; bytes 16 and 17 are shown in hex.
+┌───────────┬────────┬────────┬────────┬─────────┬────────────────┐
+│ requested │ byte16 │ byte17 │ stored │ decoded │ sqlite_reports │
+├───────────┼────────┼────────┼────────┼─────────┼────────────────┤
+│ 512       │ 02     │ 00     │ 512    │ 512     │ 512            │
+│ 4096      │ 10     │ 00     │ 4096   │ 4096    │ 4096           │
+│ 65536     │ 00     │ 01     │ 1      │ 65536   │ 65536          │
+└───────────┴────────┴────────┴────────┴─────────┴────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  opening R0, reading the pragmas and closing left it byte-identical and at rest
+A  ✓  each of the 18 decoded header fields that has an oracle here (PRAGMA or .dbinfo) equals SQLite's own report of it; 1 field(s) have none (n/a)
+A  ✓  bytes 96-99 read 3053004 (the library that last wrote the file)
+A  ✓  bytes 18 and 19 are 2 and 2 in a WAL-mode file
+A  ✓  bytes 24-27 equal 92-95, so the in-header size at 28 is used
+B  ✓  after step 28 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
+B  ✓  after step 29 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
+B  ✓  after step 30 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
+B  ✓  rollback mode: bytes 24-27 and 92-95 each advance by exactly one per commit, on one connection
+B  ✓  closing the connection changed nothing in page 1
+C  ✓  step 28: the current page 1 has 24-27 equal to 92-95 (30)
+C  ✓  step 29: the current page 1 has 24-27 equal to 92-95 (30)
+C  ✓  step 30: the current page 1 has 24-27 equal to 92-95 (30)
+C  ✓  WAL, one connection: every commit writes the same change counter 30 (base + 1), it does not advance per commit
+C  ✓  WAL: the database file's page 1 does not change at commit; the new page 1 is a frame in the -wal
+C  ✓  the checkpoint at close copied the current page 1 into the file
+C  ✓  WAL: each of the three UPDATEs changed one row and appended frames to the -wal
+C  ✓  after the checkpoint at close the database file differs from the base
+C  ✓  WAL: commits that do not write page 1 leave every header byte unchanged, even the change counter, before and after the checkpoint
+C  ✓  WAL: with another connection open, the file's page 1 still equals the base after three commits
+C  ✓  WAL: each new connection reads page 1 afresh and writes counter + 1, so the counter advances once per connection that writes page 1
+C  ✓  closing the last connection checkpointed page 1 into the file and removed the -wal
+C  ✓  WAL, one connection, page 1 dropped from the cache before each commit: the counter advances once per commit (30, 31, 32), so C1's constant counter comes from page 1 staying cached, not from the connection
+D  ✓  PRAGMA journal_mode=WAL sets bytes 18 and 19 to 2
+D  ✓  PRAGMA journal_mode=DELETE sets bytes 18 and 19 back to 1
+E  ✓  agreeing counters: SQLite and our parser both trust the in-header size
+E  ✓  disagreeing counters: both ignore bytes 28-31 and use the file size
+E  ✓  an agreeing in-header size larger than the file is corruption to both
+E  ✓  an in-header size of 0 is ignored by both
+F  ✓  page size 512 is stored as 512 and decodes to the size asked for and to what SQLite reports
+F  ✓  page size 4096 is stored as 4096 and decodes to the size asked for and to what SQLite reports
+F  ✓  page size 65536 is stored as 1 and decodes to the size asked for and to what SQLite reports
+
+32 of 32 claims hold
+
+Experiment verdict: HEADER OK
 ```
 
 #### Reading the evidence
 
-- **Lines 1–4 (pin and tools).** Both the Go driver and the `sqlite3` CLI report the pinned 3.53.4 Fossil check-in. The `INFO:` lines record that the CLI was found via `PATH` and scratch files live in `_work/2.1`. (If no CLI is installed anywhere, `LocateCLI` returns `sqlitex.ErrNoCLI` and line 2 prints `NO-CLI:`; a missing explicit `$SQLITE3_BIN` or a wrong-pin CLI fails the run with exit status 1.)
-- **Lines 6–58 (Part A: full header decode of R0).** R0 (WAL mode, 30 steps) hashes to `24aa158fdf713808…`, matching Chapter 1. Lines 9–31 list all 23 fields covering bytes 0–99: page size `4096`, write/read versions `2/2` (WAL), change counter `32`, in-header database size `270`, first freelist trunk `230`, freelist page count `3`, schema cookie `4` (three `CREATE TABLE` statements in step 0 plus one `CREATE INDEX` in step 5), schema format `4`, `auto_vacuum` `NONE` (offsets 52 and 64 both `0`), text encoding `1 (UTF-8)`, `user_version` `30`, `application_id` `1397836120`, `version-valid-for` `32`, and SQLite version `3053004 (3.53.4)`. Because bytes 24–27 equal bytes 92–95 (`32 == 32`), the page count (`270`) is taken from the in-header size. Opening R0 on a normal connection to read the pragmas and closing it left the file byte-identical and at rest (line 33). In the oracle table (lines 35–54; check on line 55), 18 of 19 rows have an oracle (`PRAGMA` or `.dbinfo`) and print `true`, while `version-valid-for` (line 53) has neither oracle and prints `n/a`. Without a CLI, 8 rows are checked against `PRAGMA` and 11 print `n/a`.
-- **Lines 60–87 (Part B: rollback-mode commits).** Starting from a rollback-mode recipe at step 27 (change counter `30`), steps 28, 29, and 30 run on one connection. After every commit, the child process reads page 1 directly from `.db` and confirms it equals SQLite's `sqlite_dbpage` view. Each commit advances bytes 24–27 and bytes 92–95 by 1 (`30 -> 31 -> 32 -> 33`), updates database size (`244 -> 251 -> 259 -> 270`), updates freelist trunk and count as pages are reused and freed, and advances `user_version` (`27 -> 28 -> 29 -> 30`). Closing the connection changes nothing on page 1 (line 87).
-- **Lines 89–177 (Part C: WAL-mode commits).** Starting from a WAL-mode recipe at step 27 (change counter `29`), the experiment compares `current` (`sqlite_dbpage`, WAL included) against `file` (raw `.db` bytes read by a child process):
-  - **C1 (one connection, steps 28–30, lines 92–124):** Every recipe step writes `PRAGMA user_version`, dirtying page 1. Step 28 grows `-wal` to `82432` bytes and moves `current` bytes 24–27 and 92–95 from `29 -> 30`, while `file vs base: no header byte changed`. Steps 29 and 30 grow `-wal` to `156592` and `280192` bytes and update size, freelist, and `user_version` in `current`, but because page 1 stays in the connection's page cache, bytes 24–27 and 92–95 hold steady at `30` (lines 101–115). Only when the connection closes does the checkpoint copy page 1 into `.db` and delete `-wal`, leaving counter `30` (not `32`) in `.db` (lines 117–124).
-  - **C2 (one connection, three `UPDATE`s not touching page 1, lines 125–131):** Each single-row update modifies one row and appends one 4,120-byte frame (`24`-byte frame header + `4096`-byte page) to `-wal` (`4152 -> 8272 -> 12392` bytes, after the 32-byte WAL header). After close, `.db`'s SHA-256 differs from the base, yet zero header bytes change in `current` or in `.db` before or after the checkpoint.
-  - **C3 (new connection per step under an idle holder, lines 132–155):** Each new writer calls `readDbPage` on page 1, refreshing `dbFileVers` from the latest WAL frame. The counter advances `29 -> 30 -> 31 -> 32` across the three connections while `.db` stays untouched until the holder closes.
-  - **C4 (one connection with `PRAGMA shrink_memory` before each step, lines 156–177):** Dropping unused pages—page 1 included—from the connection's cache before each step forces `readDbPage` to re-read page 1 from `-wal` and refresh `dbFileVers`. On that single connection the counter advances on every commit (`29 -> 30 -> 31 -> 32`; `-wal` `82432 -> 156592 -> 280192`), proving C1's flat counter comes from page 1 staying cached rather than from the connection itself.
-- **Lines 179–192 (Part D: bytes 18–19).** Switching a rollback database to WAL with `PRAGMA journal_mode=WAL` sets bytes 18 and 19 from `1` to `2` and increments bytes 24–27 and 92–95 (`6 -> 7`). Switching back with `PRAGMA journal_mode=DELETE` sets bytes 18 and 19 back to `1` (`7 -> 8`).
-- **Lines 194–211 (Part E: in-header size rule).** On four edited copies of a 39-page rollback database: **E1** sets offset 28 to `38` with matching counters → both `internal/dbfile` and SQLite report `38`; **E2** increments byte 95 so counters disagree → both fall back to file size `39`; **E3** sets offset 28 to `44` with matching counters → both reject it (`in-header size larger than the file` vs `database disk image is malformed (11)`); **E4** sets offset 28 to `0` → both fall back to `39`.
-- **Lines 213–219 (Part F: page-size encoding).** `512` is stored as `02 00` (`512`); `4096` is stored as `10 00` (`4096`); `65536` is stored as `00 01` (`1`) and decodes to `65536` in both `internal/dbfile` and `PRAGMA page_size`.
+- **Pin and tools (the experiment's own output, shown when it is run directly; not part of the walkthrough).** Both the Go driver and the `sqlite3` CLI report the pinned 3.53.4 Fossil check-in. The `INFO:` lines record where the CLI was found (the tools directory in the `lab` container) and where the scratch files live (`/work/2.1` in the container, `_work/2.1` when run directly). (If no CLI is installed anywhere, `LocateCLI` returns `sqlitex.ErrNoCLI` and the experiment prints `NO-CLI:`; a missing explicit `$SQLITE3_BIN` or a wrong-pin CLI fails the run with exit status 1.)
+- **Section A (Part A: full header decode of R0).** R0 (WAL mode, 30 steps) hashes to `24aa158fdf713808…`, matching Chapter 1 (A1). A2 lists all 23 fields covering bytes 0–99: page size `4096`, write/read versions `2/2` (WAL), change counter `32`, in-header database size `270`, first freelist trunk `230`, freelist page count `3`, schema cookie `4` (three `CREATE TABLE` statements in step 0 plus one `CREATE INDEX` in step 5), schema format `4`, `auto_vacuum` `NONE` (offsets 52 and 64 both `0`), text encoding `1 (UTF-8)`, `user_version` `30`, `application_id` `1397836120`, `version-valid-for` `32`, and SQLite version `3053004 (3.53.4)`. Because bytes 24–27 equal bytes 92–95 (`32 == 32`), the page count (`270`) is taken from the in-header size. Opening R0 on a normal connection to read the pragmas and closing it left the file byte-identical and at rest (a Part A check). In the oracle table (A3; its check is in the checks list), 18 of 19 rows have an oracle (`PRAGMA` or `.dbinfo`) and print `true`, while `version-valid-for` has neither oracle and prints `n/a`. Without a CLI, 8 rows are checked against `PRAGMA` and 11 print `n/a`.
+- **B1 (Part B: rollback-mode commits).** Starting from a rollback-mode recipe at step 27 (change counter `30`), steps 28, 29, and 30 run on one connection. After every commit, the child process reads page 1 directly from `.db` and confirms it equals SQLite's `sqlite_dbpage` view. Each commit advances bytes 24–27 and bytes 92–95 by 1 (`30 -> 31 -> 32 -> 33`), updates database size (`244 -> 251 -> 259 -> 270`), updates freelist trunk and count as pages are reused and freed, and advances `user_version` (`27 -> 28 -> 29 -> 30`). Closing the connection changes nothing on page 1 (a Part B check).
+- **Section C (Part C: WAL-mode commits).** Starting from a WAL-mode recipe at step 27 (change counter `29`), the experiment compares `current` (`sqlite_dbpage`, WAL included) against `file` (raw `.db` bytes read by a child process):
+  - **C1 (one connection, steps 28–30):** Every recipe step writes `PRAGMA user_version`, dirtying page 1. Step 28 grows `-wal` to `82432` bytes and moves `current` bytes 24–27 and 92–95 from `29 -> 30`, while the `file vs base` row reads `no header byte changed`. Steps 29 and 30 grow `-wal` to `156592` and `280192` bytes and update size, freelist, and `user_version` in `current`, but because page 1 stays in the connection's page cache, bytes 24–27 and 92–95 hold steady at `30` (the `current vs previous` rows of steps 29 and 30). Only when the connection closes does the checkpoint copy page 1 into `.db` and delete `-wal`, leaving counter `30` (not `32`) in `.db` (the `after the last close` rows).
+  - **C2 (one connection, three `UPDATE`s not touching page 1):** Each single-row update modifies one row and appends one 4,120-byte frame (`24`-byte frame header + `4096`-byte page) to `-wal` (`4152 -> 8272 -> 12392` bytes, after the 32-byte WAL header). After close, `.db`'s SHA-256 differs from the base, yet zero header bytes change in `current` or in `.db` before or after the checkpoint.
+  - **C3 (new connection per step under an idle holder):** Each new writer calls `readDbPage` on page 1, refreshing `dbFileVers` from the latest WAL frame. The counter advances `29 -> 30 -> 31 -> 32` across the three connections while `.db` stays untouched until the holder closes.
+  - **C4 (one connection with `PRAGMA shrink_memory` before each step):** Dropping unused pages—page 1 included—from the connection's cache before each step forces `readDbPage` to re-read page 1 from `-wal` and refresh `dbFileVers`. On that single connection the counter advances on every commit (`29 -> 30 -> 31 -> 32`; `-wal` `82432 -> 156592 -> 280192`), proving C1's flat counter comes from page 1 staying cached rather than from the connection itself.
+- **Section D (Part D: bytes 18–19).** Switching a rollback database to WAL with `PRAGMA journal_mode=WAL` sets bytes 18 and 19 from `1` to `2` and increments bytes 24–27 and 92–95 (`6 -> 7`). Switching back with `PRAGMA journal_mode=DELETE` sets bytes 18 and 19 back to `1` (`7 -> 8`).
+- **Section E (Part E: in-header size rule).** On four edited copies of a 39-page rollback database: **E1** sets offset 28 to `38` with matching counters → both `internal/dbfile` and SQLite report `38`; **E2** increments byte 95 so counters disagree → both fall back to file size `39`; **E3** sets offset 28 to `44` with matching counters → both reject it (`in-header size larger than the file` vs `database disk image is malformed (11)`); **E4** sets offset 28 to `0` → both fall back to `39`.
+- **Section F (Part F: page-size encoding).** `512` is stored as `02 00` (`512`); `4096` is stored as `10 00` (`4096`); `65536` is stored as `00 01` (`1`) and decodes to `65536` in both `internal/dbfile` and `PRAGMA page_size`.
 
 ---
 
@@ -3773,11 +4100,11 @@ func VerifyImage(m equal.Manifest, image []byte) ([]int, error) {
 ### 5.4 Experiment 2.2 — Page census (`2.2-page-census`)
 
 - **Claim:** Every page in an SQLite database file has exactly one structural role, and a pure-Go reader can find it from raw bytes alone: decoding `sqlite_schema` on page 1, walking every table and index B-tree (including `WITHOUT ROWID` tables, verified in unit and adversarial tests), following every overflow chain, walking multi-trunk freelists, and accounting for auto-vacuum pointer-map pages and the 1 GiB lock-byte page. The census matches `PRAGMA page_count`, `PRAGMA freelist_count`, `dbstat` (tree, page type, `ncell`, `payload`, `unused`, `mx_payload`), and SQLite's `SELECT` rows, and rejects malformed files with errors rather than panics.
-- **Evidence form:** `EXACT` (all lines except `INFO:` lines).
+- **Evidence form:** `EXACT` (every stored table must match on every run).
 - **Why kept:** the census is what lets a platform account for every byte of a file it stores, and the page walk is reused by R1, R3, R4 and R6. Decoding every record type in every kind of table is not needed for that and is out of scope.
-- **Run command:**
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./ch02-file-format-and-pages/experiments/2.2-page-census
+  go run ./cmd/course run 2.2
   ```
 
 <!-- include: experiments/2.2-page-census/main.go -->
@@ -3811,20 +4138,28 @@ import (
 
 	"github.com/nickstrad/walfleet/internal/dbfile"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 
 	_ "modernc.org/sqlite"
 )
 
-var failures []string
+var (
+	set       *results.Set
+	files     *results.Table
+	roles     *results.Table
+	freelists *results.Table
+	constants *results.Table
+	special   *results.Table
+)
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
+func openTables(dir string) {
+	set = results.MustOpen(dir)
+	files = set.Table("files", "part", "scenario", "page_size", "usable_size", "page_count", "page_count_source", "pragma_page_count", "freelist_count", "pragma_freelist_count", "btree_pages_compared", "not_in_dbstat")
+	roles = set.Table("roles", "scenario", "seq", "role", "pages")
+	freelists = set.Table("freelist_pages", "scenario", "seq", "page", "kind", "leaves_listed")
+	constants = set.Table("constants", "part", "name", "value", "note")
+	special = set.Table("special_pages", "scenario", "role", "page")
 }
 
 func fatal(what string, err error) {
@@ -3917,37 +4252,32 @@ type comparison struct {
 	notInStat  int
 }
 
-func compareWithDBStat(c *dbfile.Census, stat map[int]statRow, printPages bool) comparison {
+func compareWithDBStat(c *dbfile.Census, stat map[int]statRow, pages *results.Table) comparison {
 	var result comparison
-	if printPages {
-		fmt.Printf("  %5s  %-15s %-18s %5s %7s %7s %7s  %s\n", "page", "role", "tree", "ncell", "payload", "unused", "mx_pay", "dbstat")
-	}
 	for _, p := range c.Pages {
 		kind := dbstatType(p.Role)
-		verdict := "not a b-tree page (not in dbstat)"
+		theirs, listed := stat[p.Number]
+		if pages != nil {
+			if listed {
+				pages.Row(p.Number, p.Role, p.Tree, kind, p.CellCount, p.Payload, p.Unused, p.MaxPayload, theirs.Tree, theirs.Type, theirs.Cells, theirs.Payload, theirs.Unused, theirs.MaxPay)
+			} else {
+				pages.Row(p.Number, p.Role, p.Tree, kind, p.CellCount, p.Payload, p.Unused, p.MaxPayload, nil, nil, nil, nil, nil, nil)
+			}
+		}
 		if kind == "" {
-			if _, listed := stat[p.Number]; listed {
-				verdict = "LISTED BY DBSTAT"
+			if listed {
 				result.mismatches = append(result.mismatches, fmt.Sprintf("page %d (%s) is in dbstat", p.Number, p.Role))
 			}
 			result.notInStat++
-		} else {
-			ours := statRow{p.Tree, kind, p.CellCount, p.Payload, p.Unused, int(p.MaxPayload)}
-			theirs, listed := stat[p.Number]
-			result.compared++
-			switch {
-			case !listed:
-				verdict = "MISSING FROM DBSTAT"
-				result.mismatches = append(result.mismatches, fmt.Sprintf("page %d missing from dbstat", p.Number))
-			case ours != theirs:
-				verdict = fmt.Sprintf("DIFFERS: %+v", theirs)
-				result.mismatches = append(result.mismatches, fmt.Sprintf("page %d: ours %+v dbstat %+v", p.Number, ours, theirs))
-			default:
-				verdict = "match"
-			}
+			continue
 		}
-		if printPages {
-			fmt.Printf("  %5d  %-15s %-18s %5d %7d %7d %7d  %s\n", p.Number, p.Role, p.Tree, p.CellCount, p.Payload, p.Unused, p.MaxPayload, verdict)
+		ours := statRow{p.Tree, kind, p.CellCount, p.Payload, p.Unused, int(p.MaxPayload)}
+		result.compared++
+		switch {
+		case !listed:
+			result.mismatches = append(result.mismatches, fmt.Sprintf("page %d missing from dbstat", p.Number))
+		case ours != theirs:
+			result.mismatches = append(result.mismatches, fmt.Sprintf("page %d: ours %+v dbstat %+v", p.Number, ours, theirs))
 		}
 	}
 	if result.compared != len(stat) {
@@ -3956,16 +4286,28 @@ func compareWithDBStat(c *dbfile.Census, stat map[int]statRow, printPages bool) 
 	return result
 }
 
-func printRoleCounts(c *dbfile.Census) int {
+// recordRoles writes how many pages of each role the census found and returns the total.
+func recordRoles(scenario string, c *dbfile.Census) int {
 	counts := c.RoleCounts()
 	total := 0
-	var parts []string
-	for _, r := range dbfile.AllRoles {
+	for i, r := range dbfile.AllRoles {
 		total += counts[r]
-		parts = append(parts, fmt.Sprintf("%s=%d", r, counts[r]))
+		roles.Row(scenario, i+1, r, counts[r])
 	}
-	fmt.Printf("  roles: %s; sum %d\n", strings.Join(parts, " "), total)
 	return total
+}
+
+// recordFreelist writes the freelist pages in the order the file lists them.
+func recordFreelist(scenario string, c *dbfile.Census) {
+	seq := 0
+	for _, trunk := range c.FreelistTrunks {
+		seq++
+		freelists.Row(scenario, seq, trunk, "trunk", c.Page(trunk).CellCount)
+	}
+	for _, leaf := range c.FreelistLeaves {
+		seq++
+		freelists.Row(scenario, seq, leaf, "leaf", nil)
+	}
 }
 
 // census loads the closed database file into memory and runs dbfile.Census so
@@ -4094,64 +4436,52 @@ var recipeColumns = map[string][]string{
 }
 
 func partA(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== A. census of the R0 database (recipe default, WAL, 30 steps, closed)")
 	r := recipe.Default()
 	path := filepath.Join(dir, "r0.db")
 	if err := r.Build(ctx, path, r.Steps); err != nil {
 		fatal("build", err)
 	}
 	f, c := census(path)
-	fmt.Printf("  page size %d, usable %d, page count %d (from the %s)\n", c.PageSize, c.UsableSize, c.PageCount, f.PageCountSource())
-	fmt.Println("  schema table (page 1), decoded by our record reader:")
+	schema := set.Table("schema_entries", "entry", "type", "name", "tbl_name", "rootpage", "sql")
 	for _, e := range c.Schema {
-		fmt.Printf("    rowid %d: type=%s name=%s tbl_name=%s rootpage=%d sql=%q\n", e.Rowid, e.Type, e.Name, e.TableName, e.RootPage, e.SQL)
+		schema.Row(e.Rowid, e.Type, e.Name, e.TableName, e.RootPage, e.SQL)
 	}
-	fmt.Println("  b-trees walked from those roots:")
+	trees := set.Table("trees", "name", "type", "root_page", "btree_pages", "overflow_pages", "cells")
 	for _, t := range c.SortedTrees() {
-		fmt.Printf("    %-18s %-5s root %3d: %3d b-tree page(s), %3d overflow page(s), %4d cell(s)\n", t.Name, t.Type, t.RootPage, t.Pages, t.Overflow, t.Cells)
+		trees.Row(t.Name, t.Type, t.RootPage, t.Pages, t.Overflow, t.Cells)
 	}
-	fmt.Printf("  freelist from header offset 32: trunk(s) %v, leaves %v\n", c.FreelistTrunks, c.FreelistLeaves)
-	total := printRoleCounts(c)
-	check(total == c.PageCount, fmt.Sprintf("the census sums to page_count %d", c.PageCount))
-	check(c.Complete() == nil, "every page has exactly one role: none counted twice (the census fails on a second claim), none missed")
+	recordFreelist("r0", c)
+	total := recordRoles("r0", c)
+	set.Check("A", total == c.PageCount, fmt.Sprintf("the census sums to page_count %d", c.PageCount))
+	set.Check("A", c.Complete() == nil, "every page has exactly one role: none counted twice (the census fails on a second claim), none missed")
 
 	db := openSQLite(path, false)
 	pageCount := queryInt(ctx, db, "PRAGMA page_count")
 	freelist := queryInt(ctx, db, "PRAGMA freelist_count")
 	stat := readDBStat(ctx, db)
-	fmt.Println("  per-page census against dbstat:")
-	cmp := compareWithDBStat(c, stat, true)
-	check(pageCount == c.PageCount, fmt.Sprintf("PRAGMA page_count = %d", pageCount))
-	check(freelist == c.FreelistLength(), fmt.Sprintf("freelist length %d = PRAGMA freelist_count %d", c.FreelistLength(), freelist))
-	check(len(cmp.mismatches) == 0, fmt.Sprintf("all %d b-tree and overflow pages match dbstat in tree, type, ncell, payload, unused and mx_payload; the %d other pages are not in dbstat", cmp.compared, cmp.notInStat))
-	for _, m := range cmp.mismatches {
-		fmt.Println("    MISMATCH", m)
-	}
+	pages := set.Table("pages", "page", "role", "tree", "kind", "ncell", "payload", "unused", "mx_payload", "db_tree", "db_type", "db_ncell", "db_payload", "db_unused", "db_mx_payload")
+	cmp := compareWithDBStat(c, stat, pages)
+	files.Row("A", "r0", c.PageSize, c.UsableSize, c.PageCount, f.PageCountSource(), pageCount, c.FreelistLength(), freelist, cmp.compared, cmp.notInStat)
+	set.Check("A", pageCount == c.PageCount, fmt.Sprintf("PRAGMA page_count = %d", pageCount))
+	set.Check("A", freelist == c.FreelistLength(), fmt.Sprintf("freelist length %d = PRAGMA freelist_count %d", c.FreelistLength(), freelist))
+	set.Check("A", len(cmp.mismatches) == 0, fmt.Sprintf("all %d b-tree and overflow pages match dbstat in tree, type, ncell, payload, unused and mx_payload; the %d other pages are not in dbstat", cmp.compared, cmp.notInStat))
 
-	fmt.Println("  overflow chains of the documents table:")
-	var chains, overflowPages, longest int
-	var shown int
+	chainRows := set.Table("overflow_chains", "row_id", "body_bytes", "leaf_page", "overflow_pages", "chain_length")
+	var overflowPages int
 	err := f.WalkTable(treeNamed(c, "documents").RootPage, func(row dbfile.Row) error {
 		if len(row.OverflowPages) == 0 {
 			return nil
 		}
-		chains++
 		overflowPages += len(row.OverflowPages)
-		longest = max(longest, len(row.OverflowPages))
-		if shown < 5 {
-			shown++
-			fmt.Printf("    row %d: body %d bytes, leaf page %d, overflow chain %v\n", row.Rowid, len(row.Values[3].Bytes), row.Page, row.OverflowPages)
-		}
+		chainRows.Row(row.Rowid, len(row.Values[3].Bytes), row.Page, strings.Trim(fmt.Sprint(row.OverflowPages), "[]"), len(row.OverflowPages))
 		return nil
 	})
 	if err != nil {
 		fatal("documents", err)
 	}
-	fmt.Printf("    %d rows overflow, %d overflow pages in all, longest chain %d pages\n", chains, overflowPages, longest)
-	check(overflowPages == c.RoleCounts()[dbfile.RoleOverflow], "the chains followed from the documents rows hold every overflow page in the file")
+	set.Check("A", overflowPages == c.RoleCounts()[dbfile.RoleOverflow], "the chains followed from the documents rows hold every overflow page in the file")
 
-	fmt.Println("  row hashes, our parser vs SQLite (SELECT ... ORDER BY rowid, every value tagged with typeof()):")
+	hashes := set.Table("row_hashes", "table_name", "our_rows", "sqlite_rows", "our_sha256", "sqlite_sha256")
 	for _, e := range c.Schema {
 		columns, isRecipe := recipeColumns[e.Name]
 		if !isRecipe {
@@ -4159,8 +4489,8 @@ func partA(ctx context.Context, dir string) {
 		}
 		ours := ourTableHash(f, e.RootPage)
 		theirs := sqliteTableHash(ctx, db, e.Name, columns)
-		fmt.Printf("    %-9s rows %4d / %4d  sha256 %s / %s\n", e.Name, ours.rows, theirs.rows, ours.sum[:16], theirs.sum[:16])
-		check(ours == theirs, fmt.Sprintf("table %s: same rows and values, read from the bytes and through SQLite", e.Name))
+		hashes.Row(e.Name, ours.rows, theirs.rows, ours.sum, theirs.sum)
+		set.Check("A", ours == theirs, fmt.Sprintf("table %s: same rows and values, read from the bytes and through SQLite", e.Name))
 	}
 	closeAtRest(db, path)
 }
@@ -4186,24 +4516,22 @@ func newDB(ctx context.Context, path string, edit func(*sqlitex.Options), statem
 	}
 }
 
-func checkAgainstSQLite(ctx context.Context, path string, c *dbfile.Census, label string) {
+func checkAgainstSQLite(ctx context.Context, path, part string, f *dbfile.File, c *dbfile.Census, label string) {
 	db := openSQLite(path, false)
 	pageCount := queryInt(ctx, db, "PRAGMA page_count")
 	freelist := queryInt(ctx, db, "PRAGMA freelist_count")
-	cmp := compareWithDBStat(c, readDBStat(ctx, db), false)
+	cmp := compareWithDBStat(c, readDBStat(ctx, db), nil)
 	closeAtRest(db, path)
-	check(pageCount == c.PageCount && freelist == c.FreelistLength() && c.Complete() == nil && len(cmp.mismatches) == 0,
+	files.Row(part, strings.TrimSuffix(filepath.Base(path), ".db"), c.PageSize, c.UsableSize, c.PageCount, f.PageCountSource(), pageCount, c.FreelistLength(), freelist, cmp.compared, cmp.notInStat)
+	set.Check(part, pageCount == c.PageCount && freelist == c.FreelistLength() && c.Complete() == nil && len(cmp.mismatches) == 0,
 		fmt.Sprintf("%s: census complete, page_count %d and freelist_count %d agree, %d pages match dbstat", label, pageCount, freelist, cmp.compared))
-	for _, m := range cmp.mismatches {
-		fmt.Println("    MISMATCH", m)
-	}
 }
 
 func partB(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== B. a payload exactly at the local limit, and one byte over (table leaf, usable size 4096)")
 	maxLocal, minLocal := dbfile.MaxLocalPayload(4096, dbfile.TableLeaf), dbfile.MinLocalPayload(4096)
-	fmt.Printf("  table leaf: maxLocal = usable-35 = %d, minLocal = (usable-12)*32/255-23 = %d; index: maxLocal = (usable-12)*64/255-23 = %d\n", maxLocal, minLocal, dbfile.MaxLocalPayload(4096, dbfile.IndexLeaf))
+	constants.Row("B", "table leaf maxLocal", maxLocal, "usable-35, usable size 4096")
+	constants.Row("B", "table leaf minLocal", minLocal, "(usable-12)*32/255-23")
+	constants.Row("B", "index maxLocal", dbfile.MaxLocalPayload(4096, dbfile.IndexLeaf), "(usable-12)*64/255-23")
 	path := filepath.Join(dir, "limit.db")
 	newDB(ctx, path, nil,
 		"CREATE TABLE b(id INTEGER PRIMARY KEY, v BLOB)",
@@ -4220,6 +4548,7 @@ func partB(ctx context.Context, dir string) {
 		lastFilled int
 	}
 	splits := map[int64]split{}
+	splitRows := set.Table("payload_splits", "row_id", "blob_bytes", "payload_bytes", "local_bytes", "overflow_pages", "last_overflow_bytes")
 	err := f.WalkTable(2, func(row dbfile.Row) error {
 		page := must(f.BTreePage(row.Page))("page")
 		for i := range page.CellCount {
@@ -4227,48 +4556,41 @@ func partB(ctx context.Context, dir string) {
 			if cell.Rowid != row.Rowid {
 				continue
 			}
-			fmt.Printf("  row %d: blob %d bytes, payload %d bytes (record header 4 + blob), local %d, overflow pages %d\n", row.Rowid, len(row.Values[1].Bytes), cell.PayloadSize, cell.LocalSize, len(row.OverflowPages))
 			chain := must(f.OverflowChain(row.Page, cell))("chain")
 			s := split{payload: cell.PayloadSize, local: cell.LocalSize, overflow: len(chain)}
 			if len(chain) > 0 {
 				s.lastFilled = chain[len(chain)-1].Payload
 			}
 			splits[row.Rowid] = s
+			splitRows.Row(row.Rowid, len(row.Values[1].Bytes), cell.PayloadSize, cell.LocalSize, len(chain), s.lastFilled)
 		}
 		return nil
 	})
 	if err != nil {
 		fatal("walk", err)
 	}
-	check(len(splits) == 3, "limit.db holds the three rows 1, 2 and 3")
-	check(splits[1] == split{4061, 4061, 0, 0}, "row 1: payload 4061 (= maxLocal) stays entirely on the leaf")
-	check(splits[2] == split{4062, minLocal, 1, 4062 - minLocal}, fmt.Sprintf("row 2: payload 4062 keeps only minLocal %d bytes on the leaf and spills %d to one overflow page", minLocal, 4062-minLocal))
-	check(splits[3] == split{8153, 4061, 1, 4092}, "row 3: payload 8153 keeps 4061 on the leaf so its overflow exactly fills one page (4092 bytes)")
-	checkAgainstSQLite(ctx, path, c, "local limit")
+	set.Check("B", len(splits) == 3, "limit.db holds the three rows 1, 2 and 3")
+	set.Check("B", splits[1] == split{4061, 4061, 0, 0}, "row 1: payload 4061 (= maxLocal) stays entirely on the leaf")
+	set.Check("B", splits[2] == split{4062, minLocal, 1, 4062 - minLocal}, fmt.Sprintf("row 2: payload 4062 keeps only minLocal %d bytes on the leaf and spills %d to one overflow page", minLocal, 4062-minLocal))
+	set.Check("B", splits[3] == split{8153, 4061, 1, 4092}, "row 3: payload 8153 keeps 4061 on the leaf so its overflow exactly fills one page (4092 bytes)")
+	checkAgainstSQLite(ctx, path, "B", f, c, "local limit")
 }
 
 func partC(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== C. a freelist longer than one trunk page")
 	path := filepath.Join(dir, "freelist.db")
 	newDB(ctx, path, func(o *sqlitex.Options) { o.File.PageSize = 1024 },
 		"CREATE TABLE big(id INTEGER PRIMARY KEY, v BLOB)",
 		"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 600) INSERT INTO big SELECT i, zeroblob(1000) FROM n ORDER BY i",
 		"DELETE FROM big")
-	_, c := census(path)
-	fmt.Printf("  page size 1024: a trunk holds at most usable/4-2 = %d leaf numbers\n", c.UsableSize/4-2)
-	for _, trunk := range c.FreelistTrunks {
-		fmt.Printf("  trunk page %d lists %d leaves, next trunk is the next in this list\n", trunk, c.Page(trunk).CellCount)
-	}
-	fmt.Printf("  %d trunk(s) + %d leaves = %d free pages of %d\n", len(c.FreelistTrunks), len(c.FreelistLeaves), c.FreelistLength(), c.PageCount)
-	printRoleCounts(c)
-	check(len(c.FreelistTrunks) >= 2, "the freelist spans more than one trunk page")
-	checkAgainstSQLite(ctx, path, c, "long freelist")
+	f, c := census(path)
+	constants.Row("C", "leaf numbers per trunk", c.UsableSize/4-2, "usable/4-2 at page size 1024")
+	recordFreelist("freelist", c)
+	recordRoles("freelist", c)
+	set.Check("C", len(c.FreelistTrunks) >= 2, "the freelist spans more than one trunk page")
+	checkAgainstSQLite(ctx, path, "C", f, c, "long freelist")
 }
 
 func partD(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== D. auto_vacuum=FULL adds pointer-map pages (the course runs auto_vacuum=NONE; the parser still accounts for them)")
 	path := filepath.Join(dir, "autovacuum.db")
 	newDB(ctx, path, func(o *sqlitex.Options) { o.File.PageSize = 1024; o.File.AutoVacuum = sqlitex.AutoVacuumFull },
 		"CREATE TABLE big(id INTEGER PRIMARY KEY, v BLOB)",
@@ -4280,16 +4602,17 @@ func partD(ctx context.Context, dir string) {
 			maps = append(maps, p.Number)
 		}
 	}
-	fmt.Printf("  header byte 52 (largest root page) = %d, so auto-vacuum is on (%s)\n", f.Header.LargestRootPage, f.Header.AutoVacuumName())
-	fmt.Printf("  pointer-map pages: one every usable/5+1 = %d pages from page 2: %v\n", c.UsableSize/5+1, maps)
-	printRoleCounts(c)
-	check(slices.Equal(maps, []int{2, 2 + c.UsableSize/5 + 1}), "pointer-map pages are pages 2 and 2 + usable/5 + 1 in this 408-page file")
-	checkAgainstSQLite(ctx, path, c, "auto_vacuum=FULL")
+	constants.Row("D", "header byte 52 (largest root page)", f.Header.LargestRootPage, "not 0, so auto-vacuum is on: "+f.Header.AutoVacuumName())
+	constants.Row("D", "pointer-map spacing", c.UsableSize/5+1, "usable/5+1 pages, from page 2")
+	for _, n := range maps {
+		special.Row("autovacuum", dbfile.RolePointerMap, n)
+	}
+	recordRoles("autovacuum", c)
+	set.Check("D", slices.Equal(maps, []int{2, 2 + c.UsableSize/5 + 1}), "pointer-map pages are pages 2 and 2 + usable/5 + 1 in this 408-page file")
+	checkAgainstSQLite(ctx, path, "D", f, c, "auto_vacuum=FULL")
 }
 
 func partE(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== E. a file larger than 1 GiB: the page holding byte offset 1073741824 (the lock-byte page) is never used")
 	// Construct a > 1 GiB sparse file at page size 65536 so the 1 GiB
 	// lock-byte page (1073741824/65536 + 1 = 16385) lies inside the database
 	// without allocating 1 GiB of disk blocks; page 3 lists all remaining pages
@@ -4329,21 +4652,24 @@ func partE(ctx context.Context, dir string) {
 	if err != nil {
 		fatal("write sparse file", err)
 	}
-	fmt.Printf("  built by editing a 2-page database (page size 65536): in-header size %d pages, page 3 a freelist trunk listing pages 4..%d except %d; the rest of the file is a hole (sparse)\n", pages, pages, lock)
-	fmt.Printf("  file size %d bytes (1 GiB = 1073741824); lock-byte page = 1073741824/65536 + 1 = %d\n", int64(pages)*pageSize, lock)
+	constants.Row("E", "in-header size (pages)", pages, "page 3 is a freelist trunk listing pages 4.."+fmt.Sprint(pages)+" except the lock-byte page")
+	constants.Row("E", "file size (bytes)", int64(pages)*pageSize, "1 GiB is 1073741824; everything after page 3 is a hole")
+	constants.Row("E", "lock-byte page", lock, "1073741824/65536 + 1")
 	fmt.Printf("INFO: blocks on disk: %s\n", diskUsage(path))
 	// A > 1 GiB sparse file is too large to load with os.ReadFile, so open it
 	// directly with dbfile.Open and close the descriptor before SQLite opens it.
 	f := must(dbfile.Open(path))("parse " + filepath.Base(path))
 	c, err := f.Census()
+	source := f.PageCountSource()
 	if closeErr := f.Close(); closeErr != nil {
 		fatal("close parsed file", closeErr)
 	}
 	if err != nil {
 		fatal("census "+filepath.Base(path), err)
 	}
-	printRoleCounts(c)
-	check(c.Page(lock).Role == dbfile.RoleLockByte && c.Complete() == nil, fmt.Sprintf("page %d is counted as the lock-byte page, not as lost", lock))
+	recordRoles("large", c)
+	special.Row("large", dbfile.RoleLockByte, lock)
+	set.Check("E", c.Page(lock).Role == dbfile.RoleLockByte && c.Complete() == nil, fmt.Sprintf("page %d is counted as the lock-byte page, not as lost", lock))
 	db := openSQLite(path, true)
 	var integrity string
 	if err := db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
@@ -4352,8 +4678,9 @@ func partE(ctx context.Context, dir string) {
 	freelist := queryInt(ctx, db, "PRAGMA freelist_count")
 	pageCount := queryInt(ctx, db, "PRAGMA page_count")
 	closeAtRest(db, path)
-	fmt.Printf("  SQLite: integrity_check=%s page_count=%d freelist_count=%d\n", integrity, pageCount, freelist)
-	check(integrity == "ok" && pageCount == c.PageCount && freelist == c.FreelistLength(), "SQLite accepts the file: integrity_check ok, and page_count and freelist_count equal the census")
+	files.Row("E", "large", c.PageSize, c.UsableSize, c.PageCount, source, pageCount, c.FreelistLength(), freelist, nil, nil)
+	constants.Row("E", "SQLite integrity_check", integrity, "on the edited file, read-only")
+	set.Check("E", integrity == "ok" && pageCount == c.PageCount && freelist == c.FreelistLength(), "SQLite accepts the file: integrity_check ok, and page_count and freelist_count equal the census")
 	if err := os.Remove(path); err != nil {
 		fatal("remove large file", err)
 	}
@@ -4365,8 +4692,6 @@ type corruption struct {
 }
 
 func partF(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== F. what the inspector must reject: one damaged structure per file, our error vs SQLite's integrity_check")
 	// Each case damages one structure in a 6-page rollback-mode copy; rollback
 	// mode and mode=ro keep SQLite from altering the damaged file on open.
 	base := filepath.Join(dir, "reject-base.db")
@@ -4378,12 +4703,10 @@ func partF(ctx context.Context, dir string) {
 		"DELETE FROM t WHERE id = 3")
 	good := must(os.ReadFile(base))("read")
 	_, c := census(base)
-	fmt.Printf("  base: %d pages; table t root 2; roles: ", c.PageCount)
-	var roles []string
+	basePages := set.Table("reject_base_pages", "page", "role")
 	for _, p := range c.Pages {
-		roles = append(roles, fmt.Sprintf("%d=%s", p.Number, p.Role))
+		basePages.Row(p.Number, p.Role)
 	}
-	fmt.Println(strings.Join(roles, " "))
 	page2 := 4096
 	cellPointer := page2 + 8
 	firstCell := int(binary.BigEndian.Uint16(good[cellPointer:]))
@@ -4406,6 +4729,7 @@ func partF(ctx context.Context, dir string) {
 		{"freelist trunk (header 32) -> page 2, a table page", func(b []byte) { binary.BigEndian.PutUint32(b[32:], 2) }},
 		{"freelist count (header 36) + 1", func(b []byte) { b[39]++ }},
 	}
+	rejections := set.Table("rejections", "case_no", "damage", "ours", "sqlite")
 	for i, k := range cases {
 		image := append([]byte(nil), good...)
 		if k.edit == nil {
@@ -4419,10 +4743,10 @@ func partF(ctx context.Context, dir string) {
 		}
 		ours := parseAll(image)
 		theirs := sqliteVerdict(ctx, path)
-		fmt.Printf("  F%d %s\n    ours:   %s\n    SQLite: %s\n", i+1, k.name, ours, theirs)
-		check(ours != "accepted" && !strings.HasPrefix(ours, "PANIC"), fmt.Sprintf("F%d: our parser returns an error, without panicking", i+1))
+		rejections.Row(fmt.Sprintf("F%d", i+1), k.name, ours, theirs)
+		set.Check("F", ours != "accepted" && !strings.HasPrefix(ours, "PANIC"), fmt.Sprintf("F%d: our parser returns an error, without panicking", i+1))
 		if k.edit == nil {
-			check(strings.HasSuffix(theirs, ": ok"), "F2: SQLite rounds a partial last page up and reads the missing bytes as zeros, so it reports ok; our parser is stricter and refuses the file")
+			set.Check("F", strings.HasSuffix(theirs, ": ok"), "F2: SQLite rounds a partial last page up and reads the missing bytes as zeros, so it reports ok; our parser is stricter and refuses the file")
 		}
 	}
 }
@@ -4485,6 +4809,7 @@ func main() {
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("2.2")
+	openTables(dir)
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
 	partA(ctx, dir)
 	partB(ctx, dir)
@@ -4492,15 +4817,7 @@ func main() {
 	partD(ctx, dir)
 	partE(ctx, dir)
 	partF(ctx, dir)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("CENSUS FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("CENSUS OK")
+	set.Finish("CENSUS")
 }
 
 var errNoUsage = errors.New("disk usage unknown on this system")
@@ -4521,7 +4838,7 @@ func displayPath(path string) string {
 }
 ```
 
-Build-tag helpers (`//go:build unix` for Linux and macOS, `//go:build !unix` elsewhere) report allocated disk blocks for part E's sparse file on an `INFO:` line:
+Build-tag helpers (`//go:build unix` for Linux and macOS, `//go:build !unix` elsewhere) report allocated disk blocks for part E's sparse file on an `INFO:` line of the experiment's own output (not part of the walkthrough or the stored evidence):
 
 <!-- include: experiments/2.2-page-census/usage_unix.go -->
 ```go
@@ -4561,422 +4878,955 @@ package main
 func diskUsage(path string) string { return errNoUsage.Error() }
 ```
 
-Captured output (`evidence/2.2-page-census.txt`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/2.2-page-census/report.sql -->
+```sql
+-- Walkthrough of experiment 2.2. Run it with:
+--   go run ./cmd/course run 2.2        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   files             one row per database file the census ran on, with SQLite's page counts
+--   roles             one row per scenario and page role: how many pages have that role
+--   freelist_pages    one row per freelist page, in the order the file lists them
+--   constants         one row per derived or observed value (formula in note)
+--   special_pages     one row per pointer-map or lock-byte page
+--   schema_entries    part A: one row per entry of the schema table on page 1
+--   trees             part A: one row per b-tree walked from a schema root
+--   pages             part A: one row per page, our census beside the dbstat row
+--   overflow_chains   part A: one row per documents row that has overflow pages
+--   row_hashes        part A: one row per recipe table, rows hashed both ways
+--   payload_splits    part B: one row per blob around the local-payload limit
+--   reject_base_pages part F: one row per page of the undamaged file
+--   rejections        part F: one row per damaged copy, with both verdicts
+--   checks            every claim the experiment asserted (the runner lists it last)
+
+-- Pages of one scenario by role, in the order of the census, with the total last.
+CREATE TEMP MACRO role_counts(s) AS TABLE
+    SELECT role, pages FROM (
+        SELECT seq, role, pages FROM roles WHERE scenario = s
+        UNION ALL
+        SELECT 1000, 'total', sum(pages) FROM roles WHERE scenario = s
+    ) ORDER BY seq;
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  2.2  Can a parser account for every page of a database file?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'internal/dbfile reads a closed database file and gives every page one'
+.print 'role: b-tree interior or leaf, overflow, freelist trunk or leaf, pointer'
+.print 'map, or the lock-byte page. The experiment checks the census against'
+.print 'SQLite (PRAGMA page_count, freelist_count, the dbstat virtual table, a'
+.print 'SELECT of every table), builds files that stress the corners, and tries'
+.print 'to break the parser with nine damaged files.'
+
+.print
+.print '── A. Census of the R0 database (recipe default, WAL, 30 steps, closed) ──'
+.print
+.print 'A1. The file as the census and SQLite see it. The page count comes from the'
+.print 'in-header size; both page counts and both freelist lengths must agree.'
+
+SELECT page_size, usable_size, page_count, page_count_source,
+       pragma_page_count AS sqlite_pages, freelist_count AS free_pages, pragma_freelist_count AS sqlite_free
+FROM files WHERE scenario = 'r0';
+
+.print
+.print 'A2. The schema table on page 1, decoded by our record reader. The sql column'
+.print 'is cut into lines of at most 50 characters.'
+
+SELECT CASE WHEN g.i = 0 THEN s.entry END    AS entry,
+       CASE WHEN g.i = 0 THEN s.type END     AS type,
+       CASE WHEN g.i = 0 THEN s.name END     AS name,
+       CASE WHEN g.i = 0 THEN s.tbl_name END AS tbl_name,
+       CASE WHEN g.i = 0 THEN s.rootpage END AS rootpage,
+       substr(s.sql, g.i * 50 + 1, 50)       AS sql
+FROM schema_entries s, generate_series(0, (length(s.sql) - 1) // 50) AS g(i)
+ORDER BY s.entry, g.i;
+
+.print
+.print 'A3. The b-trees walked from those roots.'
+
+SELECT name, type, root_page, btree_pages, overflow_pages, cells FROM trees ORDER BY name;
+
+.print
+.print 'A4. The freelist from header offset 32: the trunk and the leaves it lists.'
+
+SELECT string_agg(CASE WHEN kind = 'trunk' THEN CAST(page AS VARCHAR) END, ' ' ORDER BY seq) AS trunks,
+       string_agg(CASE WHEN kind = 'leaf'  THEN CAST(page AS VARCHAR) END, ' ' ORDER BY seq) AS leaves
+FROM freelist_pages WHERE scenario = 'r0';
+
+.print
+.print 'A5. Pages by role. Every page has exactly one role, so the roles sum to the'
+.print 'page count (270) and none is unaccounted for.'
+
+SELECT role, pages FROM role_counts('r0');
+
+.print
+.print 'A6. The page-role census against dbstat, page by page. Every b-tree and'
+.print 'overflow page must match on tree, type, cell count, payload, unused bytes and'
+.print 'largest payload. The other pages are not b-tree pages, so dbstat does not list them.'
+
+SELECT page, role, tree, ncell, payload, unused, mx_payload AS mx_pay,
+       CASE WHEN coalesce(kind, '') = ''
+            THEN CASE WHEN db_type IS NULL THEN 'not a b-tree page (not in dbstat)' ELSE 'LISTED BY DBSTAT' END
+            WHEN db_type IS NULL THEN 'MISSING FROM DBSTAT'
+            WHEN tree = db_tree AND kind = db_type AND ncell = db_ncell AND payload = db_payload
+                 AND unused = db_unused AND mx_payload = db_mx_payload THEN 'match'
+            ELSE 'DIFFERS'
+       END AS dbstat
+FROM pages ORDER BY page;
+
+.print
+.print 'A7. The verdicts in total.'
+
+SELECT CASE WHEN coalesce(kind, '') = ''
+            THEN CASE WHEN db_type IS NULL THEN 'not a b-tree page (not in dbstat)' ELSE 'LISTED BY DBSTAT' END
+            WHEN db_type IS NULL THEN 'MISSING FROM DBSTAT'
+            WHEN tree = db_tree AND kind = db_type AND ncell = db_ncell AND payload = db_payload
+                 AND unused = db_unused AND mx_payload = db_mx_payload THEN 'match'
+            ELSE 'DIFFERS'
+       END AS dbstat,
+       count(*) AS pages
+FROM pages GROUP BY ALL ORDER BY dbstat;
+
+.print
+.print 'A8. Overflow chains of the documents table: the first five rows that overflow,'
+.print 'then the totals over all of them.'
+
+SELECT row_id, body_bytes, leaf_page, overflow_pages AS overflow_chain
+FROM overflow_chains ORDER BY row_id LIMIT 5;
+
+SELECT count(*)            AS rows_that_overflow,
+       sum(chain_length)   AS overflow_pages_in_all,
+       max(chain_length)   AS longest_chain
+FROM overflow_chains;
+
+.print
+.print 'A9. Every row of every recipe table, hashed from the page bytes by our parser'
+.print 'and read through SELECT ... ORDER BY rowid with every value tagged by typeof().'
+.print 'The first 16 hex digits of each sha256 are shown.'
+
+SELECT table_name, our_rows, sqlite_rows,
+       left(our_sha256, 16) AS our_sha256, left(sqlite_sha256, 16) AS sqlite_sha256,
+       our_sha256 = sqlite_sha256 AS same
+FROM row_hashes ORDER BY table_name;
+
+.print
+.print '── B. A payload exactly at the local limit, and one byte over ───────────'
+.print
+.print 'A table leaf at usable size 4096 keeps a whole payload when it is at most'
+.print 'maxLocal. A larger one keeps only minLocal bytes (or maxLocal, when the'
+.print 'overflow would then fill its last page exactly) and spills the rest.'
+
+SELECT name, value, note FROM constants WHERE part = 'B' ORDER BY name;
+
+.print
+.print 'B1. Three blobs. The payload is the blob plus a 4-byte record header.'
+.print 'Row 1 is exactly maxLocal and stays on the leaf; row 2 is one byte over.'
+
+SELECT row_id, blob_bytes, payload_bytes, local_bytes, overflow_pages, last_overflow_bytes
+FROM payload_splits ORDER BY row_id;
+
+.print
+.print 'B2. The census of that file against SQLite.'
+
+SELECT scenario, page_count, pragma_page_count AS sqlite_pages,
+       freelist_count AS free_pages, pragma_freelist_count AS sqlite_free, btree_pages_compared, not_in_dbstat
+FROM files WHERE part = 'B' ORDER BY scenario;
+
+.print
+.print '── C. A freelist longer than one trunk page ────────────────────────────'
+.print
+.print 'Page size 1024, 600 rows of 1000 bytes inserted and then all deleted.'
+
+SELECT name, value, note FROM constants WHERE part = 'C' ORDER BY name;
+
+.print
+.print 'C1. The trunks, in the order the file chains them, with how many leaves each lists.'
+
+SELECT seq, page AS trunk_page, leaves_listed
+FROM freelist_pages WHERE scenario = 'freelist' AND kind = 'trunk' ORDER BY seq;
+
+.print
+.print 'C2. Trunks plus leaves are the free pages, and they agree with SQLite.'
+
+SELECT count(*) FILTER (kind = 'trunk') AS trunks,
+       count(*) FILTER (kind = 'leaf')  AS leaves,
+       count(*)                         AS free_pages,
+       any_value(f.page_count)          AS of_pages,
+       any_value(f.pragma_freelist_count) AS pragma_freelist_count
+FROM freelist_pages p, files f
+WHERE p.scenario = 'freelist' AND f.scenario = 'freelist';
+
+.print
+.print 'C3. Pages by role.'
+
+SELECT role, pages FROM role_counts('freelist');
+
+.print
+.print '── D. auto_vacuum=FULL adds pointer-map pages ──────────────────────────'
+.print
+.print 'The course runs auto_vacuum=NONE; the parser still accounts for pointer maps.'
+.print 'Page size 1024, 400 rows of 900 bytes, auto_vacuum=FULL.'
+
+SELECT name, value, note FROM constants WHERE part = 'D' ORDER BY name;
+
+.print
+.print 'D1. The pointer-map pages found: page 2, then one every spacing pages.'
+
+SELECT scenario, role, page FROM special_pages WHERE scenario = 'autovacuum' ORDER BY page;
+
+.print
+.print 'D2. Pages by role.'
+
+SELECT role, pages FROM role_counts('autovacuum');
+
+.print
+.print 'D3. The census against SQLite.'
+
+SELECT scenario, page_count, pragma_page_count AS sqlite_pages,
+       freelist_count AS free_pages, pragma_freelist_count AS sqlite_free, btree_pages_compared, not_in_dbstat
+FROM files WHERE part = 'D' ORDER BY scenario;
+
+.print
+.print '── E. A file larger than 1 GiB: the lock-byte page ─────────────────────'
+.print
+.print 'The page that holds byte offset 1073741824 is never used. The file is built'
+.print 'by editing a 2-page database with page size 65536: the in-header size is'
+.print 'raised, page 3 becomes a freelist trunk that lists every later page except the'
+.print 'lock-byte page, and the rest of the file is a hole (sparse).'
+
+SELECT name, value, note FROM constants WHERE part = 'E' ORDER BY name;
+
+.print
+.print 'E1. Pages by role, and the lock-byte page the census found.'
+
+SELECT role, pages FROM role_counts('large');
+
+SELECT role, page FROM special_pages WHERE scenario = 'large' ORDER BY page;
+
+.print
+.print 'E2. SQLite accepts the file: its page count and freelist count equal the census.'
+
+SELECT scenario, page_count, pragma_page_count AS sqlite_pages, freelist_count AS free_pages,
+       pragma_freelist_count AS sqlite_free
+FROM files WHERE part = 'E' ORDER BY scenario;
+
+.print
+.print '── F. What the inspector must reject ───────────────────────────────────'
+.print
+.print 'One damaged structure per file, in a 6-page rollback-mode copy. For each,'
+.print 'what our parser says and what PRAGMA integrity_check says. Texts are cut'
+.print 'into lines of at most 100 characters.'
+.print
+.print 'F0. The pages of the undamaged file (table t has root page 2):'
+
+SELECT string_agg(page || '=' || role, ' ' ORDER BY page) AS pages FROM reject_base_pages;
+
+.print
+.print 'F1. The nine damaged copies, one structure each.'
+
+SELECT case_no, damage FROM rejections ORDER BY CAST(substr(case_no, 2) AS INTEGER);
+
+.print
+.print 'F2. What each parser says about each copy. Our parser must return an error'
+.print 'without panicking. SQLite does not always object: for F2 it reads the missing'
+.print 'half of the last page as zeros and calls the file ok.'
+
+WITH texts AS (
+    SELECT case_no, 1 AS ord, 'ours' AS who, ours AS text FROM rejections
+    UNION ALL
+    SELECT case_no, 2, 'SQLite', sqlite FROM rejections
+)
+SELECT CASE WHEN ord = 1 AND g.i = 0 THEN case_no END AS case_no,
+       CASE WHEN g.i = 0 THEN who END                 AS who,
+       substr(text, g.i * 85 + 1, 85)                 AS verdict
+FROM texts, generate_series(0, (length(text) - 1) // 85) AS g(i)
+ORDER BY CAST(substr(case_no, 2) AS INTEGER), ord, g.i;
+```
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/2.2-page-census/`](evidence/2.2-page-census/), and `go run ./cmd/course check evidence ch02` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/2.2-page-census.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/2.2
 
-== A. census of the R0 database (recipe default, WAL, 30 steps, closed)
-  page size 4096, usable 4096, page count 270 (from the in-header size)
-  schema table (page 1), decoded by our record reader:
-    rowid 1: type=table name=accounts tbl_name=accounts rootpage=2 sql="CREATE TABLE accounts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, balance INTEGER NOT NULL)"
-    rowid 2: type=table name=documents tbl_name=documents rootpage=3 sql="CREATE TABLE documents(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, title TEXT NOT NULL, body BLOB NOT NULL)"
-    rowid 3: type=table name=events tbl_name=events rootpage=4 sql="CREATE TABLE events(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, kind TEXT NOT NULL, amount INTEGER NOT NULL, note TEXT NOT NULL)"
-    rowid 4: type=index name=events_by_account tbl_name=events rootpage=28 sql="CREATE INDEX events_by_account ON events(account_id, id)"
-  b-trees walked from those roots:
-    sqlite_schema      table root   1:   1 b-tree page(s),   0 overflow page(s),    4 cell(s)
-    accounts           table root   2:   3 b-tree page(s),   0 overflow page(s),  184 cell(s)
-    documents          table root   3:  70 b-tree page(s), 170 overflow page(s),  164 cell(s)
-    events             table root   4:  18 b-tree page(s),   0 overflow page(s), 1193 cell(s)
-    events_by_account  index root  28:   5 b-tree page(s),   0 overflow page(s), 1177 cell(s)
-  freelist from header offset 32: trunk(s) [230], leaves [231 232]
-  roles: table-interior=3 table-leaf=89 index-interior=1 index-leaf=4 overflow=170 freelist-trunk=1 freelist-leaf=2 pointer-map=0 lock-byte=0 unaccounted=0; sum 270
-check ok: the census sums to page_count 270
-check ok: every page has exactly one role: none counted twice (the census fails on a second claim), none missed
-  per-page census against dbstat:
-   page  role            tree               ncell payload  unused  mx_pay  dbstat
-      1  table-leaf      sqlite_schema          4     520    3450     162  match
-      2  table-interior  accounts               1       0    4076       0  match
-      3  table-interior  documents             68       0    3608       0  match
-      4  table-interior  events                16       0    3957       0  match
-      5  overflow        documents              0    4092       0       0  match
-      6  overflow        documents              0    4092       0       0  match
-      7  overflow        documents              0    4092       0       0  match
-      8  overflow        documents              0    4092       0       0  match
-      9  overflow        documents              0    4092       0       0  match
-     10  table-leaf      documents              1    3625     454   15901  match
-     11  table-leaf      documents              1    2193    1890    2193  match
-     12  overflow        documents              0    4092       0       0  match
-     13  overflow        documents              0    4092       0       0  match
-     14  overflow        documents              0    4092       0       0  match
-     15  table-leaf      documents              1    3114     965   15390  match
-     16  overflow        documents              0    4092       0       0  match
-     17  overflow        documents              0    4092       0       0  match
-     18  overflow        documents              0    4092       0       0  match
-     19  table-leaf      documents              1    2568    1511   14844  match
-     20  overflow        documents              0    4092       0       0  match
-     21  table-leaf      documents              1    2885    1194   15161  match
-     22  overflow        documents              0    4092       0       0  match
-     23  overflow        documents              0    4092       0       0  match
-     24  overflow        documents              0    4092       0       0  match
-     25  table-leaf      documents              1    3535     548    3535  match
-     26  table-leaf      events                63    3143     693      78  match
-     27  table-leaf      events                64    3406     408      77  match
-     28  index-interior  events_by_account      3      25    4038       9  match
-     29  overflow        documents              0    3620     472       0  match
-     30  overflow        documents              0    4092       0       0  match
-     31  table-leaf      documents              2    2253    1817   13840  match
-     32  overflow        documents              0    4092       0       0  match
-     33  overflow        documents              0    4092       0       0  match
-     34  overflow        documents              0    4092       0       0  match
-     35  overflow        documents              0    4092       0       0  match
-     36  overflow        documents              0    4092       0       0  match
-     37  overflow        documents              0    4092       0       0  match
-     38  table-leaf      documents              1    1967    2112    6059  match
-     39  table-leaf      events                65    3133     630      77  match
-     40  overflow        documents              0    4092       0       0  match
-     41  overflow        documents              0    4092       0       0  match
-     42  table-leaf      documents              2    3364     706   10354  match
-     43  overflow        documents              0    4092       0       0  match
-     44  overflow        documents              0    4092       0       0  match
-     45  overflow        documents              0    4092       0       0  match
-     46  table-leaf      documents              1    3391     688    7483  match
-     47  overflow        documents              0    4092       0       0  match
-     48  table-leaf      documents              3    3642     419   13900  match
-     49  overflow        documents              0    4092       0       0  match
-     50  table-leaf      documents              1     690    3389    4782  match
-     51  overflow        documents              0    4092       0       0  match
-     52  overflow        documents              0    4092       0       0  match
-     53  overflow        documents              0    4092       0       0  match
-     54  table-leaf      documents              1    3363     716   15639  match
-     55  overflow        documents              0    4092       0       0  match
-     56  overflow        documents              0    4092       0       0  match
-     57  overflow        documents              0    4092       0       0  match
-     58  table-leaf      documents              1    3766     317    3766  match
-     59  table-leaf      events                67    3297     456      76  match
-     60  overflow        documents              0    4092       0       0  match
-     61  overflow        documents              0    4092       0       0  match
-     62  overflow        documents              0    4092       0       0  match
-     63  overflow        documents              0    4092       0       0  match
-     64  table-leaf      documents              1    3972     111    3972  match
-     65  overflow        documents              0    4092       0       0  match
-     66  table-leaf      events                69    3357     386      77  match
-     67  overflow        documents              0    3644     448       0  match
-     68  table-leaf      documents              1    1772    2307   14048  match
-     69  overflow        documents              0    4092       0       0  match
-     70  table-leaf      documents              1    2938    1141   11122  match
-     71  overflow        documents              0    4092       0       0  match
-     72  table-leaf      documents              1    3262     817    7354  match
-     73  overflow        documents              0    4092       0       0  match
-     74  overflow        documents              0    4092       0       0  match
-     75  overflow        documents              0    4092       0       0  match
-     76  table-leaf      documents              1    2407    1676    2407  match
-     77  overflow        documents              0    4092       0       0  match
-     78  table-leaf      documents              1    2751    1332    2751  match
-     79  table-leaf      documents              1    2444    1639    2444  match
-     80  table-leaf      documents              1    3749     330   11933  match
-     81  table-leaf      documents              1    3565     514    7657  match
-     82  overflow        documents              0    4092       0       0  match
-     83  table-leaf      documents              1    1106    2973    9290  match
-     84  overflow        documents              0    4092       0       0  match
-     85  overflow        documents              0    4092       0       0  match
-     86  table-leaf      documents              1    3800     279   11984  match
-     87  table-leaf      events                65    3395     368      78  match
-     88  index-leaf      events_by_account    331    2750     345       9  match
-     89  index-leaf      events_by_account    314    2822     324       9  match
-     90  overflow        documents              0    4092       0       0  match
-     91  overflow        documents              0    4092       0       0  match
-     92  overflow        documents              0    4092       0       0  match
-     93  table-leaf      documents              2    3939     131   13932  match
-     94  overflow        documents              0    4092       0       0  match
-     95  table-leaf      documents              1    2062    2021    2062  match
-     96  overflow        documents              0    4092       0       0  match
-     97  table-leaf      documents              1    3174     905    7266  match
-     98  overflow        documents              0    4092       0       0  match
-     99  overflow        documents              0    4092       0       0  match
-    100  table-leaf      documents              1    3034    1045   11218  match
-    101  overflow        documents              0    4092       0       0  match
-    102  overflow        documents              0    4092       0       0  match
-    103  overflow        documents              0    4092       0       0  match
-    104  overflow        documents              0    4092       0       0  match
-    105  overflow        documents              0    4092       0       0  match
-    106  table-leaf      documents              3    3602     459   13160  match
-    107  overflow        documents              0    4092       0       0  match
-    108  table-leaf      events                69    3519     224      78  match
-    109  overflow        documents              0    4092       0       0  match
-    110  overflow        documents              0    4092       0       0  match
-    111  overflow        documents              0    4092       0       0  match
-    112  overflow        documents              0    4092       0       0  match
-    113  overflow        documents              0    4092       0       0  match
-    114  table-leaf      documents              1    3817     262   12001  match
-    115  overflow        documents              0    4092       0       0  match
-    116  overflow        documents              0    4092       0       0  match
-    117  overflow        documents              0    4092       0       0  match
-    118  table-leaf      documents              2    2400    1670   14187  match
-    119  overflow        documents              0    4092       0       0  match
-    120  overflow        documents              0    4092       0       0  match
-    121  overflow        documents              0    3832     260       0  match
-    122  table-leaf      documents              1    3689     394    3689  match
-    123  overflow        documents              0    4092       0       0  match
-    124  table-leaf      events                71    3641      92      77  match
-    125  overflow        documents              0    4092       0       0  match
-    126  table-leaf      documents              1    2116    1963   10300  match
-    127  table-leaf      documents              1    2641    1438   14917  match
-    128  overflow        documents              0    4092       0       0  match
-    129  overflow        documents              0    4092       0       0  match
-    130  overflow        documents              0    4092       0       0  match
-    131  overflow        documents              0    4092       0       0  match
-    132  table-leaf      events                76    3525     183      78  match
-    133  overflow        documents              0    4092       0       0  match
-    134  table-leaf      documents              1    3594     485    7686  match
-    135  overflow        documents              0    4092       0       0  match
-    136  table-leaf      documents              1    3419     660    7511  match
-    137  overflow        documents              0    4092       0       0  match
-    138  overflow        documents              0    4092       0       0  match
-    139  table-leaf      documents              2    1653    2417    9348  match
-    140  overflow        documents              0    4092       0       0  match
-    141  overflow        documents              0    3975     117       0  match
-    142  overflow        documents              0    4092       0       0  match
-    143  overflow        documents              0    4092       0       0  match
-    144  table-leaf      documents              1    2772    1307   10956  match
-    145  overflow        documents              0    4092       0       0  match
-    146  table-leaf      documents              1    3556     523    7648  match
-    147  overflow        documents              0    4092       0       0  match
-    148  overflow        documents              0    4092       0       0  match
-    149  table-leaf      documents              1    2071    2008   10255  match
-    150  overflow        documents              0    4092       0       0  match
-    151  overflow        documents              0    4092       0       0  match
-    152  table-leaf      documents              1    3129     950   11313  match
-    153  table-leaf      documents              1    3631     452    3631  match
-    154  overflow        documents              0    4092       0       0  match
-    155  overflow        documents              0    4092       0       0  match
-    156  table-leaf      documents              2    3846     224   10306  match
-    157  table-leaf      events                72    3633      95      77  match
-    158  overflow        documents              0    4092       0       0  match
-    159  overflow        documents              0    4092       0       0  match
-    160  overflow        documents              0    4092       0       0  match
-    161  overflow        documents              0    4092       0       0  match
-    162  table-leaf      documents              2    3974      96   10896  match
-    163  table-leaf      documents              2    3789     281   14051  match
-    164  overflow        documents              0    4092       0       0  match
-    165  overflow        documents              0    4092       0       0  match
-    166  table-leaf      documents              1    1193    2886    5285  match
-    167  index-leaf      events_by_account    279    2511     740       9  match
-    168  table-leaf      events                67    3611     142      76  match
-    169  overflow        documents              0    4092       0       0  match
-    170  overflow        documents              0    4092       0       0  match
-    171  table-leaf      documents              1    2866    1217    2866  match
-    172  overflow        documents              0    4092       0       0  match
-    173  overflow        documents              0    4092       0       0  match
-    174  overflow        documents              0    4092       0       0  match
-    175  table-leaf      documents              3    3197     864   14000  match
-    176  overflow        documents              0    4092       0       0  match
-    177  overflow        documents              0    4092       0       0  match
-    178  overflow        documents              0    4092       0       0  match
-    179  overflow        documents              0    4092       0       0  match
-    180  overflow        documents              0    4092       0       0  match
-    181  overflow        documents              0    4092       0       0  match
-    182  overflow        documents              0    4092       0       0  match
-    183  table-leaf      documents              3    4041      20   13926  match
-    184  table-leaf      events                70    3658      80      78  match
-    185  overflow        documents              0    4092       0       0  match
-    186  table-leaf      documents              1    2944    1139    2944  match
-    187  overflow        documents              0    4092       0       0  match
-    188  overflow        documents              0    4092       0       0  match
-    189  overflow        documents              0    4092       0       0  match
-    190  table-leaf      documents              2    2981    1089   10352  match
-    191  overflow        documents              0    4092       0       0  match
-    192  overflow        documents              0    4092       0       0  match
-    193  overflow        documents              0    4092       0       0  match
-    194  overflow        documents              0    4092       0       0  match
-    195  table-leaf      documents              1    2815    1264   15091  match
-    196  overflow        documents              0    4092       0       0  match
-    197  overflow        documents              0    4092       0       0  match
-    198  overflow        documents              0    3700     392       0  match
-    199  overflow        documents              0    4092       0       0  match
-    200  table-leaf      documents              1    3095     984   15371  match
-    201  overflow        documents              0    4092       0       0  match
-    202  overflow        documents              0    4092       0       0  match
-    203  table-leaf      documents              1    2161    1918   10345  match
-    204  table-leaf      events                70    3562     176      77  match
-    205  overflow        documents              0    4092       0       0  match
-    206  table-leaf      documents              1    2144    1935   10328  match
-    207  overflow        documents              0    4092       0       0  match
-    208  overflow        documents              0    4092       0       0  match
-    209  table-leaf      documents              2    3452     618   11147  match
-    210  table-leaf      events                71    3573     160      78  match
-    211  overflow        documents              0    4092       0       0  match
-    212  overflow        documents              0    4092       0       0  match
-    213  table-leaf      documents              2    3079     991   14866  match
-    214  overflow        documents              0    4092       0       0  match
-    215  overflow        documents              0    4092       0       0  match
-    216  overflow        documents              0    4092       0       0  match
-    217  overflow        documents              0    4092       0       0  match
-    218  overflow        documents              0    4092       0       0  match
-    219  table-leaf      events                73    3723       0      78  match
-    220  overflow        documents              0    4092       0       0  match
-    221  overflow        documents              0    4092       0       0  match
-    222  overflow        documents              0    4092       0       0  match
-    223  table-leaf      documents              2    3831     239   14706  match
-    224  overflow        documents              0    4092       0       0  match
-    225  overflow        documents              0    4092       0       0  match
-    226  overflow        documents              0    4092       0       0  match
-    227  overflow        documents              0    4092       0       0  match
-    228  overflow        documents              0    4092       0       0  match
-    229  table-leaf      documents              2    3962     108    9858  match
-    230  freelist-trunk                         2       0       0       0  not a b-tree page (not in dbstat)
-    231  freelist-leaf                          0       0       0       0  not a b-tree page (not in dbstat)
-    232  freelist-leaf                          0       0       0       0  not a b-tree page (not in dbstat)
-    233  overflow        documents              0    4092       0       0  match
-    234  overflow        documents              0    4092       0       0  match
-    235  table-leaf      documents              1    4025      54   12209  match
-    236  overflow        documents              0    4092       0       0  match
-    237  overflow        documents              0    4092       0       0  match
-    238  table-leaf      documents              4    3321     731    9460  match
-    239  overflow        documents              0    3584     508       0  match
-    240  overflow        documents              0    4092       0       0  match
-    241  overflow        documents              0    4092       0       0  match
-    242  index-leaf      events_by_account    250    2310    1028      10  match
-    243  table-leaf      events                72    3693      35      78  match
-    244  overflow        documents              0    4092       0       0  match
-    245  table-leaf      documents              1    2677    1406    2677  match
-    246  overflow        documents              0    4092       0       0  match
-    247  table-leaf      documents              1    3562     517    7654  match
-    248  overflow        documents              0    4092       0       0  match
-    249  table-leaf      documents              2    2711    1359   10291  match
-    250  overflow        documents              0    4092       0       0  match
-    251  overflow        documents              0    4092       0       0  match
-    252  overflow        documents              0    4092       0       0  match
-    253  overflow        documents              0    4092       0       0  match
-    254  table-leaf      documents              2    3431     639   15136  match
-    255  overflow        documents              0    4092       0       0  match
-    256  overflow        documents              0    4092       0       0  match
-    257  overflow        documents              0    4092       0       0  match
-    258  table-leaf      documents              1    3452     627   11636  match
-    259  table-leaf      events                73    3666      57      77  match
-    260  table-leaf      accounts             177    3306      24      25  match
-    261  table-leaf      accounts               6     118    3940      24  match
-    262  overflow        documents              0    4092       0       0  match
-    263  overflow        documents              0    4092       0       0  match
-    264  table-leaf      documents              2    2880    1190   12723  match
-    265  overflow        documents              0    4092       0       0  match
-    266  overflow        documents              0    4092       0       0  match
-    267  overflow        documents              0    4050      42       0  match
-    268  overflow        documents              0    4092       0       0  match
-    269  table-leaf      documents              1    2181    1898    6273  match
-    270  overflow        documents              0    4092       0       0  match
-check ok: PRAGMA page_count = 270
-check ok: freelist length 3 = PRAGMA freelist_count 3
-check ok: all 267 b-tree and overflow pages match dbstat in tree, type, ncell, payload, unused and mx_payload; the 3 other pages are not in dbstat
-  overflow chains of the documents table:
-    row 1: body 15875 bytes, leaf page 10, overflow chain [5 6 7]
-    row 3: body 15347 bytes, leaf page 15, overflow chain [12 13 14]
-    row 4: body 14821 bytes, leaf page 19, overflow chain [16 17 18]
-    row 6: body 15129 bytes, leaf page 21, overflow chain [9 8 23]
-    row 8: body 13816 bytes, leaf page 31, overflow chain [22 20 30]
-    83 rows overflow, 170 overflow pages in all, longest chain 3 pages
-check ok: the chains followed from the documents rows hold every overflow page in the file
-  row hashes, our parser vs SQLite (SELECT ... ORDER BY rowid, every value tagged with typeof()):
-    accounts  rows  183 /  183  sha256 8017137363561914 / 8017137363561914
-check ok: table accounts: same rows and values, read from the bytes and through SQLite
-    documents rows   96 /   96  sha256 973d4aa8fa24c3aa / 973d4aa8fa24c3aa
-check ok: table documents: same rows and values, read from the bytes and through SQLite
-    events    rows 1177 / 1177  sha256 afdcccdab84ea9c5 / afdcccdab84ea9c5
-check ok: table events: same rows and values, read from the bytes and through SQLite
+════════════════════════════════════════════════════════════════════════
+  2.2  Can a parser account for every page of a database file?
+════════════════════════════════════════════════════════════════════════
 
-== B. a payload exactly at the local limit, and one byte over (table leaf, usable size 4096)
-  table leaf: maxLocal = usable-35 = 4061, minLocal = (usable-12)*32/255-23 = 489; index: maxLocal = (usable-12)*64/255-23 = 1002
-  row 1: blob 4057 bytes, payload 4061 bytes (record header 4 + blob), local 4061, overflow pages 0
-  row 2: blob 4058 bytes, payload 4062 bytes (record header 4 + blob), local 489, overflow pages 1
-  row 3: blob 8149 bytes, payload 8153 bytes (record header 4 + blob), local 4061, overflow pages 1
-check ok: limit.db holds the three rows 1, 2 and 3
-check ok: row 1: payload 4061 (= maxLocal) stays entirely on the leaf
-check ok: row 2: payload 4062 keeps only minLocal 489 bytes on the leaf and spills 3573 to one overflow page
-check ok: row 3: payload 8153 keeps 4061 on the leaf so its overflow exactly fills one page (4092 bytes)
-check ok: local limit: census complete, page_count 7 and freelist_count 0 agree, 7 pages match dbstat
+internal/dbfile reads a closed database file and gives every page one
+role: b-tree interior or leaf, overflow, freelist trunk or leaf, pointer
+map, or the lock-byte page. The experiment checks the census against
+SQLite (PRAGMA page_count, freelist_count, the dbstat virtual table, a
+SELECT of every table), builds files that stress the corners, and tries
+to break the parser with nine damaged files.
 
-== C. a freelist longer than one trunk page
-  page size 1024: a trunk holds at most usable/4-2 = 254 leaf numbers
-  trunk page 502 lists 175 leaves, next trunk is the next in this list
-  trunk page 252 lists 248 leaves, next trunk is the next in this list
-  trunk page 3 lists 248 leaves, next trunk is the next in this list
-  3 trunk(s) + 671 leaves = 674 free pages of 676
-  roles: table-interior=0 table-leaf=2 index-interior=0 index-leaf=0 overflow=0 freelist-trunk=3 freelist-leaf=671 pointer-map=0 lock-byte=0 unaccounted=0; sum 676
-check ok: the freelist spans more than one trunk page
-check ok: long freelist: census complete, page_count 676 and freelist_count 674 agree, 2 pages match dbstat
+── A. Census of the R0 database (recipe default, WAL, 30 steps, closed) ──
 
-== D. auto_vacuum=FULL adds pointer-map pages (the course runs auto_vacuum=NONE; the parser still accounts for them)
-  header byte 52 (largest root page) = 3, so auto-vacuum is on (FULL)
-  pointer-map pages: one every usable/5+1 = 205 pages from page 2: [2 207]
-  roles: table-interior=5 table-leaf=401 index-interior=0 index-leaf=0 overflow=0 freelist-trunk=0 freelist-leaf=0 pointer-map=2 lock-byte=0 unaccounted=0; sum 408
-check ok: pointer-map pages are pages 2 and 2 + usable/5 + 1 in this 408-page file
-check ok: auto_vacuum=FULL: census complete, page_count 408 and freelist_count 0 agree, 406 pages match dbstat
+A1. The file as the census and SQLite see it. The page count comes from the
+in-header size; both page counts and both freelist lengths must agree.
+┌───────────┬─────────────┬────────────┬───────────────────┬──────────────┬────────────┬─────────────┐
+│ page_size │ usable_size │ page_count │ page_count_source │ sqlite_pages │ free_pages │ sqlite_free │
+├───────────┼─────────────┼────────────┼───────────────────┼──────────────┼────────────┼─────────────┤
+│ 4096      │ 4096        │ 270        │ in-header size    │ 270          │ 3          │ 3           │
+└───────────┴─────────────┴────────────┴───────────────────┴──────────────┴────────────┴─────────────┘
 
-== E. a file larger than 1 GiB: the page holding byte offset 1073741824 (the lock-byte page) is never used
-  built by editing a 2-page database (page size 65536): in-header size 16386 pages, page 3 a freelist trunk listing pages 4..16386 except 16385; the rest of the file is a hole (sparse)
-  file size 1073872896 bytes (1 GiB = 1073741824); lock-byte page = 1073741824/65536 + 1 = 16385
-INFO: blocks on disk: 196608 bytes allocated for a 1073872896-byte file
-  roles: table-interior=0 table-leaf=2 index-interior=0 index-leaf=0 overflow=0 freelist-trunk=1 freelist-leaf=16382 pointer-map=0 lock-byte=1 unaccounted=0; sum 16386
-check ok: page 16385 is counted as the lock-byte page, not as lost
-  SQLite: integrity_check=ok page_count=16386 freelist_count=16383
-check ok: SQLite accepts the file: integrity_check ok, and page_count and freelist_count equal the census
+A2. The schema table on page 1, decoded by our record reader. The sql column
+is cut into lines of at most 50 characters.
+┌───────┬───────┬───────────────────┬───────────┬──────────┬────────────────────────────────────────────────────┐
+│ entry │ type  │       name        │ tbl_name  │ rootpage │                        sql                         │
+├───────┼───────┼───────────────────┼───────────┼──────────┼────────────────────────────────────────────────────┤
+│ 1     │ table │ accounts          │ accounts  │ 2        │ CREATE TABLE accounts(id INTEGER PRIMARY KEY, name │
+│       │       │                   │           │          │  TEXT NOT NULL, balance INTEGER NOT NULL)          │
+│ 2     │ table │ documents         │ documents │ 3        │ CREATE TABLE documents(id INTEGER PRIMARY KEY, acc │
+│       │       │                   │           │          │ ount_id INTEGER NOT NULL, title TEXT NOT NULL, bod │
+│       │       │                   │           │          │ y BLOB NOT NULL)                                   │
+│ 3     │ table │ events            │ events    │ 4        │ CREATE TABLE events(id INTEGER PRIMARY KEY, accoun │
+│       │       │                   │           │          │ t_id INTEGER NOT NULL, kind TEXT NOT NULL, amount  │
+│       │       │                   │           │          │ INTEGER NOT NULL, note TEXT NOT NULL)              │
+│ 4     │ index │ events_by_account │ events    │ 28       │ CREATE INDEX events_by_account ON events(account_i │
+│       │       │                   │           │          │ d, id)                                             │
+└───────┴───────┴───────────────────┴───────────┴──────────┴────────────────────────────────────────────────────┘
 
-== F. what the inspector must reject: one damaged structure per file, our error vs SQLite's integrity_check
-  base: 6 pages; table t root 2; roles: 1=table-leaf 2=table-leaf 3=overflow 4=overflow 5=freelist-trunk 6=freelist-leaf
-  F1 magic: byte 0 changed
-    ours:   error: not an SQLite database file: file offset 0: magic is "XQLite format 3\x00"
-    SQLite: error: file is not a database (26)
-check ok: F1: our parser returns an error, without panicking
-  F2 truncated: last page (a freelist leaf) cut in half
-    ours:   error: file is truncated: file offset 22528: file size 22528 is not a multiple of the page size 4096
-    SQLite: integrity_check: ok
-check ok: F2: our parser returns an error, without panicking
-check ok: F2: SQLite rounds a partial last page up and reads the missing bytes as zeros, so it reports ok; our parser is stricter and refuses the file
-  F3 page 2 type byte 0x0d -> 0x07
-    ours:   error: tree "t" (root 2): database file is malformed: page 2 offset 0: page type byte 0x07 is not 0x02, 0x05, 0x0a or 0x0d
-    SQLite: error: database disk image is malformed (11)
-check ok: F3: our parser returns an error, without panicking
-  F4 page 2 cell count 2 -> 3000
-    ours:   error: tree "t" (root 2): database file is malformed: page 2 offset 3: 3000 cells do not fit: the cell pointer array would end at 6008, usable size 4096
-    SQLite: error: database disk image is malformed (11)
-check ok: F4: our parser returns an error, without panicking
-  F5 page 2 first cell pointer -> 9
-    ours:   error: tree "t" (root 2): database file is malformed: page 2 offset 8: cell 0 pointer 9 is outside the cell content area 2260..4092
-    SQLite: integrity_check: *** in database main *** / Tree 2 page 2 cell 0: Offset 9 out of range 2260..4092 / Page 3: never used / Page 4: never used / (+1 more lines)
-check ok: F5: our parser returns an error, without panicking
-  F6 row 1 payload size varint -> 0x7f
-    ours:   error: tree "t" (root 2): database file is malformed: page 2 offset 7: 1699 bytes of the cell content area belong to no cell or freeblock, the header reports 0 fragmented bytes
-    SQLite: integrity_check: *** in database main *** / Tree 2 page 2 cell 0: Rowid 21 out of order / Fragmentation of 1699 bytes reported as 0 on page 2 / Page 3: never used / (+2 more lines)
-check ok: F6: our parser returns an error, without panicking
-  F7 overflow page 3 points back to itself
-    ours:   error: tree "t" (root 2): database file is malformed: page 3: overflow chain of cell 0 loops back to page 3
-    SQLite: integrity_check: *** in database main *** / Tree 2 page 2 cell 0: 2nd reference to page 3 / Page 4: never used
-check ok: F7: our parser returns an error, without panicking
-  F8 freelist trunk (header 32) -> page 2, a table page
-    ours:   error: freelist: database file is malformed: page 2: page claimed twice: as table-leaf of "t" and as freelist-trunk
-    SQLite: integrity_check: *** in database main *** / Freelist: freelist leaf count too big on page 2 / Freelist: invalid page number 218103808 / 2nd reference to page 2 / (+4 more lines)
-check ok: F8: our parser returns an error, without panicking
-  F9 freelist count (header 36) + 1
-    ours:   error: freelist: database file is malformed: file offset 36: header counts 3 freelist pages, the trunk chain holds 2
-    SQLite: integrity_check: *** in database main *** / Freelist: size is 2 but should be 3
-check ok: F9: our parser returns an error, without panicking
+A3. The b-trees walked from those roots.
+┌───────────────────┬───────┬───────────┬─────────────┬────────────────┬───────┐
+│       name        │ type  │ root_page │ btree_pages │ overflow_pages │ cells │
+├───────────────────┼───────┼───────────┼─────────────┼────────────────┼───────┤
+│ accounts          │ table │ 2         │ 3           │ 0              │ 184   │
+│ documents         │ table │ 3         │ 70          │ 170            │ 164   │
+│ events            │ table │ 4         │ 18          │ 0              │ 1193  │
+│ events_by_account │ index │ 28        │ 5           │ 0              │ 1177  │
+│ sqlite_schema     │ table │ 1         │ 1           │ 0              │ 4     │
+└───────────────────┴───────┴───────────┴─────────────┴────────────────┴───────┘
 
-CENSUS OK
+A4. The freelist from header offset 32: the trunk and the leaves it lists.
+┌────────┬─────────┐
+│ trunks │ leaves  │
+├────────┼─────────┤
+│ 230    │ 231 232 │
+└────────┴─────────┘
+
+A5. Pages by role. Every page has exactly one role, so the roles sum to the
+page count (270) and none is unaccounted for.
+┌────────────────┬───────┐
+│      role      │ pages │
+├────────────────┼───────┤
+│ table-interior │ 3     │
+│ table-leaf     │ 89    │
+│ index-interior │ 1     │
+│ index-leaf     │ 4     │
+│ overflow       │ 170   │
+│ freelist-trunk │ 1     │
+│ freelist-leaf  │ 2     │
+│ pointer-map    │ 0     │
+│ lock-byte      │ 0     │
+│ unaccounted    │ 0     │
+│ total          │ 270   │
+└────────────────┴───────┘
+
+A6. The page-role census against dbstat, page by page. Every b-tree and
+overflow page must match on tree, type, cell count, payload, unused bytes and
+largest payload. The other pages are not b-tree pages, so dbstat does not list them.
+┌──────┬────────────────┬───────────────────┬───────┬─────────┬────────┬────────┬───────────────────────────────────┐
+│ page │      role      │       tree        │ ncell │ payload │ unused │ mx_pay │              dbstat               │
+├──────┼────────────────┼───────────────────┼───────┼─────────┼────────┼────────┼───────────────────────────────────┤
+│ 1    │ table-leaf     │ sqlite_schema     │ 4     │ 520     │ 3450   │ 162    │ match                             │
+│ 2    │ table-interior │ accounts          │ 1     │ 0       │ 4076   │ 0      │ match                             │
+│ 3    │ table-interior │ documents         │ 68    │ 0       │ 3608   │ 0      │ match                             │
+│ 4    │ table-interior │ events            │ 16    │ 0       │ 3957   │ 0      │ match                             │
+│ 5    │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 6    │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 7    │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 8    │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 9    │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 10   │ table-leaf     │ documents         │ 1     │ 3625    │ 454    │ 15901  │ match                             │
+│ 11   │ table-leaf     │ documents         │ 1     │ 2193    │ 1890   │ 2193   │ match                             │
+│ 12   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 13   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 14   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 15   │ table-leaf     │ documents         │ 1     │ 3114    │ 965    │ 15390  │ match                             │
+│ 16   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 17   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 18   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 19   │ table-leaf     │ documents         │ 1     │ 2568    │ 1511   │ 14844  │ match                             │
+│ 20   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 21   │ table-leaf     │ documents         │ 1     │ 2885    │ 1194   │ 15161  │ match                             │
+│ 22   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 23   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 24   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 25   │ table-leaf     │ documents         │ 1     │ 3535    │ 548    │ 3535   │ match                             │
+│ 26   │ table-leaf     │ events            │ 63    │ 3143    │ 693    │ 78     │ match                             │
+│ 27   │ table-leaf     │ events            │ 64    │ 3406    │ 408    │ 77     │ match                             │
+│ 28   │ index-interior │ events_by_account │ 3     │ 25      │ 4038   │ 9      │ match                             │
+│ 29   │ overflow       │ documents         │ 0     │ 3620    │ 472    │ 0      │ match                             │
+│ 30   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 31   │ table-leaf     │ documents         │ 2     │ 2253    │ 1817   │ 13840  │ match                             │
+│ 32   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 33   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 34   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 35   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 36   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 37   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 38   │ table-leaf     │ documents         │ 1     │ 1967    │ 2112   │ 6059   │ match                             │
+│ 39   │ table-leaf     │ events            │ 65    │ 3133    │ 630    │ 77     │ match                             │
+│ 40   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 41   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 42   │ table-leaf     │ documents         │ 2     │ 3364    │ 706    │ 10354  │ match                             │
+│ 43   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 44   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 45   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 46   │ table-leaf     │ documents         │ 1     │ 3391    │ 688    │ 7483   │ match                             │
+│ 47   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 48   │ table-leaf     │ documents         │ 3     │ 3642    │ 419    │ 13900  │ match                             │
+│ 49   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 50   │ table-leaf     │ documents         │ 1     │ 690     │ 3389   │ 4782   │ match                             │
+│ 51   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 52   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 53   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 54   │ table-leaf     │ documents         │ 1     │ 3363    │ 716    │ 15639  │ match                             │
+│ 55   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 56   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 57   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 58   │ table-leaf     │ documents         │ 1     │ 3766    │ 317    │ 3766   │ match                             │
+│ 59   │ table-leaf     │ events            │ 67    │ 3297    │ 456    │ 76     │ match                             │
+│ 60   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 61   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 62   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 63   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 64   │ table-leaf     │ documents         │ 1     │ 3972    │ 111    │ 3972   │ match                             │
+│ 65   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 66   │ table-leaf     │ events            │ 69    │ 3357    │ 386    │ 77     │ match                             │
+│ 67   │ overflow       │ documents         │ 0     │ 3644    │ 448    │ 0      │ match                             │
+│ 68   │ table-leaf     │ documents         │ 1     │ 1772    │ 2307   │ 14048  │ match                             │
+│ 69   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 70   │ table-leaf     │ documents         │ 1     │ 2938    │ 1141   │ 11122  │ match                             │
+│ 71   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 72   │ table-leaf     │ documents         │ 1     │ 3262    │ 817    │ 7354   │ match                             │
+│ 73   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 74   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 75   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 76   │ table-leaf     │ documents         │ 1     │ 2407    │ 1676   │ 2407   │ match                             │
+│ 77   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 78   │ table-leaf     │ documents         │ 1     │ 2751    │ 1332   │ 2751   │ match                             │
+│ 79   │ table-leaf     │ documents         │ 1     │ 2444    │ 1639   │ 2444   │ match                             │
+│ 80   │ table-leaf     │ documents         │ 1     │ 3749    │ 330    │ 11933  │ match                             │
+│ 81   │ table-leaf     │ documents         │ 1     │ 3565    │ 514    │ 7657   │ match                             │
+│ 82   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 83   │ table-leaf     │ documents         │ 1     │ 1106    │ 2973   │ 9290   │ match                             │
+│ 84   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 85   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 86   │ table-leaf     │ documents         │ 1     │ 3800    │ 279    │ 11984  │ match                             │
+│ 87   │ table-leaf     │ events            │ 65    │ 3395    │ 368    │ 78     │ match                             │
+│ 88   │ index-leaf     │ events_by_account │ 331   │ 2750    │ 345    │ 9      │ match                             │
+│ 89   │ index-leaf     │ events_by_account │ 314   │ 2822    │ 324    │ 9      │ match                             │
+│ 90   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 91   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 92   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 93   │ table-leaf     │ documents         │ 2     │ 3939    │ 131    │ 13932  │ match                             │
+│ 94   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 95   │ table-leaf     │ documents         │ 1     │ 2062    │ 2021   │ 2062   │ match                             │
+│ 96   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 97   │ table-leaf     │ documents         │ 1     │ 3174    │ 905    │ 7266   │ match                             │
+│ 98   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 99   │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 100  │ table-leaf     │ documents         │ 1     │ 3034    │ 1045   │ 11218  │ match                             │
+│ 101  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 102  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 103  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 104  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 105  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 106  │ table-leaf     │ documents         │ 3     │ 3602    │ 459    │ 13160  │ match                             │
+│ 107  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 108  │ table-leaf     │ events            │ 69    │ 3519    │ 224    │ 78     │ match                             │
+│ 109  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 110  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 111  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 112  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 113  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 114  │ table-leaf     │ documents         │ 1     │ 3817    │ 262    │ 12001  │ match                             │
+│ 115  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 116  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 117  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 118  │ table-leaf     │ documents         │ 2     │ 2400    │ 1670   │ 14187  │ match                             │
+│ 119  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 120  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 121  │ overflow       │ documents         │ 0     │ 3832    │ 260    │ 0      │ match                             │
+│ 122  │ table-leaf     │ documents         │ 1     │ 3689    │ 394    │ 3689   │ match                             │
+│ 123  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 124  │ table-leaf     │ events            │ 71    │ 3641    │ 92     │ 77     │ match                             │
+│ 125  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 126  │ table-leaf     │ documents         │ 1     │ 2116    │ 1963   │ 10300  │ match                             │
+│ 127  │ table-leaf     │ documents         │ 1     │ 2641    │ 1438   │ 14917  │ match                             │
+│ 128  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 129  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 130  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 131  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 132  │ table-leaf     │ events            │ 76    │ 3525    │ 183    │ 78     │ match                             │
+│ 133  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 134  │ table-leaf     │ documents         │ 1     │ 3594    │ 485    │ 7686   │ match                             │
+│ 135  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 136  │ table-leaf     │ documents         │ 1     │ 3419    │ 660    │ 7511   │ match                             │
+│ 137  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 138  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 139  │ table-leaf     │ documents         │ 2     │ 1653    │ 2417   │ 9348   │ match                             │
+│ 140  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 141  │ overflow       │ documents         │ 0     │ 3975    │ 117    │ 0      │ match                             │
+│ 142  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 143  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 144  │ table-leaf     │ documents         │ 1     │ 2772    │ 1307   │ 10956  │ match                             │
+│ 145  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 146  │ table-leaf     │ documents         │ 1     │ 3556    │ 523    │ 7648   │ match                             │
+│ 147  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 148  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 149  │ table-leaf     │ documents         │ 1     │ 2071    │ 2008   │ 10255  │ match                             │
+│ 150  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 151  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 152  │ table-leaf     │ documents         │ 1     │ 3129    │ 950    │ 11313  │ match                             │
+│ 153  │ table-leaf     │ documents         │ 1     │ 3631    │ 452    │ 3631   │ match                             │
+│ 154  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 155  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 156  │ table-leaf     │ documents         │ 2     │ 3846    │ 224    │ 10306  │ match                             │
+│ 157  │ table-leaf     │ events            │ 72    │ 3633    │ 95     │ 77     │ match                             │
+│ 158  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 159  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 160  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 161  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 162  │ table-leaf     │ documents         │ 2     │ 3974    │ 96     │ 10896  │ match                             │
+│ 163  │ table-leaf     │ documents         │ 2     │ 3789    │ 281    │ 14051  │ match                             │
+│ 164  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 165  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 166  │ table-leaf     │ documents         │ 1     │ 1193    │ 2886   │ 5285   │ match                             │
+│ 167  │ index-leaf     │ events_by_account │ 279   │ 2511    │ 740    │ 9      │ match                             │
+│ 168  │ table-leaf     │ events            │ 67    │ 3611    │ 142    │ 76     │ match                             │
+│ 169  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 170  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 171  │ table-leaf     │ documents         │ 1     │ 2866    │ 1217   │ 2866   │ match                             │
+│ 172  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 173  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 174  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 175  │ table-leaf     │ documents         │ 3     │ 3197    │ 864    │ 14000  │ match                             │
+│ 176  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 177  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 178  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 179  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 180  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 181  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 182  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 183  │ table-leaf     │ documents         │ 3     │ 4041    │ 20     │ 13926  │ match                             │
+│ 184  │ table-leaf     │ events            │ 70    │ 3658    │ 80     │ 78     │ match                             │
+│ 185  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 186  │ table-leaf     │ documents         │ 1     │ 2944    │ 1139   │ 2944   │ match                             │
+│ 187  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 188  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 189  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 190  │ table-leaf     │ documents         │ 2     │ 2981    │ 1089   │ 10352  │ match                             │
+│ 191  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 192  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 193  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 194  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 195  │ table-leaf     │ documents         │ 1     │ 2815    │ 1264   │ 15091  │ match                             │
+│ 196  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 197  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 198  │ overflow       │ documents         │ 0     │ 3700    │ 392    │ 0      │ match                             │
+│ 199  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 200  │ table-leaf     │ documents         │ 1     │ 3095    │ 984    │ 15371  │ match                             │
+│ 201  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 202  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 203  │ table-leaf     │ documents         │ 1     │ 2161    │ 1918   │ 10345  │ match                             │
+│ 204  │ table-leaf     │ events            │ 70    │ 3562    │ 176    │ 77     │ match                             │
+│ 205  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 206  │ table-leaf     │ documents         │ 1     │ 2144    │ 1935   │ 10328  │ match                             │
+│ 207  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 208  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 209  │ table-leaf     │ documents         │ 2     │ 3452    │ 618    │ 11147  │ match                             │
+│ 210  │ table-leaf     │ events            │ 71    │ 3573    │ 160    │ 78     │ match                             │
+│ 211  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 212  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 213  │ table-leaf     │ documents         │ 2     │ 3079    │ 991    │ 14866  │ match                             │
+│ 214  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 215  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 216  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 217  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 218  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 219  │ table-leaf     │ events            │ 73    │ 3723    │ 0      │ 78     │ match                             │
+│ 220  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 221  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 222  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 223  │ table-leaf     │ documents         │ 2     │ 3831    │ 239    │ 14706  │ match                             │
+│ 224  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 225  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 226  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 227  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 228  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 229  │ table-leaf     │ documents         │ 2     │ 3962    │ 108    │ 9858   │ match                             │
+│ 230  │ freelist-trunk │                   │ 2     │ 0       │ 0      │ 0      │ not a b-tree page (not in dbstat) │
+│ 231  │ freelist-leaf  │                   │ 0     │ 0       │ 0      │ 0      │ not a b-tree page (not in dbstat) │
+│ 232  │ freelist-leaf  │                   │ 0     │ 0       │ 0      │ 0      │ not a b-tree page (not in dbstat) │
+│ 233  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 234  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 235  │ table-leaf     │ documents         │ 1     │ 4025    │ 54     │ 12209  │ match                             │
+│ 236  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 237  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 238  │ table-leaf     │ documents         │ 4     │ 3321    │ 731    │ 9460   │ match                             │
+│ 239  │ overflow       │ documents         │ 0     │ 3584    │ 508    │ 0      │ match                             │
+│ 240  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 241  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 242  │ index-leaf     │ events_by_account │ 250   │ 2310    │ 1028   │ 10     │ match                             │
+│ 243  │ table-leaf     │ events            │ 72    │ 3693    │ 35     │ 78     │ match                             │
+│ 244  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 245  │ table-leaf     │ documents         │ 1     │ 2677    │ 1406   │ 2677   │ match                             │
+│ 246  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 247  │ table-leaf     │ documents         │ 1     │ 3562    │ 517    │ 7654   │ match                             │
+│ 248  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 249  │ table-leaf     │ documents         │ 2     │ 2711    │ 1359   │ 10291  │ match                             │
+│ 250  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 251  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 252  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 253  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 254  │ table-leaf     │ documents         │ 2     │ 3431    │ 639    │ 15136  │ match                             │
+│ 255  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 256  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 257  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 258  │ table-leaf     │ documents         │ 1     │ 3452    │ 627    │ 11636  │ match                             │
+│ 259  │ table-leaf     │ events            │ 73    │ 3666    │ 57     │ 77     │ match                             │
+│ 260  │ table-leaf     │ accounts          │ 177   │ 3306    │ 24     │ 25     │ match                             │
+│ 261  │ table-leaf     │ accounts          │ 6     │ 118     │ 3940   │ 24     │ match                             │
+│ 262  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 263  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 264  │ table-leaf     │ documents         │ 2     │ 2880    │ 1190   │ 12723  │ match                             │
+│ 265  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 266  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 267  │ overflow       │ documents         │ 0     │ 4050    │ 42     │ 0      │ match                             │
+│ 268  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+│ 269  │ table-leaf     │ documents         │ 1     │ 2181    │ 1898   │ 6273   │ match                             │
+│ 270  │ overflow       │ documents         │ 0     │ 4092    │ 0      │ 0      │ match                             │
+└──────┴────────────────┴───────────────────┴───────┴─────────┴────────┴────────┴───────────────────────────────────┘
+
+A7. The verdicts in total.
+┌───────────────────────────────────┬───────┐
+│              dbstat               │ pages │
+├───────────────────────────────────┼───────┤
+│ match                             │ 267   │
+│ not a b-tree page (not in dbstat) │ 3     │
+└───────────────────────────────────┴───────┘
+
+A8. Overflow chains of the documents table: the first five rows that overflow,
+then the totals over all of them.
+┌────────┬────────────┬───────────┬────────────────┐
+│ row_id │ body_bytes │ leaf_page │ overflow_chain │
+├────────┼────────────┼───────────┼────────────────┤
+│ 1      │ 15875      │ 10        │ 5 6 7          │
+│ 3      │ 15347      │ 15        │ 12 13 14       │
+│ 4      │ 14821      │ 19        │ 16 17 18       │
+│ 6      │ 15129      │ 21        │ 9 8 23         │
+│ 8      │ 13816      │ 31        │ 22 20 30       │
+└────────┴────────────┴───────────┴────────────────┘
+┌────────────────────┬───────────────────────┬───────────────┐
+│ rows_that_overflow │ overflow_pages_in_all │ longest_chain │
+├────────────────────┼───────────────────────┼───────────────┤
+│ 83                 │ 170                   │ 3             │
+└────────────────────┴───────────────────────┴───────────────┘
+
+A9. Every row of every recipe table, hashed from the page bytes by our parser
+and read through SELECT ... ORDER BY rowid with every value tagged by typeof().
+The first 16 hex digits of each sha256 are shown.
+┌────────────┬──────────┬─────────────┬──────────────────┬──────────────────┬──────┐
+│ table_name │ our_rows │ sqlite_rows │    our_sha256    │  sqlite_sha256   │ same │
+├────────────┼──────────┼─────────────┼──────────────────┼──────────────────┼──────┤
+│ accounts   │ 183      │ 183         │ 8017137363561914 │ 8017137363561914 │ true │
+│ documents  │ 96       │ 96          │ 973d4aa8fa24c3aa │ 973d4aa8fa24c3aa │ true │
+│ events     │ 1177     │ 1177        │ afdcccdab84ea9c5 │ afdcccdab84ea9c5 │ true │
+└────────────┴──────────┴─────────────┴──────────────────┴──────────────────┴──────┘
+
+── B. A payload exactly at the local limit, and one byte over ───────────
+
+A table leaf at usable size 4096 keeps a whole payload when it is at most
+maxLocal. A larger one keeps only minLocal bytes (or maxLocal, when the
+overflow would then fill its last page exactly) and spills the rest.
+┌─────────────────────┬───────┬─────────────────────────────┐
+│        name         │ value │            note             │
+├─────────────────────┼───────┼─────────────────────────────┤
+│ index maxLocal      │ 1002  │ (usable-12)*64/255-23       │
+│ table leaf maxLocal │ 4061  │ usable-35, usable size 4096 │
+│ table leaf minLocal │ 489   │ (usable-12)*32/255-23       │
+└─────────────────────┴───────┴─────────────────────────────┘
+
+B1. Three blobs. The payload is the blob plus a 4-byte record header.
+Row 1 is exactly maxLocal and stays on the leaf; row 2 is one byte over.
+┌────────┬────────────┬───────────────┬─────────────┬────────────────┬─────────────────────┐
+│ row_id │ blob_bytes │ payload_bytes │ local_bytes │ overflow_pages │ last_overflow_bytes │
+├────────┼────────────┼───────────────┼─────────────┼────────────────┼─────────────────────┤
+│ 1      │ 4057       │ 4061          │ 4061        │ 0              │ 0                   │
+│ 2      │ 4058       │ 4062          │ 489         │ 1              │ 3573                │
+│ 3      │ 8149       │ 8153          │ 4061        │ 1              │ 4092                │
+└────────┴────────────┴───────────────┴─────────────┴────────────────┴─────────────────────┘
+
+B2. The census of that file against SQLite.
+┌──────────┬────────────┬──────────────┬────────────┬─────────────┬──────────────────────┬───────────────┐
+│ scenario │ page_count │ sqlite_pages │ free_pages │ sqlite_free │ btree_pages_compared │ not_in_dbstat │
+├──────────┼────────────┼──────────────┼────────────┼─────────────┼──────────────────────┼───────────────┤
+│ limit    │ 7          │ 7            │ 0          │ 0           │ 7                    │ 0             │
+└──────────┴────────────┴──────────────┴────────────┴─────────────┴──────────────────────┴───────────────┘
+
+── C. A freelist longer than one trunk page ────────────────────────────
+
+Page size 1024, 600 rows of 1000 bytes inserted and then all deleted.
+┌────────────────────────┬───────┬──────────────────────────────┐
+│          name          │ value │             note             │
+├────────────────────────┼───────┼──────────────────────────────┤
+│ leaf numbers per trunk │ 254   │ usable/4-2 at page size 1024 │
+└────────────────────────┴───────┴──────────────────────────────┘
+
+C1. The trunks, in the order the file chains them, with how many leaves each lists.
+┌─────┬────────────┬───────────────┐
+│ seq │ trunk_page │ leaves_listed │
+├─────┼────────────┼───────────────┤
+│ 1   │ 502        │ 175           │
+│ 2   │ 252        │ 248           │
+│ 3   │ 3          │ 248           │
+└─────┴────────────┴───────────────┘
+
+C2. Trunks plus leaves are the free pages, and they agree with SQLite.
+┌────────┬────────┬────────────┬──────────┬───────────────────────┐
+│ trunks │ leaves │ free_pages │ of_pages │ pragma_freelist_count │
+├────────┼────────┼────────────┼──────────┼───────────────────────┤
+│ 3      │ 671    │ 674        │ 676      │ 674                   │
+└────────┴────────┴────────────┴──────────┴───────────────────────┘
+
+C3. Pages by role.
+┌────────────────┬───────┐
+│      role      │ pages │
+├────────────────┼───────┤
+│ table-interior │ 0     │
+│ table-leaf     │ 2     │
+│ index-interior │ 0     │
+│ index-leaf     │ 0     │
+│ overflow       │ 0     │
+│ freelist-trunk │ 3     │
+│ freelist-leaf  │ 671   │
+│ pointer-map    │ 0     │
+│ lock-byte      │ 0     │
+│ unaccounted    │ 0     │
+│ total          │ 676   │
+└────────────────┴───────┘
+
+── D. auto_vacuum=FULL adds pointer-map pages ──────────────────────────
+
+The course runs auto_vacuum=NONE; the parser still accounts for pointer maps.
+Page size 1024, 400 rows of 900 bytes, auto_vacuum=FULL.
+┌────────────────────────────────────┬───────┬───────────────────────────────────┐
+│                name                │ value │               note                │
+├────────────────────────────────────┼───────┼───────────────────────────────────┤
+│ header byte 52 (largest root page) │ 3     │ not 0, so auto-vacuum is on: FULL │
+│ pointer-map spacing                │ 205   │ usable/5+1 pages, from page 2     │
+└────────────────────────────────────┴───────┴───────────────────────────────────┘
+
+D1. The pointer-map pages found: page 2, then one every spacing pages.
+┌────────────┬─────────────┬──────┐
+│  scenario  │    role     │ page │
+├────────────┼─────────────┼──────┤
+│ autovacuum │ pointer-map │ 2    │
+│ autovacuum │ pointer-map │ 207  │
+└────────────┴─────────────┴──────┘
+
+D2. Pages by role.
+┌────────────────┬───────┐
+│      role      │ pages │
+├────────────────┼───────┤
+│ table-interior │ 5     │
+│ table-leaf     │ 401   │
+│ index-interior │ 0     │
+│ index-leaf     │ 0     │
+│ overflow       │ 0     │
+│ freelist-trunk │ 0     │
+│ freelist-leaf  │ 0     │
+│ pointer-map    │ 2     │
+│ lock-byte      │ 0     │
+│ unaccounted    │ 0     │
+│ total          │ 408   │
+└────────────────┴───────┘
+
+D3. The census against SQLite.
+┌────────────┬────────────┬──────────────┬────────────┬─────────────┬──────────────────────┬───────────────┐
+│  scenario  │ page_count │ sqlite_pages │ free_pages │ sqlite_free │ btree_pages_compared │ not_in_dbstat │
+├────────────┼────────────┼──────────────┼────────────┼─────────────┼──────────────────────┼───────────────┤
+│ autovacuum │ 408        │ 408          │ 0          │ 0           │ 406                  │ 2             │
+└────────────┴────────────┴──────────────┴────────────┴─────────────┴──────────────────────┴───────────────┘
+
+── E. A file larger than 1 GiB: the lock-byte page ─────────────────────
+
+The page that holds byte offset 1073741824 is never used. The file is built
+by editing a 2-page database with page size 65536: the in-header size is
+raised, page 3 becomes a freelist trunk that lists every later page except the
+lock-byte page, and the rest of the file is a hole (sparse).
+┌────────────────────────┬────────────┬─────────────────────────────────────────────────────────────────────────────┐
+│          name          │   value    │                                    note                                     │
+├────────────────────────┼────────────┼─────────────────────────────────────────────────────────────────────────────┤
+│ SQLite integrity_check │ ok         │ on the edited file, read-only                                               │
+│ file size (bytes)      │ 1073872896 │ 1 GiB is 1073741824; everything after page 3 is a hole                      │
+│ in-header size (pages) │ 16386      │ page 3 is a freelist trunk listing pages 4..16386 except the lock-byte page │
+│ lock-byte page         │ 16385      │ 1073741824/65536 + 1                                                        │
+└────────────────────────┴────────────┴─────────────────────────────────────────────────────────────────────────────┘
+
+E1. Pages by role, and the lock-byte page the census found.
+┌────────────────┬───────┐
+│      role      │ pages │
+├────────────────┼───────┤
+│ table-interior │ 0     │
+│ table-leaf     │ 2     │
+│ index-interior │ 0     │
+│ index-leaf     │ 0     │
+│ overflow       │ 0     │
+│ freelist-trunk │ 1     │
+│ freelist-leaf  │ 16382 │
+│ pointer-map    │ 0     │
+│ lock-byte      │ 1     │
+│ unaccounted    │ 0     │
+│ total          │ 16386 │
+└────────────────┴───────┘
+┌───────────┬───────┐
+│   role    │ page  │
+├───────────┼───────┤
+│ lock-byte │ 16385 │
+└───────────┴───────┘
+
+E2. SQLite accepts the file: its page count and freelist count equal the census.
+┌──────────┬────────────┬──────────────┬────────────┬─────────────┐
+│ scenario │ page_count │ sqlite_pages │ free_pages │ sqlite_free │
+├──────────┼────────────┼──────────────┼────────────┼─────────────┤
+│ large    │ 16386      │ 16386        │ 16383      │ 16383       │
+└──────────┴────────────┴──────────────┴────────────┴─────────────┘
+
+── F. What the inspector must reject ───────────────────────────────────
+
+One damaged structure per file, in a 6-page rollback-mode copy. For each,
+what our parser says and what PRAGMA integrity_check says. Texts are cut
+into lines of at most 100 characters.
+
+F0. The pages of the undamaged file (table t has root page 2):
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                                      pages                                       │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│ 1=table-leaf 2=table-leaf 3=overflow 4=overflow 5=freelist-trunk 6=freelist-leaf │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+F1. The nine damaged copies, one structure each.
+┌─────────┬────────────────────────────────────────────────────┐
+│ case_no │                       damage                       │
+├─────────┼────────────────────────────────────────────────────┤
+│ F1      │ magic: byte 0 changed                              │
+│ F2      │ truncated: last page (a freelist leaf) cut in half │
+│ F3      │ page 2 type byte 0x0d -> 0x07                      │
+│ F4      │ page 2 cell count 2 -> 3000                        │
+│ F5      │ page 2 first cell pointer -> 9                     │
+│ F6      │ row 1 payload size varint -> 0x7f                  │
+│ F7      │ overflow page 3 points back to itself              │
+│ F8      │ freelist trunk (header 32) -> page 2, a table page │
+│ F9      │ freelist count (header 36) + 1                     │
+└─────────┴────────────────────────────────────────────────────┘
+
+F2. What each parser says about each copy. Our parser must return an error
+without panicking. SQLite does not always object: for F2 it reads the missing
+half of the last page as zeros and calls the file ok.
+┌─────────┬────────┬───────────────────────────────────────────────────────────────────────────────────────┐
+│ case_no │  who   │                                        verdict                                        │
+├─────────┼────────┼───────────────────────────────────────────────────────────────────────────────────────┤
+│ F1      │ ours   │ error: not an SQLite database file: file offset 0: magic is "XQLite format 3\x00"     │
+│         │ SQLite │ error: file is not a database (26)                                                    │
+│ F2      │ ours   │ error: file is truncated: file offset 22528: file size 22528 is not a multiple of the │
+│         │        │  page size 4096                                                                       │
+│         │ SQLite │ integrity_check: ok                                                                   │
+│ F3      │ ours   │ error: tree "t" (root 2): database file is malformed: page 2 offset 0: page type byte │
+│         │        │  0x07 is not 0x02, 0x05, 0x0a or 0x0d                                                 │
+│         │ SQLite │ error: database disk image is malformed (11)                                          │
+│ F4      │ ours   │ error: tree "t" (root 2): database file is malformed: page 2 offset 3: 3000 cells do  │
+│         │        │ not fit: the cell pointer array would end at 6008, usable size 4096                   │
+│         │ SQLite │ error: database disk image is malformed (11)                                          │
+│ F5      │ ours   │ error: tree "t" (root 2): database file is malformed: page 2 offset 8: cell 0 pointer │
+│         │        │  9 is outside the cell content area 2260..4092                                        │
+│         │ SQLite │ integrity_check: *** in database main *** / Tree 2 page 2 cell 0: Offset 9 out of ran │
+│         │        │ ge 2260..4092 / Page 3: never used / Page 4: never used / (+1 more lines)             │
+│ F6      │ ours   │ error: tree "t" (root 2): database file is malformed: page 2 offset 7: 1699 bytes of  │
+│         │        │ the cell content area belong to no cell or freeblock, the header reports 0 fragmented │
+│         │        │  bytes                                                                                │
+│         │ SQLite │ integrity_check: *** in database main *** / Tree 2 page 2 cell 0: Rowid 21 out of ord │
+│         │        │ er / Fragmentation of 1699 bytes reported as 0 on page 2 / Page 3: never used / (+2 m │
+│         │        │ ore lines)                                                                            │
+│ F7      │ ours   │ error: tree "t" (root 2): database file is malformed: page 3: overflow chain of cell  │
+│         │        │ 0 loops back to page 3                                                                │
+│         │ SQLite │ integrity_check: *** in database main *** / Tree 2 page 2 cell 0: 2nd reference to pa │
+│         │        │ ge 3 / Page 4: never used                                                             │
+│ F8      │ ours   │ error: freelist: database file is malformed: page 2: page claimed twice: as table-lea │
+│         │        │ f of "t" and as freelist-trunk                                                        │
+│         │ SQLite │ integrity_check: *** in database main *** / Freelist: freelist leaf count too big on  │
+│         │        │ page 2 / Freelist: invalid page number 218103808 / 2nd reference to page 2 / (+4 more │
+│         │        │  lines)                                                                               │
+│ F9      │ ours   │ error: freelist: database file is malformed: file offset 36: header counts 3 freelist │
+│         │        │  pages, the trunk chain holds 2                                                       │
+│         │ SQLite │ integrity_check: *** in database main *** / Freelist: size is 2 but should be 3       │
+└─────────┴────────┴───────────────────────────────────────────────────────────────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the census sums to page_count 270
+A  ✓  every page has exactly one role: none counted twice (the census fails on a second claim), none missed
+A  ✓  PRAGMA page_count = 270
+A  ✓  freelist length 3 = PRAGMA freelist_count 3
+A  ✓  all 267 b-tree and overflow pages match dbstat in tree, type, ncell, payload, unused and mx_payload; the 3 other pages are not in dbstat
+A  ✓  the chains followed from the documents rows hold every overflow page in the file
+A  ✓  table accounts: same rows and values, read from the bytes and through SQLite
+A  ✓  table documents: same rows and values, read from the bytes and through SQLite
+A  ✓  table events: same rows and values, read from the bytes and through SQLite
+B  ✓  limit.db holds the three rows 1, 2 and 3
+B  ✓  row 1: payload 4061 (= maxLocal) stays entirely on the leaf
+B  ✓  row 2: payload 4062 keeps only minLocal 489 bytes on the leaf and spills 3573 to one overflow page
+B  ✓  row 3: payload 8153 keeps 4061 on the leaf so its overflow exactly fills one page (4092 bytes)
+B  ✓  local limit: census complete, page_count 7 and freelist_count 0 agree, 7 pages match dbstat
+C  ✓  the freelist spans more than one trunk page
+C  ✓  long freelist: census complete, page_count 676 and freelist_count 674 agree, 2 pages match dbstat
+D  ✓  pointer-map pages are pages 2 and 2 + usable/5 + 1 in this 408-page file
+D  ✓  auto_vacuum=FULL: census complete, page_count 408 and freelist_count 0 agree, 406 pages match dbstat
+E  ✓  page 16385 is counted as the lock-byte page, not as lost
+E  ✓  SQLite accepts the file: integrity_check ok, and page_count and freelist_count equal the census
+F  ✓  F1: our parser returns an error, without panicking
+F  ✓  F2: our parser returns an error, without panicking
+F  ✓  F2: SQLite rounds a partial last page up and reads the missing bytes as zeros, so it reports ok; our parser is stricter and refuses the file
+F  ✓  F3: our parser returns an error, without panicking
+F  ✓  F4: our parser returns an error, without panicking
+F  ✓  F5: our parser returns an error, without panicking
+F  ✓  F6: our parser returns an error, without panicking
+F  ✓  F7: our parser returns an error, without panicking
+F  ✓  F8: our parser returns an error, without panicking
+F  ✓  F9: our parser returns an error, without panicking
+
+30 of 30 claims hold
+
+Experiment verdict: CENSUS OK
 ```
 
 #### Reading the evidence
 
-- **Lines 4–310 (Part A: full census of R0).**
-  - **Schema and trees (lines 6–17):** Decoding page 1 yields the four `sqlite_schema` rows: tables `accounts` (root 2), `documents` (root 3), `events` (root 4), and index `events_by_account` (root 28). Walking those roots plus `sqlite_schema` (root 1) accounts for 97 B-tree pages and 170 overflow pages. Walking header offset 32 finds freelist trunk `230` listing leaves `[231 232]`.
-  - **Role sum (lines 18–20):** `table-interior=3`, `table-leaf=89`, `index-interior=1`, `index-leaf=4`, `overflow=170`, `freelist-trunk=1`, `freelist-leaf=2`, `pointer-map=0`, `lock-byte=0`, `unaccounted=0`; sum `270`, matching `PRAGMA page_count = 270` and `PRAGMA freelist_count = 3`.
-  - **`dbstat` cross-check (lines 21–295):** All 267 B-tree and overflow pages print `match` across all six columns (`name`, `pagetype`, `ncell`, `payload`, `unused`, `mx_payload`). Freelist pages `230`, `231`, and `232` are not in `dbstat`. `accounts` has 183 rows (`177` on leaf 260 + `6` on leaf 261) and `184` cells total because its interior root (page 2) holds `1` divider cell.
-  - **Overflow chains and row hashes (lines 296–310):** 83 `documents` rows overflow across all 170 overflow pages (longest chain 3 pages). Row 6's chain `[9 8 23]` is non-monotonic because pages 8 and 9 were reused from the freelist. Canonical row hashes (tagging every value with `typeof()` and substituting the rowid for `INTEGER PRIMARY KEY` column 0 `NULL`) match SQLite identically for all three tables: `accounts` (`183` rows, `8017137363561914`), `documents` (`96` rows, `973d4aa8fa24c3aa`), and `events` (`1177` rows, `afdcccdab84ea9c5`).
-- **Lines 312–321 (Part B: local payload boundary).** At usable size 4,096, `maxLocal` is `4061` and `minLocal` is `489`. With a 4-byte record header (`CREATE TABLE b(id INTEGER PRIMARY KEY, v BLOB)`), the experiment records each row's parsed `(payload, local, overflow pages, bytes on the last overflow page)` from `WalkTable` and `OverflowChain`: row 1 (4,057-byte blob, payload `4061`) stays 100% local (`0` overflow pages); row 2 (4,058-byte blob, payload `4062`) drops local storage down to `489` bytes and spills `3573` bytes to 1 overflow page; row 3 (8,149-byte blob, payload `8153`) keeps `4061` bytes locally so its overflow fills one overflow page to the exact byte (`4092` bytes).
-- **Lines 323–331 (Part C: multi-trunk freelist).** At page size 1,024, a trunk holds at most `1024/4 - 2 = 254` leaves on read, while `freePage2` stops writing at `1024/4 - 8 = 248` leaves. Deleting 600 rows leaves three trunks in chain order: trunk `502` (newest head, `175` leaves), trunk `252` (`248` leaves), and trunk `3` (`248` leaves), totaling `3 + 671 = 674` free pages of `676`.
-- **Lines 333–338 (Part D: `auto_vacuum=FULL` pointer-map pages).** At page size 1,024, header byte 52 is `3` (`FULL`), and pointer-map pages appear every `1024/5 + 1 = 205` pages from page 2: pages `2` and `207`. All 406 non-pointer-map pages match `dbstat`, and the 2 pointer-map pages are accounted for cleanly.
-- **Lines 340–347 (Part E: > 1 GiB lock-byte page).** Editing a 2-page, 65,536-byte-page database into a 16,386-page (`1,073,872,896`-byte) sparse file places the lock-byte page at `1073741824 / 65536 + 1 = 16385`. Page 3 is a freelist trunk listing all `16,382` pages from 4..16386 except 16385, with `196,608` bytes allocated on disk (`INFO:` line). Parts A–D load closed files into memory with `os.ReadFile` + `dbfile.FromBytes`; Part E opens its 1 GiB sparse file with `dbfile.Open`, runs the census, and closes the descriptor before opening SQLite so no `os.Open` descriptor ever overlaps a live SQLite connection. Both our census (`lock-byte=1`, `unaccounted=0`) and SQLite (`integrity_check=ok`, `page_count=16386`, `freelist_count=16383`) accept the file.
-- **Lines 349–387 (Part F: nine damaged files).** Every case returns a structured error without panicking; Section 6.1 examines all nine cases in detail.
+- **Section A (Part A: full census of R0).**
+  - **Schema and trees (A2–A4):** Decoding page 1 yields the four `sqlite_schema` rows: tables `accounts` (root 2), `documents` (root 3), `events` (root 4), and index `events_by_account` (root 28). Walking those roots plus `sqlite_schema` (root 1) accounts for 97 B-tree pages and 170 overflow pages. Walking header offset 32 finds freelist trunk `230` listing leaves `[231 232]`.
+  - **Role sum (A1, A5):** `table-interior=3`, `table-leaf=89`, `index-interior=1`, `index-leaf=4`, `overflow=170`, `freelist-trunk=1`, `freelist-leaf=2`, `pointer-map=0`, `lock-byte=0`, `unaccounted=0`; sum `270`, matching `PRAGMA page_count = 270` and `PRAGMA freelist_count = 3`.
+  - **`dbstat` cross-check (A6–A7):** All 267 B-tree and overflow pages print `match` across all six columns (`name`, `pagetype`, `ncell`, `payload`, `unused`, `mx_payload`). Freelist pages `230`, `231`, and `232` are not in `dbstat`. `accounts` has 183 rows (`177` on leaf 260 + `6` on leaf 261) and `184` cells total because its interior root (page 2) holds `1` divider cell.
+  - **Overflow chains and row hashes (A8–A9):** 83 `documents` rows overflow across all 170 overflow pages (longest chain 3 pages). Row 6's chain `[9 8 23]` is non-monotonic because pages 8 and 9 were reused from the freelist. Canonical row hashes (tagging every value with `typeof()` and substituting the rowid for `INTEGER PRIMARY KEY` column 0 `NULL`) match SQLite identically for all three tables: `accounts` (`183` rows, `8017137363561914`), `documents` (`96` rows, `973d4aa8fa24c3aa`), and `events` (`1177` rows, `afdcccdab84ea9c5`).
+- **Section B (Part B: local payload boundary).** At usable size 4,096, `maxLocal` is `4061` and `minLocal` is `489`. With a 4-byte record header (`CREATE TABLE b(id INTEGER PRIMARY KEY, v BLOB)`), the experiment records each row's parsed `(payload, local, overflow pages, bytes on the last overflow page)` from `WalkTable` and `OverflowChain`: row 1 (4,057-byte blob, payload `4061`) stays 100% local (`0` overflow pages); row 2 (4,058-byte blob, payload `4062`) drops local storage down to `489` bytes and spills `3573` bytes to 1 overflow page; row 3 (8,149-byte blob, payload `8153`) keeps `4061` bytes locally so its overflow fills one overflow page to the exact byte (`4092` bytes).
+- **Section C (Part C: multi-trunk freelist).** At page size 1,024, a trunk holds at most `1024/4 - 2 = 254` leaves on read, while `freePage2` stops writing at `1024/4 - 8 = 248` leaves. Deleting 600 rows leaves three trunks in chain order: trunk `502` (newest head, `175` leaves), trunk `252` (`248` leaves), and trunk `3` (`248` leaves), totaling `3 + 671 = 674` free pages of `676`.
+- **Section D (Part D: `auto_vacuum=FULL` pointer-map pages).** At page size 1,024, header byte 52 is `3` (`FULL`), and pointer-map pages appear every `1024/5 + 1 = 205` pages from page 2: pages `2` and `207`. All 406 non-pointer-map pages match `dbstat`, and the 2 pointer-map pages are accounted for cleanly.
+- **Section E (Part E: > 1 GiB lock-byte page).** Editing a 2-page, 65,536-byte-page database into a 16,386-page (`1,073,872,896`-byte) sparse file places the lock-byte page at `1073741824 / 65536 + 1 = 16385`. Page 3 is a freelist trunk listing all `16,382` pages from 4..16386 except 16385, with `196,608` bytes allocated on disk in the earlier capture (an `INFO:` line of the experiment's own output, not stored). Parts A–D load closed files into memory with `os.ReadFile` + `dbfile.FromBytes`; Part E opens its 1 GiB sparse file with `dbfile.Open`, runs the census, and closes the descriptor before opening SQLite so no `os.Open` descriptor ever overlaps a live SQLite connection. Both our census (`lock-byte=1`, `unaccounted=0`) and SQLite (`integrity_check=ok`, `page_count=16386`, `freelist_count=16383`) accept the file.
+- **Section F (Part F: nine damaged files).** Every case returns a structured error without panicking; Section 6.1 examines all nine cases in detail.
 
 ### 5.5 Experiment 2.3 — Page manifest, rung R1 (`2.3-page-manifest`)
 
 - **Claim:** The ordered list of page images (`pages.bin`) plus its per-page SHA-256 manifest (`manifest.txt`) is a complete saved state of a closed database: writing those verified pages back in order rebuilds a database file that is E1 byte-identical to the original and passes `PRAGMA integrity_check`. Two independent builds of R0 produce line-for-line identical manifests. Tampered captures are refused with the offending page named, and databases that are not at rest (non-empty `-wal` or hot `-journal`) are refused before capture.
 - **Capture / rebuild:** capture = `pages.bin` + `manifest.txt` via `capture.Pages`; rebuild = verified sequential page write via `capture.Rebuild`.
-- **Evidence form:** `EXACT` (all lines except `INFO:` lines).
-- **Run command:**
+- **Evidence form:** `EXACT` (every stored table must match on every run).
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./ch02-file-format-and-pages/experiments/2.3-page-manifest
+  go run ./cmd/course run 2.3
   ```
 
 <!-- include: experiments/2.3-page-manifest/main.go -->
@@ -5004,9 +5854,9 @@ import (
 	"strings"
 
 	"github.com/nickstrad/walfleet/internal/capture"
-	"github.com/nickstrad/walfleet/internal/dbfile"
 	"github.com/nickstrad/walfleet/internal/equal"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 
@@ -5020,15 +5870,24 @@ const (
 	childExitWithoutClose = 3
 )
 
-var failures []string
+var (
+	set         *results.Set
+	comparisons *results.Table
+	notAtRest   *results.Table
+)
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
+func openTables(dir string) {
+	set = results.MustOpen(dir)
+	comparisons = set.Table("comparisons", "part", "name", "result", "equal", "first_differing_page", "differing_pages")
+	notAtRest = set.Table("not_at_rest", "scenario", "seq", "observation", "value")
+}
+
+var observations = map[string]int{}
+
+// observe records one numbered observation of a not-at-rest scenario.
+func observe(scenario, observation string, value any) {
+	observations[scenario]++
+	notAtRest.Row(scenario, observations[scenario], observation, value)
 }
 
 func fatal(what string, err error) {
@@ -5043,6 +5902,14 @@ func must[T any](value T, err error) func(string) T {
 		}
 		return value
 	}
+}
+
+// nilIfZero turns a missing page number into an empty field.
+func nilIfZero(n int) any {
+	if n == 0 {
+		return nil
+	}
+	return n
 }
 
 func relative(dir, text string) string {
@@ -5061,24 +5928,10 @@ func integrityCheck(ctx context.Context, path string) string {
 	return result
 }
 
-func roleSummary(m equal.Manifest) string {
-	counts := map[string]int{}
-	for _, e := range m.Entries {
-		counts[e.Role]++
-	}
-	var parts []string
-	for _, r := range dbfile.AllRoles {
-		if counts[r.String()] > 0 {
-			parts = append(parts, fmt.Sprintf("%s=%d", r, counts[r.String()]))
-		}
-	}
-	return strings.Join(parts, " ")
-}
-
 func partA(ctx context.Context, dir string) (string, string) {
-	fmt.Println()
-	fmt.Println("== A. capture: every page of the closed R0 database, read by internal/dbfile, plus a manifest (page, role, sha256)")
 	r := recipe.Default()
+	captureRows := set.Table("captures", "run", "database", "capture_dir", "steps", "pages", "page_size", "pages_bin_bytes", "manifest_format", "manifest_sha256")
+	manifestRows := set.Table("manifest", "run", "page", "role", "sha256")
 	var manifests []equal.Manifest
 	var paths, captures []string
 	for run := 1; run <= 2; run++ {
@@ -5091,45 +5944,39 @@ func partA(ctx context.Context, dir string) (string, string) {
 		}
 		captureDir := filepath.Join(dir, fmt.Sprintf("run-%d", run), "capture")
 		m := must(capture.Pages(path, captureDir))("capture")
-		fmt.Printf("run %d: %s built to step %d -> %s: %d pages, manifest sha256 %s\n", run, relative(dir, path), r.Steps, relative(dir, captureDir), m.PageCount(), m.SHA256())
+		captureRows.Row(run, relative(dir, path), relative(dir, captureDir), r.Steps, m.PageCount(), m.PageSize,
+			must(os.Stat(filepath.Join(captureDir, capture.PagesFile)))("stat").Size(), equal.ManifestFormat, m.SHA256())
+		for _, e := range m.Entries {
+			manifestRows.Row(run, e.Page, e.Role, e.SHA256)
+		}
 		manifests = append(manifests, m)
 		paths = append(paths, path)
 		captures = append(captures, captureDir)
 	}
-	fmt.Printf("roles in the manifest: %s\n", roleSummary(manifests[0]))
-	fmt.Printf("capture files: %s (%d bytes = %d pages x %d) and %s\n", capture.PagesFile, must(os.Stat(filepath.Join(captures[0], capture.PagesFile)))("stat").Size(), manifests[0].PageCount(), manifests[0].PageSize, capture.ManifestFile)
-	fmt.Println("manifest of run 1:")
-	for _, line := range strings.Split(strings.TrimSuffix(manifests[0].Text(), "\n"), "\n") {
-		fmt.Printf("  %s\n", line)
-	}
 	diff := equal.CompareManifests(manifests[0], manifests[1])
-	fmt.Printf("run 1 vs run 2: %s\n", diff)
-	check(diff.Equal && manifests[0].Text() == manifests[1].Text(), "two runs of the recipe give manifests identical line for line")
+	comparisons.Row("A", "run 1 vs run 2", diff, diff.Equal, nilIfZero(diff.FirstDifferingPage), diff.DifferingPages)
+	set.Check("A", diff.Equal && manifests[0].Text() == manifests[1].Text(), "two runs of the recipe give manifests identical line for line")
 	return paths[0], captures[0]
 }
 
 func partB(ctx context.Context, dir, original, captureDir string) {
-	fmt.Println()
-	fmt.Println("== B. rebuild from the capture alone and prove it equal (E1)")
 	rebuilt := filepath.Join(dir, "rebuilt", "from-capture.db")
 	if err := os.MkdirAll(filepath.Dir(rebuilt), 0o755); err != nil {
 		fatal("mkdir", err)
 	}
 	m := must(capture.Rebuild(captureDir, rebuilt))("rebuild")
-	fmt.Printf("rebuilt %s from %s: %d pages written in order\n", relative(dir, rebuilt), relative(dir, captureDir), m.PageCount())
 	result := must(equal.CompareFiles(original, rebuilt, m.PageSize))("compare")
-	fmt.Printf("original vs rebuilt: %s\n", result)
-	check(result.Equal, "sha256 of the rebuild equals sha256 of the original")
+	comparisons.Row("B", "original vs rebuilt", result, result.Equal, nilIfZero(result.FirstDifferingPage), result.DifferingPages)
+	set.Check("B", result.Equal, "sha256 of the rebuild equals sha256 of the original")
 	match := must(recipe.Default().MatchStep(ctx, rebuilt))("match step")
-	fmt.Printf("recipe lookup of the rebuild: %s\n", match)
-	check(match.Found() && match.Exact && match.Step == 30, "the rebuild is the recipe's state after step 30, byte for byte")
 	integrity := integrityCheck(ctx, rebuilt)
-	fmt.Printf("integrity_check of the rebuild: %s\n", integrity)
-	check(integrity == "ok", "SQLite opens the rebuild and integrity_check returns ok")
+	set.Table("rebuild", "rebuilt", "from_capture", "pages_written", "sha256", "recipe_lookup", "integrity_check").
+		Row(relative(dir, rebuilt), relative(dir, captureDir), m.PageCount(), result.SHA256B, match, integrity)
+	set.Check("B", match.Found() && match.Exact && match.Step == 30, "the rebuild is the recipe's state after step 30, byte for byte")
+	set.Check("B", integrity == "ok", "SQLite opens the rebuild and integrity_check returns ok")
 	again := must(equal.FileSHA256(rebuilt))("hash")
-	check(again == result.SHA256A && recipe.CheckAtRest(rebuilt) == nil, "opening the rebuild with SQLite and closing it changed nothing and left no side files")
+	set.Check("B", again == result.SHA256A && recipe.CheckAtRest(rebuilt) == nil, "opening the rebuild with SQLite and closing it changed nothing and left no side files")
 
-	fmt.Println("one more recipe state for comparison: the manifest of the database after step 29")
 	step29 := filepath.Join(dir, "step-29", "r.db")
 	if err := os.MkdirAll(filepath.Dir(step29), 0o755); err != nil {
 		fatal("mkdir", err)
@@ -5139,8 +5986,8 @@ func partB(ctx context.Context, dir, original, captureDir string) {
 	}
 	m29 := must(capture.Pages(step29, filepath.Join(dir, "step-29", "capture")))("capture step 29")
 	diff := equal.CompareManifests(m29, m)
-	fmt.Printf("step 29 vs step 30: %s\n", diff)
-	check(!diff.Equal && diff.FirstDifferingPage == 1, "the manifest comparison names the first differing page (page 1: the header changes on every recipe step)")
+	comparisons.Row("B", "step 29 vs step 30", diff, diff.Equal, nilIfZero(diff.FirstDifferingPage), diff.DifferingPages)
+	set.Check("B", !diff.Equal && diff.FirstDifferingPage == 1, "the manifest comparison names the first differing page (page 1: the header changes on every recipe step)")
 }
 
 // tamper defines one capture-corruption test case and the page-naming substring
@@ -5153,8 +6000,7 @@ type tamper struct {
 }
 
 func partC(dir, captureDir string) {
-	fmt.Println()
-	fmt.Println("== C. a damaged capture is refused, and the refusal names the page")
+	tampered := set.Table("tampered", "case_no", "damage", "wanted", "refusal", "output_written")
 	original := must(os.ReadFile(filepath.Join(captureDir, capture.ManifestFile)))("read manifest")
 	pages := must(os.ReadFile(filepath.Join(captureDir, capture.PagesFile)))("read pages")
 	cases := []tamper{
@@ -5197,8 +6043,8 @@ func partC(dir, captureDir string) {
 		out := filepath.Join(target, "rebuilt.db")
 		_, err := capture.Rebuild(target, out)
 		_, statErr := os.Stat(out)
-		fmt.Printf("  C%d %s\n    -> %v\n", i+1, c.name, err)
-		check(err != nil && strings.Contains(err.Error(), c.want) && errors.Is(statErr, os.ErrNotExist), fmt.Sprintf("C%d: the rebuild is refused naming %q, and no output file is written", i+1, c.want))
+		tampered.Row(fmt.Sprintf("C%d", i+1), c.name, c.want, err, !errors.Is(statErr, os.ErrNotExist))
+		set.Check("C", err != nil && strings.Contains(err.Error(), c.want) && errors.Is(statErr, os.ErrNotExist), fmt.Sprintf("C%d: the rebuild is refused naming %q, and no output file is written", i+1, c.want))
 	}
 }
 
@@ -5293,11 +6139,8 @@ func sideFiles(path string) string {
 }
 
 func partD(ctx context.Context, dir string) {
-	fmt.Println()
-	fmt.Println("== D. a database that is not at rest is refused, because its file alone is stale or torn")
 	r := recipe.Default()
 
-	fmt.Println("D1. WAL mode: a child process commits one UPDATE and exits without closing its connection")
 	walDir := filepath.Join(dir, "not-at-rest", "wal")
 	if err := os.MkdirAll(walDir, 0o755); err != nil {
 		fatal("mkdir", err)
@@ -5308,23 +6151,26 @@ func partD(ctx context.Context, dir string) {
 	}
 	before := must(equal.FileSHA256(path))("hash")
 	exit := runChild(childLeaveWAL, path)
-	fmt.Printf("  child exit status %d; %s\n", exit, sideFiles(path))
+	observe("D1", "child exit status", exit)
+	observe("D1", "side files after the child", sideFiles(path))
 	_, err := capture.Pages(path, filepath.Join(walDir, "capture"))
-	fmt.Printf("  capture -> %s\n", relative(walDir, fmt.Sprint(err)))
-	check(errors.Is(err, capture.ErrNotAtRest), "D1: the capture is refused: the -wal holds committed frames")
+	observe("D1", "capture", relative(walDir, fmt.Sprint(err)))
+	set.Check("D", errors.Is(err, capture.ErrNotAtRest), "D1: the capture is refused: the -wal holds committed frames")
 	stale := filepath.Join(walDir, "stale-copy.db")
 	copyMainFileOnly(path, stale)
 	balanceQuery := "SELECT balance FROM accounts WHERE id = 1"
 	staleBalance := queryString(ctx, stale, true, balanceQuery)
-	fmt.Printf("  the database file alone: sha256 unchanged by the commit: %v; account 1 balance %s\n", must(equal.FileSHA256(path))("hash") == before, staleBalance)
+	observe("D1", "database file alone: sha256 unchanged by the commit", must(equal.FileSHA256(path))("hash") == before)
+	observe("D1", "database file alone: account 1 balance", staleBalance)
 	liveBalance := queryString(ctx, path, false, balanceQuery)
-	fmt.Printf("  SQLite opening the database with its -wal: account 1 balance %s; after the last close: %s\n", liveBalance, sideFiles(path))
-	check(staleBalance != liveBalance, "D1: a page capture taken from the file alone would have lost the committed UPDATE")
+	observe("D1", "SQLite with the -wal: account 1 balance", liveBalance)
+	observe("D1", "side files after the last close", sideFiles(path))
+	set.Check("D", staleBalance != liveBalance, "D1: a page capture taken from the file alone would have lost the committed UPDATE")
 	m := must(capture.Pages(path, filepath.Join(walDir, "capture")))("capture after checkpoint")
-	fmt.Printf("  capture after SQLite checkpointed and closed: %d pages, manifest sha256 %s\n", m.PageCount(), m.SHA256())
-	check(must(equal.FileSHA256(path))("hash") != before, "D1: once at rest, the capture includes the UPDATE (the file changed at the checkpoint)")
+	observe("D1", "capture after the checkpoint: pages", m.PageCount())
+	observe("D1", "capture after the checkpoint: manifest sha256", m.SHA256())
+	set.Check("D", must(equal.FileSHA256(path))("hash") != before, "D1: once at rest, the capture includes the UPDATE (the file changed at the checkpoint)")
 
-	fmt.Printf("D2. rollback mode: a child process with cache_size=%d updates every document body in one transaction, spills dirty pages to the file, and exits before COMMIT\n", childSpillCacheSize)
 	journalDir := filepath.Join(dir, "not-at-rest", "journal")
 	if err := os.MkdirAll(journalDir, 0o755); err != nil {
 		fatal("mkdir", err)
@@ -5337,21 +6183,24 @@ func partD(ctx context.Context, dir string) {
 	before = must(equal.FileSHA256(path))("hash")
 	bodyHashQuery := "SELECT count(*) || ' rows, ' || sum(body = zeroblob(length(body))) || ' bodies all zero' FROM documents"
 	exit = runChild(childLeaveHotJournal, path)
-	fmt.Printf("  child exit status %d; %s\n", exit, sideFiles(path))
+	observe("D2", "child exit status", exit)
+	observe("D2", "side files after the child", sideFiles(path))
 	_, err = capture.Pages(path, filepath.Join(journalDir, "capture"))
-	fmt.Printf("  capture -> %s\n", relative(journalDir, fmt.Sprint(err)))
-	check(errors.Is(err, capture.ErrNotAtRest), "D2: the capture is refused: a hot -journal exists")
+	observe("D2", "capture", relative(journalDir, fmt.Sprint(err)))
+	set.Check("D", errors.Is(err, capture.ErrNotAtRest), "D2: the capture is refused: a hot -journal exists")
 	torn := filepath.Join(journalDir, "torn-copy.db")
 	copyMainFileOnly(path, torn)
 	changed := must(equal.FileSHA256(path))("hash") != before
 	tornView := queryString(ctx, torn, true, bodyHashQuery)
-	fmt.Printf("  the database file alone: changed by the spill: %v; documents: %s\n", changed, tornView)
+	observe("D2", "database file alone: changed by the spill", changed)
+	observe("D2", "database file alone: documents", tornView)
 	recovered := queryString(ctx, path, false, bodyHashQuery)
-	fmt.Printf("  SQLite opening the database with its hot journal (rolls it back): documents: %s; after the last close: %s\n", recovered, sideFiles(path))
-	check(changed && tornView != recovered, "D2: the file alone holds part of an uncommitted transaction; a capture of it would be torn")
-	check(must(equal.FileSHA256(path))("hash") == before, "D2: after SQLite rolled the hot journal back, the file is byte-identical to its state before the transaction")
+	observe("D2", "SQLite with the hot journal (rolls it back): documents", recovered)
+	observe("D2", "side files after the last close", sideFiles(path))
+	set.Check("D", changed && tornView != recovered, "D2: the file alone holds part of an uncommitted transaction; a capture of it would be torn")
+	set.Check("D", must(equal.FileSHA256(path))("hash") == before, "D2: after SQLite rolled the hot journal back, the file is byte-identical to its state before the transaction")
 	m = must(capture.Pages(path, filepath.Join(journalDir, "capture")))("capture after rollback")
-	fmt.Printf("  capture after the rollback: %d pages\n", m.PageCount())
+	observe("D2", "capture after the rollback: pages", m.PageCount())
 }
 
 func main() {
@@ -5363,19 +6212,12 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("2.3")
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
+	openTables(dir)
 	original, captureDir := partA(ctx, dir)
 	partB(ctx, dir, original, captureDir)
 	partC(dir, captureDir)
 	partD(ctx, dir)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("MANIFEST FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("MANIFEST OK")
+	set.Finish("MANIFEST")
 }
 
 func displayPath(path string) string {
@@ -5394,353 +6236,612 @@ func displayPath(path string) string {
 }
 ```
 
-Captured output (`evidence/2.3-page-manifest.txt`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/2.3-page-manifest/report.sql -->
+```sql
+-- Walkthrough of experiment 2.3. Run it with:
+--   go run ./cmd/course run 2.3        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   captures      part A: one row per run of the recipe, with its capture directory
+--   manifest      part A: one row per page of each run's manifest (page, role, sha256)
+--   comparisons   parts A and B: one row per manifest or file comparison, as the library reports it
+--   rebuild       part B: one row, the database rebuilt from the capture alone
+--   tampered      part C: one row per damaged capture, with the refusal
+--   not_at_rest   part D: numbered observations of the two not-at-rest scenarios
+--   checks        every claim the experiment asserted (the runner lists it last)
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  2.3  Can the pages of a database be captured and rebuilt exactly?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'Rebuild Ladder rung R1: internal/capture reads every page of the closed R0'
+.print 'database into pages.bin and writes manifest.txt, one line per page with'
+.print 'its role and the sha256 of its bytes. The experiment rebuilds a database'
+.print 'from the capture alone and checks it is byte-identical, refuses five kinds'
+.print 'of damaged captures, and refuses databases that are not at rest.'
+
+.print
+.print '── A. Capture: every page of the closed R0 database ────────────────────'
+.print
+.print 'A1. The recipe is run twice and each result captured. pages.bin holds'
+.print 'pages x page_size bytes; manifest.txt starts with the format line, the page'
+.print 'size and the page count, then one line per page.'
+
+SELECT run, database, capture_dir, steps, pages, page_size, pages_bin_bytes
+FROM captures ORDER BY run;
+
+.print
+.print 'A2. The manifest as a whole: its format line and the sha256 of its text.'
+.print 'Both runs must give the same manifest.'
+
+SELECT run, manifest_format, manifest_sha256 FROM captures ORDER BY run;
+
+.print
+.print 'A3. Run 1 against run 2, as the library compares them, and from the rows:'
+.print 'the number of pages whose role or sha256 differ between the runs.'
+
+SELECT name, result, equal, differing_pages
+FROM comparisons WHERE part = 'A' ORDER BY name;
+
+SELECT count(*) FILTER (a.role IS DISTINCT FROM b.role OR a.sha256 IS DISTINCT FROM b.sha256) AS differing_pages,
+       count(*) AS pages_compared
+FROM (SELECT * FROM manifest WHERE run = 1) a
+FULL JOIN (SELECT * FROM manifest WHERE run = 2) b USING (page);
+
+.print
+.print 'A4. The roles in the manifest (run 1).'
+
+SELECT role, count(*) AS pages FROM manifest WHERE run = 1 GROUP BY role ORDER BY pages DESC, role;
+
+.print
+.print 'A5. The manifest of run 1, one line per page.'
+
+SELECT page, role, sha256 FROM manifest WHERE run = 1 ORDER BY page;
+
+.print
+.print '── B. Rebuild from the capture alone and prove it equal (E1) ───────────'
+.print
+.print 'B1. The rebuild: pages written in order, its sha256, what the recipe lookup'
+.print 'says it is, and the integrity_check of SQLite.'
+
+SELECT rebuilt, from_capture, pages_written, recipe_lookup, integrity_check FROM rebuild;
+
+.print
+.print 'B2. The rebuild against the original, and the manifest after step 29'
+.print 'against the manifest after step 30. They differ first at page 1: the header'
+.print 'changes on every recipe step.'
+
+SELECT name, equal, first_differing_page, differing_pages
+FROM comparisons WHERE part = 'B' ORDER BY name;
+
+.print
+.print 'The words of the library for each comparison:'
+
+SELECT result FROM comparisons WHERE part = 'B' ORDER BY name;
+
+.print
+.print 'The sha256 of the rebuild, which is also the sha256 of the original:'
+
+SELECT sha256 FROM rebuild;
+
+.print
+.print '── C. A damaged capture is refused, and the refusal names the page ─────'
+.print
+.print 'Each row is a copy of the capture with one thing changed. The rebuild must'
+.print 'refuse it with a message that contains the text in wanted, and must not write'
+.print 'an output file.'
+
+SELECT case_no, damage, wanted, output_written FROM tampered ORDER BY case_no;
+
+.print
+.print 'The refusals:'
+
+SELECT case_no, refusal FROM tampered ORDER BY case_no;
+
+.print
+.print '── D. A database that is not at rest is refused ────────────────────────'
+.print
+.print 'Its file alone is stale or torn. Each scenario starts a child process that'
+.print 'leaves the database not at rest and exits with status 3 without closing'
+.print 'its connection.'
+.print
+.print 'D1. WAL mode: the child commits one UPDATE (account 1 gains 1000). The'
+.print 'commit lives in the -wal, so the database file alone is stale.'
+
+SELECT CASE WHEN g.i = 0 THEN seq END AS seq,
+       CASE WHEN g.i = 0 THEN observation END AS observation,
+       substr(value, g.i * 70 + 1, 70) AS value
+FROM not_at_rest, generate_series(0, (length(value) - 1) // 70) AS g(i)
+WHERE scenario = 'D1'
+ORDER BY not_at_rest.seq, g.i;
+
+.print
+.print 'D2. Rollback mode: the child sets cache_size=10, updates every document body'
+.print 'in one transaction, which spills dirty pages to the file, and exits before'
+.print 'COMMIT. The file alone holds part of an uncommitted transaction.'
+
+SELECT CASE WHEN g.i = 0 THEN seq END AS seq,
+       CASE WHEN g.i = 0 THEN observation END AS observation,
+       substr(value, g.i * 70 + 1, 70) AS value
+FROM not_at_rest, generate_series(0, (length(value) - 1) // 70) AS g(i)
+WHERE scenario = 'D2'
+ORDER BY not_at_rest.seq, g.i;
+```
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/2.3-page-manifest/`](evidence/2.3-page-manifest/), and `go run ./cmd/course check evidence ch02` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/2.3-page-manifest.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/2.3
 
-== A. capture: every page of the closed R0 database, read by internal/dbfile, plus a manifest (page, role, sha256)
-run 1: run-1/r0.db built to step 30 -> run-1/capture: 270 pages, manifest sha256 8d9ad6e1251dfbbe513d57fa7dcd5e8159fa7c62d227d28008ebc1a9ed92f523
-run 2: run-2/r0.db built to step 30 -> run-2/capture: 270 pages, manifest sha256 8d9ad6e1251dfbbe513d57fa7dcd5e8159fa7c62d227d28008ebc1a9ed92f523
-roles in the manifest: table-interior=3 table-leaf=89 index-interior=1 index-leaf=4 overflow=170 freelist-trunk=1 freelist-leaf=2
-capture files: pages.bin (1105920 bytes = 270 pages x 4096) and manifest.txt
-manifest of run 1:
-  sqlite-internals page manifest v1
-  page-size 4096
-  pages 270
-  1 table-leaf 1b9902e64e6c0f5d1eb4e501973304e85e7aff7d6e44912a06fbcc00e07debe9
-  2 table-interior 46d56d23abed588975c19161aa6dc1f9cf7f9d31a72cfbd40b3441bf38d8cc1e
-  3 table-interior 860bd520e10f3ed30a0cf84ada13addbbf2fb19cc5584699ff702868986c24b0
-  4 table-interior 3c53ee0581571b0fd924cb47c637b6b1ebe6425f4a04320f26390083cfd37072
-  5 overflow 7aad2880eb458697ca2b782d104c7bc12ab581778d1617616113daf7fec3d4c8
-  6 overflow 7e7afe23ae214297b337e3c4675ffdd9ab84024fc3074c15e812494dd20e4983
-  7 overflow a534c6fdb6abf78b7a7b52b27b3051790c85036beb7218b4d0ff6e6decac0a0f
-  8 overflow fba5521b93297c4b8f3bef088245f945ccb51124446b306cd489d6f3e4217b15
-  9 overflow ca9a4af9e802b51d7f6b06fbd720c6514584a367091c9873a5f9aa21a71067f2
-  10 table-leaf 5bb69638130cf6381f376435e2423a5e0d06bdf068fcaf571022fc1e0ee59370
-  11 table-leaf 724eb0ed932ef10781b9172d5e32a48a1b8863c254a982c4f8ddc4d082338b96
-  12 overflow 7f5502748230a361201e00b9e58fbd6a0db0125c9ac0e24b6f138b301090d9ef
-  13 overflow 12a4b4e75b3e86d31bbd4c27ee214c6b806652f6ad9af57ee636219644b7c301
-  14 overflow 34962cb641e4debab98b6f3a2fecb54e612793071b88eb82c39836a7d4aa728a
-  15 table-leaf 4d3175e4b2c34d53defc5dbb504cb680b4e3296c0eb81083024329a3d622646e
-  16 overflow a0572382d487533308f59de5d509f29bafed75da79a73f9812acedc32e35f10a
-  17 overflow 15b724903840c0ad7abb639fa0700fedb4a1f58f43e3b0ff9005ca78bb3b5491
-  18 overflow 383820231ab24d46be1913e631aa92713455b9b6c6c9f1d021610207a9f7da14
-  19 table-leaf e3bb3b6b00cacac610514dcd58061d2a1ab831786006278c228b4785d3844497
-  20 overflow 3b65dbee9941c10a07b33942455612512b666d94d3609ff23becc45a79251df6
-  21 table-leaf deb86ca0005d14f7ab3b7da9c5ac31d4282c568de0b03e0cddc20973682cdb14
-  22 overflow e245c6247cbcc8c212299bb2f89b5327d72dfa799529b2dece4790eff92112ee
-  23 overflow 59134759e86d787f8fdebc82af48ad8bc9c55a135c7fc67af8b38cb6a56c7ffe
-  24 overflow 68c7d34bd3ef689df419818c41e6ddbbf30b4499c90acbd1ffd3d5bd06775cdb
-  25 table-leaf 732423d9158389d0e946170f10075404559e4d8112bb83ef80c72c7a4bf15fd7
-  26 table-leaf 8006a99485269b70b926860d50f87f4ca908a513a655597a9af43fcbfc4f038f
-  27 table-leaf d45416dbdf129e59d604e2fc3b7f9c802ffab7696837438dda8d2b60ed29e586
-  28 index-interior 51e6ac1f4e34240f1bbf86abf31c101ad643155a33da16f3a6ee4f089ce0fc71
-  29 overflow a4e416cafa8141e1ed4cc9150cf7bc91e6bd363b510d2daf4748d511c8d253f3
-  30 overflow 2d8423154a553dbcdb5b400d9e42cc68018148d63a4ea559731e2f0c2d25ff7c
-  31 table-leaf f3da9777ca90fcf540b92d3aef099433d7c73021688064744b62e39f16555a35
-  32 overflow ec7d9f3bb6c902490f0bd3cf49f07a0a3a50b8f4d00b1a32ffae31caa8e088f1
-  33 overflow 4552b82b526e55ab64d4b4c8f906cff8be626594f828c2aad32dec6beff99c94
-  34 overflow ce92b5493316efc5c6dcc493c40b2a39bcf69230138f41891dbe4ba1b33b86d0
-  35 overflow 7673f433fe64cf17405855c1361fbabf3a8fa0309a283068178d32ed3e478321
-  36 overflow 568c08e129d6dbf91a58337b21f0ec334d437816422939b5999310ac1653f069
-  37 overflow 02cf9a93058eb383f8c1e4bf6c2736e428a50bc009277feafaafc5072504d51c
-  38 table-leaf c2fae8bcd1c019e21ab735b11ffa65e2e88e94bdea3924ca82466fcfa92d16ea
-  39 table-leaf 568908de0766d844eaaa85f1870b7cf9d4fe78d3bf20cb38aa947bb1732b0ac8
-  40 overflow 91be9b798474f1b35c757fd09064e640b39ecb7476dcdb27cebf869725ba9559
-  41 overflow de1b5cde831492f35afa92c9be4e794c9249cfef58555b50010499a9e8aecef9
-  42 table-leaf 3a30707ad61b33660e0ded2a8d178499c314c5e6cf495359734dff401cb1957b
-  43 overflow b221d22756aae42e95f33c00b839cfa8a0b0548870cc0598e0b5fa490d923c29
-  44 overflow 887b2f0e56135974ac1471a3ce699b43fb4e1bbdb6581cc031f45e506e421965
-  45 overflow 5c63bd72305ee4300a2762a0e1028b8a01861e003e41936502ae435b9f0cd45d
-  46 table-leaf c8bee6ed976fd2a7ea7e61eeb0d594c73ee4a72a0159bd6132383fae8051fe94
-  47 overflow 06d3326df34a4041c367f5e94ed81bfe1e6f680a90da3a33f0a47c51a7f8b099
-  48 table-leaf d893cb79a18ea5fc17b23c8fcd7298af35196233d4058d7dfac10a994cafb39f
-  49 overflow 1981d7c68d1e32ba7361d5ae699892f30fece85ee6404cc689b261fa32ec58f3
-  50 table-leaf 73fd216d724396dae4897b0180cbad5be03987df5bcf36e490ccd81ff7c34442
-  51 overflow 0c62745060da6ad711e8b596d3c84e925ed8126ba38f8cf6c4d2f6b10fb36c99
-  52 overflow 9abb60aa174193ffeac20bd41da49d251318a3166fb4ab358360dc451188aa93
-  53 overflow 4dfa14a601f073d5a84d21e3948b69f47d04c2a4d29142f6f5bf307044c962b1
-  54 table-leaf 15130a78f58e4eaa8209aa8fdd5c81f3bd5f999fe9e342040358f1cbac317d5a
-  55 overflow c736558d3fbf4b32b223e2638859498c08c9cd71aafcebf88700ea3aa775722a
-  56 overflow c043a6192cc1dea5f3891ef71135adee8cd2bae5680e87cd686be55f655d45b7
-  57 overflow 36f9a238db5b34f0ad7f3a32863b747f923985c01c227589aba0a4c0ace2747a
-  58 table-leaf 862957a42085704cea1a2e36da9110425f16a0a454b77a8988c88cd6c0261646
-  59 table-leaf 6012e5651530caceb1c97f08704c30f56849f59fd78b490bcb93cb13386aa757
-  60 overflow 0ef5ec177aafb28e3f0e28f7b5fa5d2ffbe2cf38858d3a7ec4636ea1664b281e
-  61 overflow 0a5c815ffe5216011f595370a3bd50b8fb950ab6e2b2e01ed9f3f01019fa69cf
-  62 overflow 758650437fa2ea8bb875b8efd46eecf166acb1e4ae5b472d048513970a95fbed
-  63 overflow ccfb4d0853cb3cf0610c9c4c9275be042c5365fcd77bd500c04272f6954f9902
-  64 table-leaf 732fee5afc87573193067e4ae0da1f7f9b0f9932f7f069369340d90be01fd692
-  65 overflow 2cc0ddd717bafbcb1c57098c3271106c1677deeb35a97018958ae2659b28163d
-  66 table-leaf eb7d545f2ee9266beafe0d4d6d7cc58a8baab1bfe4710ea5eb536fc7e5b9a449
-  67 overflow 88fa136200d8b002867b73ebd94ae78e513d10d24f88ba8bfb302bf33ede5cc0
-  68 table-leaf b0ac4bd16e8ffa500762646b6dc7c6c7398fac999e487eed713851238fc86b9f
-  69 overflow 88bbbe03f7e1b3f93fedce3262856d0369829891a78b2d4cb7a3c5b499f62a03
-  70 table-leaf dcba5028b293ab80f2d09bf42e1555968ac75b7f69d696542a69345daee29d2a
-  71 overflow 9ad4b590ee93d7d431db66e5dcf4fccacd095d6ba3ae565c04f0627f0c170687
-  72 table-leaf 9fd9e4ebcc248c76a69dee2f7b87cb5e42af0fe6d3c947e5f71bea3719571d01
-  73 overflow ea4a139a0d21dc40233abe44fa65ed0438f486a962a527154f27bbaaefb09817
-  74 overflow 6c5289f3250687b7c3619713518d3dc6fbeac59eb981bd1e908ae5101180f5bb
-  75 overflow a740c5597fb7ef676b27728a9a0828a3285a9a1bab20a5d9d2c98c341b69cc40
-  76 table-leaf e368ff348ef725f9309256c3b8cdb7f25e5ab6436c47875c29cf3f77729e6de6
-  77 overflow 8f58298ac0df2a6e4e47585ab26e7291ffc65a851133da66fe0f9ccc5c5a59fe
-  78 table-leaf 0bbec48152ee56fd0cde848ee5b6c27955a27712457ad8b57422d6d26eb0080e
-  79 table-leaf a9ad5b3bbee64f2b82c38c2317eaa98f36c814c104bbb75cfbf5801054474e7e
-  80 table-leaf aa911e9e62211cdead52ffbc7cfeb4e3fa77a1644a998013b319806d672f6fc9
-  81 table-leaf 88b1c57ea604ea1108fda629f0ad7af846e0f6a5036bc77842e0bd88249af210
-  82 overflow c402483d0808de9a1a843fa2bf5a1dcc8dde050e6b0791e68b5052b01a4dc95a
-  83 table-leaf 79064bddf27aafb5e2050cf8af0c74ce0756589248e8a77489f13d96239c8572
-  84 overflow 72c3d06469fa69d849fe5ea16c284b489a5ed550f6c18153f3b0124242b1b4ef
-  85 overflow 808cf95246048d2300d190bd5bb9e7899137e1e02cc305c4b09bbb4b825e5985
-  86 table-leaf ec8b82a7792a9c53cb14f41f197e891bbddb5eee92987eea9bf8714ac9e87a74
-  87 table-leaf 727d286cec6c7242a80c5ffe1b7d531c5b0f687f8e66758d3f33cb3486e0f48e
-  88 index-leaf f348efbbf9aa30ea9af8f21a5ef9fc491856d71102c39d798836bb130680a1af
-  89 index-leaf 64e83d5312baf8a3c73f3efc2d7b2d05a46e3603223d638d908100729dd99df9
-  90 overflow 988c00b7986f0b06e4a047ddd647029196844bf91cfae3384884afd448d34420
-  91 overflow 03878852ef827430aa7b2447d43340d4a1dc07556969bb51d0eacc887c282ccc
-  92 overflow c18d4b56b6862c94633cdb486b9471676cb2fecad2faecad206d4b6eb86dcbd9
-  93 table-leaf 09dc4cbd982af09308de11c5d05ce4a2808f6f215005b8ee6a2708e8142a25f9
-  94 overflow 0273b357f14b648d9335d42d8c346624456b8981c57425a6854e8fe840bdd9fd
-  95 table-leaf 565bf12e4a91fdc96cf89a3b90c4961df44bcacc6804129ca842807df95b6e3d
-  96 overflow fca46a535e78cbed584dca90532a9d4ada1a4401cb29d3457cccd332fbd9c443
-  97 table-leaf ef08059b194ea9a5dbc287ac6bcd3c82cd2b3a76b9e2d0cec9477e5ad684ecc9
-  98 overflow 2885bb2d9da559ed257254d403c2b0c4137363c6df0b953e2fbc0cadd9303bf7
-  99 overflow ad43a659e2a57a51c86f87beb182b018bbd3424daaef771ea2c8326ea871f972
-  100 table-leaf 42abd0d5c512933133653865ad518c8e6d12112bff9c31c913c075beb9afee8d
-  101 overflow 55edb83f4053180be82e7661ccbe17d0b5bd9bc5022348ef2264a53c6b7d3d55
-  102 overflow df06845273d305ae660324a369356b54f727ecbe4fd9b94dc9bcda4b9b0c379d
-  103 overflow 1435a614c08d5479b7d1bfd8a16abf1f1c0a4c3e451aecbc7920c97444b3d8c9
-  104 overflow 813cf888feaae9b51ac066fb71929159288a23d9a11b7d307c8a35d84b4a0cc9
-  105 overflow 632b547d5af4e4847c92c640ce8d45c68dc0dca75505a5624887b0ec3e20f94e
-  106 table-leaf 848e089a6e152a2611c1e07ef3cb8b888de3c267f833e2e6f610d7a6eadffbc9
-  107 overflow 49cc6fe894ea6da5213523ec43a26facb16f7a3b040524ee5c13fe76f0c771cf
-  108 table-leaf 8abeb3283e0b47b7db4b4c194094a5526e090003c6e0e35cdd9675a75c1c5aaf
-  109 overflow 54f44a88e044984e44d373a03680dd3759789746fde5d08a4ffaac18a42e8d68
-  110 overflow e80b8c0b0947e336d3c819f690377af2f615b55fd9915f3a8ba7d22da59ab978
-  111 overflow d14e526d57b5bafa2a3e08fe01effedb64cf89e2dc10a5847f37bdfaca36437f
-  112 overflow 95e50efa0e78ff80b87ad799328c2823e6e352c3e5e3379d9a80742ace967a7a
-  113 overflow 97ea1d43a7c5e8fb0da485be88980a55490614f7f5b890aa2e2598c2167e33f8
-  114 table-leaf 5cdaa78217d2150a0bf2d3c80aa12024ea256da8cd33982a4bf059dacdb5b5f8
-  115 overflow 1d9cbda1a0e90bdc4c7c0a11c5e51090922b1ada96ac1936956bc37f176f939c
-  116 overflow 2b48e052073c6bfc240028e5a4ceb16ddb3f0e04d0f53170f9edaa186da0cfd4
-  117 overflow 04234553cddc6fcd4069febd77b87f4d64811dd63bfaec0bfba6efc0c93b1562
-  118 table-leaf cc77e8c53bc44d3f9ec2e862a5e3c62f1384166a376fbc591b06f04a66b9a7b6
-  119 overflow 130806d3885b0211707f546e7e6c894bb09b4a0e556bba8ad80de6d114b3a68f
-  120 overflow 4551c32df32ecf04c413ad17a59413b720421274c8314a6ad26f89fba4fc4def
-  121 overflow 8863d6b8d94deaebb95bdd1a02f8743503e473e482e9b4ee9b34e98090e83f56
-  122 table-leaf 73b66a24dc411f00dcdbcceffe5f21778e0b90b603f7853b884dc0d97fd536de
-  123 overflow 0794d43b88322f22e8250c0c79a9efcaaf459a54a8b07a071267dd33f16fae1e
-  124 table-leaf 1430942e4bbd8d54d254e2dc5dac3db31f52193a489b0973ff1037284f04d910
-  125 overflow d283ee9250e0ce6430d788da2431cf9e5605c0053165ce862232569caba9f788
-  126 table-leaf 1b782ab4ae9d83cd884e84e88c97db9bcf2ae98850a12be281e3b3330932401f
-  127 table-leaf b522ef1af3b0b8779c2ea43d3ff801a9d2f50d4830152b4c716df93d54a5c985
-  128 overflow 2ff02aeb9c1d60400994aa5d13455f7522be6b032eac801443989405352192c1
-  129 overflow ad5ebe9e004f84fa0135c9d3d1dccb41e23beee3df3c8fdfd5dac5358aa9fd56
-  130 overflow 2237eb84c5d68a348d8fa11409b505b67c8399eb94771a7da70f58f8c0037e1c
-  131 overflow 04b162883872aba167b6982659fe122eacf674e99f171d08418be41fcd53fd21
-  132 table-leaf f7c462f63279bf6acd4d3b2b609190281a0e796e5a74fdb7536273d2c5ec6c3f
-  133 overflow 3d1a288db1f0a6e69e64a1b5ce5b47f8d421da38b1eaa98f081c148de2583e30
-  134 table-leaf 39338cfa073abb3a5571e03b029f29139f8d10a58467c6f5c93de236ea3fe8b7
-  135 overflow b52bb1074cf3c25075249a0a9957dcc55a7a1ab67ea573e7d3e4f022dd7ac417
-  136 table-leaf 21322aaa8277e28109421c975ca1f1d6ceb296c687a0a53c1b1c2c49367b7cbe
-  137 overflow ba5c54d41839876a1a145420a7edf0ee9cf0eea1f24d57b4bc797d9125b8d0ef
-  138 overflow 4283a503f149a51b09e069a2b1bf7cf7dd0fd92783d71b1bee53914a7b838ed9
-  139 table-leaf b84214635122e91fb75100a6d935786fb002bedbc4535d7e2dfe9b7a507dc7d0
-  140 overflow 96e2cd05720136d0384e5ec79ec3a5157100e1d6e6980c4b189516fbd0f6a86c
-  141 overflow 787db4dc093cfc8ad6ded6b7e82482a21b84572f2da80c7e5b5c8cc971d65da8
-  142 overflow 875c8b067fac66afcf8c9a958d1ae4897535fb08cd74aa90e935a22a8c7802f0
-  143 overflow 2da5c6392c5500f4e0bcfb7f6f01fb91b160d6ead868ae2d830664e758b21fbb
-  144 table-leaf e173043bd290f8ded7aa15a968abac512a3fc0c5de3cf914475646d4f1bcd11e
-  145 overflow 645f01d7974adc719c5abcea988f44a96c91232d85f6af6f26bb7427cf147cd9
-  146 table-leaf 232999b442843f030ab01ee02a9c1b529de85183ed1a3a956654b5bf0fa69adf
-  147 overflow c6c2eaf7a8cf228898658b1095e5d8432e4bf1e6b97c207e3fb02a5364e03bd8
-  148 overflow 32d01b24c2c5d20dad20e84c5341a2c67389e85b2654f83adedc53dbabd72e35
-  149 table-leaf bfc28ec86893abb9bc5b44eda41bdba963744e659485d5a74e3bcde7a5f5158c
-  150 overflow 1cf7cb226955104cf78d7e92d646b414ca576b7156535f9961543ff96c125e40
-  151 overflow 7f9e9b145d1335574de859e7f21f6f430939b9286de85c93c64a1ef35012ee33
-  152 table-leaf ae3c2642dacd1fc71aadd09f5933318a89c7a09ee4217060836ee8f8386c880e
-  153 table-leaf d2e52f7dfaf1ee997c3966b0e8f94e357a8700f87923650c2c0250e735868b3f
-  154 overflow 6baed52dc619ec51af512f078dc3a94e6df5d722bf2ad4f405eb99e80d6f581e
-  155 overflow 6013788ab488ebedf636362170e6c90eca3fb7efed38c6e04f56e652ed2f9909
-  156 table-leaf eb71eba626a462ed55f68c03299f5e71201620fcbe3c4e98048f75708b93ffc7
-  157 table-leaf f1415e89843d7b50ec128f8be3965d85efa1a3e547c5a0dbe2c659e57274f152
-  158 overflow 939f128f7a957470606e7867f81d0bacbfc7cc8898778607fafdd1a3bec6a15c
-  159 overflow d5b9772cff3af4d364f3651f4502207e61763c26c585b9fa8f995deca0a77ec8
-  160 overflow 70305b14df663528b9592d561c85c976f74d65571bb3acceb3d95ddb8cad78df
-  161 overflow 8aed8e506b72467da1a95f823a863f2a7b9f3c92026ac0389044945606db8575
-  162 table-leaf b5c2bc6b4ca810c938c99c69af8e2e6697b4e080f313ae4d882c88ea99a6548d
-  163 table-leaf 81d2edf79ac8eefa90c0f5f7ad6d7e753b6b53f675abe0431c63038d24a53c45
-  164 overflow 3a01461230c9643760562274b8fad32005a2351faf173a4dc7d76660a675c309
-  165 overflow 20fd3f79abcdef139324d0a308b7174da51e2ee9508fec383a1655ba3dd792e7
-  166 table-leaf 3605a1f6ed1917f4ea9b388d621cc9be26011ea8336bd5e0ad69220d0cd7d8db
-  167 index-leaf ad8ae738c43075cb8c49c8b62ea69eb8fb6224d0deab4c53379c4f3ef0d7c803
-  168 table-leaf 900856304d8ad4d43446f715d96fc0be12b5fc344576ba4bc0980d1fb75971c9
-  169 overflow 3cd1484621a6930deda2fd63d2be32072c15bac0807933bf28f8f19162d457b8
-  170 overflow 7a2c6d554fbfc58aec2ceae45162d16225d83993e13aa57e1d3800af6ddc4d24
-  171 table-leaf 25bf59c0709b6edbf627c221ccc7338337a4a9abaf723f4de4752e4f28f09bf4
-  172 overflow c292b98a605b9531581d84d1412b1fedc4ba05cbfb5d7cf342864b4df789a0e1
-  173 overflow 81929ae1a5c151c988ddb036210aa3975d422058eb73872d780ea0814c9c2afa
-  174 overflow c2a669aed711efcecde3ba1faa7b7a3c912a6705a92c767dabf0d32381962412
-  175 table-leaf 9e6a00f61e695edf8ce07ce8c69603a755e814108b84779e3f21fc6614d2b6e5
-  176 overflow 70a3c713eeb87a3b873bf5d032b21d679f9adb8a8c527f0af600017c843813a7
-  177 overflow 812040bb47ff3134003e4e1da04f70eec0522ccacf08fde842cd722e4571ade5
-  178 overflow 41770f11407c484eb54ca98bd72cb7f0f1328c5de8c0fcdf32f3045b6daa3d71
-  179 overflow 4d6e7156e5210c3c810638264c46f8d0ed428cd3698b9be38641df055351a929
-  180 overflow 36774019b141812d8bb2f1401a52c33efb19e3a32df6f39537c768214773476b
-  181 overflow 3621cd7ebfbf961a3ae3bda905453238cd837d97f7f1dfabb8506f53fa2316e6
-  182 overflow b8edd5b7ed028935b68768b0accf7f5c6bface649d460ea7b3d79f2154c20803
-  183 table-leaf 5d01dd4623fd4a750ce3e5f87e0f440b80311491e94f6b8b6c9e572db5429957
-  184 table-leaf ea016b0904d23d14bb2fa62c036f7d8b2ab72727f2b60ba7b820d2b55d30b8ae
-  185 overflow 147612121f23e6007d1cf95d651f89ac9cbc2031f70e53cb3b2e8a860c8ad9d0
-  186 table-leaf 3743d3e1ce7de8542889854bd07635e0db484b63b8fc4ba62018577d0d57a260
-  187 overflow 5cd072ba58d0bef1f3f3487c3d651153cdecb877e4b435878ca5fa44bd563ad4
-  188 overflow ac3e560ca6e7a95deb6051928ce624c2c780a3bcb2b7c22634f3e4be24c33cf9
-  189 overflow 977213a029c072749990cd83d118d8eb01a1fd45fcecf7e0807c58698fb5337c
-  190 table-leaf 7c51f6f4da511db86b9b55b22893aff7e99dcd80cf7134ab9b92053303b88235
-  191 overflow 674df96ffea07223102545c9083939726e035966a8c29873da38c13379dac5a6
-  192 overflow a1dda57fb84ecd5b9bbeaa6fb5801ede1af7fb7b56fbc3772bc5936e43d0876b
-  193 overflow 0bb9d64731e39b27c628079e03c1439d9c6e3d6ef32c28cb6459f12cfc8129dc
-  194 overflow f2207c072673589a7c154fb192f515ea68a963a53d78cf49517b3b8539e0cadb
-  195 table-leaf c7208e06bd98746438e93f1ae7fb45155b5baab1c270ed342964ea1fa38e0592
-  196 overflow 201d8f2bc00f73b32d62b428d247b8a56fcac19b1de078e75906e0bd9fd1e79e
-  197 overflow 80dd673f81bdf47ebe2e8819123cfc693afc052fa64be1d494005e4aa57596c0
-  198 overflow 87d09f9c392d694fdda13788e46e84d6f03d733510d1537a1c8a7769d5fde29f
-  199 overflow 48a4c890d6966899da4b367e2a5ece906be9ad32dc9711c1035038e55560fdfa
-  200 table-leaf a9efcc50448876b41b2209921d713496d5ab111c48df306b000bc92b874ad353
-  201 overflow 9cf34393c30f1156740d2ed575c1abbf6841852cd281524a99923a1da88d67a6
-  202 overflow ede9cdcfc3289dfe634b55a17d6a868326d7c41929a5ccb5a5e3bf1036d65f3b
-  203 table-leaf 08d351b2c10fc9dab3e14ba46777aca4ce0fc934ac421f6215b9eb679ceb3a11
-  204 table-leaf fa1a04e7ddf7118f43624a24a749e60975842ac6337474c9061bfb0e9fa44a90
-  205 overflow 4ed0ea698b6d12687455d50e0b543c7516d81164ae67867f959bdd7e40547e38
-  206 table-leaf 5cf13eaedd56113712759a8b058b8b3e636c1196e4f3ea5ccf7c5526beca43bb
-  207 overflow e6b89650492f6d2f49b2ea0d73ae5b07713522937b244fdd30c374b37b3f78df
-  208 overflow d3f153dbc7e7ce01491bd4dabd842617719dd562d961eccb5f00c91cea5772d7
-  209 table-leaf 1cb112ddea905435efa8ea4ca7d2570c4bb5a6fb94d80e8d68fb2fdb5d79ce5a
-  210 table-leaf 897e54e68f312e2aa2edc958548d60456a558a5b0e456e52c5cacf4095d16580
-  211 overflow 3b3706aafeb0b2c1b995302e3001910c857f9d086c21045e8cd08767106ba1f5
-  212 overflow 6815b9e928bffcad27ff4a952ac5cdda584a0928c4341434fc7d92fe327c02be
-  213 table-leaf f8487727c0cd0a88e92bb202e6c92db12f71eeed692e2ce76529831af744962e
-  214 overflow 8dae397cea317c949b255ccd90f7ae29610ae219098fa5c429a1015a40dab220
-  215 overflow 24ebaa59a26af623e3767de407269b9aefa2577b72d98f503fac15d955917e19
-  216 overflow 44a8f5918fb867a2d919f3db0db8c443a754da0cda5efb998826024e3a36c05a
-  217 overflow 40a96f5f5ddfd323bef78fcdaddebc3a13e8d39e3a1841c10d8b359ee177c9b6
-  218 overflow c6f12c1ed6acdfa1d3374c21ee425c7134ecbc01868633408e36609228e7dc3e
-  219 table-leaf 97a711c0dc20de2e6a34ce51f61ebf0aedb29e3b1a268982526816115b85eedd
-  220 overflow cdd31ed7c770fc1608d4ac32d291f30f867a28639b34488ac32ace07a95cf5c6
-  221 overflow 00bea5b536dbdbd201729ed609ed925463cfb4b87588d5e5a0df8c43b7cf6d33
-  222 overflow b414b6e822682648c2e8e29f84456cb700ee3a512e512309a1ca942fe6d2efae
-  223 table-leaf 0a0961052a04adc43a4549f5538499dd109c982a7724f32cfb1b27e31b9e7b0e
-  224 overflow fa7fb2c4f7c22de155dad918fe70990861571ff387933cc7b3adcf00c90d079d
-  225 overflow 115afee8ef26a376070491221cd33f49840a49a67d480c54c3133653c7227629
-  226 overflow 9754ccc3bbb0a6ab9c7802b69d32a178faee6b9ed6b2d02003180b56dd08745d
-  227 overflow 6c29865d25e5796669f89d13e6478c2795f5d044eac2ee58f57d1fb1abdabe50
-  228 overflow 3bff5c2e1be3bc6b9ae72cf82c7570ef6075a68c7ce06e923e3f723b5b102404
-  229 table-leaf 8782ee7b6fce201a6c8b70a0b505889a6989265cee17eb319a86e670fd0998ce
-  230 freelist-trunk c87a78226061b340db326b28249cf4d70558f57ee712591a70210e847f8e3f7e
-  231 freelist-leaf ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7
-  232 freelist-leaf ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7
-  233 overflow bd0dba7fcb0d77b4ec4a17e044f099ab20b87d8d32a12b865785bbe5f8cfcf06
-  234 overflow 6cfbfc530bb4df138c6e21665fd52937a439052067246c57db1c8b558860c1c2
-  235 table-leaf a48fe108915400cc05afc9b34ca6feb46a9b040b49afd633f45cef2152c59216
-  236 overflow e568253890d7a9695f10ef88b5ffe111c5ffc441499e9245f15c8191a84b9de4
-  237 overflow 0ec08eae5b32429eac790f8246de897a4535b2d9f60a51ae533f596c50281f9f
-  238 table-leaf c24df11ef4497f2d0672276394c9d3f67eebe3b9d9584d27da51a6d7b9713fa1
-  239 overflow 80f767d0d279a9e7d99c8982e6f4dd09d972b430a80dada3f777025187fb977f
-  240 overflow aa93bed9b60983a91008131c9a10c81584ae4965359b434bfcf95ef460a22a70
-  241 overflow 9359ca48c0108d0e5c44e6ab26a928326f078a46d1efcf0f799fc01d9b0ec7fc
-  242 index-leaf a1477703add342d21b8c339556803b964e8d9e3e478c63b8bbbd5430120c282b
-  243 table-leaf c0f6b1c2094fb08df1735df4ae0aec63b28c579867f4c337420bb1fbb3fce722
-  244 overflow fb6a6b25d3fefc28db75adeffb88930587588f87221426e86e10867874da92bf
-  245 table-leaf 00bc00cd7e93f90137bff6e90a154914152dc9299b0821c99899ee7c00fa0aba
-  246 overflow 570986ec39ec913b852019c4a2695a6303f94dbf9d479eb0b23cfe9dc6e8afee
-  247 table-leaf 24293084e423ced4143675d4f2e02c18fe1d5c0f40acd80d672b219f66ffac8d
-  248 overflow 29b63daaa8287b7720f690ce5c4bda7efa76da8f40b58956034d9da23cc62056
-  249 table-leaf 0f413743b990730eacfb64df4386633394ebd9790075700338c583b2d10403b1
-  250 overflow 7184accfa8fe098c38a16bc9030f61dbbb74c852d0ee7087277a5736c27aed6d
-  251 overflow ceede5817f74dadd8a0691f264861423282366ae054c47dfa982cdbb14781d5d
-  252 overflow 1f2073e0d2e776181321daadb6669a0e197ef9ca6d103bcf94e84a758cc9beaa
-  253 overflow 427e0ce90b40a2bcfba0322802f4550898b3b8ed9d7076b3c7be944e87124f8b
-  254 table-leaf 1c9f1fcfef357551296e963e475d138653a8e0acb975f5c75cf953d87cd4cbd9
-  255 overflow 8acaa7d09e431d93d9a6154f7fd7d089885c2b259aa5958ede44f9070f1eaf29
-  256 overflow a77956d277cfc9febddb4904fa3c335d0599fc09ef1221bbdbcb312dcaee733d
-  257 overflow 3b9c2faae264b478d329daf0d3300571271de0c20043a2ae441d0b070eedfa0f
-  258 table-leaf 9bb2466c861ded02acd4106470c4bc8b1b465fa8b476033e3e2eb3465133ad00
-  259 table-leaf 1b13dc75619b6e2f5f0a9ee32a619f95e9030874fbf5376433c7b480de3e2f3b
-  260 table-leaf e778d1107f06dded66181037839c530ccde3b75a9e0d17c4339140f569dd241c
-  261 table-leaf 7323ace1550498a42c3320cdde9df3efdd1d0ec312a012e55f0ec7346adeb07d
-  262 overflow 487a9bc24226973a0283e4d3cbb91d73503681f3a983b2c24082cae7bae37f16
-  263 overflow a99d77b547c0e68761b258014ac7c528460b0411627d3ae501bcdd69496959af
-  264 table-leaf ca0bcc06007923846a5f28f669b60dc09681826ea74591f19bf6456d22310879
-  265 overflow 89ee12580173f6765466613a75b5318cec32f679c5e4b09e43f1f56f3d032003
-  266 overflow 0866cbbace434723e8da1512f24f6eb663235646c61412e2f88dea322743c892
-  267 overflow e6ae8ae984a89238c365a8138d93b3b3dd0b2919b12856794f35652852852350
-  268 overflow 07b5f98d5d313031a249f66f23e496a6bbec79da3013c3fb4bdfad5a7bc12ee0
-  269 table-leaf b1a76d96595574cbf5e5445e90da4b831ffbee44931da0ad942e0cd6cd825db1
-  270 overflow 991abeed9b2f89b4b29abcc92073e6dfb59497192f0b33ff7dcc4da79f80065d
-run 1 vs run 2: manifests identical
-check ok: two runs of the recipe give manifests identical line for line
+════════════════════════════════════════════════════════════════════════
+  2.3  Can the pages of a database be captured and rebuilt exactly?
+════════════════════════════════════════════════════════════════════════
 
-== B. rebuild from the capture alone and prove it equal (E1)
-rebuilt rebuilt/from-capture.db from run-1/capture: 270 pages written in order
-original vs rebuilt: E1 bytes: equal (sha256 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74)
-check ok: sha256 of the rebuild equals sha256 of the original
-recipe lookup of the rebuild: step 30 (exact bytes)
-check ok: the rebuild is the recipe's state after step 30, byte for byte
-integrity_check of the rebuild: ok
-check ok: SQLite opens the rebuild and integrity_check returns ok
-check ok: opening the rebuild with SQLite and closing it changed nothing and left no side files
-one more recipe state for comparison: the manifest of the database after step 29
-step 29 vs step 30: manifests differ: first differing page 1 (page image differs), 30 page(s) differ
-check ok: the manifest comparison names the first differing page (page 1: the header changes on every recipe step)
+Rebuild Ladder rung R1: internal/capture reads every page of the closed R0
+database into pages.bin and writes manifest.txt, one line per page with
+its role and the sha256 of its bytes. The experiment rebuilds a database
+from the capture alone and checks it is byte-identical, refuses five kinds
+of damaged captures, and refuses databases that are not at rest.
 
-== C. a damaged capture is refused, and the refusal names the page
-  C1 drop the manifest entry for page 100
-    -> manifest entry 100: page 100: missing (entry 100 lists page 101)
-check ok: C1: the rebuild is refused naming "page 100: missing", and no output file is written
-  C2 list page 50 twice (in place of page 51)
-    -> manifest entry 51: page 50: listed twice (entries 50 and 51)
-check ok: C2: the rebuild is refused naming "page 50: listed twice", and no output file is written
-  C3 swap the entries for pages 120 and 121
-    -> manifest entry 120: page 121: out of order (entry 120 should be page 120)
-check ok: C3: the rebuild is refused naming "page 121: out of order", and no output file is written
-  C4 flip one byte in the image of page 200
-    -> capture page 200: image sha256 does not match the manifest
-check ok: C4: the rebuild is refused naming "capture page 200:", and no output file is written
-  C5 swap the images of pages 7 and 8
-    -> capture page 7: image sha256 does not match the manifest
-check ok: C5: the rebuild is refused naming "capture page 7:", and no output file is written
+── A. Capture: every page of the closed R0 database ────────────────────
 
-== D. a database that is not at rest is refused, because its file alone is stale or torn
-D1. WAL mode: a child process commits one UPDATE and exits without closing its connection
-  child exit status 3; -wal 4152 bytes, -shm 32768 bytes
-  capture -> database is not at rest: r.db: -wal holds 4152 bytes of frames not yet checkpointed into the database file
-check ok: D1: the capture is refused: the -wal holds committed frames
-  the database file alone: sha256 unchanged by the commit: true; account 1 balance 43047
-  SQLite opening the database with its -wal: account 1 balance 44047; after the last close: no side files
-check ok: D1: a page capture taken from the file alone would have lost the committed UPDATE
-  capture after SQLite checkpointed and closed: 60 pages, manifest sha256 2a17d23aa48e660bf7431827e6a0aa391794544f201166e0cd729508dc4431fc
-check ok: D1: once at rest, the capture includes the UPDATE (the file changed at the checkpoint)
-D2. rollback mode: a child process with cache_size=10 updates every document body in one transaction, spills dirty pages to the file, and exits before COMMIT
-  child exit status 3; -journal 203312 bytes
-  capture -> database is not at rest: r.db: hot -journal (203312 bytes with a live header): a transaction was interrupted and the next open will roll it back
-check ok: D2: the capture is refused: a hot -journal exists
-  the database file alone: changed by the spill: true; documents: 17 rows, 15 bodies all zero
-  SQLite opening the database with its hot journal (rolls it back): documents: 17 rows, 0 bodies all zero; after the last close: no side files
-check ok: D2: the file alone holds part of an uncommitted transaction; a capture of it would be torn
-check ok: D2: after SQLite rolled the hot journal back, the file is byte-identical to its state before the transaction
-  capture after the rollback: 60 pages
+A1. The recipe is run twice and each result captured. pages.bin holds
+pages x page_size bytes; manifest.txt starts with the format line, the page
+size and the page count, then one line per page.
+┌─────┬─────────────┬───────────────┬───────┬───────┬───────────┬─────────────────┐
+│ run │  database   │  capture_dir  │ steps │ pages │ page_size │ pages_bin_bytes │
+├─────┼─────────────┼───────────────┼───────┼───────┼───────────┼─────────────────┤
+│ 1   │ run-1/r0.db │ run-1/capture │ 30    │ 270   │ 4096      │ 1105920         │
+│ 2   │ run-2/r0.db │ run-2/capture │ 30    │ 270   │ 4096      │ 1105920         │
+└─────┴─────────────┴───────────────┴───────┴───────┴───────────┴─────────────────┘
 
-MANIFEST OK
+A2. The manifest as a whole: its format line and the sha256 of its text.
+Both runs must give the same manifest.
+┌─────┬───────────────────────────────────┬──────────────────────────────────────────────────────────────────┐
+│ run │          manifest_format          │                         manifest_sha256                          │
+├─────┼───────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ 1   │ sqlite-internals page manifest v1 │ 8d9ad6e1251dfbbe513d57fa7dcd5e8159fa7c62d227d28008ebc1a9ed92f523 │
+│ 2   │ sqlite-internals page manifest v1 │ 8d9ad6e1251dfbbe513d57fa7dcd5e8159fa7c62d227d28008ebc1a9ed92f523 │
+└─────┴───────────────────────────────────┴──────────────────────────────────────────────────────────────────┘
+
+A3. Run 1 against run 2, as the library compares them, and from the rows:
+the number of pages whose role or sha256 differ between the runs.
+┌────────────────┬─────────────────────┬───────┬─────────────────┐
+│      name      │       result        │ equal │ differing_pages │
+├────────────────┼─────────────────────┼───────┼─────────────────┤
+│ run 1 vs run 2 │ manifests identical │ true  │ 0               │
+└────────────────┴─────────────────────┴───────┴─────────────────┘
+┌─────────────────┬────────────────┐
+│ differing_pages │ pages_compared │
+├─────────────────┼────────────────┤
+│ 0               │ 270            │
+└─────────────────┴────────────────┘
+
+A4. The roles in the manifest (run 1).
+┌────────────────┬───────┐
+│      role      │ pages │
+├────────────────┼───────┤
+│ overflow       │ 170   │
+│ table-leaf     │ 89    │
+│ index-leaf     │ 4     │
+│ table-interior │ 3     │
+│ freelist-leaf  │ 2     │
+│ freelist-trunk │ 1     │
+│ index-interior │ 1     │
+└────────────────┴───────┘
+
+A5. The manifest of run 1, one line per page.
+┌──────┬────────────────┬──────────────────────────────────────────────────────────────────┐
+│ page │      role      │                              sha256                              │
+├──────┼────────────────┼──────────────────────────────────────────────────────────────────┤
+│ 1    │ table-leaf     │ 1b9902e64e6c0f5d1eb4e501973304e85e7aff7d6e44912a06fbcc00e07debe9 │
+│ 2    │ table-interior │ 46d56d23abed588975c19161aa6dc1f9cf7f9d31a72cfbd40b3441bf38d8cc1e │
+│ 3    │ table-interior │ 860bd520e10f3ed30a0cf84ada13addbbf2fb19cc5584699ff702868986c24b0 │
+│ 4    │ table-interior │ 3c53ee0581571b0fd924cb47c637b6b1ebe6425f4a04320f26390083cfd37072 │
+│ 5    │ overflow       │ 7aad2880eb458697ca2b782d104c7bc12ab581778d1617616113daf7fec3d4c8 │
+│ 6    │ overflow       │ 7e7afe23ae214297b337e3c4675ffdd9ab84024fc3074c15e812494dd20e4983 │
+│ 7    │ overflow       │ a534c6fdb6abf78b7a7b52b27b3051790c85036beb7218b4d0ff6e6decac0a0f │
+│ 8    │ overflow       │ fba5521b93297c4b8f3bef088245f945ccb51124446b306cd489d6f3e4217b15 │
+│ 9    │ overflow       │ ca9a4af9e802b51d7f6b06fbd720c6514584a367091c9873a5f9aa21a71067f2 │
+│ 10   │ table-leaf     │ 5bb69638130cf6381f376435e2423a5e0d06bdf068fcaf571022fc1e0ee59370 │
+│ 11   │ table-leaf     │ 724eb0ed932ef10781b9172d5e32a48a1b8863c254a982c4f8ddc4d082338b96 │
+│ 12   │ overflow       │ 7f5502748230a361201e00b9e58fbd6a0db0125c9ac0e24b6f138b301090d9ef │
+│ 13   │ overflow       │ 12a4b4e75b3e86d31bbd4c27ee214c6b806652f6ad9af57ee636219644b7c301 │
+│ 14   │ overflow       │ 34962cb641e4debab98b6f3a2fecb54e612793071b88eb82c39836a7d4aa728a │
+│ 15   │ table-leaf     │ 4d3175e4b2c34d53defc5dbb504cb680b4e3296c0eb81083024329a3d622646e │
+│ 16   │ overflow       │ a0572382d487533308f59de5d509f29bafed75da79a73f9812acedc32e35f10a │
+│ 17   │ overflow       │ 15b724903840c0ad7abb639fa0700fedb4a1f58f43e3b0ff9005ca78bb3b5491 │
+│ 18   │ overflow       │ 383820231ab24d46be1913e631aa92713455b9b6c6c9f1d021610207a9f7da14 │
+│ 19   │ table-leaf     │ e3bb3b6b00cacac610514dcd58061d2a1ab831786006278c228b4785d3844497 │
+│ 20   │ overflow       │ 3b65dbee9941c10a07b33942455612512b666d94d3609ff23becc45a79251df6 │
+│ 21   │ table-leaf     │ deb86ca0005d14f7ab3b7da9c5ac31d4282c568de0b03e0cddc20973682cdb14 │
+│ 22   │ overflow       │ e245c6247cbcc8c212299bb2f89b5327d72dfa799529b2dece4790eff92112ee │
+│ 23   │ overflow       │ 59134759e86d787f8fdebc82af48ad8bc9c55a135c7fc67af8b38cb6a56c7ffe │
+│ 24   │ overflow       │ 68c7d34bd3ef689df419818c41e6ddbbf30b4499c90acbd1ffd3d5bd06775cdb │
+│ 25   │ table-leaf     │ 732423d9158389d0e946170f10075404559e4d8112bb83ef80c72c7a4bf15fd7 │
+│ 26   │ table-leaf     │ 8006a99485269b70b926860d50f87f4ca908a513a655597a9af43fcbfc4f038f │
+│ 27   │ table-leaf     │ d45416dbdf129e59d604e2fc3b7f9c802ffab7696837438dda8d2b60ed29e586 │
+│ 28   │ index-interior │ 51e6ac1f4e34240f1bbf86abf31c101ad643155a33da16f3a6ee4f089ce0fc71 │
+│ 29   │ overflow       │ a4e416cafa8141e1ed4cc9150cf7bc91e6bd363b510d2daf4748d511c8d253f3 │
+│ 30   │ overflow       │ 2d8423154a553dbcdb5b400d9e42cc68018148d63a4ea559731e2f0c2d25ff7c │
+│ 31   │ table-leaf     │ f3da9777ca90fcf540b92d3aef099433d7c73021688064744b62e39f16555a35 │
+│ 32   │ overflow       │ ec7d9f3bb6c902490f0bd3cf49f07a0a3a50b8f4d00b1a32ffae31caa8e088f1 │
+│ 33   │ overflow       │ 4552b82b526e55ab64d4b4c8f906cff8be626594f828c2aad32dec6beff99c94 │
+│ 34   │ overflow       │ ce92b5493316efc5c6dcc493c40b2a39bcf69230138f41891dbe4ba1b33b86d0 │
+│ 35   │ overflow       │ 7673f433fe64cf17405855c1361fbabf3a8fa0309a283068178d32ed3e478321 │
+│ 36   │ overflow       │ 568c08e129d6dbf91a58337b21f0ec334d437816422939b5999310ac1653f069 │
+│ 37   │ overflow       │ 02cf9a93058eb383f8c1e4bf6c2736e428a50bc009277feafaafc5072504d51c │
+│ 38   │ table-leaf     │ c2fae8bcd1c019e21ab735b11ffa65e2e88e94bdea3924ca82466fcfa92d16ea │
+│ 39   │ table-leaf     │ 568908de0766d844eaaa85f1870b7cf9d4fe78d3bf20cb38aa947bb1732b0ac8 │
+│ 40   │ overflow       │ 91be9b798474f1b35c757fd09064e640b39ecb7476dcdb27cebf869725ba9559 │
+│ 41   │ overflow       │ de1b5cde831492f35afa92c9be4e794c9249cfef58555b50010499a9e8aecef9 │
+│ 42   │ table-leaf     │ 3a30707ad61b33660e0ded2a8d178499c314c5e6cf495359734dff401cb1957b │
+│ 43   │ overflow       │ b221d22756aae42e95f33c00b839cfa8a0b0548870cc0598e0b5fa490d923c29 │
+│ 44   │ overflow       │ 887b2f0e56135974ac1471a3ce699b43fb4e1bbdb6581cc031f45e506e421965 │
+│ 45   │ overflow       │ 5c63bd72305ee4300a2762a0e1028b8a01861e003e41936502ae435b9f0cd45d │
+│ 46   │ table-leaf     │ c8bee6ed976fd2a7ea7e61eeb0d594c73ee4a72a0159bd6132383fae8051fe94 │
+│ 47   │ overflow       │ 06d3326df34a4041c367f5e94ed81bfe1e6f680a90da3a33f0a47c51a7f8b099 │
+│ 48   │ table-leaf     │ d893cb79a18ea5fc17b23c8fcd7298af35196233d4058d7dfac10a994cafb39f │
+│ 49   │ overflow       │ 1981d7c68d1e32ba7361d5ae699892f30fece85ee6404cc689b261fa32ec58f3 │
+│ 50   │ table-leaf     │ 73fd216d724396dae4897b0180cbad5be03987df5bcf36e490ccd81ff7c34442 │
+│ 51   │ overflow       │ 0c62745060da6ad711e8b596d3c84e925ed8126ba38f8cf6c4d2f6b10fb36c99 │
+│ 52   │ overflow       │ 9abb60aa174193ffeac20bd41da49d251318a3166fb4ab358360dc451188aa93 │
+│ 53   │ overflow       │ 4dfa14a601f073d5a84d21e3948b69f47d04c2a4d29142f6f5bf307044c962b1 │
+│ 54   │ table-leaf     │ 15130a78f58e4eaa8209aa8fdd5c81f3bd5f999fe9e342040358f1cbac317d5a │
+│ 55   │ overflow       │ c736558d3fbf4b32b223e2638859498c08c9cd71aafcebf88700ea3aa775722a │
+│ 56   │ overflow       │ c043a6192cc1dea5f3891ef71135adee8cd2bae5680e87cd686be55f655d45b7 │
+│ 57   │ overflow       │ 36f9a238db5b34f0ad7f3a32863b747f923985c01c227589aba0a4c0ace2747a │
+│ 58   │ table-leaf     │ 862957a42085704cea1a2e36da9110425f16a0a454b77a8988c88cd6c0261646 │
+│ 59   │ table-leaf     │ 6012e5651530caceb1c97f08704c30f56849f59fd78b490bcb93cb13386aa757 │
+│ 60   │ overflow       │ 0ef5ec177aafb28e3f0e28f7b5fa5d2ffbe2cf38858d3a7ec4636ea1664b281e │
+│ 61   │ overflow       │ 0a5c815ffe5216011f595370a3bd50b8fb950ab6e2b2e01ed9f3f01019fa69cf │
+│ 62   │ overflow       │ 758650437fa2ea8bb875b8efd46eecf166acb1e4ae5b472d048513970a95fbed │
+│ 63   │ overflow       │ ccfb4d0853cb3cf0610c9c4c9275be042c5365fcd77bd500c04272f6954f9902 │
+│ 64   │ table-leaf     │ 732fee5afc87573193067e4ae0da1f7f9b0f9932f7f069369340d90be01fd692 │
+│ 65   │ overflow       │ 2cc0ddd717bafbcb1c57098c3271106c1677deeb35a97018958ae2659b28163d │
+│ 66   │ table-leaf     │ eb7d545f2ee9266beafe0d4d6d7cc58a8baab1bfe4710ea5eb536fc7e5b9a449 │
+│ 67   │ overflow       │ 88fa136200d8b002867b73ebd94ae78e513d10d24f88ba8bfb302bf33ede5cc0 │
+│ 68   │ table-leaf     │ b0ac4bd16e8ffa500762646b6dc7c6c7398fac999e487eed713851238fc86b9f │
+│ 69   │ overflow       │ 88bbbe03f7e1b3f93fedce3262856d0369829891a78b2d4cb7a3c5b499f62a03 │
+│ 70   │ table-leaf     │ dcba5028b293ab80f2d09bf42e1555968ac75b7f69d696542a69345daee29d2a │
+│ 71   │ overflow       │ 9ad4b590ee93d7d431db66e5dcf4fccacd095d6ba3ae565c04f0627f0c170687 │
+│ 72   │ table-leaf     │ 9fd9e4ebcc248c76a69dee2f7b87cb5e42af0fe6d3c947e5f71bea3719571d01 │
+│ 73   │ overflow       │ ea4a139a0d21dc40233abe44fa65ed0438f486a962a527154f27bbaaefb09817 │
+│ 74   │ overflow       │ 6c5289f3250687b7c3619713518d3dc6fbeac59eb981bd1e908ae5101180f5bb │
+│ 75   │ overflow       │ a740c5597fb7ef676b27728a9a0828a3285a9a1bab20a5d9d2c98c341b69cc40 │
+│ 76   │ table-leaf     │ e368ff348ef725f9309256c3b8cdb7f25e5ab6436c47875c29cf3f77729e6de6 │
+│ 77   │ overflow       │ 8f58298ac0df2a6e4e47585ab26e7291ffc65a851133da66fe0f9ccc5c5a59fe │
+│ 78   │ table-leaf     │ 0bbec48152ee56fd0cde848ee5b6c27955a27712457ad8b57422d6d26eb0080e │
+│ 79   │ table-leaf     │ a9ad5b3bbee64f2b82c38c2317eaa98f36c814c104bbb75cfbf5801054474e7e │
+│ 80   │ table-leaf     │ aa911e9e62211cdead52ffbc7cfeb4e3fa77a1644a998013b319806d672f6fc9 │
+│ 81   │ table-leaf     │ 88b1c57ea604ea1108fda629f0ad7af846e0f6a5036bc77842e0bd88249af210 │
+│ 82   │ overflow       │ c402483d0808de9a1a843fa2bf5a1dcc8dde050e6b0791e68b5052b01a4dc95a │
+│ 83   │ table-leaf     │ 79064bddf27aafb5e2050cf8af0c74ce0756589248e8a77489f13d96239c8572 │
+│ 84   │ overflow       │ 72c3d06469fa69d849fe5ea16c284b489a5ed550f6c18153f3b0124242b1b4ef │
+│ 85   │ overflow       │ 808cf95246048d2300d190bd5bb9e7899137e1e02cc305c4b09bbb4b825e5985 │
+│ 86   │ table-leaf     │ ec8b82a7792a9c53cb14f41f197e891bbddb5eee92987eea9bf8714ac9e87a74 │
+│ 87   │ table-leaf     │ 727d286cec6c7242a80c5ffe1b7d531c5b0f687f8e66758d3f33cb3486e0f48e │
+│ 88   │ index-leaf     │ f348efbbf9aa30ea9af8f21a5ef9fc491856d71102c39d798836bb130680a1af │
+│ 89   │ index-leaf     │ 64e83d5312baf8a3c73f3efc2d7b2d05a46e3603223d638d908100729dd99df9 │
+│ 90   │ overflow       │ 988c00b7986f0b06e4a047ddd647029196844bf91cfae3384884afd448d34420 │
+│ 91   │ overflow       │ 03878852ef827430aa7b2447d43340d4a1dc07556969bb51d0eacc887c282ccc │
+│ 92   │ overflow       │ c18d4b56b6862c94633cdb486b9471676cb2fecad2faecad206d4b6eb86dcbd9 │
+│ 93   │ table-leaf     │ 09dc4cbd982af09308de11c5d05ce4a2808f6f215005b8ee6a2708e8142a25f9 │
+│ 94   │ overflow       │ 0273b357f14b648d9335d42d8c346624456b8981c57425a6854e8fe840bdd9fd │
+│ 95   │ table-leaf     │ 565bf12e4a91fdc96cf89a3b90c4961df44bcacc6804129ca842807df95b6e3d │
+│ 96   │ overflow       │ fca46a535e78cbed584dca90532a9d4ada1a4401cb29d3457cccd332fbd9c443 │
+│ 97   │ table-leaf     │ ef08059b194ea9a5dbc287ac6bcd3c82cd2b3a76b9e2d0cec9477e5ad684ecc9 │
+│ 98   │ overflow       │ 2885bb2d9da559ed257254d403c2b0c4137363c6df0b953e2fbc0cadd9303bf7 │
+│ 99   │ overflow       │ ad43a659e2a57a51c86f87beb182b018bbd3424daaef771ea2c8326ea871f972 │
+│ 100  │ table-leaf     │ 42abd0d5c512933133653865ad518c8e6d12112bff9c31c913c075beb9afee8d │
+│ 101  │ overflow       │ 55edb83f4053180be82e7661ccbe17d0b5bd9bc5022348ef2264a53c6b7d3d55 │
+│ 102  │ overflow       │ df06845273d305ae660324a369356b54f727ecbe4fd9b94dc9bcda4b9b0c379d │
+│ 103  │ overflow       │ 1435a614c08d5479b7d1bfd8a16abf1f1c0a4c3e451aecbc7920c97444b3d8c9 │
+│ 104  │ overflow       │ 813cf888feaae9b51ac066fb71929159288a23d9a11b7d307c8a35d84b4a0cc9 │
+│ 105  │ overflow       │ 632b547d5af4e4847c92c640ce8d45c68dc0dca75505a5624887b0ec3e20f94e │
+│ 106  │ table-leaf     │ 848e089a6e152a2611c1e07ef3cb8b888de3c267f833e2e6f610d7a6eadffbc9 │
+│ 107  │ overflow       │ 49cc6fe894ea6da5213523ec43a26facb16f7a3b040524ee5c13fe76f0c771cf │
+│ 108  │ table-leaf     │ 8abeb3283e0b47b7db4b4c194094a5526e090003c6e0e35cdd9675a75c1c5aaf │
+│ 109  │ overflow       │ 54f44a88e044984e44d373a03680dd3759789746fde5d08a4ffaac18a42e8d68 │
+│ 110  │ overflow       │ e80b8c0b0947e336d3c819f690377af2f615b55fd9915f3a8ba7d22da59ab978 │
+│ 111  │ overflow       │ d14e526d57b5bafa2a3e08fe01effedb64cf89e2dc10a5847f37bdfaca36437f │
+│ 112  │ overflow       │ 95e50efa0e78ff80b87ad799328c2823e6e352c3e5e3379d9a80742ace967a7a │
+│ 113  │ overflow       │ 97ea1d43a7c5e8fb0da485be88980a55490614f7f5b890aa2e2598c2167e33f8 │
+│ 114  │ table-leaf     │ 5cdaa78217d2150a0bf2d3c80aa12024ea256da8cd33982a4bf059dacdb5b5f8 │
+│ 115  │ overflow       │ 1d9cbda1a0e90bdc4c7c0a11c5e51090922b1ada96ac1936956bc37f176f939c │
+│ 116  │ overflow       │ 2b48e052073c6bfc240028e5a4ceb16ddb3f0e04d0f53170f9edaa186da0cfd4 │
+│ 117  │ overflow       │ 04234553cddc6fcd4069febd77b87f4d64811dd63bfaec0bfba6efc0c93b1562 │
+│ 118  │ table-leaf     │ cc77e8c53bc44d3f9ec2e862a5e3c62f1384166a376fbc591b06f04a66b9a7b6 │
+│ 119  │ overflow       │ 130806d3885b0211707f546e7e6c894bb09b4a0e556bba8ad80de6d114b3a68f │
+│ 120  │ overflow       │ 4551c32df32ecf04c413ad17a59413b720421274c8314a6ad26f89fba4fc4def │
+│ 121  │ overflow       │ 8863d6b8d94deaebb95bdd1a02f8743503e473e482e9b4ee9b34e98090e83f56 │
+│ 122  │ table-leaf     │ 73b66a24dc411f00dcdbcceffe5f21778e0b90b603f7853b884dc0d97fd536de │
+│ 123  │ overflow       │ 0794d43b88322f22e8250c0c79a9efcaaf459a54a8b07a071267dd33f16fae1e │
+│ 124  │ table-leaf     │ 1430942e4bbd8d54d254e2dc5dac3db31f52193a489b0973ff1037284f04d910 │
+│ 125  │ overflow       │ d283ee9250e0ce6430d788da2431cf9e5605c0053165ce862232569caba9f788 │
+│ 126  │ table-leaf     │ 1b782ab4ae9d83cd884e84e88c97db9bcf2ae98850a12be281e3b3330932401f │
+│ 127  │ table-leaf     │ b522ef1af3b0b8779c2ea43d3ff801a9d2f50d4830152b4c716df93d54a5c985 │
+│ 128  │ overflow       │ 2ff02aeb9c1d60400994aa5d13455f7522be6b032eac801443989405352192c1 │
+│ 129  │ overflow       │ ad5ebe9e004f84fa0135c9d3d1dccb41e23beee3df3c8fdfd5dac5358aa9fd56 │
+│ 130  │ overflow       │ 2237eb84c5d68a348d8fa11409b505b67c8399eb94771a7da70f58f8c0037e1c │
+│ 131  │ overflow       │ 04b162883872aba167b6982659fe122eacf674e99f171d08418be41fcd53fd21 │
+│ 132  │ table-leaf     │ f7c462f63279bf6acd4d3b2b609190281a0e796e5a74fdb7536273d2c5ec6c3f │
+│ 133  │ overflow       │ 3d1a288db1f0a6e69e64a1b5ce5b47f8d421da38b1eaa98f081c148de2583e30 │
+│ 134  │ table-leaf     │ 39338cfa073abb3a5571e03b029f29139f8d10a58467c6f5c93de236ea3fe8b7 │
+│ 135  │ overflow       │ b52bb1074cf3c25075249a0a9957dcc55a7a1ab67ea573e7d3e4f022dd7ac417 │
+│ 136  │ table-leaf     │ 21322aaa8277e28109421c975ca1f1d6ceb296c687a0a53c1b1c2c49367b7cbe │
+│ 137  │ overflow       │ ba5c54d41839876a1a145420a7edf0ee9cf0eea1f24d57b4bc797d9125b8d0ef │
+│ 138  │ overflow       │ 4283a503f149a51b09e069a2b1bf7cf7dd0fd92783d71b1bee53914a7b838ed9 │
+│ 139  │ table-leaf     │ b84214635122e91fb75100a6d935786fb002bedbc4535d7e2dfe9b7a507dc7d0 │
+│ 140  │ overflow       │ 96e2cd05720136d0384e5ec79ec3a5157100e1d6e6980c4b189516fbd0f6a86c │
+│ 141  │ overflow       │ 787db4dc093cfc8ad6ded6b7e82482a21b84572f2da80c7e5b5c8cc971d65da8 │
+│ 142  │ overflow       │ 875c8b067fac66afcf8c9a958d1ae4897535fb08cd74aa90e935a22a8c7802f0 │
+│ 143  │ overflow       │ 2da5c6392c5500f4e0bcfb7f6f01fb91b160d6ead868ae2d830664e758b21fbb │
+│ 144  │ table-leaf     │ e173043bd290f8ded7aa15a968abac512a3fc0c5de3cf914475646d4f1bcd11e │
+│ 145  │ overflow       │ 645f01d7974adc719c5abcea988f44a96c91232d85f6af6f26bb7427cf147cd9 │
+│ 146  │ table-leaf     │ 232999b442843f030ab01ee02a9c1b529de85183ed1a3a956654b5bf0fa69adf │
+│ 147  │ overflow       │ c6c2eaf7a8cf228898658b1095e5d8432e4bf1e6b97c207e3fb02a5364e03bd8 │
+│ 148  │ overflow       │ 32d01b24c2c5d20dad20e84c5341a2c67389e85b2654f83adedc53dbabd72e35 │
+│ 149  │ table-leaf     │ bfc28ec86893abb9bc5b44eda41bdba963744e659485d5a74e3bcde7a5f5158c │
+│ 150  │ overflow       │ 1cf7cb226955104cf78d7e92d646b414ca576b7156535f9961543ff96c125e40 │
+│ 151  │ overflow       │ 7f9e9b145d1335574de859e7f21f6f430939b9286de85c93c64a1ef35012ee33 │
+│ 152  │ table-leaf     │ ae3c2642dacd1fc71aadd09f5933318a89c7a09ee4217060836ee8f8386c880e │
+│ 153  │ table-leaf     │ d2e52f7dfaf1ee997c3966b0e8f94e357a8700f87923650c2c0250e735868b3f │
+│ 154  │ overflow       │ 6baed52dc619ec51af512f078dc3a94e6df5d722bf2ad4f405eb99e80d6f581e │
+│ 155  │ overflow       │ 6013788ab488ebedf636362170e6c90eca3fb7efed38c6e04f56e652ed2f9909 │
+│ 156  │ table-leaf     │ eb71eba626a462ed55f68c03299f5e71201620fcbe3c4e98048f75708b93ffc7 │
+│ 157  │ table-leaf     │ f1415e89843d7b50ec128f8be3965d85efa1a3e547c5a0dbe2c659e57274f152 │
+│ 158  │ overflow       │ 939f128f7a957470606e7867f81d0bacbfc7cc8898778607fafdd1a3bec6a15c │
+│ 159  │ overflow       │ d5b9772cff3af4d364f3651f4502207e61763c26c585b9fa8f995deca0a77ec8 │
+│ 160  │ overflow       │ 70305b14df663528b9592d561c85c976f74d65571bb3acceb3d95ddb8cad78df │
+│ 161  │ overflow       │ 8aed8e506b72467da1a95f823a863f2a7b9f3c92026ac0389044945606db8575 │
+│ 162  │ table-leaf     │ b5c2bc6b4ca810c938c99c69af8e2e6697b4e080f313ae4d882c88ea99a6548d │
+│ 163  │ table-leaf     │ 81d2edf79ac8eefa90c0f5f7ad6d7e753b6b53f675abe0431c63038d24a53c45 │
+│ 164  │ overflow       │ 3a01461230c9643760562274b8fad32005a2351faf173a4dc7d76660a675c309 │
+│ 165  │ overflow       │ 20fd3f79abcdef139324d0a308b7174da51e2ee9508fec383a1655ba3dd792e7 │
+│ 166  │ table-leaf     │ 3605a1f6ed1917f4ea9b388d621cc9be26011ea8336bd5e0ad69220d0cd7d8db │
+│ 167  │ index-leaf     │ ad8ae738c43075cb8c49c8b62ea69eb8fb6224d0deab4c53379c4f3ef0d7c803 │
+│ 168  │ table-leaf     │ 900856304d8ad4d43446f715d96fc0be12b5fc344576ba4bc0980d1fb75971c9 │
+│ 169  │ overflow       │ 3cd1484621a6930deda2fd63d2be32072c15bac0807933bf28f8f19162d457b8 │
+│ 170  │ overflow       │ 7a2c6d554fbfc58aec2ceae45162d16225d83993e13aa57e1d3800af6ddc4d24 │
+│ 171  │ table-leaf     │ 25bf59c0709b6edbf627c221ccc7338337a4a9abaf723f4de4752e4f28f09bf4 │
+│ 172  │ overflow       │ c292b98a605b9531581d84d1412b1fedc4ba05cbfb5d7cf342864b4df789a0e1 │
+│ 173  │ overflow       │ 81929ae1a5c151c988ddb036210aa3975d422058eb73872d780ea0814c9c2afa │
+│ 174  │ overflow       │ c2a669aed711efcecde3ba1faa7b7a3c912a6705a92c767dabf0d32381962412 │
+│ 175  │ table-leaf     │ 9e6a00f61e695edf8ce07ce8c69603a755e814108b84779e3f21fc6614d2b6e5 │
+│ 176  │ overflow       │ 70a3c713eeb87a3b873bf5d032b21d679f9adb8a8c527f0af600017c843813a7 │
+│ 177  │ overflow       │ 812040bb47ff3134003e4e1da04f70eec0522ccacf08fde842cd722e4571ade5 │
+│ 178  │ overflow       │ 41770f11407c484eb54ca98bd72cb7f0f1328c5de8c0fcdf32f3045b6daa3d71 │
+│ 179  │ overflow       │ 4d6e7156e5210c3c810638264c46f8d0ed428cd3698b9be38641df055351a929 │
+│ 180  │ overflow       │ 36774019b141812d8bb2f1401a52c33efb19e3a32df6f39537c768214773476b │
+│ 181  │ overflow       │ 3621cd7ebfbf961a3ae3bda905453238cd837d97f7f1dfabb8506f53fa2316e6 │
+│ 182  │ overflow       │ b8edd5b7ed028935b68768b0accf7f5c6bface649d460ea7b3d79f2154c20803 │
+│ 183  │ table-leaf     │ 5d01dd4623fd4a750ce3e5f87e0f440b80311491e94f6b8b6c9e572db5429957 │
+│ 184  │ table-leaf     │ ea016b0904d23d14bb2fa62c036f7d8b2ab72727f2b60ba7b820d2b55d30b8ae │
+│ 185  │ overflow       │ 147612121f23e6007d1cf95d651f89ac9cbc2031f70e53cb3b2e8a860c8ad9d0 │
+│ 186  │ table-leaf     │ 3743d3e1ce7de8542889854bd07635e0db484b63b8fc4ba62018577d0d57a260 │
+│ 187  │ overflow       │ 5cd072ba58d0bef1f3f3487c3d651153cdecb877e4b435878ca5fa44bd563ad4 │
+│ 188  │ overflow       │ ac3e560ca6e7a95deb6051928ce624c2c780a3bcb2b7c22634f3e4be24c33cf9 │
+│ 189  │ overflow       │ 977213a029c072749990cd83d118d8eb01a1fd45fcecf7e0807c58698fb5337c │
+│ 190  │ table-leaf     │ 7c51f6f4da511db86b9b55b22893aff7e99dcd80cf7134ab9b92053303b88235 │
+│ 191  │ overflow       │ 674df96ffea07223102545c9083939726e035966a8c29873da38c13379dac5a6 │
+│ 192  │ overflow       │ a1dda57fb84ecd5b9bbeaa6fb5801ede1af7fb7b56fbc3772bc5936e43d0876b │
+│ 193  │ overflow       │ 0bb9d64731e39b27c628079e03c1439d9c6e3d6ef32c28cb6459f12cfc8129dc │
+│ 194  │ overflow       │ f2207c072673589a7c154fb192f515ea68a963a53d78cf49517b3b8539e0cadb │
+│ 195  │ table-leaf     │ c7208e06bd98746438e93f1ae7fb45155b5baab1c270ed342964ea1fa38e0592 │
+│ 196  │ overflow       │ 201d8f2bc00f73b32d62b428d247b8a56fcac19b1de078e75906e0bd9fd1e79e │
+│ 197  │ overflow       │ 80dd673f81bdf47ebe2e8819123cfc693afc052fa64be1d494005e4aa57596c0 │
+│ 198  │ overflow       │ 87d09f9c392d694fdda13788e46e84d6f03d733510d1537a1c8a7769d5fde29f │
+│ 199  │ overflow       │ 48a4c890d6966899da4b367e2a5ece906be9ad32dc9711c1035038e55560fdfa │
+│ 200  │ table-leaf     │ a9efcc50448876b41b2209921d713496d5ab111c48df306b000bc92b874ad353 │
+│ 201  │ overflow       │ 9cf34393c30f1156740d2ed575c1abbf6841852cd281524a99923a1da88d67a6 │
+│ 202  │ overflow       │ ede9cdcfc3289dfe634b55a17d6a868326d7c41929a5ccb5a5e3bf1036d65f3b │
+│ 203  │ table-leaf     │ 08d351b2c10fc9dab3e14ba46777aca4ce0fc934ac421f6215b9eb679ceb3a11 │
+│ 204  │ table-leaf     │ fa1a04e7ddf7118f43624a24a749e60975842ac6337474c9061bfb0e9fa44a90 │
+│ 205  │ overflow       │ 4ed0ea698b6d12687455d50e0b543c7516d81164ae67867f959bdd7e40547e38 │
+│ 206  │ table-leaf     │ 5cf13eaedd56113712759a8b058b8b3e636c1196e4f3ea5ccf7c5526beca43bb │
+│ 207  │ overflow       │ e6b89650492f6d2f49b2ea0d73ae5b07713522937b244fdd30c374b37b3f78df │
+│ 208  │ overflow       │ d3f153dbc7e7ce01491bd4dabd842617719dd562d961eccb5f00c91cea5772d7 │
+│ 209  │ table-leaf     │ 1cb112ddea905435efa8ea4ca7d2570c4bb5a6fb94d80e8d68fb2fdb5d79ce5a │
+│ 210  │ table-leaf     │ 897e54e68f312e2aa2edc958548d60456a558a5b0e456e52c5cacf4095d16580 │
+│ 211  │ overflow       │ 3b3706aafeb0b2c1b995302e3001910c857f9d086c21045e8cd08767106ba1f5 │
+│ 212  │ overflow       │ 6815b9e928bffcad27ff4a952ac5cdda584a0928c4341434fc7d92fe327c02be │
+│ 213  │ table-leaf     │ f8487727c0cd0a88e92bb202e6c92db12f71eeed692e2ce76529831af744962e │
+│ 214  │ overflow       │ 8dae397cea317c949b255ccd90f7ae29610ae219098fa5c429a1015a40dab220 │
+│ 215  │ overflow       │ 24ebaa59a26af623e3767de407269b9aefa2577b72d98f503fac15d955917e19 │
+│ 216  │ overflow       │ 44a8f5918fb867a2d919f3db0db8c443a754da0cda5efb998826024e3a36c05a │
+│ 217  │ overflow       │ 40a96f5f5ddfd323bef78fcdaddebc3a13e8d39e3a1841c10d8b359ee177c9b6 │
+│ 218  │ overflow       │ c6f12c1ed6acdfa1d3374c21ee425c7134ecbc01868633408e36609228e7dc3e │
+│ 219  │ table-leaf     │ 97a711c0dc20de2e6a34ce51f61ebf0aedb29e3b1a268982526816115b85eedd │
+│ 220  │ overflow       │ cdd31ed7c770fc1608d4ac32d291f30f867a28639b34488ac32ace07a95cf5c6 │
+│ 221  │ overflow       │ 00bea5b536dbdbd201729ed609ed925463cfb4b87588d5e5a0df8c43b7cf6d33 │
+│ 222  │ overflow       │ b414b6e822682648c2e8e29f84456cb700ee3a512e512309a1ca942fe6d2efae │
+│ 223  │ table-leaf     │ 0a0961052a04adc43a4549f5538499dd109c982a7724f32cfb1b27e31b9e7b0e │
+│ 224  │ overflow       │ fa7fb2c4f7c22de155dad918fe70990861571ff387933cc7b3adcf00c90d079d │
+│ 225  │ overflow       │ 115afee8ef26a376070491221cd33f49840a49a67d480c54c3133653c7227629 │
+│ 226  │ overflow       │ 9754ccc3bbb0a6ab9c7802b69d32a178faee6b9ed6b2d02003180b56dd08745d │
+│ 227  │ overflow       │ 6c29865d25e5796669f89d13e6478c2795f5d044eac2ee58f57d1fb1abdabe50 │
+│ 228  │ overflow       │ 3bff5c2e1be3bc6b9ae72cf82c7570ef6075a68c7ce06e923e3f723b5b102404 │
+│ 229  │ table-leaf     │ 8782ee7b6fce201a6c8b70a0b505889a6989265cee17eb319a86e670fd0998ce │
+│ 230  │ freelist-trunk │ c87a78226061b340db326b28249cf4d70558f57ee712591a70210e847f8e3f7e │
+│ 231  │ freelist-leaf  │ ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7 │
+│ 232  │ freelist-leaf  │ ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7 │
+│ 233  │ overflow       │ bd0dba7fcb0d77b4ec4a17e044f099ab20b87d8d32a12b865785bbe5f8cfcf06 │
+│ 234  │ overflow       │ 6cfbfc530bb4df138c6e21665fd52937a439052067246c57db1c8b558860c1c2 │
+│ 235  │ table-leaf     │ a48fe108915400cc05afc9b34ca6feb46a9b040b49afd633f45cef2152c59216 │
+│ 236  │ overflow       │ e568253890d7a9695f10ef88b5ffe111c5ffc441499e9245f15c8191a84b9de4 │
+│ 237  │ overflow       │ 0ec08eae5b32429eac790f8246de897a4535b2d9f60a51ae533f596c50281f9f │
+│ 238  │ table-leaf     │ c24df11ef4497f2d0672276394c9d3f67eebe3b9d9584d27da51a6d7b9713fa1 │
+│ 239  │ overflow       │ 80f767d0d279a9e7d99c8982e6f4dd09d972b430a80dada3f777025187fb977f │
+│ 240  │ overflow       │ aa93bed9b60983a91008131c9a10c81584ae4965359b434bfcf95ef460a22a70 │
+│ 241  │ overflow       │ 9359ca48c0108d0e5c44e6ab26a928326f078a46d1efcf0f799fc01d9b0ec7fc │
+│ 242  │ index-leaf     │ a1477703add342d21b8c339556803b964e8d9e3e478c63b8bbbd5430120c282b │
+│ 243  │ table-leaf     │ c0f6b1c2094fb08df1735df4ae0aec63b28c579867f4c337420bb1fbb3fce722 │
+│ 244  │ overflow       │ fb6a6b25d3fefc28db75adeffb88930587588f87221426e86e10867874da92bf │
+│ 245  │ table-leaf     │ 00bc00cd7e93f90137bff6e90a154914152dc9299b0821c99899ee7c00fa0aba │
+│ 246  │ overflow       │ 570986ec39ec913b852019c4a2695a6303f94dbf9d479eb0b23cfe9dc6e8afee │
+│ 247  │ table-leaf     │ 24293084e423ced4143675d4f2e02c18fe1d5c0f40acd80d672b219f66ffac8d │
+│ 248  │ overflow       │ 29b63daaa8287b7720f690ce5c4bda7efa76da8f40b58956034d9da23cc62056 │
+│ 249  │ table-leaf     │ 0f413743b990730eacfb64df4386633394ebd9790075700338c583b2d10403b1 │
+│ 250  │ overflow       │ 7184accfa8fe098c38a16bc9030f61dbbb74c852d0ee7087277a5736c27aed6d │
+│ 251  │ overflow       │ ceede5817f74dadd8a0691f264861423282366ae054c47dfa982cdbb14781d5d │
+│ 252  │ overflow       │ 1f2073e0d2e776181321daadb6669a0e197ef9ca6d103bcf94e84a758cc9beaa │
+│ 253  │ overflow       │ 427e0ce90b40a2bcfba0322802f4550898b3b8ed9d7076b3c7be944e87124f8b │
+│ 254  │ table-leaf     │ 1c9f1fcfef357551296e963e475d138653a8e0acb975f5c75cf953d87cd4cbd9 │
+│ 255  │ overflow       │ 8acaa7d09e431d93d9a6154f7fd7d089885c2b259aa5958ede44f9070f1eaf29 │
+│ 256  │ overflow       │ a77956d277cfc9febddb4904fa3c335d0599fc09ef1221bbdbcb312dcaee733d │
+│ 257  │ overflow       │ 3b9c2faae264b478d329daf0d3300571271de0c20043a2ae441d0b070eedfa0f │
+│ 258  │ table-leaf     │ 9bb2466c861ded02acd4106470c4bc8b1b465fa8b476033e3e2eb3465133ad00 │
+│ 259  │ table-leaf     │ 1b13dc75619b6e2f5f0a9ee32a619f95e9030874fbf5376433c7b480de3e2f3b │
+│ 260  │ table-leaf     │ e778d1107f06dded66181037839c530ccde3b75a9e0d17c4339140f569dd241c │
+│ 261  │ table-leaf     │ 7323ace1550498a42c3320cdde9df3efdd1d0ec312a012e55f0ec7346adeb07d │
+│ 262  │ overflow       │ 487a9bc24226973a0283e4d3cbb91d73503681f3a983b2c24082cae7bae37f16 │
+│ 263  │ overflow       │ a99d77b547c0e68761b258014ac7c528460b0411627d3ae501bcdd69496959af │
+│ 264  │ table-leaf     │ ca0bcc06007923846a5f28f669b60dc09681826ea74591f19bf6456d22310879 │
+│ 265  │ overflow       │ 89ee12580173f6765466613a75b5318cec32f679c5e4b09e43f1f56f3d032003 │
+│ 266  │ overflow       │ 0866cbbace434723e8da1512f24f6eb663235646c61412e2f88dea322743c892 │
+│ 267  │ overflow       │ e6ae8ae984a89238c365a8138d93b3b3dd0b2919b12856794f35652852852350 │
+│ 268  │ overflow       │ 07b5f98d5d313031a249f66f23e496a6bbec79da3013c3fb4bdfad5a7bc12ee0 │
+│ 269  │ table-leaf     │ b1a76d96595574cbf5e5445e90da4b831ffbee44931da0ad942e0cd6cd825db1 │
+│ 270  │ overflow       │ 991abeed9b2f89b4b29abcc92073e6dfb59497192f0b33ff7dcc4da79f80065d │
+└──────┴────────────────┴──────────────────────────────────────────────────────────────────┘
+
+── B. Rebuild from the capture alone and prove it equal (E1) ───────────
+
+B1. The rebuild: pages written in order, its sha256, what the recipe lookup
+says it is, and the integrity_check of SQLite.
+┌─────────────────────────┬───────────────┬───────────────┬───────────────────────┬─────────────────┐
+│         rebuilt         │ from_capture  │ pages_written │     recipe_lookup     │ integrity_check │
+├─────────────────────────┼───────────────┼───────────────┼───────────────────────┼─────────────────┤
+│ rebuilt/from-capture.db │ run-1/capture │ 270           │ step 30 (exact bytes) │ ok              │
+└─────────────────────────┴───────────────┴───────────────┴───────────────────────┴─────────────────┘
+
+B2. The rebuild against the original, and the manifest after step 29
+against the manifest after step 30. They differ first at page 1: the header
+changes on every recipe step.
+┌─────────────────────┬───────┬──────────────────────┬─────────────────┐
+│        name         │ equal │ first_differing_page │ differing_pages │
+├─────────────────────┼───────┼──────────────────────┼─────────────────┤
+│ original vs rebuilt │ true  │                      │ 0               │
+│ step 29 vs step 30  │ false │ 1                    │ 30              │
+└─────────────────────┴───────┴──────────────────────┴─────────────────┘
+
+The words of the library for each comparison:
+┌───────────────────────────────────────────────────────────────────────────────────────────┐
+│                                          result                                           │
+├───────────────────────────────────────────────────────────────────────────────────────────┤
+│ E1 bytes: equal (sha256 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74) │
+│ manifests differ: first differing page 1 (page image differs), 30 page(s) differ          │
+└───────────────────────────────────────────────────────────────────────────────────────────┘
+
+The sha256 of the rebuild, which is also the sha256 of the original:
+┌──────────────────────────────────────────────────────────────────┐
+│                              sha256                              │
+├──────────────────────────────────────────────────────────────────┤
+│ 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74 │
+└──────────────────────────────────────────────────────────────────┘
+
+── C. A damaged capture is refused, and the refusal names the page ─────
+
+Each row is a copy of the capture with one thing changed. The rebuild must
+refuse it with a message that contains the text in wanted, and must not write
+an output file.
+┌─────────┬──────────────────────────────────────────┬────────────────────────┬────────────────┐
+│ case_no │                  damage                  │         wanted         │ output_written │
+├─────────┼──────────────────────────────────────────┼────────────────────────┼────────────────┤
+│ C1      │ drop the manifest entry for page 100     │ page 100: missing      │ false          │
+│ C2      │ list page 50 twice (in place of page 51) │ page 50: listed twice  │ false          │
+│ C3      │ swap the entries for pages 120 and 121   │ page 121: out of order │ false          │
+│ C4      │ flip one byte in the image of page 200   │ capture page 200:      │ false          │
+│ C5      │ swap the images of pages 7 and 8         │ capture page 7:        │ false          │
+└─────────┴──────────────────────────────────────────┴────────────────────────┴────────────────┘
+
+The refusals:
+┌─────────┬───────────────────────────────────────────────────────────────────────────┐
+│ case_no │                                  refusal                                  │
+├─────────┼───────────────────────────────────────────────────────────────────────────┤
+│ C1      │ manifest entry 100: page 100: missing (entry 100 lists page 101)          │
+│ C2      │ manifest entry 51: page 50: listed twice (entries 50 and 51)              │
+│ C3      │ manifest entry 120: page 121: out of order (entry 120 should be page 120) │
+│ C4      │ capture page 200: image sha256 does not match the manifest                │
+│ C5      │ capture page 7: image sha256 does not match the manifest                  │
+└─────────┴───────────────────────────────────────────────────────────────────────────┘
+
+── D. A database that is not at rest is refused ────────────────────────
+
+Its file alone is stale or torn. Each scenario starts a child process that
+leaves the database not at rest and exits with status 3 without closing
+its connection.
+
+D1. WAL mode: the child commits one UPDATE (account 1 gains 1000). The
+commit lives in the -wal, so the database file alone is stale.
+┌─────┬─────────────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────┐
+│ seq │                     observation                     │                                 value                                  │
+├─────┼─────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+│ 1   │ child exit status                                   │ 3                                                                      │
+│ 2   │ side files after the child                          │ -wal 4152 bytes, -shm 32768 bytes                                      │
+│ 3   │ capture                                             │ database is not at rest: r.db: -wal holds 4152 bytes of frames not yet │
+│     │                                                     │  checkpointed into the database file                                   │
+│ 4   │ database file alone: sha256 unchanged by the commit │ true                                                                   │
+│ 5   │ database file alone: account 1 balance              │ 43047                                                                  │
+│ 6   │ SQLite with the -wal: account 1 balance             │ 44047                                                                  │
+│ 7   │ side files after the last close                     │ no side files                                                          │
+│ 8   │ capture after the checkpoint: pages                 │ 60                                                                     │
+│ 9   │ capture after the checkpoint: manifest sha256       │ 2a17d23aa48e660bf7431827e6a0aa391794544f201166e0cd729508dc4431fc       │
+└─────┴─────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────┘
+
+D2. Rollback mode: the child sets cache_size=10, updates every document body
+in one transaction, which spills dirty pages to the file, and exits before
+COMMIT. The file alone holds part of an uncommitted transaction.
+┌─────┬────────────────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────┐
+│ seq │                      observation                       │                                 value                                  │
+├─────┼────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+│ 1   │ child exit status                                      │ 3                                                                      │
+│ 2   │ side files after the child                             │ -journal 203312 bytes                                                  │
+│ 3   │ capture                                                │ database is not at rest: r.db: hot -journal (203312 bytes with a live  │
+│     │                                                        │ header): a transaction was interrupted and the next open will roll it  │
+│     │                                                        │ back                                                                   │
+│ 4   │ database file alone: changed by the spill              │ true                                                                   │
+│ 5   │ database file alone: documents                         │ 17 rows, 15 bodies all zero                                            │
+│ 6   │ SQLite with the hot journal (rolls it back): documents │ 17 rows, 0 bodies all zero                                             │
+│ 7   │ side files after the last close                        │ no side files                                                          │
+│ 8   │ capture after the rollback: pages                      │ 60                                                                     │
+└─────┴────────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  two runs of the recipe give manifests identical line for line
+B  ✓  sha256 of the rebuild equals sha256 of the original
+B  ✓  the rebuild is the recipe's state after step 30, byte for byte
+B  ✓  SQLite opens the rebuild and integrity_check returns ok
+B  ✓  opening the rebuild with SQLite and closing it changed nothing and left no side files
+B  ✓  the manifest comparison names the first differing page (page 1: the header changes on every recipe step)
+C  ✓  C1: the rebuild is refused naming "page 100: missing", and no output file is written
+C  ✓  C2: the rebuild is refused naming "page 50: listed twice", and no output file is written
+C  ✓  C3: the rebuild is refused naming "page 121: out of order", and no output file is written
+C  ✓  C4: the rebuild is refused naming "capture page 200:", and no output file is written
+C  ✓  C5: the rebuild is refused naming "capture page 7:", and no output file is written
+D  ✓  D1: the capture is refused: the -wal holds committed frames
+D  ✓  D1: a page capture taken from the file alone would have lost the committed UPDATE
+D  ✓  D1: once at rest, the capture includes the UPDATE (the file changed at the checkpoint)
+D  ✓  D2: the capture is refused: a hot -journal exists
+D  ✓  D2: the file alone holds part of an uncommitted transaction; a capture of it would be torn
+D  ✓  D2: after SQLite rolled the hot journal back, the file is byte-identical to its state before the transaction
+
+17 of 17 claims hold
+
+Experiment verdict: MANIFEST OK
 ```
 
 #### Reading the evidence
 
-- **Lines 4–284 (Part A: deterministic capture and full manifest).** Two independent builds of R0 (`run-1/r0.db` and `run-2/r0.db`) each capture 270 pages (`pages.bin` = `1,105,920` bytes = `270 * 4096`) and produce the exact same manifest digest `8d9ad6e1251dfbbe…f523`. Notice lines 243–244 of the evidence: freelist leaves 231 and 232 share the identical SHA-256 `ad7facb2586fc6e9…8892ca7`—the hash of 4,096 zero bytes—because the recipe sets `secure_delete=ON`, causing `freePage2` to zero freed pages.
-- **Lines 286–297 (Part B: verified E1 rebuild and step diff).** `capture.Rebuild` writes `rebuilt/from-capture.db` from `run-1/capture` alone. `equal.CompareFiles` reports `E1 bytes: equal (sha256 24aa158fdf713808…)`, `recipe.MatchStep` identifies it as `step 30 (exact bytes)`, `PRAGMA integrity_check` returns `ok`, and opening and closing the rebuild leaves its SHA-256 unchanged with no sidecar files. Comparing the manifests of step 29 and step 30 pinpoints `first differing page 1 (page image differs), 30 page(s) differ`.
-- **Lines 299–314 (Part C: five tampered captures) and Lines 316–334 (Part D: not-at-rest refusals).** Analyzed in Sections 6.2 and 6.3 below.
+- **Section A (Part A: deterministic capture and full manifest).** Two independent builds of R0 (`run-1/r0.db` and `run-2/r0.db`) each capture 270 pages (`pages.bin` = `1,105,920` bytes = `270 * 4096`) and produce the exact same manifest digest `8d9ad6e1251dfbbe…f523`. Notice the rows for pages 231 and 232 in A5: freelist leaves 231 and 232 share the identical SHA-256 `ad7facb2586fc6e9…8892ca7`—the hash of 4,096 zero bytes—because the recipe sets `secure_delete=ON`, causing `freePage2` to zero freed pages.
+- **Section B (Part B: verified E1 rebuild and step diff).** `capture.Rebuild` writes `rebuilt/from-capture.db` from `run-1/capture` alone. `equal.CompareFiles` reports `E1 bytes: equal (sha256 24aa158fdf713808…)`, `recipe.MatchStep` identifies it as `step 30 (exact bytes)`, `PRAGMA integrity_check` returns `ok`, and opening and closing the rebuild leaves its SHA-256 unchanged with no sidecar files. Comparing the manifests of step 29 and step 30 pinpoints `first differing page 1 (page image differs), 30 page(s) differ`.
+- **Section C (Part C: five tampered captures) and section D (Part D: not-at-rest refusals).** Analyzed in Sections 6.2 and 6.3 below.
 
 ---
 

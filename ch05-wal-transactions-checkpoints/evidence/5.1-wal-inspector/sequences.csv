@@ -1,0 +1,4 @@
+part,run,synchronous,wal_bytes,frames,commits,same_sequence,first_difference
+B,run 2,FULL,387312,94,5,true,0
+C,sync-normal,NORMAL,387312,94,5,true,0
+C,sync-off,OFF,387312,94,5,true,0

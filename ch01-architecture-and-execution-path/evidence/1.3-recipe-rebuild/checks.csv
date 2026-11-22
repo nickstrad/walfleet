@@ -1,0 +1,21 @@
+seq,part,status,claim
+1,A,ok,two builds of the recipe in different directories under different names are byte-identical
+2,A,ok,the per-step hash lists of the two runs are identical (31 states)
+3,A,ok,"every step leaves a different file, so a hash names exactly one step"
+4,A,ok,recipe.StepHashes (the cached list later chapters use) equals the list just built
+5,A,ok,recipe.MatchStep names the step a database equals
+6,A,ok,the rollback-mode recipe also rebuilds byte for byte at every step
+7,B,ok,SQL random() makes two runs differ
+8,B,ok,"current_timestamp makes runs differ once the wall clock's second changes (its resolution is one second, so two fast runs can still match)"
+9,B,ok,FINDING: an unordered INSERT ... SELECT run twice on the same build with the same plan gives identical files
+10,B,ok,an unordered INSERT ... SELECT changes the file when the scan order changes; ORDER BY removes the dependence
+11,B,ok,"FINDING: in WAL mode on one connection with secure_delete=ON, different transaction batches give identical files"
+12,B,ok,"with secure_delete=OFF different batches differ, and only in bytes no cell uses (stale content left in unallocated space, freeblocks or freelist pages)"
+13,B,ok,"in rollback mode different batches differ, and with secure_delete=ON only in the change counter (it counts commits)"
+14,B,ok,secure_delete=FAST is not ON: on the same history FAST leaves old bytes in the unused space of freelist pages that ON zeroes
+15,B,ok,rowid assignment past the maximum rowid makes two runs differ
+16,C,ok,"FINDING: in WAL mode the number of connection sessions changes the file, and only the change counter (bytes 24-27 and 92-95)"
+17,C,ok,in rollback mode the number of connection sessions does not change the file
+18,C,ok,in WAL mode only a commit that writes page 1 writes the change counter: sessions whose commits never touch page 1 leave the file identical
+19,D,ok,"WAL mode: a rolled-back SAVEPOINT changes the committed file even with secure_delete=ON: reused freelist leaf pages keep the rolled-back bytes, and page 1's change counter moves"
+20,D,ok,rollback mode: a rolled-back SAVEPOINT leaves the rolled-back bytes in reused freelist leaf pages (secure_delete=ON does not clear them)

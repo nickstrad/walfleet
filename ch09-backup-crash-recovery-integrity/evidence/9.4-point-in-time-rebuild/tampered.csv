@@ -1,0 +1,4 @@
+seq,damage,restore_to,refused_while_planning,error
+1,segment 7 deleted,9,true,segment chain is broken: no segment starts at position 7
+2,segments 10 and 11 swapped,11,true,"segment chain is broken: the segment starting at position 10 is damaged: malformed walship object: key names first position 10, metadata says 11"
+3,one byte of segment 13 flipped,13,true,segment chain is broken: the segment starting at position 13 is damaged: malformed walship object: body sha256 does not match its metadata

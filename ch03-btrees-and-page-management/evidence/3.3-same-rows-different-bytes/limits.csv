@@ -1,0 +1,4 @@
+seq,case_name,dbhash_sources_equal,captures_equal
+1,tables created in another order,true,false
+2,a table created and dropped in the history,true,
+3,an index created before vs after the rows,true,

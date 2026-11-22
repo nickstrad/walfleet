@@ -1,0 +1,6 @@
+seq,case_name,observed,value
+1,VACUUM INTO output,header bytes 18-19,1 1
+2,"journal_mode=persist set on a new file, reopened",journal_mode,delete
+3,"PRAGMA default_cache_size=777, then a copy opened",default_cache_size,777
+4,"PRAGMA default_cache_size=777, then a copy opened",cache_size,777
+5,"PRAGMA default_cache_size=777, then a copy opened",header bytes 48-51,777

@@ -1,0 +1,4 @@
+mode,pages_created,pages_after_delete,freelist_after_delete,pages_after_incremental_vacuum
+NONE,52,52,37,52
+FULL,53,16,0,16
+INCREMENTAL,53,53,37,16

@@ -1,24 +1,90 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/9.3
-original: recipe step 12, 118 pages, manifest sha256 5a2143ca7f8bc869; integrity_check ok, quick_check ok
-check ok: every check passes on the undamaged file
 
-one byte flipped in                  | integrity_check          | quick_check              | E3 logical hash            | page manifest
-b-tree page header (cell count)      | 2 problem(s), the fir... | *** in database main ... | differs (2 difference(s))  | page(s) [26] differ
-    where: page 26 (events leaf), header byte 4
-    integrity_check said: 2 problem(s), the first: Fragmentation of 46 bytes reported as 0 on page 26
-check ok: b-tree page header (cell count): caught by integrity_check true, quick_check true, E3 true, manifest true
-unindexed column (events.note)       | ok                       | ok                       | differs (1 difference(s))  | page(s) [27] differ
-    where: page 27, row 76, letter 'q' -> 'Q'
-    integrity_check said: ok
-check ok: unindexed column (events.note): caught by integrity_check false, quick_check false, E3 true, manifest true
-indexed column (events.account_id)   | 1 problem(s), the fir... | ok                       | differs (2 difference(s))  | page(s) [27] differ
-    where: page 27, row 76, account_id 8 -> 9
-    integrity_check said: 1 problem(s), the first: row 66 missing from index events_by_account
-check ok: indexed column (events.account_id): caught by integrity_check true, quick_check false, E3 true, manifest true
-freelist leaf page                   | ok                       | ok                       | equal                      | page(s) [24] differ
-    where: page 24, byte 2048
-    integrity_check said: ok
-check ok: freelist leaf page: caught by integrity_check false, quick_check false, E3 false, manifest true
+════════════════════════════════════════════════════════════════════════
+  9.3  What does integrity_check not catch?
+════════════════════════════════════════════════════════════════════════
 
-INTEGRITY CHECK LIMITS OK
+The experiment builds the recipe database to one step, then makes four
+copies, each with one byte flipped in a different place. Every file is
+checked four ways: PRAGMA integrity_check, PRAGMA quick_check, the E3
+logical hash (every row and schema object), and the per-page SHA-256
+manifest of Chapter 2 taken from the original. No check changes the file.
+
+── A. The undamaged file ───────────────────────────────────────────────
+
+A1. The original, and the manifest every copy is compared with:
+┌─────────────┬───────┬──────────────────┐
+│ recipe_step │ pages │ manifest_sha256  │
+├─────────────┼───────┼──────────────────┤
+│ 12          │ 118   │ 5a2143ca7f8bc869 │
+└─────────────┴───────┴──────────────────┘
+
+A2. Every check passes on it (caught = false everywhere, no problem lines):
+┌─────────────┬──────────────────┬──────────────┬───────────┬─────────────────┬───────────────┐
+│    file     │ caught_integrity │ caught_quick │ caught_e3 │ caught_manifest │ problem_lines │
+├─────────────┼──────────────────┼──────────────┼───────────┼─────────────────┼───────────────┤
+│ original.db │ false            │ false        │ false     │ false           │ 0             │
+└─────────────┴──────────────────┴──────────────┴───────────┴─────────────────┴───────────────┘
+
+── B. One byte flipped ─────────────────────────────────────────────────
+
+B1. The four places. The cell count is B-tree structure; the note and
+    account_id are row data, and only account_id has an index; the
+    freelist page belongs to no table at all.
+┌─────┬────────────────────────────────────┬──────────────────────────────────────┬─────────────┬──────────┐
+│ seq │                site                │               location               │ file_offset │ xor_mask │
+├─────┼────────────────────────────────────┼──────────────────────────────────────┼─────────────┼──────────┤
+│ 1   │ b-tree page header (cell count)    │ page 26 (events leaf), header byte 4 │ 102404      │ 0x01     │
+│ 2   │ unindexed column (events.note)     │ page 27, row 76, letter 'q' -> 'Q'   │ 110538      │ 0x20     │
+│ 3   │ indexed column (events.account_id) │ page 27, row 76, account_id 8 -> 9   │ 110527      │ 0x01     │
+│ 4   │ freelist leaf page                 │ page 24, byte 2048                   │ 96256       │ 0xff     │
+└─────┴────────────────────────────────────┴──────────────────────────────────────┴─────────────┴──────────┘
+
+B2. Which check caught which flip, measured against expected. Only the
+    page manifest catches all four. integrity_check misses the unindexed
+    column and the freelist page; quick_check catches only the header.
+┌────────────────────────────────────┬─────────────────┬─────────────┬────────────┬──────────┬─────────────┐
+│                site                │ integrity_check │ quick_check │ e3_logical │ manifest │ as_expected │
+├────────────────────────────────────┼─────────────────┼─────────────┼────────────┼──────────┼─────────────┤
+│ b-tree page header (cell count)    │ true            │ true        │ true       │ true     │ true        │
+│ unindexed column (events.note)     │ false           │ false       │ true       │ true     │ true        │
+│ indexed column (events.account_id) │ true            │ false       │ true       │ true     │ true        │
+│ freelist leaf page                 │ false           │ false       │ false      │ true     │ true        │
+└────────────────────────────────────┴─────────────────┴─────────────┴────────────┴──────────┴─────────────┘
+
+B3. How much each check reported. The freelist flip changes no row, schema
+    object or pragma, so the E3 hash sees no difference; only the page
+    manifest sees it.
+┌────────────────────────────────────┬────────────────────┬────────────────┬────────────────┬───────────────────────┐
+│                site                │ integrity_problems │ quick_problems │ e3_differences │ manifest_pages_differ │
+├────────────────────────────────────┼────────────────────┼────────────────┼────────────────┼───────────────────────┤
+│ b-tree page header (cell count)    │ 2                  │ 1              │ 2              │ 26                    │
+│ unindexed column (events.note)     │ 0                  │ 0              │ 1              │ 27                    │
+│ indexed column (events.account_id) │ 1                  │ 0              │ 2              │ 27                    │
+│ freelist leaf page                 │ 0                  │ 0              │ 0              │ 24                    │
+└────────────────────────────────────┴────────────────────┴────────────────┴────────────────┴───────────────────────┘
+
+B4. What the two pragmas said, problem by problem. integrity_check reads
+    every index against its table, so it finds the row missing from
+    events_by_account; quick_check skips that comparison.
+┌────────────────────────────────────┬─────────────────┬────────────────────────────────────────────────────┐
+│                site                │     pragma      │                      problem                       │
+├────────────────────────────────────┼─────────────────┼────────────────────────────────────────────────────┤
+│ b-tree page header (cell count)    │ integrity_check │ Fragmentation of 46 bytes reported as 0 on page 26 │
+│ b-tree page header (cell count)    │ integrity_check │ wrong # of entries in index events_by_account      │
+│ b-tree page header (cell count)    │ quick_check     │ Fragmentation of 46 bytes reported as 0 on page 26 │
+│ indexed column (events.account_id) │ integrity_check │ row 66 missing from index events_by_account        │
+└────────────────────────────────────┴─────────────────┴────────────────────────────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  every check passes on the undamaged file
+B  ✓  b-tree page header (cell count): caught by integrity_check true, quick_check true, E3 true, manifest true
+B  ✓  unindexed column (events.note): caught by integrity_check false, quick_check false, E3 true, manifest true
+B  ✓  indexed column (events.account_id): caught by integrity_check true, quick_check false, E3 true, manifest true
+B  ✓  freelist leaf page: caught by integrity_check false, quick_check false, E3 false, manifest true
+
+5 of 5 claims hold
+
+Experiment verdict: INTEGRITY CHECK LIMITS OK

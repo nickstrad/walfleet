@@ -1,0 +1,5 @@
+seq,name,sha256,integrity,user_version,matched_step,exact
+1,rebuilt from the page capture,1558477d01bc85e9ec8dfa29e63f245bc427ee31a6da515ffc3f75a892579529,ok,8,8,false
+2,"reference (recipe to step 8 on one connection, then checkpoint)",1558477d01bc85e9ec8dfa29e63f245bc427ee31a6da515ffc3f75a892579529,ok,8,8,false
+3,rebuilt from the file + -wal copy,fbe88f844fab4985cedb193ca311835fca63350604ead06e0cd8a9d7ee1f7447,ok,13,13,false
+4,the database-file copy on its own,04c300a81ff1920094a1a51df748104b8b035f254c226db0fc66898b2649273e,"10 problem(s), the first: Freelist: freelist leaf count too big on page 35",5,,false

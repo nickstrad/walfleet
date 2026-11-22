@@ -1,0 +1,5 @@
+seq,location,rows_readable,rows_total
+1,-wal after the DELETE,40,40
+2,-wal after wal_checkpoint(PASSIVE),40,40
+3,-wal after wal_checkpoint(TRUNCATE),0,40
+4,database file at rest,0,40

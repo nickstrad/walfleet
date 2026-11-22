@@ -16,6 +16,9 @@
 // measured write-loop window (redrawing if a kill lands after the last reply).
 // Part C runs the ack-before-put mutant as a self-test to prove the checker
 // catches an unshipped store-durable acknowledgement.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 10.2
 package main
 
 import (
@@ -31,6 +34,7 @@ import (
 
 	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/lab"
 	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 )
@@ -38,7 +42,6 @@ import (
 const packagePath = "ch10-multi-database-platform-capstone/experiments/10.2-acknowledged-writes-survive"
 
 var (
-	failures     []string
 	databases    = flag.Int("databases", 4, "databases the node owns")
 	writes       = flag.Int("writes", 12, "writes in each killed run, round robin over the databases")
 	syscallKills = flag.Int("syscall-kills", 4, "kill points at fsync per mode (Linux, strace)")
@@ -60,13 +63,40 @@ func init() {
 	flag.BoolVar(&process.AckBeforePut, "ack-before-put", false, "internal: the mutant node")
 }
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 10.2" runs both.
+// part labels the rows and claims written while a part runs.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		settings, parts, uninterrupted, fsyncKills, randomKills, recovery, violations, selfTest, problems, infoRun, infoWriteLoops, infoRandomKills *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	settingSeq int
+)
+
+func openTables() {
+	tables.settings = set.Table("settings", "seq", "name", "value")
+	tables.parts = set.Table("parts", "part", "name", "ran", "note")
+	tables.uninterrupted = set.Table("uninterrupted", "part", "mode", "how", "commands", "acknowledged", "command_thread_fsyncs", "exit_code")
+	tables.fsyncKills = set.Table("fsync_kills", "mode", "kill_no", "at_fsync", "of_fsyncs", "file", "killed", "during_command_no", "during_command", "acknowledged", "reopened")
+	tables.randomKills = set.Table("random_kills", "mode", "kill_no", "in_flight", "violations")
+	tables.recovery = set.Table("recovery", "part", "mode", "kill_no", "database", "acknowledged_version", "reopened", "integrity", "recovered_version", "recovered_state")
+	tables.violations = set.Table("violations", "part", "mode", "kill_no", "line")
+	tables.selfTest = set.Table("self_test", "reply", "acknowledged")
+	tables.problems = set.Table("problems", "seq", "kind", "line")
+	tables.infoRun = set.Table("info_run", "name", "value")
+	tables.infoWriteLoops = set.Table("info_write_loops", "mode", "writes", "elapsed_ms", "acknowledged")
+	tables.infoRandomKills = set.Table("info_random_kills", "mode", "kill_no", "draw", "delay_ms", "acknowledged", "reopened", "recovered_versions", "acknowledged_versions")
+}
+
+func setting(name string, value any) {
+	settingSeq++
+	tables.settings.Row(settingSeq, name, value)
+}
+
+func check(ok bool, claim string) {
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -239,7 +269,27 @@ func (x *experiment) versions(o *outcome) (string, string) {
 		recovered = append(recovered, fmt.Sprint(o.recovered[id].UserVersion))
 		acked = append(acked, fmt.Sprint(o.acked[id]))
 	}
-	return strings.Join(recovered, ","), strings.Join(acked, ",")
+	return strings.Join(recovered, " "), strings.Join(acked, " ")
+}
+
+// recordRecovery writes what each database held after the recovery of one
+// killed run, and the violations the recovery found.
+func (x *experiment) recordRecovery(mode node.AckMode, kill int, o *outcome) {
+	for _, id := range x.ids {
+		integrity, reopened := o.integrity[id]
+		var state, version any
+		if recovered, ok := o.recovered[id]; ok {
+			state, version = recovered.Match, recovered.UserVersion
+		}
+		tables.recovery.Row(part, mode, kill, id, o.acked[id], reopened, integrity, version, state)
+	}
+	x.recordViolations(mode, kill, o)
+}
+
+func (x *experiment) recordViolations(mode node.AckMode, kill int, o *outcome) {
+	for _, v := range o.violations {
+		tables.violations.Row(part, mode, kill, v)
+	}
 }
 
 func killedFile(result *trace.Result) string {
@@ -271,8 +321,8 @@ func fsyncsByThread(result *trace.Result) (int, int, int) {
 func (x *experiment) syscallKills(mode node.AckMode) {
 	uninterrupted, base := x.traced(mode, nil)
 	_, syncs, elsewhere := fsyncsByThread(uninterrupted)
-	fmt.Printf("%s, uninterrupted: %d commands, %d acknowledged, %d fsync calls on the node's command thread (the process exits at the end of its input without closing)\n", mode, base.replies, base.acks, syncs)
-	fmt.Printf("INFO: fsync calls on other threads: %d\n", elsewhere)
+	tables.uninterrupted.Row(part, mode, "strace, not killed", base.replies, base.acks, syncs, uninterrupted.ExitCode)
+	tables.infoRun.Row(fmt.Sprintf("%s: fsync calls on other threads", mode), elsewhere)
 	check(uninterrupted.ExitCode == 0 && base.acks == *writes && elsewhere == 0, fmt.Sprintf("%s: the uninterrupted run acknowledges all %d writes and every fsync runs on the command thread", mode, *writes))
 	violations, killed := 0, 0
 	for i := range *syscallKills {
@@ -282,16 +332,12 @@ func (x *experiment) syscallKills(mode node.AckMode) {
 			killed++
 		}
 		x.recover(mode, o)
-		recovered, acked := x.versions(o)
-		during := "after the last command"
+		var duringNo, during any
 		if o.replies < *writes {
-			during = fmt.Sprintf("during command %d (%s)", o.replies+1, x.script(mode)[o.replies])
+			duringNo, during = o.replies+1, x.script(mode)[o.replies]
 		}
-		fmt.Printf("%s, kill at fsync %d of %d (of %s) %s: %d acknowledged; reopened %d of %d; recovered user_version %s; acknowledged %s\n",
-			mode, when, syncs, killedFile(result), during, o.acks, o.reopened, len(x.ids), recovered, acked)
-		for _, v := range o.violations {
-			fmt.Println("  violation: " + v)
-		}
+		tables.fsyncKills.Row(mode, i+1, when, syncs, killedFile(result), result.Killed, duringNo, during, o.acks, o.reopened)
+		x.recordRecovery(mode, i+1, o)
 		violations += len(o.violations)
 	}
 	check(killed == *syscallKills, fmt.Sprintf("%s: strace killed the node at each of the %d fsync kill points", mode, *syscallKills))
@@ -302,25 +348,30 @@ const drawsPerRandomKill = 5
 
 func (x *experiment) randomTimeKills(mode node.AckMode, rng *rand.Rand) {
 	full, elapsed := x.randomKill(mode, time.Hour)
-	fmt.Printf("INFO: %s, the write loop of an unkilled interactive run of %d writes took %s (%d acknowledged)\n", mode, *writes, elapsed.Round(time.Millisecond), full.acks)
+	tables.uninterrupted.Row(part, mode, "interactive, not killed", full.replies, full.acks, nil, nil)
+	tables.infoWriteLoops.Row(mode, *writes, elapsed.Milliseconds(), full.acks)
 	violations, inFlight := 0, 0
 	for i := range *randomKills {
+		killViolations, landed := 0, false
 		for draw := 1; draw <= drawsPerRandomKill; draw++ {
 			delay := time.Duration(rng.Int64N(int64(elapsed)))
 			o, _ := x.randomKill(mode, delay)
 			x.recover(mode, o)
 			recovered, acked := x.versions(o)
-			fmt.Printf("INFO: %s, random kill %d (draw %d) after %s: %d acknowledged; reopened %d; recovered %s; acknowledged %s\n", mode, i+1, draw, delay.Round(time.Millisecond), o.acks, o.reopened, recovered, acked)
-			for _, v := range o.violations {
-				fmt.Println("  violation: " + v)
-			}
-			violations += len(o.violations)
+			tables.infoRandomKills.Row(mode, i+1, draw, delay.Milliseconds(), o.acks, o.reopened, recovered, acked)
+			x.recordViolations(mode, i+1, o)
+			killViolations += len(o.violations)
 			// Every draw is recovered and checked; redraw up to drawsPerRandomKill
 			// if the timer fired after all writes had already replied.
 			if o.replies < *writes {
-				inFlight++
+				landed = true
 				break
 			}
+		}
+		tables.randomKills.Row(mode, i+1, landed, killViolations)
+		violations += killViolations
+		if landed {
+			inFlight++
 		}
 	}
 	check(full.acks == *writes, fmt.Sprintf("%s: an interactive run that is not killed acknowledges all %d writes", mode, *writes))
@@ -329,7 +380,8 @@ func (x *experiment) randomTimeKills(mode node.AckMode, rng *rand.Rand) {
 }
 
 func (x *experiment) selfTest() {
-	fmt.Println("\n== C. self-test: a node that acknowledges store-durable writes before the segment put ==")
+	part = "C"
+	tables.parts.Row(part, "self-test: a node that acknowledges store-durable writes before the segment put", true, nil)
 	x.setup()
 	config := x.env.Config("a", "")
 	config.AckBeforePut = true
@@ -341,15 +393,13 @@ func (x *experiment) selfTest() {
 	if err != nil {
 		fatal("mutant write", err)
 	}
-	fmt.Println("  " + reply.Line)
 	p.Signal()
 	p.Reap()
 	o := newOutcome()
 	x.record(o, []string{reply.Line})
 	x.recover(node.StoreDurable, o)
-	for _, v := range o.violations {
-		fmt.Println("  violation: " + v)
-	}
+	tables.selfTest.Row(reply.Line, o.acks)
+	x.recordRecovery(node.StoreDurable, 1, o)
 	check(o.acks == 1 && len(o.violations) == 1, "self-test: the checker finds the store-durable acknowledgement the store never received")
 }
 
@@ -382,42 +432,66 @@ func main() {
 		fatal("work directory", err)
 	}
 	defer env.Close()
+	set = results.MustOpen(env.Work)
+	openTables()
+	// env.Reset empties env.Work before every run, so the node works in a
+	// subdirectory and the tables in env.Work/results survive.
+	env.Work = filepath.Join(env.Work, "node")
+	env.Process.Work = env.Work
+	if err := os.MkdirAll(env.Work, 0o755); err != nil {
+		fatal("work directory", err)
+	}
 	x := &experiment{env: env, ids: lab.Ids("db", *databases)}
 	fmt.Printf("INFO: store %s, work directory %s\n", store.Endpoint, env.ShownWork())
-	fmt.Printf("store: bucket %s, prefix %s; one node owns %d databases and keeps at most %d open; each killed run sends %d writes round robin; settings %s\n",
-		store.Bucket, store.Prefix, *databases, process.Capacity, *writes, node.PlatformSettings())
-	fmt.Println("recovery: local-durable restarts the node on its own files; store-durable deletes the node's directory first and rebuilds every database from the store alone")
+	tables.infoRun.Row("store endpoint", store.Endpoint)
+	tables.infoRun.Row("work directory", env.ShownWork())
+	setting("bucket", store.Bucket)
+	setting("prefix", store.Prefix)
+	setting("databases", *databases)
+	setting("open_databases", process.Capacity)
+	setting("writes_per_run", *writes)
+	setting("fsync_kill_points_per_mode", *syscallKills)
+	setting("random_kills_per_mode", *randomKills)
+	setting("random_seed", *seed)
 	if *mutant != "" {
-		fmt.Printf("mutant: %s\n", *mutant)
+		setting("mutant", *mutant)
+	}
+	for _, pragma := range strings.Fields(node.PlatformSettings().String()) {
+		name, value, _ := strings.Cut(pragma, "=")
+		setting(name, value)
 	}
 	modes := []node.AckMode{node.LocalDurable, node.StoreDurable}
-	fmt.Println("\n== A. kills at a chosen fsync (strace) ==")
+	part = "A"
 	if trace.Supported && !*portable {
+		tables.parts.Row(part, "kills at a chosen fsync (strace)", true, nil)
 		for _, mode := range modes {
 			x.syscallKills(mode)
 		}
 	} else {
-		fmt.Println(trace.LinuxOnlyMessage("killing the node at a chosen fsync with strace", packagePath))
+		notice := trace.LinuxOnlyMessage("killing the node at a chosen fsync with strace", packagePath)
+		fmt.Println(notice)
+		tables.parts.Row(part, "kills at a chosen fsync (strace)", false, notice)
 	}
-	fmt.Println("\n== B. kills at a random time (portable) ==")
+	part = "B"
+	tables.parts.Row(part, "kills at a random time (portable)", true, nil)
 	rng := rand.New(rand.NewPCG(*seed, 102))
 	for _, mode := range modes {
 		x.randomTimeKills(mode, rng)
 	}
 	x.selfTest()
-	fmt.Println()
-	for _, problem := range env.Tracker.Problems {
-		fmt.Println("problem: " + problem)
-	}
-	for _, line := range env.Tracker.OverBounds {
-		fmt.Println("over bounds: " + line)
+	part = "D"
+	seq := 0
+	for _, kind := range []struct {
+		name  string
+		lines []string
+	}{{"problem", env.Tracker.Problems}, {"over bounds", env.Tracker.OverBounds}} {
+		for _, line := range kind.lines {
+			seq++
+			tables.problems.Row(seq, kind.name, line)
+		}
 	}
 	check(len(env.Tracker.Problems) == 0, "no node reported a problem")
 	check(len(env.Tracker.OverBounds) == 0 && env.Tracker.Replies > 0, "after every command of every node process the descriptors and memory stayed within the standing bounds")
-	fmt.Printf("INFO: %d node replies carried a bounds check\n", env.Tracker.Replies)
-	if len(failures) > 0 {
-		fmt.Printf("\n%d check(s) FAILED\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("\nall checks passed")
+	tables.infoRun.Row("node replies that carried a bounds check", env.Tracker.Replies)
+	set.Finish("ACKNOWLEDGED WRITES SURVIVE")
 }

@@ -1,0 +1,7 @@
+page,role
+1,table-leaf
+2,table-leaf
+3,overflow
+4,overflow
+5,freelist-trunk
+6,freelist-leaf

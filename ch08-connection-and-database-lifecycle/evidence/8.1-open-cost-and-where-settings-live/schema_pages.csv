@@ -1,0 +1,46 @@
+tables,page,role
+1,1,sqlite_schema
+1,2,t0001 root
+100,1,sqlite_schema
+100,34,sqlite_schema
+100,36,sqlite_schema
+100,69,sqlite_schema
+100,102,sqlite_schema
+100,2,t0001 root
+1000,1,sqlite_schema
+1000,34,sqlite_schema
+1000,36,sqlite_schema
+1000,69,sqlite_schema
+1000,102,sqlite_schema
+1000,132,sqlite_schema
+1000,162,sqlite_schema
+1000,192,sqlite_schema
+1000,222,sqlite_schema
+1000,252,sqlite_schema
+1000,282,sqlite_schema
+1000,312,sqlite_schema
+1000,342,sqlite_schema
+1000,372,sqlite_schema
+1000,402,sqlite_schema
+1000,432,sqlite_schema
+1000,462,sqlite_schema
+1000,492,sqlite_schema
+1000,522,sqlite_schema
+1000,552,sqlite_schema
+1000,582,sqlite_schema
+1000,612,sqlite_schema
+1000,642,sqlite_schema
+1000,672,sqlite_schema
+1000,702,sqlite_schema
+1000,732,sqlite_schema
+1000,762,sqlite_schema
+1000,792,sqlite_schema
+1000,822,sqlite_schema
+1000,852,sqlite_schema
+1000,882,sqlite_schema
+1000,912,sqlite_schema
+1000,942,sqlite_schema
+1000,972,sqlite_schema
+1000,1002,sqlite_schema
+1000,1032,sqlite_schema
+1000,2,t0001 root

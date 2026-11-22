@@ -1,0 +1,7 @@
+mode,phase_no,statement,opcode,call_path
+delete,1,BEGIN IMMEDIATE,OP_Transaction,"sqlite3BtreeBeginTrans -> sqlite3PagerSharedLock, sqlite3PagerBegin"
+delete,2,"INSERT INTO t(id, v) VALUES(2, 'two')",OP_Insert,sqlite3BtreeInsert -> sqlite3PagerWrite
+delete,3,COMMIT,OP_AutoCommit (OP_Halt in an autocommit INSERT),sqlite3VdbeHalt -> vdbeCommit -> sqlite3BtreeCommitPhaseOne/PhaseTwo -> sqlite3PagerCommitPhaseOne/PhaseTwo
+wal,1,BEGIN IMMEDIATE,OP_Transaction,"sqlite3BtreeBeginTrans -> sqlite3PagerSharedLock, sqlite3PagerBegin"
+wal,2,"INSERT INTO t(id, v) VALUES(2, 'two')",OP_Insert,sqlite3BtreeInsert -> sqlite3PagerWrite
+wal,3,COMMIT,OP_AutoCommit (OP_Halt in an autocommit INSERT),sqlite3VdbeHalt -> vdbeCommit -> sqlite3BtreeCommitPhaseOne -> sqlite3PagerCommitPhaseOne -> pagerWalFrames -> sqlite3WalFrames

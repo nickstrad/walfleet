@@ -1,0 +1,15 @@
+seq,name,value
+1,database files (copies of one WAL-mode file),64
+2,rows in table t,1000
+3,bytes per row (body BLOB),3500
+4,pages per file,1004
+5,bytes per file,4112384
+6,cache_size of every connection,-2000
+7,"cache budget per connection, bytes",2048000
+8,scan,"SELECT count(*), sum(length(body)) FROM t"
+9,"N: connections kept open (parts B, C)",64
+10,K: connections in the bounded pool (part D),8
+11,driver compiled with ENABLE_MEMORY_MANAGEMENT,1
+12,CACHE_USED bytes per cached page,4352
+13,of which page header bytes,256
+14,part E: mmap_size of connection 2 (twice the file),8224768

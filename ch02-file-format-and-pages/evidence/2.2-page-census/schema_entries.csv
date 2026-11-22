@@ -1,0 +1,5 @@
+entry,type,name,tbl_name,rootpage,sql
+1,table,accounts,accounts,2,"CREATE TABLE accounts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, balance INTEGER NOT NULL)"
+2,table,documents,documents,3,"CREATE TABLE documents(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, title TEXT NOT NULL, body BLOB NOT NULL)"
+3,table,events,events,4,"CREATE TABLE events(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, kind TEXT NOT NULL, amount INTEGER NOT NULL, note TEXT NOT NULL)"
+4,index,events_by_account,events,28,"CREATE INDEX events_by_account ON events(account_id, id)"

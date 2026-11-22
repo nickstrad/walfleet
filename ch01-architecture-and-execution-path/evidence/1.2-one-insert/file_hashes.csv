@@ -1,0 +1,9 @@
+mode,what,sha256
+delete,base,0aec0e95a3f65e0c
+delete,go_insert,47bae5ed0c8207f2
+delete,cli_insert,47bae5ed0c8207f2
+delete,cli_split,47bae5ed0c8207f2
+wal,base,5de4f3aefd26bcea
+wal,go_insert,1afce8154bf3124c
+wal,cli_insert,1afce8154bf3124c
+wal,cli_split,1afce8154bf3124c

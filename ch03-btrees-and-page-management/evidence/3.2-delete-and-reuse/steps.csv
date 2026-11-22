@@ -1,0 +1,13 @@
+secure_delete,step,what,file_bytes,pages,freelist_pages,trunk_pages,freelist_leaves,table_leaf_pages
+OFF,1,insert the rows,417792,102,0,,0,100
+OFF,2,delete rows,417792,102,50,29,49,50
+OFF,3,insert new rows,417792,102,25,29,24,75
+OFF,4,grow with more inserts,438272,107,0,,0,105
+OFF,5,delete the new rows,438272,107,55,102,54,50
+OFF,6,VACUUM,208896,51,0,,0,49
+ON,1,insert the rows,417792,102,0,,0,100
+ON,2,delete rows,417792,102,50,29,49,50
+ON,3,insert new rows,417792,102,25,29,24,75
+ON,4,grow with more inserts,438272,107,0,,0,105
+ON,5,delete the new rows,438272,107,55,102,54,50
+ON,6,VACUUM,208896,51,0,,0,49

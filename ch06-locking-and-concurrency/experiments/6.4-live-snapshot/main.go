@@ -9,6 +9,9 @@
 // replayer repairs the torn base to the last commit before the -wal copy.
 // The -hold flag selects read (default, BEGIN DEFERRED + read) or immediate
 // (BEGIN IMMEDIATE, blocking concurrent commits while checkpoints still run).
+//
+// It prints only its verdict. The steps and the checked files go to CSV
+// tables that report.sql presents: go run ./cmd/course run 6.4
 package main
 
 import (
@@ -18,11 +21,13 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/nickstrad/walfleet/internal/capture"
 	"github.com/nickstrad/walfleet/internal/equal"
 	"github.com/nickstrad/walfleet/internal/procs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walfile"
 )
@@ -35,9 +40,48 @@ const (
 	holdImmediate = "immediate"
 )
 
+// Every step and every checked file goes to a CSV table in <work dir>/results/;
+// part labels the rows written while a part runs.
+var (
+	set         *results.Set
+	part        string
+	databaseSeq int
+	tables      struct {
+		settings, steps, pageCapture, databases, comparisons, replay *results.Table
+	}
+)
+
+func openTables() {
+	tables.settings = set.Table("settings", "hold", "base_step", "snapshot_step", "chunks")
+	tables.steps = set.Table("steps", "part", "step", "process", "action", "result", "code", "value")
+	tables.pageCapture = set.Table("page_capture", "pages", "manifest_sha256")
+	tables.databases = set.Table("databases", "seq", "name", "sha256", "integrity", "user_version", "matched_step", "exact")
+	tables.comparisons = set.Table("comparisons", "name", "level", "equal", "result")
+	tables.replay = set.Table("replay", "wal_ignored_reason", "frames_in_file", "valid_frames", "transactions", "last_commit_frame", "database_pages",
+		"applied_frames", "distinct_pages", "skipped_beyond_size", "base_bytes", "output_bytes", "ignored")
+}
+
+// recorder is a procs.Lab that writes each step and claim to the tables
+// instead of printing them.
+type recorder struct{ *procs.Lab }
+
+func newRecorder() *recorder {
+	lab := procs.NewLab(os.Stdout)
+	lab.Script.Out = nil
+	return &recorder{lab}
+}
+
+func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
+	r := l.Lab.Must(child, action, args...)
+	tables.steps.Row(part, r.Step, child.Name, procs.ActionText(action, args), r.CodeName(), r.Code, r.Value)
+	return r
+}
+
+func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
+
 type run struct {
 	ctx      context.Context
-	lab      *procs.Lab
+	lab      *recorder
 	r        recipe.Recipe
 	hold     string
 	dir      string
@@ -59,13 +103,6 @@ func (x *run) betweenReads() int {
 	before := x.backfill()
 	x.lab.Must(x.writer, "checkpoint", sqlitex.CheckpointPassive)
 	return x.backfill() - before
-}
-
-func (x *run) writerWork() string {
-	if x.hold == holdRead {
-		return "commits a recipe step and checkpoints"
-	}
-	return "checkpoints (it cannot commit while the capture holds BEGIN IMMEDIATE)"
 }
 
 func (x *run) backfill() int {
@@ -180,7 +217,12 @@ func (x *run) verify(label, path string) (recipe.Match, procs.Inspection) {
 	if err != nil || after != sum {
 		x.lab.Fatal("inspect", fmt.Errorf("opening %s changed it (%v)", label, err))
 	}
-	fmt.Printf("%s: sha256 %s, integrity_check %s, user_version %s, equals recipe %s\n", label, sum[:16], procs.IntegritySummary(inspection.Integrity), inspection.Values[0], match)
+	var matched any
+	if match.Found() {
+		matched = match.Step
+	}
+	databaseSeq++
+	tables.databases.Row(databaseSeq, label, sum, procs.IntegritySummary(inspection.Integrity), inspection.Values[0], matched, match.Exact)
 	return match, inspection
 }
 
@@ -198,7 +240,9 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("6.4")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	lab := procs.NewLab(os.Stdout)
+	set = results.MustOpen(dir)
+	openTables()
+	lab := newRecorder()
 	x := &run{ctx: ctx, lab: lab, r: recipe.Default(), hold: *hold, dir: dir}
 	live := filepath.Join(dir, "live")
 	if err := os.MkdirAll(live, 0o755); err != nil {
@@ -209,7 +253,8 @@ func main() {
 		lab.Fatal("build", err)
 	}
 	snapshotFile := filepath.Join(dir, "snapshot.db")
-	fmt.Printf("== live database: recipe built to step %d; the writer commits steps %d-%d (wal_autocheckpoint=0); every capture holds hold=%s\n", baseStep, baseStep+1, snapshotStep, x.hold)
+	tables.settings.Row(x.hold, baseStep, snapshotStep, chunks)
+	part = "A"
 	x.writer = lab.SpawnSQL("writer", procs.SQLOptions{Path: x.db, JournalMode: sqlitex.JournalWAL})
 	x.capturer = lab.SpawnSQL("capture", procs.SQLOptions{Path: x.db, JournalMode: sqlitex.JournalWAL, PagesOut: snapshotFile})
 	x.copier = lab.Spawn("copier", procs.RoleCopier, "-db", x.db, "-out", dir)
@@ -218,8 +263,7 @@ func main() {
 	}
 	x.next = snapshotStep + 1
 
-	fmt.Println()
-	fmt.Printf("-- method 1: every page through sqlite_dbpage inside one transaction, in %d chunks; between chunks the writer %s\n", chunks, x.writerWork())
+	part = "B"
 	seen := x.beginCapture()
 	lab.Check(seen == snapshotStep, fmt.Sprintf("the capture's transaction sees recipe step %d", snapshotStep))
 	pageCount := lab.Must(x.capturer, "query", "PRAGMA page_count")
@@ -231,8 +275,7 @@ func main() {
 	x.endCapture(seen)
 	lab.Check(firstBackfill > 0, "the first checkpoint during the page capture copied WAL frames into the database file under the open transaction")
 
-	fmt.Println()
-	fmt.Printf("-- method 2: in a new transaction, plain copies of the database file (in two halves) and then its -wal; between the halves the writer %s\n", x.writerWork())
+	part = "C"
 	secondSnapshot := x.beginCapture()
 	lab.Check(secondSnapshot == x.lastCommitted(), fmt.Sprintf("the second transaction sees step %d, the last commit", x.lastCommitted()))
 	baseTorn := x.fileAndWALCopy()
@@ -249,8 +292,7 @@ func main() {
 	}
 	lab.StopChildren()
 
-	fmt.Println()
-	fmt.Println("== checks after every process closed")
+	part = "D"
 	captureDir := filepath.Join(dir, "capture")
 	manifest, err := capture.Pages(snapshotFile, captureDir)
 	if err != nil {
@@ -260,7 +302,7 @@ func main() {
 	if _, err := capture.Rebuild(captureDir, rebuilt); err != nil {
 		lab.Fatal("rebuild", err)
 	}
-	fmt.Printf("page capture: %d pages, manifest sha256 %s\n", manifest.PageCount(), manifest.SHA256()[:16])
+	tables.pageCapture.Row(manifest.PageCount(), manifest.SHA256())
 	pageMatch, pageInspection := x.verify("rebuilt from the page capture", rebuilt)
 	reference := x.reference(snapshotStep)
 	x.verify(fmt.Sprintf("reference (recipe to step %d on one connection, then checkpoint)", snapshotStep), reference)
@@ -268,7 +310,7 @@ func main() {
 	if err != nil {
 		lab.Fatal("compare", err)
 	}
-	fmt.Printf("E1 rebuilt vs reference: %s\n", comparison)
+	tables.comparisons.Row("rebuilt vs reference", comparison.Level, comparison.Equal, comparison.String())
 	lab.Check(pageInspection.Integrity == "ok" && pageMatch.Found() && pageMatch.Step == snapshotStep && comparison.Equal,
 		fmt.Sprintf("the page capture passes integrity_check and its bytes equal the recipe run to exactly step %d and checkpointed (E1)", snapshotStep))
 
@@ -277,9 +319,14 @@ func main() {
 	if err != nil {
 		lab.Fatal("replay", err)
 	}
+	var ignored []string
 	for _, line := range report.Lines() {
-		fmt.Printf("replay: %s\n", line)
+		if strings.HasPrefix(line, "ignored") {
+			ignored = append(ignored, line)
+		}
 	}
+	tables.replay.Row(report.WALIgnoredReason, report.FramesInFile, report.ValidFrames, report.Transactions, report.LastCommitFrame, report.DatabasePages,
+		report.AppliedFrames, report.DistinctPages, report.SkippedBeyondSize, report.BaseBytes, report.OutputBytes, strings.Join(ignored, "; "))
 	copyMatch, copyInspection := x.verify("rebuilt from the file + -wal copy", replayed)
 	lab.Check(copyInspection.Integrity == "ok" && copyMatch.Found() && copyMatch.Step >= secondSnapshot && copyMatch.Step == x.lastCommitted(),
 		fmt.Sprintf("the file + -wal copy rebuilds to a recipe state at or after its transaction's snapshot (step %d): step %d, the last commit before the -wal was copied", secondSnapshot, x.lastCommitted()))
@@ -287,5 +334,5 @@ func main() {
 	if x.hold == holdRead {
 		lab.Check(baseInspection.Integrity != "ok" || !baseMatch.Found(), "on its own the database-file copy is torn (it fails integrity_check or equals no recipe state); the -wal frames repair it")
 	}
-	lab.Report("LIVE SNAPSHOT")
+	set.Finish("LIVE SNAPSHOT")
 }

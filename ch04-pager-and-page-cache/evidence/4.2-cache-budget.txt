@@ -1,115 +1,177 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
 
-== setup ==
-database files: 64 copies of one WAL-mode file, table t with 1000 rows of 3500 bytes, 1004 pages (4112384 bytes)
-every connection: sqlitex defaults (journal_mode=wal, synchronous=FULL) with cache_size=-2000; budget 2048000 bytes per connection
-scan: SELECT count(*), sum(length(body)) FROM t (reads every leaf page)
-N=64 unbounded connections, K=8 in the bounded pool
-INFO: process memory read from /proc/self/status; runs in child processes so every measurement starts from a fresh process
-driver compiled with ENABLE_MEMORY_MANAGEMENT: 1 (1 = every connection's page cache is one process-wide LRU group, pcache1.c:718-719)
+════════════════════════════════════════════════════════════════════════
+  4.2  What a page cache budget costs, per connection and per process
+════════════════════════════════════════════════════════════════════════
 
-== A. one connection, the same scan twice ==
-CACHE_USED counts 4352 bytes per cached page (measured: cache_size=200 minus cache_size=100, both full, divided by 100); the 4096-byte page plus 256 bytes of headers (sqlite3PagerMemUsed, pager.c:6881)
-INFO: fixed part of CACHE_USED per connection 5077 bytes (the Pager allocation, which holds the file names, plus one page buffer)
-cache_size=100 holds 99 pages, cache_size=200 holds 199 pages
-cache_size=-2000 (budget 2048000 bytes):
-  after scan 1: cached pages=482 hit=7 miss=1005 spill=0
-INFO:   after scan 1: CACHE_USED=2102741 bytes
-  after scan 2: cached pages=482 hit=9 miss=2007 spill=0
-INFO:   after scan 2: CACHE_USED=2102741 bytes
-check ok: cache_size=-2000: CACHE_USED stays within the budget plus 5% (482 pages x 4352 bytes against 2048000 bytes)
-check ok: a file larger than the cache misses again on the second scan (the LRU evicted the pages the scan needs next)
-cache_size=-8032 (budget 8224768 bytes):
-  after scan 1: cached pages=1004 hit=7 miss=1005 spill=0
-INFO:   after scan 1: CACHE_USED=4374485 bytes
-  after scan 2: cached pages=1004 hit=1011 miss=1005 spill=0
-INFO:   after scan 2: CACHE_USED=4374485 bytes
-check ok: cache_size=-8032: CACHE_USED stays within the budget plus 5% (1004 pages x 4352 bytes against 8224768 bytes)
-check ok: a cache larger than the file serves the second scan from memory: no new misses
+Copies of one WAL-mode file are scanned by connections that keep their
+page cache. Each scenario runs in a fresh child process, which reads
+SQLITE_DBSTATUS_CACHE_USED, CACHE_HIT, CACHE_MISS and CACHE_SPILL of every
+open connection and its own RSS at each checkpoint.
+┌────────────────────────────────────────────────────┬───────────────────────────────────────────┐
+│                        name                        │                   value                   │
+├────────────────────────────────────────────────────┼───────────────────────────────────────────┤
+│ database files (copies of one WAL-mode file)       │ 64                                        │
+│ rows in table t                                    │ 1000                                      │
+│ bytes per row (body BLOB)                          │ 3500                                      │
+│ pages per file                                     │ 1004                                      │
+│ bytes per file                                     │ 4112384                                   │
+│ cache_size of every connection                     │ -2000                                     │
+│ cache budget per connection, bytes                 │ 2048000                                   │
+│ scan                                               │ SELECT count(*), sum(length(body)) FROM t │
+│ N: connections kept open (parts B, C)              │ 64                                        │
+│ K: connections in the bounded pool (part D)        │ 8                                         │
+│ driver compiled with ENABLE_MEMORY_MANAGEMENT      │ 1                                         │
+│ CACHE_USED bytes per cached page                   │ 4352                                      │
+│ of which page header bytes                         │ 256                                       │
+│ part E: mmap_size of connection 2 (twice the file) │ 8224768                                   │
+└────────────────────────────────────────────────────┴───────────────────────────────────────────┘
 
-== B. 64 connections to 64 files, all kept open ==
-  checkpoint    open cached pages (sum) cached pages per connection min..max
-  after 1          1                482                   482..482       
-INFO:   after 1      sum CACHE_USED 2102741 bytes; RSS 12.9 MiB (anon 5.8 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 6.0 MiB
-  after 2          2                964                     0..964       
-INFO:   after 2      sum CACHE_USED 4205482 bytes; RSS 16.9 MiB (anon 9.8 MiB, file 7.1 MiB, shmem 0.0 MiB), growth since start 10.0 MiB
-  after 4          4               1928                     0..1004      
-INFO:   after 4      sum CACHE_USED 8410964 bytes; RSS 24.8 MiB (anon 17.6 MiB, file 7.1 MiB, shmem 0.0 MiB), growth since start 17.9 MiB
-  after 8          8               3856                     0..1004      
-INFO:   after 8      sum CACHE_USED 16821928 bytes; RSS 40.8 MiB (anon 33.2 MiB, file 7.6 MiB, shmem 0.0 MiB), growth since start 33.9 MiB
-  after 16        16               7712                     0..1004      
-INFO:   after 16     sum CACHE_USED 33643856 bytes; RSS 72.6 MiB (anon 64.4 MiB, file 8.2 MiB, shmem 0.0 MiB), growth since start 65.7 MiB
-  after 32        32              15424                     0..1004      
-INFO:   after 32     sum CACHE_USED 67287712 bytes; RSS 135.2 MiB (anon 126.4 MiB, file 8.8 MiB, shmem 0.0 MiB), growth since start 128.3 MiB
-  after 64        64              30848                     0..1004      
-INFO:   after 64     sum CACHE_USED 134575424 bytes; RSS 260.7 MiB (anon 250.6 MiB, file 10.1 MiB, shmem 0.0 MiB), growth since start 253.8 MiB
-  all closed       0                  0                     0..0         
-INFO:   all closed   sum CACHE_USED 0 bytes; RSS 32.3 MiB (anon 24.2 MiB, file 8.1 MiB, shmem 0.0 MiB), growth since start 25.4 MiB
-  at after 64: connection 1 cached pages=0 hit=7 miss=1005; connection 64 cached pages=1004 hit=7 miss=1005
-check ok: the cached pages of all open connections add up to exactly (open connections) x 482, the pages one connection holds when it fills its budget
-check ok: in this driver build cache_size is not a per-connection cap: the connection that scanned last holds 1004 pages (its own budget is 482) while the idle connections were left with 0
-INFO: RSS growth at after 64 253.8 MiB, at after 32 128.3 MiB; RSS growth / summed CACHE_USED 1.98
-check ok: process memory grows by at least the summed CACHE_USED of the open connections
-INFO: RSS growth per open connection: 4.0 MiB at 64, 4.0 MiB at 32
-check ok: process memory grows linearly with open connections: growth per open connection at 64 is within -20%/+25% of that at 32
+ENABLE_MEMORY_MANAGEMENT = 1 means every page cache of the process is in
+one LRU group (pcache1.c:718-719). Cached pages are CACHE_USED minus one
+page buffer, divided by the bytes per cached page: the 4096-byte page plus
+its headers (sqlite3PagerMemUsed, pager.c:6881).
+┌──────┬───────────────────────────────────────────────────────┬────────┐
+│ part │                         what                          │ status │
+├──────┼───────────────────────────────────────────────────────┼────────┤
+│ A    │ one connection, the same scan twice                   │ ran    │
+│ B    │ 64 connections to 64 files, all kept open             │ ran    │
+│ C    │ 64 connections to one file, all kept open             │ ran    │
+│ D    │ 64 files through a pool of at most 8 open connections │ ran    │
+│ E    │ one connection without and one with mmap              │ ran    │
+│ E    │ split of the added RSS into file-backed and anonymous │ ran    │
+└──────┴───────────────────────────────────────────────────────┴────────┘
 
-== C. 64 connections to one file, all kept open ==
-  checkpoint    open cached pages (sum) cached pages per connection min..max
-  after 1          1                482                   482..482       
-INFO:   after 1      sum CACHE_USED 2102741 bytes; RSS 12.8 MiB (anon 5.8 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 6.0 MiB
-  after 2          2                964                     0..964       
-INFO:   after 2      sum CACHE_USED 4205482 bytes; RSS 16.8 MiB (anon 9.7 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 9.9 MiB
-  after 4          4               1928                     0..1004      
-INFO:   after 4      sum CACHE_USED 8410964 bytes; RSS 24.6 MiB (anon 17.6 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 17.8 MiB
-  after 8          8               3856                     0..1004      
-INFO:   after 8      sum CACHE_USED 16821928 bytes; RSS 40.8 MiB (anon 33.1 MiB, file 7.7 MiB, shmem 0.0 MiB), growth since start 33.9 MiB
-  after 16        16               7712                     0..1004      
-INFO:   after 16     sum CACHE_USED 33643856 bytes; RSS 72.1 MiB (anon 64.3 MiB, file 7.8 MiB, shmem 0.0 MiB), growth since start 65.3 MiB
-  after 32        32              15424                     0..1004      
-INFO:   after 32     sum CACHE_USED 67287712 bytes; RSS 134.2 MiB (anon 126.4 MiB, file 7.9 MiB, shmem 0.0 MiB), growth since start 127.4 MiB
-  after 64        64              30848                     0..1004      
-INFO:   after 64     sum CACHE_USED 134575424 bytes; RSS 258.5 MiB (anon 250.5 MiB, file 8.0 MiB, shmem 0.0 MiB), growth since start 251.7 MiB
-  all closed       0                  0                     0..0         
-INFO:   all closed   sum CACHE_USED 0 bytes; RSS 32.2 MiB (anon 24.2 MiB, file 8.0 MiB, shmem 0.0 MiB), growth since start 25.3 MiB
-check ok: connections to one file do not share a cache: the totals equal the N-files run at every checkpoint
-check ok: process memory grows by the summed CACHE_USED here too
+── A. One connection, the same scan twice ─────────────────────────────
 
-== D. 64 files visited through a pool of at most 8 open connections (LRU close) ==
-  checkpoint    open cached pages (sum) cached pages per connection min..max
-  after 1          1                482                   482..482       
-INFO:   after 1      sum CACHE_USED 2102741 bytes; RSS 12.9 MiB (anon 5.9 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 6.1 MiB
-  after 2          2                964                     0..964       
-INFO:   after 2      sum CACHE_USED 4205482 bytes; RSS 17.0 MiB (anon 9.9 MiB, file 7.1 MiB, shmem 0.0 MiB), growth since start 10.1 MiB
-  after 4          4               1928                     0..1004      
-INFO:   after 4      sum CACHE_USED 8410964 bytes; RSS 24.8 MiB (anon 17.7 MiB, file 7.1 MiB, shmem 0.0 MiB), growth since start 18.0 MiB
-  after 8          8               3856                     0..1004      
-INFO:   after 8      sum CACHE_USED 16821928 bytes; RSS 40.6 MiB (anon 33.3 MiB, file 7.3 MiB, shmem 0.0 MiB), growth since start 33.7 MiB
-  after 16         8               3863                     0..1004      
-INFO:   after 16     sum CACHE_USED 16852392 bytes; RSS 41.1 MiB (anon 33.5 MiB, file 7.5 MiB, shmem 0.0 MiB), growth since start 34.2 MiB
-  after 32         8               3863                     0..1004      
-INFO:   after 32     sum CACHE_USED 16852392 bytes; RSS 41.7 MiB (anon 33.8 MiB, file 7.9 MiB, shmem 0.0 MiB), growth since start 34.8 MiB
-  after 64         8               3863                     0..1004      
-INFO:   after 64     sum CACHE_USED 16852392 bytes; RSS 42.1 MiB (anon 34.0 MiB, file 8.1 MiB, shmem 0.0 MiB), growth since start 35.2 MiB
-INFO: RSS growth at after 8 33.7 MiB, at after 64 35.2 MiB
-check ok: with the pool, 8 connections are open at the end and their cached pages stay within 8 x (482 + 1), the sum of their cache sizes in pages
-check ok: with the pool, process memory stays flat after 8 connections: growth from after 8 to after 64 is at most a quarter of the growth up to after 8
-check ok: the pooled run ends with about 8/64 of the unbounded run's memory growth (at most 1.5 x that fraction)
+A1. The bytes per cached page come from two full caches 100 pages apart.
+    A cache recycles a page when it is one page short of full
+    (pcache1.c:902), so cache_size=N holds N-1 pages.
+┌────────────┬──────────────┐
+│ cache_size │ cached_pages │
+├────────────┼──────────────┤
+│ 100        │ 99           │
+│ 200        │ 199          │
+└────────────┴──────────────┘
 
-== E. mmap ==
-connection 1: no mmap, scans f-000; connection 2: PRAGMA mmap_size=8224768 (twice the file), scans f-001
-  plain   connection 1: cached pages=482 hit=7 miss=1005
-INFO:   plain   connection 1: CACHE_USED=2102741 bytes
-INFO:   plain   RSS 12.9 MiB (anon 5.8 MiB, file 7.0 MiB, shmem 0.0 MiB)
-  mapped  connection 1: cached pages=482 hit=7 miss=1005
-INFO:   mapped  connection 1: CACHE_USED=2102741 bytes
-  mapped  connection 2: cached pages=2 hit=7 miss=3
-INFO:   mapped  connection 2: CACHE_USED=13781 bytes
-INFO:   mapped  RSS 17.1 MiB (anon 6.1 MiB, file 11.0 MiB, shmem 0.0 MiB)
-check ok: with mmap covering the file, the scan leaves CACHE_USED near zero (under 5% of the unmapped connection's)
-INFO: the mapped scan added 4.2 MiB RSS (file 3.9 MiB)
-check ok: the mapped scan still adds about the file's size to process RSS: the memory moved from SQLite's heap to mapped file pages
-INFO: file-backed RSS +4.0 MiB, anonymous RSS +0.2 MiB
-check ok: the added memory is file-backed (RssFile), not anonymous heap
-INFO: runtime 4.9s
+A2. At the default budget (2048000 bytes) the cache holds 482 pages of the
+    1004-page file, and the second scan misses every page again. A budget of
+    twice the file holds it all, and the second scan only hits.
+┌────────────┬──────────────┬──────┬──────────────┬──────┬────────┬────────┐
+│ cache_size │ budget_bytes │ scan │ cached_pages │ hits │ misses │ spills │
+├────────────┼──────────────┼──────┼──────────────┼──────┼────────┼────────┤
+│ -2000      │ 2048000      │ 1    │ 482          │ 7    │ 1005   │ 0      │
+│ -2000      │ 2048000      │ 2    │ 482          │ 9    │ 2007   │ 0      │
+│ -8032      │ 8224768      │ 1    │ 1004         │ 7    │ 1005   │ 0      │
+│ -8032      │ 8224768      │ 2    │ 1004         │ 1011 │ 1005   │ 0      │
+└────────────┴──────────────┴──────┴──────────────┴──────┴────────┴────────┘
 
-CACHE BUDGET OK
+── B. N connections to N files, all kept open ─────────────────────────
+
+B1. Every connection opens its file, scans it and stays open. The cached
+    pages of all open connections add up to 482 per connection, but they
+    are not spread evenly: the one LRU group lets the connection that
+    scanned last take pages from the idle ones.
+┌────────────┬──────┬──────────────────┬───────────────┬──────────────────┐
+│ checkpoint │ open │ cached_pages_sum │ per_open_conn │ per_conn_min_max │
+├────────────┼──────┼──────────────────┼───────────────┼──────────────────┤
+│ after 1    │ 1    │ 482              │ 482           │ 482..482         │
+│ after 2    │ 2    │ 964              │ 482           │ 0..964           │
+│ after 4    │ 4    │ 1928             │ 482           │ 0..1004          │
+│ after 8    │ 8    │ 3856             │ 482           │ 0..1004          │
+│ after 16   │ 16   │ 7712             │ 482           │ 0..1004          │
+│ after 32   │ 32   │ 15424            │ 482           │ 0..1004          │
+│ after 64   │ 64   │ 30848            │ 482           │ 0..1004          │
+│ all closed │ 0    │ 0                │               │                  │
+└────────────┴──────┴──────────────────┴───────────────┴──────────────────┘
+
+B2. At the last checkpoint, the first connection and the last one:
+┌──────┬──────────────┬──────┬────────┬────────┐
+│ conn │ cached_pages │ hits │ misses │ spills │
+├──────┼──────────────┼──────┼────────┼────────┤
+│ 1    │ 0            │ 7    │ 1005   │ 0      │
+│ 64   │ 1004         │ 7    │ 1005   │ 0      │
+└──────┴──────────────┴──────┴────────┴────────┘
+
+B3. Cached pages per connection at the last checkpoint:
+┌──────────────┬─────────────┬────────────┬───────────┐
+│ cached_pages │ connections │ first_conn │ last_conn │
+├──────────────┼─────────────┼────────────┼───────────┤
+│ 0            │ 33          │ 1          │ 33        │
+│ 728          │ 1           │ 34         │ 34        │
+│ 1004         │ 30          │ 35         │ 64        │
+└──────────────┴─────────────┴────────────┴───────────┘
+
+── C. N connections to one file, all kept open ────────────────────────
+
+C1. Connections to the same file do not share pages: every checkpoint
+    has the same cached pages as in part B.
+┌────────────┬──────┬──────────────────┬──────────────────┬────────────┐
+│ checkpoint │ open │ cached_pages_sum │ per_conn_min_max │ part_b_sum │
+├────────────┼──────┼──────────────────┼──────────────────┼────────────┤
+│ after 1    │ 1    │ 482              │ 482..482         │ 482        │
+│ after 2    │ 2    │ 964              │ 0..964           │ 964        │
+│ after 4    │ 4    │ 1928             │ 0..1004          │ 1928       │
+│ after 8    │ 8    │ 3856             │ 0..1004          │ 3856       │
+│ after 16   │ 16   │ 7712             │ 0..1004          │ 7712       │
+│ after 32   │ 32   │ 15424            │ 0..1004          │ 15424      │
+│ after 64   │ 64   │ 30848            │ 0..1004          │ 30848      │
+│ all closed │ 0    │ 0                │                  │ 0          │
+└────────────┴──────┴──────────────────┴──────────────────┴────────────┘
+
+── D. N files visited through a pool of at most K open connections ────
+
+D1. The pool closes its least recently used connection before it opens
+    the next. After K files the cached pages stop growing.
+┌────────────┬──────┬─────────┬──────────────────┬──────────────────┐
+│ checkpoint │ open │ visited │ cached_pages_sum │ per_conn_min_max │
+├────────────┼──────┼─────────┼──────────────────┼──────────────────┤
+│ after 1    │ 1    │ 1       │ 482              │ 482..482         │
+│ after 2    │ 2    │ 2       │ 964              │ 0..964           │
+│ after 4    │ 4    │ 4       │ 1928             │ 0..1004          │
+│ after 8    │ 8    │ 8       │ 3856             │ 0..1004          │
+│ after 16   │ 8    │ 16      │ 3863             │ 0..1004          │
+│ after 32   │ 8    │ 32      │ 3863             │ 0..1004          │
+│ after 64   │ 8    │ 64      │ 3863             │ 0..1004          │
+└────────────┴──────┴─────────┴──────────────────┴──────────────────┘
+
+── E. mmap ─────────────────────────────────────────────────────────────
+
+E1. Connection 1 scans f-000 without mmap. Connection 2 sets PRAGMA
+    mmap_size to twice the file and scans f-001: its pages come from the
+    mapped file, outside the page cache, so it caches almost nothing.
+┌────────────┬──────┬──────────────┬──────┬────────┬────────┐
+│ checkpoint │ conn │ cached_pages │ hits │ misses │ spills │
+├────────────┼──────┼──────────────┼──────┼────────┼────────┤
+│ plain      │ 1    │ 482          │ 7    │ 1005   │ 0      │
+│ mapped     │ 1    │ 482          │ 7    │ 1005   │ 0      │
+│ mapped     │ 2    │ 2            │ 7    │ 3      │ 0      │
+└────────────┴──────┴──────────────┴──────┴────────┴────────┘
+
+The memory claims (RSS grows with the summed CACHE_USED, linearly with open
+connections, stays flat with the pool, and moves to file-backed pages with
+mmap) are in the checks below; the RSS figures are in info.sql.
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  cache_size=-2000: CACHE_USED stays within the budget plus 5% (482 pages x 4352 bytes against 2048000 bytes)
+A  ✓  a file larger than the cache misses again on the second scan (the LRU evicted the pages the scan needs next)
+A  ✓  cache_size=-8032: CACHE_USED stays within the budget plus 5% (1004 pages x 4352 bytes against 8224768 bytes)
+A  ✓  a cache larger than the file serves the second scan from memory: no new misses
+B  ✓  the cached pages of all open connections add up to exactly (open connections) x 482, the pages one connection holds when it fills its budget
+B  ✓  in this driver build cache_size is not a per-connection cap: the connection that scanned last holds 1004 pages (its own budget is 482) while the idle connections were left with 0
+B  ✓  process memory grows by at least the summed CACHE_USED of the open connections
+B  ✓  process memory grows linearly with open connections: growth per open connection at 64 is within -20%/+25% of that at 32
+C  ✓  connections to one file do not share a cache: the totals equal the N-files run at every checkpoint
+C  ✓  process memory grows by the summed CACHE_USED here too
+D  ✓  with the pool, 8 connections are open at the end and their cached pages stay within 8 x (482 + 1), the sum of their cache sizes in pages
+D  ✓  with the pool, process memory stays flat after 8 connections: growth from after 8 to after 64 is at most a quarter of the growth up to after 8
+D  ✓  the pooled run ends with about 8/64 of the unbounded run's memory growth (at most 1.5 x that fraction)
+E  ✓  with mmap covering the file, the scan leaves CACHE_USED near zero (under 5% of the unmapped connection's)
+E  ✓  the mapped scan still adds about the file's size to process RSS: the memory moved from SQLite's heap to mapped file pages
+E  ✓  the added memory is file-backed (RssFile), not anonymous heap
+
+16 of 16 claims hold
+
+Experiment verdict: CACHE BUDGET OK

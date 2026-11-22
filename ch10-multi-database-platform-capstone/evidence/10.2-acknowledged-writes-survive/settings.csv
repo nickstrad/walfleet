@@ -1,0 +1,15 @@
+seq,name,value
+1,bucket,course-ch10b
+2,prefix,exp-10-2/
+3,databases,4
+4,open_databases,2
+5,writes_per_run,12
+6,fsync_kill_points_per_mode,4
+7,random_kills_per_mode,2
+8,random_seed,1
+9,synchronous,FULL
+10,foreign_keys,ON
+11,secure_delete,ON
+12,cache_size,-256
+13,wal_autocheckpoint,0
+14,busy_timeout,5000ms

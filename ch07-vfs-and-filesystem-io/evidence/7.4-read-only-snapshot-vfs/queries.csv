@@ -1,0 +1,4 @@
+query,name,sql,plan,cache_pages,local_rows,local_digest,local_first_row,remote_rows,remote_digest,remote_first_row
+1,point lookup,"SELECT id, account_id, kind, amount, note FROM events WHERE id = 372",SEARCH events USING INTEGER PRIMARY KEY (rowid=?),500,1,564912d877435e1b,372|7|fee|2642|gkusfxyuudbxvuvijtfcnc,1,564912d877435e1b,372|7|fee|2642|gkusfxyuudbxvuvijtfcnc
+2,index range scan,"SELECT id, amount FROM events WHERE account_id = 7 ORDER BY id",SEARCH events USING INDEX events_by_account (account_id=?),500,29,d98fa27230232e1c,4|2828,29,d98fa27230232e1c,4|2828
+3,full scan,"SELECT count(*), sum(amount), sum(length(note)) FROM events",SCAN events,500,1,6b2a4af3714ab7f4,1177|-124383|41332,1,6b2a4af3714ab7f4,1177|-124383|41332

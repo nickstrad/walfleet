@@ -1,0 +1,5 @@
+variant,wal_synced_up_to,database_file_unsynced,power_model_not_applicable
+off,0,true,the checkpoint wrote the database file and nothing was ever synced
+normal,32,false,
+full,,false,
+normal-reader-5,304912,true,

@@ -1,0 +1,9 @@
+secure_delete,step,markers_searched,rows_sought,rows_found,pages_with_markers,roles
+OFF,2,SECRET,204,199,52,freelist-leaf=49 freelist-trunk=1 table-leaf=2
+OFF,3,SECRET,204,104,27,freelist-leaf=24 freelist-trunk=1 table-leaf=2
+OFF,5,"NEW, GROW",220,217,55,freelist-leaf=54 freelist-trunk=1
+OFF,6,"SECRET, NEW, GROW",424,0,0,
+ON,2,SECRET,204,0,0,
+ON,3,SECRET,204,0,0,
+ON,5,"NEW, GROW",220,0,0,
+ON,6,"SECRET, NEW, GROW",424,0,0,

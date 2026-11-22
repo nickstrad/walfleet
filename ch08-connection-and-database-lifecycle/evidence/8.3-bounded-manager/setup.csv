@@ -1,0 +1,15 @@
+seq,name,value
+1,databases,1000
+2,K (bounded capacity),64
+3,operations,4000
+4,seed,1
+5,hot databases,50
+6,% of operations to hot,50
+7,% writes,20
+8,every database,a copy of recipe step 0
+9,step 0 sha256,7470585af706eb3de499f126d74bdc98396e1e9853ee11643e2e85f61ef0cdb9
+10,a write applies,"the next recipe step of that database, up to step 4"
+11,a read runs,"SELECT count(*), coalesce(sum(balance), 0), (SELECT user_version FROM pragma_user_version) FROM accounts"
+12,connections,recipe settings with cache_size=-256
+13,descriptor sample,every 10 operations
+14,memory sample,every 100 operations

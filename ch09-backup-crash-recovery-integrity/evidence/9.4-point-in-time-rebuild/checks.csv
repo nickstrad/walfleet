@@ -1,0 +1,35 @@
+seq,part,status,claim
+1,A,ok,"steps [3] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame"
+2,A,ok,"steps [4 5] shipped as one segment of 2 commit(s), then the shipper's checkpoint copied every frame"
+3,A,ok,"steps [6] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame"
+4,A,ok,"steps [7 8 9] shipped as one segment of 3 commit(s), then the shipper's checkpoint copied every frame"
+5,A,ok,"steps [10] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame"
+6,A,ok,"steps [11 12] shipped as one segment of 2 commit(s), then the shipper's checkpoint copied every frame"
+7,A,ok,"steps [13] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame"
+8,A,ok,"steps [14] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame"
+9,A,ok,every segment came from a new WAL generation: the WAL restarted after each shipper checkpoint (8 generations)
+10,B,ok,the outsider's TRUNCATE checkpoint copied steps 15-16 into the database file and emptied the WAL
+11,B,ok,"the restarted shipper sees a WAL header it did not ship, cannot vouch for what happened in between, and takes a new snapshot (it holds step 17)"
+12,C,ok,position 2 restores byte-identical to recipe step 2 from every snapshot that reaches it
+13,C,ok,position 3 restores byte-identical to recipe step 3 from every snapshot that reaches it
+14,C,ok,position 4 restores byte-identical to recipe step 4 from every snapshot that reaches it
+15,C,ok,position 5 restores byte-identical to recipe step 5 from every snapshot that reaches it
+16,C,ok,position 6 restores byte-identical to recipe step 6 from every snapshot that reaches it
+17,C,ok,position 7 restores byte-identical to recipe step 7 from every snapshot that reaches it
+18,C,ok,position 8 restores byte-identical to recipe step 8 from every snapshot that reaches it
+19,C,ok,position 9 restores byte-identical to recipe step 9 from every snapshot that reaches it
+20,C,ok,position 10 restores byte-identical to recipe step 10 from every snapshot that reaches it
+21,C,ok,position 11 restores byte-identical to recipe step 11 from every snapshot that reaches it
+22,C,ok,position 12 restores byte-identical to recipe step 12 from every snapshot that reaches it
+23,C,ok,position 13 restores byte-identical to recipe step 13 from every snapshot that reaches it
+24,C,ok,position 14 restores byte-identical to recipe step 14 from every snapshot that reaches it
+25,C,ok,position 15 restores byte-identical to recipe step 17 from every snapshot that reaches it
+26,C,ok,position 16 restores byte-identical to recipe step 18 from every snapshot that reaches it
+27,C,ok,position 17 restores byte-identical to recipe step 19 from every snapshot that reaches it
+28,C,ok,position 18 restores byte-identical to recipe step 20 from every snapshot that reaches it
+29,C,ok,a restore from the newest snapshot never replays more than 3 segments (worst here: 3)
+30,C,ok,only steps 15 and 16 have no restore point: they were committed and checkpointed away while the shipper was down
+31,C,ok,"the newest restore point, written to a file, opens, passes integrity_check and equals the live database's final state (step 20)"
+32,D,ok,"segment 7 deleted: refused while planning, before any page is applied"
+33,D,ok,"segments 10 and 11 swapped: refused while planning, before any page is applied"
+34,D,ok,"one byte of segment 13 flipped: refused while planning, before any page is applied"

@@ -1,0 +1,6 @@
+seq,opener,statement,journal_calls,wal_writes
+1,plain,"CREATE TABLE (driver defaults, first write)",6,0
+2,switch,PRAGMA journal_mode=wal on the new empty file,6,0
+3,switch,CREATE TABLE after the switch,0,5
+4,platform,sqlitex.Open of a new file with journal_mode=wal,6,5
+5,platform,CREATE TABLE after it,0,4

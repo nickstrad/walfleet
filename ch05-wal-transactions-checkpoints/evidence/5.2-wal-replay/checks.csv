@@ -1,0 +1,19 @@
+seq,part,status,claim
+1,A,ok,the captured database file alone is byte for byte recipe step 0: every change committed since is only in the -wal
+2,A,ok,at a quiet moment every frame is committed and nothing is ignored
+3,A,ok,sha256 of our replay equals sha256 of SQLite's own checkpoint of the original
+4,A,ok,the replay is a valid database at recipe step 8
+5,A,ok,"the replay is the recipe's state after step 8 (exact, or equal except the WAL change counter of one long-lived connection)"
+6,B,ok,"the open transaction spilled frames into the -wal before committing, after the last commit frame"
+7,B,ok,"every spilled frame passes the checksum and salt checks: the frames after the last commit frame are valid, only uncommitted"
+8,B,ok,the replayer stops at the last commit frame: it applies frames up to it and ignores every valid spilled frame after it because no commit frame follows
+9,B,ok,sha256 of our replay equals sha256 of SQLite's recovery and checkpoint of the same captured files
+10,B,ok,the replay is a valid database at recipe step 10
+11,B,ok,sha256 of our replay equals sha256 of SQLite's checkpoint of the same files opened with a stale -shm
+12,B,ok,the replay is a valid database at recipe step 10
+13,B,ok,"the -shm handed to SQLite described another WAL entirely, and SQLite rebuilt it from the -wal instead of trusting it"
+14,C,ok,a rollback leaves the spilled frames in the -wal file; only the wal-index forgets them
+15,C,ok,the replayer ignores the rolled-back frames because no commit frame follows them
+16,C,ok,sha256 of our replay equals sha256 of SQLite's own checkpoint of the original after the rollback
+17,C,ok,the replay is a valid database at recipe step 10
+18,C,ok,both captures rebuild the same committed state

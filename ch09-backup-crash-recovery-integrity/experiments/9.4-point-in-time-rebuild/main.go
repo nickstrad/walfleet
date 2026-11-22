@@ -5,6 +5,9 @@
 // point-in-time restore of every shipped position from both newest and older
 // snapshots, and pre-replay rejection of missing, swapped, and corrupted
 // segments.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 9.4
 package main
 
 import (
@@ -15,10 +18,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nickstrad/walfleet/internal/procs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walship"
 )
@@ -41,6 +46,32 @@ type run struct {
 	writer   *procs.Child
 	outsider *procs.Child
 	names    walship.GenerationNames
+	set      *results.Set
+	part     string
+	cycles   int
+	tampers  int
+	tables   struct {
+		steps, starts, cycles, snapshots, store, restores, final, tampered *results.Table
+	}
+}
+
+func (x *run) openTables() {
+	x.tables.steps = x.set.Table("steps", "step", "part", "next_cycle", "child", "action", "outcome")
+	x.tables.starts = x.set.Table("shipper_starts", "part", "started", "position")
+	x.tables.cycles = x.set.Table("cycles", "cycle", "part", "wal", "segment", "first_position", "last_position", "first_frame", "last_frame", "generation", "first_user_version", "last_user_version", "before_sha256", "after_sha256", "checkpoint_busy", "checkpoint_log", "checkpointed", "every_frame_copied")
+	x.tables.snapshots = x.set.Table("snapshots", "cycle", "part", "snapshot", "reason", "position", "pages", "user_version", "state_sha256", "after_frame", "generation")
+	x.tables.store = x.set.Table("store", "snapshots", "snapshot_positions", "segments", "damaged")
+	x.tables.restores = x.set.Table("restores", "position", "snapshot", "segments", "user_version", "sha256", "recipe_sha256", "e1_equal", "older_snapshots", "older_same_bytes", "older_cannot_reach")
+	x.tables.final = x.set.Table("final", "file", "position", "integrity_check", "recipe_step", "exact_bytes")
+	x.tables.tampered = x.set.Table("tampered", "seq", "damage", "restore_to", "refused_while_planning", "error")
+}
+
+func (x *run) generation(g walship.Generation) string {
+	return strings.TrimPrefix(x.names.Name(g), "WAL generation ")
+}
+
+func (x *run) snapshotRow(cycle any, m walship.SnapshotMeta) {
+	x.tables.snapshots.Row(cycle, x.part, walship.SnapshotKey(m.Position), m.Reason, m.Position, m.Pages, m.UserVersion, m.StateSHA256[:16], m.WAL.Frame, x.generation(m.WAL.Generation))
 }
 
 func (x *run) openShipper() {
@@ -50,15 +81,22 @@ func (x *run) openShipper() {
 	}
 	x.shipper = shipper
 	if snapshot := shipper.OpenSnapshot(); snapshot != nil {
-		fmt.Printf("shipper opened: %s\n", walship.DescribeSnapshot(*snapshot, x.names.Name))
+		x.tables.starts.Row(x.part, "opened on an empty store: initial snapshot", snapshot.Position)
+		x.snapshotRow(nil, *snapshot)
 	} else {
-		fmt.Printf("shipper reopened: resumed from the store at position %d\n", shipper.Position())
+		x.tables.starts.Row(x.part, "reopened: resumed from the store", shipper.Position())
 	}
+}
+
+func (x *run) must(child *procs.Child, action string, args ...string) procs.Result {
+	result := x.lab.Must(child, action, args...)
+	x.tables.steps.Row(result.Step, x.part, x.cycles+1, child.Name, procs.ActionText(action, args), result.Outcome())
+	return result
 }
 
 func (x *run) commit(steps ...int) {
 	for _, k := range steps {
-		x.lab.Must(x.writer, "recipe-session", strconv.Itoa(k))
+		x.must(x.writer, "recipe-session", strconv.Itoa(k))
 	}
 }
 
@@ -67,8 +105,20 @@ func (x *run) cycle() walship.CycleReport {
 	if err != nil {
 		x.lab.Fatal("ship cycle", err)
 	}
-	for _, line := range report.Lines(x.names.Name) {
-		fmt.Printf("   ship: %s\n", line)
+	x.cycles++
+	wal := report.Change.String()
+	if report.Reason != "" {
+		wal += ": " + report.Reason
+	}
+	cp := report.Checkpoint
+	if m := report.Segment; m != nil {
+		x.tables.cycles.Row(x.cycles, x.part, wal, walship.SegmentKey(m.FirstPosition), m.FirstPosition, m.LastPosition, m.FirstFrame, m.LastFrame, x.generation(m.Generation),
+			m.Commits[0].UserVersion, m.Commits[len(m.Commits)-1].UserVersion, m.BeforeSHA256[:16], m.AfterSHA256[:16], cp.Busy, cp.LogFrames, cp.Checkpointed, report.FullBackfill)
+	} else {
+		x.tables.cycles.Row(x.cycles, x.part, wal, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, cp.Busy, cp.LogFrames, cp.Checkpointed, report.FullBackfill)
+	}
+	if report.Snapshot != nil {
+		x.snapshotRow(x.cycles, *report.Snapshot)
 	}
 	return report
 }
@@ -123,11 +173,11 @@ func (x *run) restoreEveryPosition(catalog *walship.Catalog, hashes []recipe.Fil
 		}
 		digest := walship.SHA256Hex(image)
 		equal := step < len(hashes) && digest == hashes[step].Exact
-		fmt.Printf("position %2d: snapshot %2d + %d segment(s) -> user_version %2d, sha256 %s, recipe step %2d sha256 %s, E1 equal %t; older snapshots: %d give the same bytes, %d cannot reach it\n",
-			position, plan.Snapshot.Meta.Position, len(plan.Segments), step, digest[:16], step, hashes[step].Exact[:16], equal, same, refused)
-		x.lab.Check(equal && same+refused == countOlder(catalog, plan.Snapshot.Meta.Position), fmt.Sprintf("position %d restores byte-identical to recipe step %d from every snapshot that reaches it", position, step))
+		older := countOlder(catalog, plan.Snapshot.Meta.Position)
+		x.tables.restores.Row(position, plan.Snapshot.Meta.Position, len(plan.Segments), step, digest[:16], hashes[step].Exact[:16], equal, older, same, refused)
+		x.set.Check(x.part, equal && same+refused == older, fmt.Sprintf("position %d restores byte-identical to recipe step %d from every snapshot that reaches it", position, step))
 	}
-	x.lab.Check(worst <= snapshotEvery, fmt.Sprintf("a restore from the newest snapshot never replays more than %d segments (worst here: %d)", snapshotEvery, worst))
+	x.set.Check(x.part, worst <= snapshotEvery, fmt.Sprintf("a restore from the newest snapshot never replays more than %d segments (worst here: %d)", snapshotEvery, worst))
 	return steps
 }
 
@@ -160,8 +210,14 @@ func (x *run) tamper(label string, target int64, damage func(walship.Store) erro
 		x.lab.Fatal("catalog", err)
 	}
 	_, err = catalog.Plan(target)
-	fmt.Printf("%s; restore to position %d: %v\n", label, target, err)
-	x.lab.Check(errors.Is(err, walship.ErrBrokenChain), fmt.Sprintf("%s: refused while planning, before any page is applied", label))
+	refused := errors.Is(err, walship.ErrBrokenChain)
+	var text any
+	if err != nil {
+		text = err.Error()
+	}
+	x.tampers++
+	x.tables.tampered.Row(x.tampers, label, target, refused, text)
+	x.set.Check(x.part, refused, fmt.Sprintf("%s: refused while planning, before any page is applied", label))
 }
 
 func swap(ctx context.Context, store walship.Store, a, b string) error {
@@ -200,7 +256,9 @@ func main() {
 	dir := sqlitex.MustWorkDir("9.4")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
 	lab := procs.NewLab(os.Stdout)
-	x := &run{ctx: ctx, lab: lab, r: recipe.Default(), dir: dir, db: filepath.Join(dir, "live", "r.db")}
+	lab.Script.Out = nil // the steps table records each child step
+	x := &run{ctx: ctx, lab: lab, r: recipe.Default(), dir: dir, db: filepath.Join(dir, "live", "r.db"), set: results.MustOpen(dir), part: "A"}
+	x.openTables()
 	if err := os.MkdirAll(filepath.Dir(x.db), 0o755); err != nil {
 		lab.Fatal("mkdir", err)
 	}
@@ -213,37 +271,36 @@ func main() {
 	}
 	x.store = store
 	options := procs.SQLOptions{Path: x.db, JournalMode: sqlitex.JournalWAL, BusyTimeout: 5 * time.Second}
-	fmt.Printf("== recipe built to step %d; writer and outsider each hold a connection (wal_autocheckpoint=0); the writer commits every step on a fresh connection\n", baseStep)
 	x.writer = lab.SpawnSQL("writer", options)
 	x.outsider = lab.SpawnSQL("outsider", options)
 	x.openShipper()
 
-	fmt.Println()
-	fmt.Printf("== phase 1: the writer commits steps %d-%d in batches; the shipper runs one cycle after each batch (snapshot every %d segments)\n", baseStep+1, 14, snapshotEvery)
+	// Part A: the writer commits steps 3-14 in batches; the shipper runs one cycle after each batch.
 	generations := map[walship.Generation]bool{}
 	for _, batch := range shippedBatches {
 		x.commit(batch...)
 		report := x.cycle()
 		last := batch[len(batch)-1]
 		segment := report.Segment
-		lab.Check(segment != nil && segment.LastPosition == int64(last) && len(segment.Commits) == len(batch) && segment.Commits[len(batch)-1].UserVersion == uint32(last) && report.FullBackfill,
+		x.set.Check("A", segment != nil && segment.LastPosition == int64(last) && len(segment.Commits) == len(batch) && segment.Commits[len(batch)-1].UserVersion == uint32(last) && report.FullBackfill,
 			fmt.Sprintf("steps %v shipped as one segment of %d commit(s), then the shipper's checkpoint copied every frame", batch, len(batch)))
 		if segment != nil {
 			generations[segment.Generation] = true
 		}
 	}
-	lab.Check(len(generations) == len(shippedBatches), fmt.Sprintf("every segment came from a new WAL generation: the WAL restarted after each shipper checkpoint (%d generations)", len(generations)))
+	x.set.Check("A", len(generations) == len(shippedBatches), fmt.Sprintf("every segment came from a new WAL generation: the WAL restarted after each shipper checkpoint (%d generations)", len(generations)))
 
-	fmt.Println()
-	fmt.Println("== phase 2: the shipper stops; the writer commits 15 and 16; the outsider runs a TRUNCATE checkpoint; the writer commits 17; the shipper restarts")
+	// Part B: the shipper stops; the writer commits 15 and 16; the outsider runs
+	// a TRUNCATE checkpoint; the writer commits 17; the shipper restarts.
+	x.part = "B"
 	x.closeShipper()
 	x.commit(15, 16)
-	truncate := lab.Must(x.outsider, "checkpoint", sqlitex.CheckpointTruncate)
-	lab.Check(truncate.Value == "busy=0 log=0 checkpointed=0", "the outsider's TRUNCATE checkpoint copied steps 15-16 into the database file and emptied the WAL")
+	truncate := x.must(x.outsider, "checkpoint", sqlitex.CheckpointTruncate)
+	x.set.Check("B", truncate.Value == "busy=0 log=0 checkpointed=0", "the outsider's TRUNCATE checkpoint copied steps 15-16 into the database file and emptied the WAL")
 	x.commit(17)
 	x.openShipper()
 	report := x.cycle()
-	lab.Check(report.Change == walship.WALDiscontinuity && report.Snapshot != nil && report.Snapshot.Reason == walship.ReasonDiscontinuity && report.Snapshot.UserVersion == 17 && report.Segment == nil,
+	x.set.Check("B", report.Change == walship.WALDiscontinuity && report.Snapshot != nil && report.Snapshot.Reason == walship.ReasonDiscontinuity && report.Snapshot.UserVersion == 17 && report.Segment == nil,
 		"the restarted shipper sees a WAL header it did not ship, cannot vouch for what happened in between, and takes a new snapshot (it holds step 17)")
 	x.commit(18)
 	x.cycle()
@@ -252,13 +309,13 @@ func main() {
 	x.closeShipper()
 	lab.StopChildren()
 
-	fmt.Println()
-	fmt.Println("== restore every position from the store and compare with the recipe")
+	// Part C: restore every position from the store and compare with the recipe.
+	x.part = "C"
 	catalog, err := walship.LoadCatalog(ctx, store)
 	if err != nil {
 		lab.Fatal("catalog", err)
 	}
-	fmt.Printf("store: %d snapshot(s) at positions %v, %d segment(s), %d damaged object(s)\n", len(catalog.Snapshots), snapshotPositions(catalog), len(catalog.Segments), len(catalog.Damaged))
+	x.tables.store.Row(len(catalog.Snapshots), joinPositions(snapshotPositions(catalog)), len(catalog.Segments), len(catalog.Damaged))
 	hashes, err := x.r.StepHashes(ctx)
 	if err != nil {
 		lab.Fatal("recipe hashes", err)
@@ -270,8 +327,7 @@ func main() {
 			missing = append(missing, k)
 		}
 	}
-	fmt.Printf("recipe steps with no restore point: %v\n", missing)
-	lab.Check(slices.Equal(missing, []int{15, 16}), "only steps 15 and 16 have no restore point: they were committed and checkpointed away while the shipper was down")
+	x.set.Check("C", slices.Equal(missing, []int{15, 16}), "only steps 15 and 16 have no restore point: they were committed and checkpointed away while the shipper was down")
 
 	last, _ := catalog.LastPosition()
 	plan, err := catalog.Plan(last)
@@ -298,15 +354,24 @@ func main() {
 	if err != nil {
 		lab.Fatal("match live", err)
 	}
-	fmt.Printf("restored.db (position %d): integrity_check %s, equals recipe %s; the live database after every process closed equals recipe %s\n", last, procs.IntegritySummary(inspection.Integrity), restoredMatch, liveMatch)
-	lab.Check(inspection.Integrity == "ok" && restoredMatch.Exact && restoredMatch.Step == 20 && liveMatch.Exact && liveMatch.Step == 20, "the newest restore point, written to a file, opens, passes integrity_check and equals the live database's final state (step 20)")
+	x.tables.final.Row("restored.db", last, procs.IntegritySummary(inspection.Integrity), restoredMatch.Step, restoredMatch.Exact)
+	x.tables.final.Row("the live database after every process closed", nil, nil, liveMatch.Step, liveMatch.Exact)
+	x.set.Check("C", inspection.Integrity == "ok" && restoredMatch.Exact && restoredMatch.Step == 20 && liveMatch.Exact && liveMatch.Step == 20, "the newest restore point, written to a file, opens, passes integrity_check and equals the live database's final state (step 20)")
 
-	fmt.Println()
-	fmt.Println("== damaged stores (each a copy of the store above)")
+	// Part D: damaged stores, each a copy of the store above.
+	x.part = "D"
 	x.tamper("segment 7 deleted", 9, func(s walship.Store) error { return s.Delete(ctx, walship.SegmentKey(7)) })
 	x.tamper("segments 10 and 11 swapped", 11, func(s walship.Store) error { return swap(ctx, s, walship.SegmentKey(10), walship.SegmentKey(11)) })
 	x.tamper("one byte of segment 13 flipped", 13, func(s walship.Store) error { return flipByte(ctx, s, walship.SegmentKey(13)) })
-	lab.Report("POINT IN TIME")
+	x.set.Finish("POINT IN TIME")
+}
+
+func joinPositions(positions []int64) string {
+	text := make([]string, len(positions))
+	for i, p := range positions {
+		text[i] = fmt.Sprint(p)
+	}
+	return strings.Join(text, " ")
 }
 
 func snapshotPositions(catalog *walship.Catalog) []int64 {

@@ -1,0 +1,6 @@
+part,subject,field,value_a,value_b
+A,backup,schema_cookie,5,2
+A2,rollback-one-transaction,change_counter,3,1463
+C,tables created in another order,schema_cookie,3,3
+C,a table created and dropped in the history,schema_cookie,2,4
+C,an index created before vs after the rows,schema_cookie,3,3

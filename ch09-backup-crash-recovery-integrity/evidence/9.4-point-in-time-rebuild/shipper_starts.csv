@@ -1,0 +1,3 @@
+part,started,position
+A,opened on an empty store: initial snapshot,2
+B,reopened: resumed from the store,14

@@ -1,0 +1,5 @@
+part,name,journal_mode,built_to_step,write_version,read_version,change_counter,in_header_size,file_pages
+B,rollback-base.db,delete,27,1,1,30,244,244
+C,wal-base.db,wal,27,2,2,29,244,244
+D,switch.db,delete,3,1,1,6,39,39
+E,size-base.db,delete,3,1,1,6,39,39

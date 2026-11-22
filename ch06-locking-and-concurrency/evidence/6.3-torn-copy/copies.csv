@@ -1,0 +1,4 @@
+part,copy,bytes,pages,open_error,integrity,user_version,contents,matched_step,exact
+A1,main-only.db,323584,79,,ok,8,"50 accounts, 336 events, 25 documents",8,false
+A2,torn.db,409600,100,,25 problem(s),8,"50 accounts, 336 events, 25 documents",,false
+B,torn.db,245760,60,,6 problem(s),5,"31 accounts, 251 events, 15 documents",,false

@@ -1,0 +1,4 @@
+synchronous,sync_calls,pwrite64_calls,pwrite64_kills
+OFF,0,357,6
+NORMAL,5,357,6
+FULL,13,357,6

@@ -15,6 +15,9 @@
 // file, 8 rebuild workers claim and restore the entire fleet from SeaweedFS S3
 // alone, verifying E1 byte equality, catalog schema versions, exact double-read
 // object counts, and standing descriptor and memory bounds throughout.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 10.4
 package main
 
 import (
@@ -23,7 +26,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,13 +36,13 @@ import (
 	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
 	"github.com/nickstrad/walfleet/internal/procstat"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 const stepsBeforeRollout = recipe.IndexStep - 1
 
 var (
-	failures  []string
 	databases = flag.Int("databases", 500, "databases in the fleet (the outline asks for 2000; see the notes for that run)")
 	writers   = flag.Int("writers", 8, "writer node processes; each owns an equal share of the fleet")
 	workers   = flag.Int("checker-workers", 4, "databases the checker inspects at once")
@@ -59,13 +61,45 @@ func init() {
 	flag.BoolVar(&process.AckBeforePut, "ack-before-put", false, "internal: unused here")
 }
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 10.4" runs both.
+// part labels the claims made while a part runs.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		settings, writers, databases, rebuild, checkerPasses, checkerFailures, problems, infoRun, infoTimings, infoWriters *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+	settingSeq int
+)
+
+func openTables() {
+	tables.settings = set.Table("settings", "seq", "name", "value")
+	tables.writers = set.Table("writers", "writer", "databases", "rolled_out")
+	tables.databases = set.Table("databases", "database", "writer", "acknowledged_version", "catalog_schema_version", "last_shipped", "quiesce_wal_frames", "rebuilt_user_version", "rebuilt_state", "byte_identical")
+	tables.rebuild = set.Table("rebuild", "databases", "workers", "local_files_left", "objects_read", "listings", "fence_objects_written")
+	tables.checkerPasses = set.Table("checker_passes", "pass", "databases", "restore_points", "failed")
+	tables.checkerFailures = set.Table("checker_failures", "phase", "line")
+	tables.problems = set.Table("problems", "seq", "kind", "line")
+	tables.infoRun = set.Table("info_run", "name", "value")
+	tables.infoTimings = set.Table("info_timings", "seq", "phase", "ms")
+	tables.infoWriters = set.Table("info_writers", "writer", "reply", "summary")
+}
+
+func setting(name string, value any) {
+	settingSeq++
+	tables.settings.Row(settingSeq, name, value)
+}
+
+var timingSeq int
+
+func timing(phase string, elapsed time.Duration) {
+	timingSeq++
+	tables.infoTimings.Row(timingSeq, phase, elapsed.Milliseconds())
+}
+
+func check(ok bool, claim string) {
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -131,17 +165,12 @@ func (f *fleet) writeStream() {
 	})
 }
 
-func (f *fleet) rollout() int {
+func (f *fleet) rollout() {
 	f.eachWriter(func(_ int, p *node.Process, share []string) {
 		for _, id := range share[:len(share)/2] {
 			f.send(p, fmt.Sprintf("write %s %s", id, node.StoreDurable))
 		}
 	})
-	rolled := 0
-	for _, share := range f.shares {
-		rolled += len(share) / 2
-	}
-	return rolled
 }
 
 func (f *fleet) runChecker(checker *node.Process, stop <-chan struct{}) (passes, points int, failed []string) {
@@ -172,6 +201,7 @@ type recorded struct {
 	sha256        string
 	schemaVersion int
 	lastShipped   int64
+	frames        int
 }
 
 func (f *fleet) quiesce(cat *catalog.Catalog) map[string]recorded {
@@ -180,7 +210,7 @@ func (f *fleet) quiesce(cat *catalog.Catalog) map[string]recorded {
 		if err != nil {
 			fatal("close "+p.Name, err)
 		}
-		fmt.Printf("INFO: writer %s: %s; %s\n", p.Name, reply.Line, reply.Summary)
+		tables.infoWriters.Row(p.Name, reply.Line, reply.Summary)
 	}
 	records, err := cat.All(f.env.Ctx)
 	if err != nil {
@@ -194,9 +224,8 @@ func (f *fleet) quiesce(cat *catalog.Catalog) map[string]recorded {
 			fatal("quiesce "+record.ID, err)
 		}
 		frames += quiesced.Checkpoint.LogFrames
-		out[record.ID] = recorded{sha256: quiesced.SHA256, schemaVersion: record.SchemaVersion, lastShipped: record.LastShipped}
+		out[record.ID] = recorded{sha256: quiesced.SHA256, schemaVersion: record.SchemaVersion, lastShipped: record.LastShipped, frames: quiesced.Checkpoint.LogFrames}
 	}
-	fmt.Printf("quiesce: every writer closed; %d databases recorded after a TRUNCATE checkpoint (WAL frames found: %d)\n", len(out), frames)
 	check(len(out) == len(f.ids) && frames == 0, "every database was at rest when quiesced: the writers' close left no WAL frame for the TRUNCATE checkpoint")
 	return out
 }
@@ -211,7 +240,6 @@ func (f *fleet) rebuild(cat *catalog.Catalog, before map[string]recorded) {
 	if err != nil {
 		fatal("glob", err)
 	}
-	fmt.Printf("every local file deleted (%d files left under the writers' directories)\n", len(left))
 	check(len(left) == 0, "the new node starts with empty disks")
 	counting := &lab.CountingStore{Store: f.env.Store}
 	f.rebuildCounts = counting
@@ -266,12 +294,13 @@ func (f *fleet) rebuild(cat *catalog.Catalog, before map[string]recorded) {
 		overBounds = append(overBounds, err.Error())
 	}
 	gets, bytes, puts, lists := counting.Counts()
-	fmt.Printf("INFO: rebuild of %d databases by %d workers took %s; %s\n", len(f.ids), *writers, elapsed.Round(time.Millisecond), assertion.Summary())
-	fmt.Printf("rebuild read %d objects in %d listings and wrote %d fence objects\n", gets, lists, puts)
-	fmt.Printf("INFO: rebuild read %d bytes (%d per database)\n", bytes, bytes/int64(len(f.ids)))
+	timing("rebuild", elapsed)
+	tables.infoRun.Row("rebuild standing assertion", assertion.Summary())
+	tables.infoRun.Row("rebuild bytes read", bytes)
+	tables.infoRun.Row("rebuild bytes read per database", bytes/int64(len(f.ids)))
+	tables.rebuild.Row(len(f.ids), *writers, len(left), gets, lists, puts)
 	equal, steps, schemaAgrees := 0, map[int]int{}, 0
-	var mismatches []string
-	for _, id := range f.ids {
+	for i, id := range f.ids {
 		image, err := os.ReadFile(paths[id])
 		if err != nil {
 			fatal("read the rebuilt "+id, err)
@@ -286,34 +315,27 @@ func (f *fleet) rebuild(cat *catalog.Catalog, before map[string]recorded) {
 		}
 		if sha == before[id].sha256 {
 			equal++
-		} else if len(mismatches) < 5 {
-			mismatches = append(mismatches, id)
 		}
 		if state.RecipeState && state.UserVersion == before[id].schemaVersion && state.UserVersion == f.acks[id] {
 			schemaAgrees++
 		}
 		steps[state.UserVersion]++
-	}
-	var histogram []string
-	var keys []int
-	for step := range steps {
-		keys = append(keys, step)
-	}
-	sort.Ints(keys)
-	for _, step := range keys {
-		histogram = append(histogram, fmt.Sprintf("%d at recipe step %d", steps[step], step))
-	}
-	fmt.Printf("rebuilt: %d of %d byte-identical (E1) to the sha256 recorded after the TRUNCATE checkpoint; %s\n", equal, len(f.ids), strings.Join(histogram, ", "))
-	if len(mismatches) > 0 {
-		fmt.Printf("  first mismatches: %s\n", strings.Join(mismatches, ", "))
+		tables.databases.Row(id, fmt.Sprintf("w%d", i%*writers+1), f.acks[id], before[id].schemaVersion, before[id].lastShipped, before[id].frames, state.UserVersion, state.Match, sha == before[id].sha256)
 	}
 	check(equal == len(f.ids), fmt.Sprintf("%d of %d rebuilt databases are byte-identical to the quiesced originals", equal, len(f.ids)))
 	check(schemaAgrees == len(f.ids), "every rebuilt database is a recipe state whose schema version (user_version) is the one the catalog recorded and the last one acknowledged")
 	check(steps[recipe.IndexStep]+steps[stepsBeforeRollout] == len(f.ids) && steps[recipe.IndexStep] > 0 && steps[stepsBeforeRollout] > 0, fmt.Sprintf("the rollout stopped halfway: databases are on the old schema (step %d) or the new one (step %d with %s), nothing else", stepsBeforeRollout, recipe.IndexStep, strings.TrimPrefix(recipe.IndexSQL, "CREATE ")))
 	for _, line := range overBounds {
-		fmt.Println("over bounds: " + line)
+		problem("rebuild over bounds", line)
 	}
 	check(len(overBounds) == 0, "the rebuilding process stayed within the standing bounds")
+}
+
+var problemSeq int
+
+func problem(kind, line string) {
+	problemSeq++
+	tables.problems.Row(problemSeq, kind, line)
 }
 
 func main() {
@@ -346,7 +368,6 @@ func main() {
 		fatal("file limit", err)
 	}
 	perNode := bounds.DescriptorsPerConnection*node.ConnectionsPerDatabase*process.Capacity + node.ReserveDescriptors
-	fmt.Printf("INFO: descriptor soft limit %d; each writer's bound %d\n", soft, perNode)
 	if uint64(perNode) > soft {
 		fatal("descriptor limit", fmt.Errorf("-capacity %d needs up to %d descriptors per writer, the soft limit is %d", process.Capacity, perNode, soft))
 	}
@@ -365,17 +386,29 @@ func main() {
 	if err := env.Reset(f.ids); err != nil {
 		fatal("reset", err)
 	}
+	// Open the tables after env.Reset, which empties env.Work.
+	set = results.MustOpen(env.Work)
+	openTables()
+	tables.infoRun.Row("descriptor soft limit", soft)
+	tables.infoRun.Row("descriptor bound of each writer", perNode)
 	f.shares = make([][]string, *writers)
 	for i, id := range f.ids {
 		f.shares[i%*writers] = append(f.shares[i%*writers], id)
 	}
 	fmt.Printf("INFO: store %s, work directory %s\n", store.Endpoint, env.ShownWork())
-	owned := fmt.Sprint(len(f.shares[0]))
-	if fewest := len(f.shares[*writers-1]); fewest != len(f.shares[0]) {
-		owned = fmt.Sprintf("%d-%d", fewest, len(f.shares[0]))
+	tables.infoRun.Row("store endpoint", store.Endpoint)
+	tables.infoRun.Row("work directory", env.ShownWork())
+	setting("databases", *databases)
+	setting("writer_processes", *writers)
+	setting("open_databases_per_writer", process.Capacity)
+	setting("checker_processes", 1)
+	setting("checker_workers", *workers)
+	setting("checker_pause", *pause)
+	setting("bucket", store.Bucket)
+	setting("prefix", store.Prefix)
+	for w, share := range f.shares {
+		tables.writers.Row(fmt.Sprintf("w%d", w+1), len(share), len(share)/2)
 	}
-	fmt.Printf("fleet: %d databases, %d writer processes (each owns %s and keeps at most %d open), one checker process; store: bucket %s, prefix %s\n",
-		*databases, *writers, owned, process.Capacity, store.Bucket, store.Prefix)
 	for w := range *writers {
 		p, err := env.Start(env.Config(fmt.Sprintf("w%d", w+1), ""))
 		if err != nil {
@@ -398,46 +431,48 @@ func main() {
 		passes, points, failed := f.runChecker(checker, stop)
 		done <- checked{passes, points, failed}
 	}()
+	part = "A"
+	setting("steps_before_rollout", stepsBeforeRollout)
+	setting("rollout_step", recipe.IndexStep)
+	setting("rollout_sql", recipe.IndexSQL)
 	phase := time.Now()
 	f.writeStream()
-	fmt.Printf("INFO: write stream took %s\n", time.Since(phase).Round(time.Millisecond))
+	timing("write stream", time.Since(phase))
 	phase = time.Now()
-	fmt.Printf("write stream: every database claimed and given recipe steps 1-%d, each acknowledged store-durable\n", stepsBeforeRollout)
-	rolled := f.rollout()
-	fmt.Printf("schema rollout: recipe step %d (%s) applied to %d of %d databases, then stopped\n", recipe.IndexStep, recipe.IndexSQL, rolled, len(f.ids))
-	fmt.Printf("INFO: rollout took %s\n", time.Since(phase).Round(time.Millisecond))
+	f.rollout()
+	timing("rollout", time.Since(phase))
 	close(stop)
 	phase = time.Now()
 	concurrent := <-done
-	fmt.Printf("INFO: waiting for the checker's last concurrent pass took %s\n", time.Since(phase).Round(time.Millisecond))
-	fmt.Printf("INFO: the concurrent checker ran %d passes over the store and rebuilt %d restore points while the writers ran\n", concurrent.passes, concurrent.points)
-	for i, line := range concurrent.failed {
-		if i < 5 {
-			fmt.Println("  failed: " + line)
-		}
+	timing("waiting for the last concurrent checker pass", time.Since(phase))
+	tables.infoRun.Row("concurrent checker passes", concurrent.passes)
+	tables.infoRun.Row("restore points the concurrent checker rebuilt", concurrent.points)
+	for _, line := range concurrent.failed {
+		tables.checkerFailures.Row("concurrent", line)
 	}
 	check(concurrent.passes > 0 && len(concurrent.failed) == 0, "every restore point the checker found while the writers ran rebuilt to a recipe state")
+	part = "B"
 	phase = time.Now()
 	before := f.quiesce(env.Catalog)
-	fmt.Printf("INFO: quiesce took %s\n", time.Since(phase).Round(time.Millisecond))
+	timing("quiesce", time.Since(phase))
+	part = "C"
 	f.rebuild(env.Catalog, before)
+	part = "D"
 	phase = time.Now()
 	reply, err := checker.Send("pass")
 	if err != nil {
 		fatal("checker", err)
 	}
-	fmt.Printf("INFO: final checker pass took %s\n", time.Since(phase).Round(time.Millisecond))
+	timing("final checker pass", time.Since(phase))
 	env.Tracker.Note("checker", node.Reply{Line: reply.Line, Bounds: reply.Bounds})
 	final, err := lab.ParsePass(reply)
 	if err != nil {
 		fatal("checker pass", err)
 	}
-	fmt.Printf("final checker pass: %d databases, %d restore points, %d fail to rebuild\n", final.Databases, final.RestorePoints, final.Failed)
-	fmt.Printf("INFO: the final pass read %d bytes, the store's whole content\n", final.BytesRead)
-	for i, line := range final.FailedLines {
-		if i < 5 {
-			fmt.Println("  failed: " + line)
-		}
+	tables.checkerPasses.Row("final", final.Databases, final.RestorePoints, final.Failed)
+	tables.infoRun.Row("final checker pass bytes read (the whole store)", final.BytesRead)
+	for _, line := range final.FailedLines {
+		tables.checkerFailures.Row("final", line)
 	}
 	check(final.Databases == len(f.ids) && final.Failed == 0, "after the rebuild every published restore point of every database rebuilds to a recipe state")
 	// node.Claim reads every existing slot twice: once in adapter.Refresh to
@@ -448,19 +483,17 @@ func main() {
 	if err != nil {
 		fatal("close checker", err)
 	}
-	fmt.Printf("INFO: checker: %s\n", closing.Summary)
-	for _, problem := range env.Tracker.Problems {
-		fmt.Println("problem: " + problem)
+	tables.infoRun.Row("checker standing assertion", closing.Summary)
+	part = "E"
+	for _, line := range env.Tracker.Problems {
+		problem("problem", line)
 	}
 	for _, line := range env.Tracker.OverBounds {
-		fmt.Println("over bounds: " + line)
+		problem("over bounds", line)
 	}
 	check(len(env.Tracker.Problems) == 0, "no node reported a problem and every command was acknowledged")
 	check(len(env.Tracker.OverBounds) == 0 && env.Tracker.Replies > 0, "after every command of every writer and checker command the descriptors and memory stayed within the standing bounds")
-	fmt.Printf("INFO: %d replies carried a bounds check; total runtime %s\n", env.Tracker.Replies, time.Since(start).Round(time.Second))
-	if len(failures) > 0 {
-		fmt.Printf("\n%d check(s) FAILED\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("\nall checks passed")
+	tables.infoRun.Row("replies that carried a bounds check", env.Tracker.Replies)
+	timing("total", time.Since(start))
+	set.Finish("REBUILD THE FLEET")
 }

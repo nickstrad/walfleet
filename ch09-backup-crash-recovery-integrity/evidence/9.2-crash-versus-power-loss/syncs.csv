@@ -1,0 +1,9 @@
+variant,file,syncs,writes_after_last_sync,lowest_unsynced_offset
+off,-wal,0,306,0
+off,database file,0,44,0
+normal,-wal,3,156,32
+normal,database file,1,0,
+full,-wal,11,0,
+full,database file,1,0,
+normal-reader-5,-wal,2,156,304912
+normal-reader-5,database file,0,15,73728

@@ -1,52 +1,125 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/6.3
 
-== A. WAL mode: a writer commits recipe steps 6-10 and checkpoints after step 8 (wal_autocheckpoint=0)
-step  1  writer     recipe-step 6                        -> SQLITE_OK
-step  2  writer     recipe-step 7                        -> SQLITE_OK
-step  3  writer     recipe-step 8                        -> SQLITE_OK
-step  4  writer     checkpoint PASSIVE                   -> SQLITE_OK busy=0 log=61 checkpointed=61
-step  5  writer     recipe-step 9                        -> SQLITE_OK
-step  6  writer     recipe-step 10                       -> SQLITE_OK
-step  7  copier     copy db main-only.db                 -> SQLITE_OK 323584 bytes
-step  8  copier     copy -wal wal-at-copy                -> SQLITE_OK 251352 bytes
+════════════════════════════════════════════════════════════════════════
+  6.3  A plain copy of a live database
+════════════════════════════════════════════════════════════════════════
 
--- A1. the database file alone, copied with plain reads between commits
-copy main-only.db: 323584 bytes (79 pages)
-  integrity_check: ok
-  user_version: 8; 50 accounts, 336 events, 25 documents
-  equals: step 8 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: the copy of the database file without its -wal opens cleanly and passes integrity_check
-check ok: but it equals recipe step 8, the last checkpoint, not step 10, the last commit: commits 9-10 are silently missing
-INFO: database file at copy time: 323584 bytes
+A writer process changes a database built from the recipe to step 5. A
+copier process copies its files with plain reads, the way cp would, with
+no SQLite lock. Each copy is then opened read-only, checked with
+integrity_check, and compared with every known recipe state.
 
--- A2. the database file copied in two halves while a checkpoint writes into it between them
-step  9  writer     query SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size -> SQLITE_OK 204800
-step 10  copier     copy-range db torn.db 0 204800       -> SQLITE_OK bytes 0-204800
-step 11  writer     checkpoint PASSIVE                   -> SQLITE_OK busy=0 log=40 checkpointed=40
-check ok: the checkpoint copied every WAL frame (steps 9-10) into the database file
-step 12  copier     copy-range db torn.db 204800 end     -> SQLITE_OK bytes 204800-409600
-copy torn.db: 409600 bytes (100 pages)
-  integrity_check: 25 problem(s), the first 3:
-    wrong # of entries in index events_by_account
-    row 335 missing from index events_by_account
-    row 336 missing from index events_by_account
-  user_version: 8; 50 accounts, 336 events, 25 documents
-  equals: no recipe step
-check ok: the torn copy fails integrity_check or equals no recipe state
+What each copy turned out to be:
+┌──────┬──────────────┬───────┬────────────┬───────────────┬──────────────┬────────────────┐
+│ part │     copy     │ pages │ open_error │   integrity   │ user_version │     equals     │
+├──────┼──────────────┼───────┼────────────┼───────────────┼──────────────┼────────────────┤
+│ A1   │ main-only.db │ 79    │            │ ok            │ 8            │ step 8         │
+│ A2   │ torn.db      │ 100   │            │ 25 problem(s) │ 8            │ no recipe step │
+│ B    │ torn.db      │ 60    │            │ 6 problem(s)  │ 5            │ no recipe step │
+└──────┴──────────────┴───────┴────────────┴───────────────┴──────────────┴────────────────┘
 
-== B. rollback mode (journal_mode=delete) as the contrast: the database file copied in two halves while a commit (step 6) writes into it between them
-step 13  writer     query SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size -> SQLITE_OK 102400
-step 14  copier     copy-range db torn.db 0 102400       -> SQLITE_OK bytes 0-102400
-step 15  writer     recipe-step 6                        -> SQLITE_OK
-step 16  copier     copy-range db torn.db 102400 end     -> SQLITE_OK bytes 102400-245760
-copy torn.db: 245760 bytes (60 pages)
-  integrity_check: 6 problem(s), the first 3:
-    Freelist: freelist leaf count too big on page 35
-    Freelist: invalid page number 52
-    Tree 3 page 24 cell 0: overflow list length is 1 but should be 3
-  user_version: 5; 31 accounts, 251 events, 15 documents
-  equals: no recipe step
-check ok: the torn copy fails integrity_check or equals no recipe state
+In the transcripts below, HALF_QUERY stands for
+  SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size
 
-TORN COPY OK
+── A. WAL mode (wal_autocheckpoint=0) ─────────────────────────────────
+
+The writer commits recipe steps 6-8, runs a PASSIVE checkpoint, then commits
+steps 9 and 10, which stay in -wal. The copier then copies the database
+file and -wal.
+┌──────┬─────────┬───────────────────────┬───────────┬───────────────────────────────┐
+│ step │ process │        action         │  result   │             value             │
+├──────┼─────────┼───────────────────────┼───────────┼───────────────────────────────┤
+│ 1    │ writer  │ recipe-step 6         │ SQLITE_OK │                               │
+│ 2    │ writer  │ recipe-step 7         │ SQLITE_OK │                               │
+│ 3    │ writer  │ recipe-step 8         │ SQLITE_OK │                               │
+│ 4    │ writer  │ checkpoint PASSIVE    │ SQLITE_OK │ busy=0 log=61 checkpointed=61 │
+│ 5    │ writer  │ recipe-step 9         │ SQLITE_OK │                               │
+│ 6    │ writer  │ recipe-step 10        │ SQLITE_OK │                               │
+│ 7    │ copier  │ copy db main-only.db  │ SQLITE_OK │ 323584 bytes                  │
+│ 8    │ copier  │ copy -wal wal-at-copy │ SQLITE_OK │ 251352 bytes                  │
+└──────┴─────────┴───────────────────────┴───────────┴───────────────────────────────┘
+
+A1. The database file alone (main-only.db), without its -wal. It opens
+    cleanly and passes integrity_check, but it is recipe step 8, the last
+    checkpoint, not step 10, the last commit: commits 9-10 are silently
+    missing. Equal except the change counter at bytes 24-27 and 92-95
+    (exact = false).
+┌──────────────┬────────┬───────────┬──────────────┬───────────────────────────────────────┬──────────────┬───────┐
+│     copy     │ bytes  │ integrity │ user_version │               contents                │ matched_step │ exact │
+├──────────────┼────────┼───────────┼──────────────┼───────────────────────────────────────┼──────────────┼───────┤
+│ main-only.db │ 323584 │ ok        │ 8            │ 50 accounts, 336 events, 25 documents │ 8            │ false │
+└──────────────┴────────┴───────────┴──────────────┴───────────────────────────────────────┴──────────────┴───────┘
+
+A2. The database file copied in two halves while a checkpoint writes into it
+    between them. The checkpoint (step 11) copies all 40 WAL frames of steps
+    9-10, so the second half comes from a newer database than the first.
+┌──────┬─────────┬──────────────────────────────────┬───────────┬───────────────────────────────┐
+│ step │ process │              action              │  result   │             value             │
+├──────┼─────────┼──────────────────────────────────┼───────────┼───────────────────────────────┤
+│ 9    │ writer  │ query HALF_QUERY                 │ SQLITE_OK │ 204800                        │
+│ 10   │ copier  │ copy-range db torn.db 0 204800   │ SQLITE_OK │ bytes 0-204800                │
+│ 11   │ writer  │ checkpoint PASSIVE               │ SQLITE_OK │ busy=0 log=40 checkpointed=40 │
+│ 12   │ copier  │ copy-range db torn.db 204800 end │ SQLITE_OK │ bytes 204800-409600           │
+└──────┴─────────┴──────────────────────────────────┴───────────┴───────────────────────────────┘
+
+The torn copy fails integrity_check and equals no recipe state.
+┌─────────┬────────┬───────┬───────────────┬──────────────┬───────────────────────────────────────┬────────────────┐
+│  copy   │ bytes  │ pages │   integrity   │ user_version │               contents                │     equals     │
+├─────────┼────────┼───────┼───────────────┼──────────────┼───────────────────────────────────────┼────────────────┤
+│ torn.db │ 409600 │ 100   │ 25 problem(s) │ 8            │ 50 accounts, 336 events, 25 documents │ no recipe step │
+└─────────┴────────┴───────┴───────────────┴──────────────┴───────────────────────────────────────┴────────────────┘
+
+Its integrity_check problems, the first 3 and the count:
+┌───┬───────────────────────────────────────────────┐
+│ n │                    problem                    │
+├───┼───────────────────────────────────────────────┤
+│ 1 │ wrong # of entries in index events_by_account │
+│ 2 │ row 335 missing from index events_by_account  │
+│ 3 │ row 336 missing from index events_by_account  │
+│   │ ... 25 problem(s) in all                      │
+└───┴───────────────────────────────────────────────┘
+
+── B. Rollback mode (journal_mode=delete) ─────────────────────────────
+
+The contrast: the database file copied in two halves while the commit of
+recipe step 6 (transcript step 15) writes into it between them.
+┌──────┬─────────┬──────────────────────────────────┬───────────┬─────────────────────┐
+│ step │ process │              action              │  result   │        value        │
+├──────┼─────────┼──────────────────────────────────┼───────────┼─────────────────────┤
+│ 13   │ writer  │ query HALF_QUERY                 │ SQLITE_OK │ 102400              │
+│ 14   │ copier  │ copy-range db torn.db 0 102400   │ SQLITE_OK │ bytes 0-102400      │
+│ 15   │ writer  │ recipe-step 6                    │ SQLITE_OK │                     │
+│ 16   │ copier  │ copy-range db torn.db 102400 end │ SQLITE_OK │ bytes 102400-245760 │
+└──────┴─────────┴──────────────────────────────────┴───────────┴─────────────────────┘
+
+This torn copy also fails integrity_check and equals no recipe state.
+┌─────────┬────────┬───────┬──────────────┬──────────────┬───────────────────────────────────────┬────────────────┐
+│  copy   │ bytes  │ pages │  integrity   │ user_version │               contents                │     equals     │
+├─────────┼────────┼───────┼──────────────┼──────────────┼───────────────────────────────────────┼────────────────┤
+│ torn.db │ 245760 │ 60    │ 6 problem(s) │ 5            │ 31 accounts, 251 events, 15 documents │ no recipe step │
+└─────────┴────────┴───────┴──────────────┴──────────────┴───────────────────────────────────────┴────────────────┘
+
+Its integrity_check problems:
+┌───┬──────────────────────────────────────────────────────────────────┐
+│ n │                             problem                              │
+├───┼──────────────────────────────────────────────────────────────────┤
+│ 1 │ Freelist: freelist leaf count too big on page 35                 │
+│ 2 │ Freelist: invalid page number 52                                 │
+│ 3 │ Tree 3 page 24 cell 0: overflow list length is 1 but should be 3 │
+│ 4 │ Page 29: never used                                              │
+│ 5 │ Page 37: never used                                              │
+│ 6 │ wrong # of entries in index events_by_account                    │
+└───┴──────────────────────────────────────────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A1  ✓  the copy of the database file without its -wal opens cleanly and passes integrity_check
+A1  ✓  but it equals recipe step 8, the last checkpoint, not step 10, the last commit: commits 9-10 are silently missing
+A2  ✓  the checkpoint copied every WAL frame (steps 9-10) into the database file
+A2  ✓  the torn copy fails integrity_check or equals no recipe state
+B  ✓  the torn copy fails integrity_check or equals no recipe state
+
+5 of 5 claims hold
+
+Experiment verdict: TORN COPY OK

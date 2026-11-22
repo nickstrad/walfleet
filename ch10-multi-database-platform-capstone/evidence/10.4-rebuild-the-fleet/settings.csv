@@ -1,0 +1,12 @@
+seq,name,value
+1,databases,500
+2,writer_processes,8
+3,open_databases_per_writer,32
+4,checker_processes,1
+5,checker_workers,4
+6,checker_pause,1s
+7,bucket,course-ch10b
+8,prefix,exp-10-4/
+9,steps_before_rollout,4
+10,rollout_step,5
+11,rollout_sql,"CREATE INDEX events_by_account ON events(account_id, id)"

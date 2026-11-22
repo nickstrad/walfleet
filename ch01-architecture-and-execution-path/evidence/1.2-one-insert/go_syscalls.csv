@@ -1,0 +1,52 @@
+mode,seq,call,norm
+delete,1,fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1 = 0,fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
+delete,2,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+delete,3,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1 = 0,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
+delete,4,pread64 t.db off=24 len=16 = 16,pread64 t.db off=24 len=16
+delete,5,fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1 = 0,fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
+delete,6,pread64 t.db off=4096 len=4096 = 4096,pread64 t.db off=4096 len=4096
+delete,7,open t.db-journal O_RDWR|O_CREAT|O_LARGEFILE|O_NOFOLLOW|O_CLOEXEC = fd,open t.db-journal
+delete,8,fcntl t.db-journal F_SETFD = 0,fcntl t.db-journal F_SETFD
+delete,9,pwrite64 t.db-journal off=0 len=512 = 512,pwrite64 t.db-journal off=0 len=512
+delete,10,pwrite64 t.db-journal off=512 len=4 = 4,pwrite64 t.db-journal off=512 len=4
+delete,11,pwrite64 t.db-journal off=516 len=4096 = 4096,pwrite64 t.db-journal off=516 len=4096
+delete,12,pwrite64 t.db-journal off=4612 len=4 = 4,pwrite64 t.db-journal off=4612 len=4
+delete,13,fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1 = 0,fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
+delete,14,fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510 = 0,fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
+delete,15,pwrite64 t.db-journal off=4616 len=4 = 4,pwrite64 t.db-journal off=4616 len=4
+delete,16,pwrite64 t.db-journal off=4620 len=4096 = 4096,pwrite64 t.db-journal off=4620 len=4096
+delete,17,pwrite64 t.db-journal off=8716 len=4 = 4,pwrite64 t.db-journal off=8716 len=4
+delete,18,pread64 t.db-journal off=9216 len=8 = 0,pread64 t.db-journal off=9216 len=8 = 0
+delete,19,fsync t.db-journal = 0,sync t.db-journal
+delete,20,open . O_RDONLY|O_LARGEFILE|O_CLOEXEC = fd,open .
+delete,21,fcntl . F_SETFD = 0,fcntl . F_SETFD
+delete,22,fsync . = 0,sync .
+delete,23,close . = 0,close .
+delete,24,pwrite64 t.db-journal off=0 len=12 = 12,pwrite64 t.db-journal off=0 len=12
+delete,25,fsync t.db-journal = 0,sync t.db-journal
+delete,26,pwrite64 t.db off=0 len=4096 = 4096,pwrite64 t.db off=0 len=4096
+delete,27,pwrite64 t.db off=4096 len=4096 = 4096,pwrite64 t.db off=4096 len=4096
+delete,28,fsync t.db = 0,sync t.db
+delete,29,close t.db-journal = 0,close t.db-journal
+delete,30,unlink t.db-journal = 0,unlink t.db-journal
+delete,31,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+delete,32,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2 = 0,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
+delete,33,fcntl t.db F_SETLK F_UNLCK start=0 len=0 = 0,fcntl t.db F_SETLK F_UNLCK start=0 len=0
+wal,1,fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1 = 0,fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1
+wal,2,fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1 = 0,fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1
+wal,3,pread64 t.db off=4096 len=4096 = 4096,pread64 t.db off=4096 len=4096
+wal,4,fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1 = 0,fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1
+wal,5,fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1 = 0,fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1
+wal,6,fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0,fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1
+wal,7,fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1 = 0,fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1
+wal,8,pwrite64 t.db-wal off=0 len=32 = 32,pwrite64 t.db-wal off=0 len=32
+wal,9,fsync t.db-wal = 0,sync t.db-wal
+wal,10,open . O_RDONLY|O_LARGEFILE|O_CLOEXEC = fd,open .
+wal,11,fcntl . F_SETFD = 0,fcntl . F_SETFD
+wal,12,fsync . = 0,sync .
+wal,13,close . = 0,close .
+wal,14,pwrite64 t.db-wal off=32 len=24 = 24,pwrite64 t.db-wal off=32 len=24
+wal,15,pwrite64 t.db-wal off=56 len=4096 = 4096,pwrite64 t.db-wal off=56 len=4096
+wal,16,fsync t.db-wal = 0,sync t.db-wal
+wal,17,fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1 = 0,fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1
+wal,18,fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0,fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1

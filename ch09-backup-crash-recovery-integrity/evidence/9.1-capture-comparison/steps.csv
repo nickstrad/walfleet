@@ -1,0 +1,16 @@
+step,during,child,action,outcome
+1,plain copy of the live file,writer,recipe-session 7,SQLITE_OK
+2,pages in a read transaction,writer,recipe-session 8,SQLITE_OK
+3,file + WAL under a held transaction,writer,recipe-session 9,SQLITE_OK
+4,VACUUM INTO,writer,begin immediate,SQLITE_OK
+5,VACUUM INTO,writer,recipe-exec 10,SQLITE_OK
+6,VACUUM INTO,writer,commit,SQLITE_OK
+7,backup API,writer,recipe-session 13,SQLITE_OK
+8,"backup API, a commit after every step",writer,recipe-session 14,SQLITE_OK
+9,"backup API, a commit after every step",writer,recipe-session 15,SQLITE_OK
+10,"backup API, a commit after every step",writer,recipe-session 16,SQLITE_OK
+11,"backup API, a commit after every step",writer,recipe-session 17,SQLITE_OK
+12,"backup API, a commit after every step",writer,recipe-session 18,SQLITE_OK
+13,"backup API, a commit after every step",writer,recipe-session 19,SQLITE_OK
+14,"backup API, a commit after every step",writer,recipe-session 20,SQLITE_OK
+15,"backup API, a commit after every step",writer,recipe-session 21,SQLITE_OK

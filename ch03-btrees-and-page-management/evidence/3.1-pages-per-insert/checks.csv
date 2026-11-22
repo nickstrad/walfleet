@@ -1,0 +1,28 @@
+seq,part,status,claim
+1,A,ok,the last manifest equals capture.BuildManifest of the same image (unchanged pages reuse the previous sha256 only to save time)
+2,A,ok,"the first split happens at insert #5 (rowid 10), as the arithmetic predicts"
+3,A,ok,"every split happens exactly where predicted: insert #4 m + 1, every 4 inserts"
+4,A,ok,every insert that does not split changes exactly one page
+5,A,ok,"that one page is the table leaf that now holds the new rowid, never page 1 (page 1 is not written)"
+6,A,ok,most inserts change one page (1546 of 2061)
+7,A,ok,"the tree gains its third level at insert #2053 (rowid 4106), as the arithmetic predicts"
+8,A,ok,"the first split is also the first depth change: the root, a new page holding the root's old cells, a new leaf, and page 1"
+9,A,ok,"an append split at depth 2 changes three pages: page 1 (database size), the parent (one new divider) and the new leaf; the full leaf is not rewritten"
+10,A,ok,the root stays page 2 through both depth changes and always equals sqlite_schema.rootpage
+11,A,ok,integrity_check = ok after every one of the 2061 inserts
+12,A,ok,for every insert the WAL frames of its commit name exactly the pages the manifest shows changed: pages changed = frames shipped
+13,B,ok,"a split in the middle rewrites the full leaf and its siblings (3 leaf pages changed), not just one new page"
+14,B,ok,every changed page is in the commit's WAL frames
+15,B,ok,"here the WAL ships more frames than pages changed: balance_nonroot rewrote a sibling leaf with the same cells it already held, and a written page is a shipped frame even when its bytes are unchanged"
+16,B,ok,integrity_check = ok after the middle split
+17,C,ok,with two indexes the common insert changes three pages: the table leaf and one leaf in each index
+18,C,ok,WAL frames equal the changed pages and integrity_check = ok for all 200 inserts
+19,D,ok,in rollback mode every commit also rewrites page 1
+20,D,ok,an insert that adds no page changes exactly two pages: page 1 and the table leaf that holds the new rowid
+21,D,ok,on those inserts page 1 differs only in the change counter (bytes 24-27) and version-valid-for (bytes 92-95)
+22,E,ok,random keys with 4 rows per leaf: only 86 of 250 inserts change one page; 70 split and 94 more change several pages without adding one (balance_nonroot moves cells between siblings)
+23,E,ok,"random keys with small rows: most inserts change one page again (566 of 600): the rule depends on how many rows fit in a leaf, not on the key order alone"
+24,E,ok,"a row larger than the leaf's local limit also writes its overflow pages and page 1 (the file grows): no insert changes one page, each changes 3..5"
+25,E,ok,"a WITHOUT ROWID table is an index b-tree, and balance_quick serves table leaves only: its append splits at depth 2 go through balance_nonroot and change more than three pages"
+26,E,ok,"in all four, every changed page is in its commit's WAL frames"
+27,E,ok,integrity_check = ok after every insert of all four

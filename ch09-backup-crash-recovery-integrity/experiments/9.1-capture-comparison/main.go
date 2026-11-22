@@ -7,6 +7,9 @@
 // place via sqlite3BackupUpdate, src/backup.c:688-715) from other-connection
 // commits (which restart from page 1 via sqlite3BackupRestart,
 // src/backup.c:728-734).
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 9.1
 package main
 
 import (
@@ -26,6 +29,7 @@ import (
 	"github.com/nickstrad/walfleet/internal/equal"
 	"github.com/nickstrad/walfleet/internal/procs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walfile"
 	"github.com/nickstrad/walfleet/internal/walship"
@@ -49,26 +53,43 @@ var errGaveUp = errors.New("gave up")
 
 type levels struct{ e1, e2, e3, e3ExceptJournalMode, canonical bool }
 
-func (l levels) String() string {
-	mark := func(b bool) string {
-		if b {
-			return "yes"
-		}
-		return "no "
-	}
-	return fmt.Sprintf("E1 %s  E2 %s  E3 %s  E3-except-journal_mode %s  E1-after-VACUUM-INTO %s", mark(l.e1), mark(l.e2), mark(l.e3), mark(l.e3ExceptJournalMode), mark(l.canonical))
-}
+var levelColumns = []string{"e1", "e2", "e3", "e3_except_journal_mode", "e1_after_vacuum_into"}
+
+func (l levels) values() []any { return []any{l.e1, l.e2, l.e3, l.e3ExceptJournalMode, l.canonical} }
 
 type run struct {
-	ctx    context.Context
-	lab    *procs.Lab
-	r      recipe.Recipe
-	dir    string
-	live   string
-	writer *procs.Child
-	source *sqlitex.DB
-	conn   *sql.Conn
-	next   int
+	ctx      context.Context
+	lab      *procs.Lab
+	r        recipe.Recipe
+	dir      string
+	live     string
+	writer   *procs.Child
+	source   *sqlitex.DB
+	conn     *sql.Conn
+	next     int
+	set      *results.Set
+	captures int
+	during   string
+	tables   struct {
+		expected, quiet, header, details, steps, captures, backupSteps, summary *results.Table
+	}
+}
+
+func (x *run) openTables() {
+	x.tables.expected = x.set.Table("expected_levels", append([]string{"method"}, levelColumns...)...)
+	x.tables.quiet = x.set.Table("quiet_captures", append([]string{"seq", "method"}, levelColumns...)...)
+	x.tables.header = x.set.Table("backup_header", "seq", "comparison", "equal_ignoring_header_bytes", "ignored_header_bytes", "differing_header_bytes")
+	x.tables.details = x.set.Table("quiet_details", "seq", "name", "value")
+	x.tables.steps = x.set.Table("steps", "step", "during", "child", "action", "outcome")
+	x.tables.captures = x.set.Table("writer_captures", append([]string{"seq", "method", "latest_commit", "equals_step", "want_step"}, levelColumns...)...)
+	x.tables.backupSteps = x.set.Table("backup_steps", "run", "step", "remaining", "page_count", "copied", "then_committed_by", "committed_step")
+	x.tables.summary = x.set.Table("summary", "seq", "method", "strongest_level", "safe_under_writer", "blocks_the_writer")
+}
+
+// must runs one action on the writer child and records it in the steps table.
+func (x *run) must(action string, args ...string) {
+	result := x.lab.Must(x.writer, action, args...)
+	x.tables.steps.Row(result.Step, x.during, x.writer.Name, procs.ActionText(action, args), result.Outcome())
 }
 
 func (x *run) ref(k int) string { return filepath.Join(x.dir, "ref", fmt.Sprintf("step-%02d.db", k)) }
@@ -188,7 +209,7 @@ func (x *run) stateOf(capture string, vacuumed bool) (int, levels) {
 }
 
 func (x *run) commit() int {
-	x.lab.Must(x.writer, "recipe-session", strconv.Itoa(x.next))
+	x.must("recipe-session", strconv.Itoa(x.next))
 	x.next++
 	return x.next - 1
 }
@@ -249,7 +270,6 @@ func (x *run) copyLive(suffix, name string) {
 func (x *run) path(name string) string { return filepath.Join(x.dir, name) }
 
 func (x *run) quiet() {
-	fmt.Printf("== part A: a quiet database (recipe step %d, no writer)\n", quietStep)
 	if err := copyFile(x.ref(quietStep), x.live); err != nil {
 		x.lab.Fatal("live copy", err)
 	}
@@ -282,36 +302,51 @@ func (x *run) quiet() {
 		methodPages:  {true, true, true, true, true},
 		methodFile:   {true, true, true, true, true},
 	}
-	for _, c := range []struct{ method, file string }{
+	for i, c := range []struct{ method, file string }{
 		{methodCopy, "a-copy.db"}, {methodBackup, "a-backup.db"}, {methodVacuum, "a-vacuum.db"}, {methodPages, "a-pages.db"}, {methodFile, "a-replayed.db"},
 	} {
 		got := x.compare(x.path(c.file), quietStep, c.method == methodVacuum)
-		fmt.Printf("%-36s vs the source: %s\n", c.method, got)
-		x.lab.Check(got == want[c.method], fmt.Sprintf("%s reaches exactly the expected levels on a quiet database", c.method))
+		x.tables.expected.Row(append([]any{c.method}, want[c.method].values()...)...)
+		x.tables.quiet.Row(append([]any{i + 1, c.method}, got.values()...)...)
+		x.set.Check("A", got == want[c.method], fmt.Sprintf("%s reaches exactly the expected levels on a quiet database", c.method))
 	}
 	backup, err := equal.ComparePageFiles(x.path("a-backup.db"), x.ref(quietStep), pageSize)
 	if err != nil {
 		x.lab.Fatal("E2", err)
 	}
-	fmt.Printf("backup API: %s\n", backup)
+	x.headerRow(1, "backup copy vs the source", backup)
 	backupCanonical, err := equal.ComparePageFiles(x.canonicalCapture(x.path("a-backup.db")), x.canonicalRef(quietStep), pageSize)
 	if err != nil {
 		x.lab.Fatal("E2 canonical", err)
 	}
-	fmt.Printf("backup API after VACUUM INTO vs the source after VACUUM INTO: %s\n", backupCanonical)
+	x.headerRow(2, "both after VACUUM INTO", backupCanonical)
 	// Read the backup's schema cookie (header bytes 40-43) to show why its
 	// canonical form still differs from the source's at byte 43:
 	// sqlite3_backup_step sets the destination's cookie to old+1 (src/backup.c:448),
 	// and VACUUM INTO carries that offset forward by adding 1 again (src/vacuum.c:359).
 	backupCookie, sourceCookie := schemaCookie(x, x.path("a-backup.db")), schemaCookie(x, x.ref(quietStep))
-	fmt.Printf("schema cookie: backup %d, source %d\n", backupCookie, sourceCookie)
-	x.lab.Check(backupCanonical.Equal && slices.Equal(backupCanonical.IgnoredDiffering, []int{schemaCookieLowByte}) && backupCookie != sourceCookie,
+	x.tables.details.Row(1, "schema cookie of the backup", backupCookie)
+	x.tables.details.Row(2, "schema cookie of the source", sourceCookie)
+	x.set.Check("A", backupCanonical.Equal && slices.Equal(backupCanonical.IgnoredDiffering, []int{schemaCookieLowByte}) && backupCookie != sourceCookie,
 		fmt.Sprintf("the backup's VACUUM INTO form differs from the source's only at byte %d, the schema cookie", schemaCookieLowByte))
 	_, logical, vacuumed, err := equal.CompareLogicalFiles(x.ctx, x.path("a-vacuum.db"), x.ref(quietStep))
 	if err != nil {
 		x.lab.Fatal("E3", err)
 	}
-	fmt.Printf("VACUUM INTO: E3 differs only in journal_mode: %s for the copy, %s for the source\n", pragma(logical, "journal_mode"), pragma(vacuumed, "journal_mode"))
+	x.tables.details.Row(3, "journal_mode of the VACUUM INTO copy", pragma(logical, "journal_mode"))
+	x.tables.details.Row(4, "journal_mode of the source", pragma(vacuumed, "journal_mode"))
+}
+
+func (x *run) headerRow(seq int, comparison string, r equal.Result) {
+	ignored := make([]string, len(r.Ignored))
+	for i, b := range r.Ignored {
+		ignored[i] = b.String()
+	}
+	differing := make([]string, len(r.IgnoredDiffering))
+	for i, offset := range r.IgnoredDiffering {
+		differing[i] = strconv.Itoa(offset)
+	}
+	x.tables.header.Row(seq, comparison, r.Equal, strings.Join(ignored, " "), strings.Join(differing, " "))
 }
 
 func schemaCookie(x *run, path string) uint32 {
@@ -364,30 +399,33 @@ var (
 
 func (x *run) report(method, file string, vacuumed bool, want int, wantLevels levels) bool {
 	k, l := x.stateOf(x.path(file), vacuumed)
-	fmt.Printf("%-36s equals recipe step %d (want %d): %s\n", method, k, want, l)
+	x.captureRow(method, k, want, l)
 	ok := k == want && l == wantLevels
-	x.lab.Check(ok, fmt.Sprintf("under the writer, %s equals recipe step %d at exactly the expected levels", method, want))
+	x.set.Check("B", ok, fmt.Sprintf("under the writer, %s equals recipe step %d at exactly the expected levels", method, want))
 	return ok
 }
 
+func (x *run) captureRow(method string, k int, want any, l levels) {
+	x.captures++
+	x.tables.captures.Row(append([]any{x.captures, method, x.next - 1, k, want}, l.values()...)...)
+}
+
 func (x *run) underWriter() map[string]bool {
-	fmt.Println()
-	fmt.Println("== part B: the same database while a writer child commits recipe steps (one fresh connection per step, wal_autocheckpoint=0)")
 	x.writer = x.lab.SpawnSQL("writer", procs.SQLOptions{Path: x.live, JournalMode: sqlitex.JournalWAL, BusyTimeout: 5 * time.Second})
 	x.openSource()
 	x.next = quietStep + 1
 	safe := map[string]bool{}
 
-	fmt.Println("-- plain copy of the live database file (the -wal is not copied)")
+	x.during = "plain copy of the live file"
 	current := x.commit()
 	x.copyLive("", "b-copy.db")
 	stale, staleLevels := x.stateOf(x.path("b-copy.db"), false)
-	fmt.Printf("%-36s equals recipe step %d (the writer has committed %d): %s\n", "plain copy of the live file", stale, current, staleLevels)
-	x.lab.Check(stale >= 0 && stale < current && staleLevels == everyLevel,
+	x.captureRow(x.during, stale, nil, staleLevels)
+	x.set.Check("B", stale >= 0 && stale < current && staleLevels == everyLevel,
 		fmt.Sprintf("the plain copy is byte-identical (E1) to an older recipe step (%d), not to the committed step %d", stale, current))
 	safe[methodCopy] = stale == current
 
-	fmt.Println("-- every page through sqlite_dbpage in one read transaction, in two halves; the writer commits between them")
+	x.during = methodPages
 	seen := x.begin()
 	pages := x.pageCount()
 	image := x.readPages(1, pages/2)
@@ -399,7 +437,7 @@ func (x *run) underWriter() map[string]bool {
 	}
 	safe[methodPages] = x.report(methodPages, "b-pages.db", false, seen, everyLevel)
 
-	fmt.Println("-- copy of the database file, a commit, then a copy of the -wal, all inside one read transaction; rebuilt by WAL replay")
+	x.during = methodFile
 	seen = x.begin()
 	x.copyLive("", "b-file.db")
 	afterCopy := x.commit()
@@ -414,15 +452,14 @@ func (x *run) underWriter() map[string]bool {
 	// uncommitted step: sqlite3RunVacuum opens only a read transaction on the
 	// source when pOut != NULL (src/vacuum.c:270), so it neither blocks nor
 	// sees the uncommitted writes.
-	fmt.Println("-- VACUUM INTO while the writer child holds the write lock with step uncommitted, then the writer commits")
+	x.during = methodVacuum
 	before := x.next - 1
-	x.lab.Must(x.writer, "begin", "immediate")
-	x.lab.Must(x.writer, "recipe-exec", strconv.Itoa(x.next))
+	x.must("begin", "immediate")
+	x.must("recipe-exec", strconv.Itoa(x.next))
 	if _, err := x.conn.ExecContext(x.ctx, "VACUUM INTO ?", x.path("b-vacuum.db")); err != nil {
 		x.lab.Fatal("vacuum into", err)
 	}
-	fmt.Println("VACUUM INTO finished while the writer held its write transaction open")
-	x.lab.Must(x.writer, "commit")
+	x.must("commit")
 	x.next++
 	safe[methodVacuum] = x.report(methodVacuum, "b-vacuum.db", true, before, vacuumLevels)
 
@@ -437,14 +474,14 @@ func (x *run) underWriter() map[string]bool {
 // to contrast sqlite3BackupUpdate with sqlite3BackupRestart, and a second
 // where the writer child commits after every step to show starvation.
 func (x *run) backups() bool {
-	fmt.Printf("-- backup API, %d pages per step; after step 2 and step 3 the backup's own connection commits a recipe step, after step 5 the writer child does\n", backupPages)
+	x.during = methodBackup
 	var copied []int
 	steps, err := sqlitex.BackupWithSourceExec(x.ctx, x.conn, x.path("b-backup.db"), backupPages, func(step sqlitex.BackupStep, exec sqlitex.SourceExecer) error {
 		// Track PageCount-Remaining (= iNext-1) rather than Remaining alone:
 		// sqlite3_backup_step recomputes Remaining from the current source size
 		// (src/backup.c:428-429), so Remaining rises whenever a commit grows the database.
 		copied = append(copied, step.PageCount-step.Remaining)
-		note := ""
+		var by, committed any
 		switch step.Step {
 		case 2, 3:
 			planned, err := x.r.Step(x.next)
@@ -454,36 +491,35 @@ func (x *run) backups() bool {
 			if err := applyThrough(x.ctx, exec, planned); err != nil {
 				return err
 			}
-			note = fmt.Sprintf("; the backup's own connection commits step %d", x.next)
+			by, committed = "the backup's own connection", x.next
 			x.next++
 		case 5:
-			note = fmt.Sprintf("; the writer child commits step %d", x.next)
-			x.commit()
+			by, committed = "the writer child", x.commit()
 		}
-		fmt.Printf("   backup step %2d: remaining %3d of %3d, copied %3d%s\n", step.Step, step.Remaining, step.PageCount, step.PageCount-step.Remaining, note)
+		x.tables.backupSteps.Row(1, step.Step, step.Remaining, step.PageCount, step.PageCount-step.Remaining, by, committed)
 		return nil
 	})
 	if err != nil {
 		x.lab.Fatal("backup", err)
 	}
 	finished := steps[len(steps)-1].Remaining == 0
-	x.lab.Check(copied[0] == backupPages && copied[1] == 2*backupPages && copied[2] == 3*backupPages && copied[3] == 4*backupPages && copied[4] == 5*backupPages,
+	x.set.Check("B", copied[0] == backupPages && copied[1] == 2*backupPages && copied[2] == 3*backupPages && copied[3] == 4*backupPages && copied[4] == 5*backupPages,
 		fmt.Sprintf("through the backup's own commits the copy keeps advancing %d pages per step (no restart), although the remaining count rose when those commits grew the database", backupPages))
-	x.lab.Check(copied[5] == backupPages, "after the writer child's commit the next step starts again from page 1: the backup restarted")
+	x.set.Check("B", copied[5] == backupPages, "after the writer child's commit the next step starts again from page 1: the backup restarted")
 	var remaining []int
 	ok := x.report(methodBackup, "b-backup.db", false, x.next-1, backupLevels) && finished
 
-	fmt.Printf("-- backup API, %d pages per step, the writer child commits after every step; give up after %d steps\n", backupPages, giveUpAfter)
+	x.during = methodBackup + ", a commit after every step"
 	_, err = sqlitex.Backup(x.ctx, x.conn, x.path("b-backup-never.db"), backupPages, func(step sqlitex.BackupStep) error {
 		remaining = append(remaining, step.Remaining)
-		fmt.Printf("   backup step %2d: remaining %2d of %2d; the writer child commits step %d\n", step.Step, step.Remaining, step.PageCount, x.next)
+		x.tables.backupSteps.Row(2, step.Step, step.Remaining, step.PageCount, step.PageCount-step.Remaining, "the writer child", x.next)
 		x.commit()
 		if step.Step == giveUpAfter {
 			return errGaveUp
 		}
 		return nil
 	})
-	x.lab.Check(errors.Is(err, errGaveUp) && minimum(remaining) > 0, fmt.Sprintf("with a commit by another connection after every step the backup never finished: after %d steps the smallest remaining count was %d", giveUpAfter, minimum(remaining)))
+	x.set.Check("B", errors.Is(err, errGaveUp) && minimum(remaining) > 0, fmt.Sprintf("with a commit by another connection after every step the backup never finished: after %d steps the smallest remaining count was %d", giveUpAfter, minimum(remaining)))
 	return ok
 }
 
@@ -515,14 +551,14 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("9.1")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	x := &run{ctx: ctx, lab: procs.NewLab(os.Stdout), r: recipe.Default(), dir: dir, live: filepath.Join(dir, "live.db")}
+	lab := procs.NewLab(os.Stdout)
+	lab.Script.Out = nil // the steps table records each writer step
+	x := &run{ctx: ctx, lab: lab, r: recipe.Default(), dir: dir, live: filepath.Join(dir, "live.db"), set: results.MustOpen(dir)}
+	x.openTables()
 	x.buildReferences()
 	x.quiet()
 	safe := x.underWriter()
 
-	fmt.Println()
-	fmt.Println("== summary")
-	fmt.Printf("%-36s | %-34s | %-17s | %s\n", "method", "strongest level", "safe under writer", "blocks the writer")
 	rows := []struct{ method, level, blocks string }{
 		{methodCopy, "E1", "the database must be closed"},
 		{methodBackup, "E2", "no (commits ran between steps)"},
@@ -530,17 +566,10 @@ func main() {
 		{methodPages, "E1", "no (a commit ran inside the read transaction)"},
 		{methodFile, "E1 after WAL replay", "no (a commit ran inside the read transaction)"},
 	}
-	for _, row := range rows {
-		fmt.Printf("%-36s | %-34s | %-17s | %s\n", row.method, row.level, yesNo(safe[row.method]), row.blocks)
+	for i, row := range rows {
+		x.tables.summary.Row(i+1, row.method, row.level, safe[row.method], row.blocks)
 	}
-	x.lab.Check(!safe[methodCopy] && safe[methodBackup] && safe[methodVacuum] && safe[methodPages] && safe[methodFile],
+	x.set.Check("C", !safe[methodCopy] && safe[methodBackup] && safe[methodVacuum] && safe[methodPages] && safe[methodFile],
 		"under the writer every capture except the plain file copy equals the exact recipe state it should; the plain copy equals an older one")
-	x.lab.Report(strings.ToUpper("capture comparison"))
-}
-
-func yesNo(b bool) string {
-	if b {
-		return "yes"
-	}
-	return "no"
+	x.set.Finish(strings.ToUpper("capture comparison"))
 }

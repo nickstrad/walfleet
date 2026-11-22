@@ -1,0 +1,15 @@
+part,journal_mode,seq,state,descriptors,expected,targets,side_files
+A,delete,1,"opened, no statement yet",1,1,t.db,
+A,delete,2,idle after a read,1,1,t.db,
+A,delete,3,inside a write transaction,2,2,t.db t.db-journal,t.db-journal
+A,delete,4,idle after the commit,1,1,t.db,
+A,delete,5,after close,0,0,,
+A,wal,1,"opened, no statement yet",1,1,t.db,
+A,wal,2,idle after a read,3,3,t.db t.db-shm t.db-wal,t.db-wal t.db-shm
+A,wal,3,inside a write transaction,3,3,t.db t.db-shm t.db-wal,t.db-wal t.db-shm
+A,wal,4,idle after the commit,3,3,t.db t.db-shm t.db-wal,t.db-wal t.db-shm
+A,wal,5,after close,0,0,,
+D,wal,1,"connection 1 open, idle after a read",3,3,t.db t.db-shm t.db-wal,t.db-wal t.db-shm
+D,wal,2,"connection 2 open too, idle after a read",5,5,t.db t.db t.db-shm t.db-wal t.db-wal,t.db-wal t.db-shm
+D,wal,3,connection 2 closed,4,4,t.db t.db t.db-shm t.db-wal,t.db-wal t.db-shm
+D,wal,4,connection 1 closed,0,0,,

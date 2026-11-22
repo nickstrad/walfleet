@@ -1,0 +1,9 @@
+part,what,status
+A,journal_mode and header bytes 18-19 of a new file,ran
+A,syscalls of the first commits of a new file,ran
+B,the recipe step: pre-step and post-step files,ran
+C,the journal of an open transaction,ran
+D,the commit traced and killed at every write and sync,ran
+D2,the same for a step whose pre-step file has no freelist,ran
+E,losing the hot journal,ran
+F,"the commit point in DELETE, TRUNCATE and PERSIST modes",ran

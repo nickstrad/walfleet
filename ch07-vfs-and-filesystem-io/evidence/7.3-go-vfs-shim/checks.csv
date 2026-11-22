@@ -1,0 +1,15 @@
+seq,part,status,claim
+1,A,ok,"delete/NORMAL: the Go driver makes the same 31 VFS calls, in the same order with the same files, offsets, lengths, lock levels and sync labels, as the C CLI"
+2,A,ok,"delete/FULL: the Go driver makes the same 32 VFS calls, in the same order with the same files, offsets, lengths, lock levels and sync labels, as the C CLI"
+3,A,ok,"wal/NORMAL: the Go driver makes the same 12 VFS calls, in the same order with the same files, offsets, lengths, lock levels and sync labels, as the C CLI"
+4,A,ok,"wal/FULL: the Go driver makes the same 13 VFS calls, in the same order with the same files, offsets, lengths, lock levels and sync labels, as the C CLI"
+5,B,ok,wal: without a fault the step commits and the file equals recipe step 4 exactly
+6,B,ok,"wal: with xWrite #52 never reached, the step commits normally"
+7,B,ok,"wal: for each of the 51 xWrite calls of the commit, failing it with SQLITE_IOERR makes the step fail, the marker row is absent after reopen, integrity_check is ok and the file equals the pre-step recipe state (step 3)"
+8,B,ok,"wal: with xSync #3 never reached, the step commits normally"
+9,B,ok,"wal: for each of the 2 xSync calls of the commit, failing it with SQLITE_IOERR makes the step fail, the marker row is absent after reopen, integrity_check is ok and the file equals the pre-step recipe state (step 3)"
+10,B,ok,delete: without a fault the step commits and the file equals recipe step 4 exactly
+11,B,ok,"delete: with xWrite #67 never reached, the step commits normally"
+12,B,ok,"delete: for each of the 66 xWrite calls of the commit, failing it with SQLITE_IOERR makes the step fail, the marker row is absent after reopen, integrity_check is ok and the file equals the pre-step recipe state (step 3)"
+13,B,ok,"delete: with xSync #4 never reached, the step commits normally"
+14,B,ok,"delete: for each of the 3 xSync calls of the commit, failing it with SQLITE_IOERR makes the step fail, the marker row is absent after reopen, integrity_check is ok and the file equals the pre-step recipe state (step 3)"

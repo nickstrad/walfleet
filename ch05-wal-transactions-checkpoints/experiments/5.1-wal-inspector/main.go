@@ -3,6 +3,9 @@
 // against PRAGMA wal_checkpoint(NOOP) and SQLite's showwal utility, and proves
 // that repeated runs and different synchronous settings produce the exact same
 // frame sequence, differing only in random salts and dependent checksums.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 5.1
 package main
 
 import (
@@ -14,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walfile"
 
@@ -25,15 +29,31 @@ const (
 	lastStep  = 5
 )
 
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 5.1" runs both.
+var (
+	set    *results.Set
+	tables struct {
+		walHeader, frames, commits, noop, walIndex, showwal, regions, sequences *results.Table
+		infoSalts, infoRegionBytes                                              *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+)
+
+func openTables() {
+	tables.walHeader = set.Table("wal_header", "magic", "checksum_order", "version", "page_size", "checkpoint_seq", "wal_bytes", "header_bytes", "frame_header_bytes", "frames", "valid_frames", "partial_bytes", "stop_reason")
+	tables.frames = set.Table("frames", "frame_no", "page", "commit_size", "sha256_16")
+	tables.commits = set.Table("commits", "commit_no", "recipe_step", "first_frame", "last_frame", "frames", "commit_size", "page_count")
+	tables.noop = set.Table("noop_checkpoint", "busy", "log_frames", "checkpointed")
+	tables.walIndex = set.Table("wal_index", "bytes", "byte_order", "headers_agree", "checksum_ok", "mx_frame", "n_page", "page_size", "n_backfill", "salts_equal_wal", "page_array_matches", "frames")
+	tables.showwal = set.Table("showwal", "frames_listed", "disagreements", "problems")
+	tables.regions = set.Table("regions", "seq", "region", "differs")
+	tables.sequences = set.Table("sequences", "part", "run", "synchronous", "wal_bytes", "frames", "commits", "same_sequence", "first_difference")
+	tables.infoSalts = set.Table("info_salts", "run", "salt1", "salt2", "header_checksum")
+	tables.infoRegionBytes = set.Table("info_region_bytes", "seq", "region", "differing_bytes")
+}
+
+func check(part string, ok bool, claim string) {
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -116,47 +136,35 @@ func buildRun(ctx context.Context, dir, name, synchronous string) run {
 func shortHash(h string) string { return h[:16] }
 
 func partA(ctx context.Context, dir string) run {
-	fmt.Println()
-	fmt.Printf("== A. one WAL holding recipe steps %d-%d: one connection, wal_autocheckpoint=0, synchronous=FULL\n", firstStep, lastStep)
 	first := buildRun(ctx, dir, "run-1", sqlitex.SyncFull)
 	wal := first.wal
-	fmt.Printf("base: recipe step %d built and closed; then steps %d-%d committed on one connection; a child process copied the database, -wal and -shm while that connection was still open\n", firstStep-1, firstStep, lastStep)
-	fmt.Printf("WAL header: magic=0x%08x (%s checksums) version=%d page-size=%d checkpoint-seq=%d\n",
-		wal.Header.Magic, wal.Header.ChecksumByteOrder(), wal.Header.Version, wal.Header.PageSize, wal.Header.CheckpointSequence)
-	fmt.Printf("INFO: salt-1=0x%08x salt-2=0x%08x header checksum %s\n", wal.Header.Salt1, wal.Header.Salt2, wal.Header.Checksum)
-	fmt.Printf("WAL size %d bytes = %d + %d frames x (%d + %d)\n", wal.Size, walfile.HeaderSize, len(wal.Frames), walfile.FrameHeaderSize, wal.PageSize())
-	check(wal.Size == walfile.HeaderSize+int64(len(wal.Frames))*int64(walfile.FrameHeaderSize+wal.PageSize()) && wal.PartialFrameBytes == 0,
+	tables.walHeader.Row(wal.Header.Magic, wal.Header.ChecksumByteOrder(), wal.Header.Version, wal.Header.PageSize, wal.Header.CheckpointSequence,
+		wal.Size, walfile.HeaderSize, walfile.FrameHeaderSize, len(wal.Frames), wal.ValidFrames, wal.PartialFrameBytes, wal.StopReason())
+	tables.infoSalts.Row("run 1", wal.Header.Salt1, wal.Header.Salt2, wal.Header.Checksum)
+	check("A", wal.Size == walfile.HeaderSize+int64(len(wal.Frames))*int64(walfile.FrameHeaderSize+wal.PageSize()) && wal.PartialFrameBytes == 0,
 		"the WAL is a 32-byte header plus whole frames of a 24-byte header and one 4096-byte page")
-	fmt.Println("frames (number, page, commit size, sha256 of the page image, first 16 hex digits):")
 	for _, frame := range wal.Frames {
-		marker := ""
-		if frame.IsCommit() {
-			marker = "  <- commit"
-		}
-		fmt.Printf("  frame %3d  page %3d  commit-size %3d  sha256 %s%s\n", frame.Number, frame.Page, frame.CommitSize, shortHash(frame.PageSHA256), marker)
+		tables.frames.Row(frame.Number, frame.Page, frame.CommitSize, shortHash(frame.PageSHA256))
 	}
 	saltsMatch := true
 	for _, frame := range wal.Frames {
 		saltsMatch = saltsMatch && frame.SaltsMatchHeader
 	}
-	fmt.Printf("checksum chain: %d of %d frames verify, stop reason: %s\n", wal.ValidFrames, len(wal.Frames), wal.StopReason())
-	check(wal.ValidFrames == len(wal.Frames) && saltsMatch, "every frame carries the header's salts and continues the running checksum chain")
+	check("A", wal.ValidFrames == len(wal.Frames) && saltsMatch, "every frame carries the header's salts and continues the running checksum chain")
 	commits := wal.Commits()
-	fmt.Println("transactions (a commit frame is the only frame with a non-zero commit size):")
 	sizesMatch := len(commits) == len(first.pageCounts)
 	for i, c := range commits {
 		pageCount := -1
 		if i < len(first.pageCounts) {
 			pageCount = first.pageCounts[i]
 		}
-		fmt.Printf("  commit %d = recipe step %d: frames %d-%d (%d frames), commit size %d pages; PRAGMA page_count after the step: %d\n",
-			i+1, firstStep+i, c.FirstFrame, c.LastFrame, c.Frames(), c.Pages, pageCount)
+		tables.commits.Row(i+1, firstStep+i, c.FirstFrame, c.LastFrame, c.Frames(), c.Pages, pageCount)
 		sizesMatch = sizesMatch && int(c.Pages) == pageCount
 	}
-	check(len(commits) == lastStep-firstStep+1, "five recipe steps left exactly five commit frames")
-	check(sizesMatch, "each commit frame's size field equals the database's page count after that transaction")
-	fmt.Printf("PRAGMA wal_checkpoint(NOOP) on the open connection: %s\n", first.noop)
-	check(first.noop.LogFrames == len(wal.Frames) && first.noop.Checkpointed == 0, "the frame count equals the log column of wal_checkpoint(NOOP); nothing was checkpointed")
+	check("A", len(commits) == lastStep-firstStep+1, "five recipe steps left exactly five commit frames")
+	check("A", sizesMatch, "each commit frame's size field equals the database's page count after that transaction")
+	tables.noop.Row(first.noop.Busy, first.noop.LogFrames, first.noop.Checkpointed)
+	check("A", first.noop.LogFrames == len(wal.Frames) && first.noop.Checkpointed == 0, "the frame count equals the log column of wal_checkpoint(NOOP); nothing was checkpointed")
 	describeIndex(first)
 	crossCheckShowwal(first)
 	return first
@@ -165,16 +173,15 @@ func partA(ctx context.Context, dir string) run {
 func describeIndex(r run) {
 	h := r.index.Header()
 	wal := r.wal
-	fmt.Printf("wal-index (-shm copy): %d bytes, %s, header copies agree: %v, header checksum ok: %v\n", r.index.Size, r.index.ByteOrderName(), r.index.HeadersAgree(), h.ChecksumOK)
-	fmt.Printf("  mxFrame=%d nPage=%d page-size=%d nBackfill=%d salts equal the WAL header: %v\n", h.MaxFrame, h.Pages, h.PageSize(), r.index.Checkpoint.Backfill, h.Salt1 == wal.Header.Salt1 && h.Salt2 == wal.Header.Salt2)
+	saltsEqual := h.Salt1 == wal.Header.Salt1 && h.Salt2 == wal.Header.Salt2
 	pages, err := r.index.FramePages(h.MaxFrame)
 	mappingMatches := err == nil && len(pages) == len(wal.Frames)
 	for i := 0; mappingMatches && i < len(pages); i++ {
 		mappingMatches = pages[i] == wal.Frames[i].Page
 	}
-	fmt.Printf("  page-number array for frames 1-%d equals the WAL's frame pages: %v\n", h.MaxFrame, mappingMatches)
-	check(r.index.HeadersAgree() && h.ChecksumOK && int(h.MaxFrame) == wal.LastCommitFrame && h.Pages == wal.DatabasePages() &&
-		h.Salt1 == wal.Header.Salt1 && h.Salt2 == wal.Header.Salt2 && mappingMatches,
+	tables.walIndex.Row(r.index.Size, r.index.ByteOrderName(), r.index.HeadersAgree(), h.ChecksumOK, h.MaxFrame, h.Pages, h.PageSize(), r.index.Checkpoint.Backfill, saltsEqual, mappingMatches, len(pages))
+	check("A", r.index.HeadersAgree() && h.ChecksumOK && int(h.MaxFrame) == wal.LastCommitFrame && h.Pages == wal.DatabasePages() &&
+		saltsEqual && mappingMatches,
 		"the -shm header names the last commit frame (mxFrame), the database size and the WAL's salts, and its page array maps every frame to its page")
 }
 
@@ -190,39 +197,33 @@ func crossCheckShowwal(r run) {
 	}
 	listing := must(walfile.ParseShowwal(string(out)))("parse showwal output")
 	problems := r.wal.CompareWithShowwal(listing)
-	fmt.Printf("showwal (built from the pinned tree) lists %d frames; disagreements with walfile: %d\n", len(listing.Frames), len(problems))
-	for _, p := range problems {
-		fmt.Printf("  %s\n", p)
-	}
-	check(len(problems) == 0, "showwal and walfile agree on every frame's page, commit size, salts and stored checksums, and on which checksums verify")
+	tables.showwal.Row(len(listing.Frames), len(problems), strings.Join(problems, "; "))
+	check("A", len(problems) == 0, "showwal and walfile agree on every frame's page, commit size, salts and stored checksums, and on which checksums verify")
+}
+
+func sequenceRow(part, name, synchronous string, other run, equal bool, at int) {
+	tables.sequences.Row(part, name, synchronous, len(other.walBytes), len(other.wal.Frames), len(other.wal.Commits()), equal, at)
 }
 
 func partB(ctx context.Context, dir string, first run) {
-	fmt.Println()
-	fmt.Println("== B. the same workload again: what differs between two WALs")
 	second := buildRun(ctx, dir, "run-2", sqlitex.SyncFull)
-	fmt.Printf("INFO: run 2 salt-1=0x%08x salt-2=0x%08x\n", second.wal.Header.Salt1, second.wal.Header.Salt2)
+	tables.infoSalts.Row("run 2", second.wal.Header.Salt1, second.wal.Header.Salt2, second.wal.Header.Checksum)
 	comparison := walfile.CompareBytes(first.walBytes, second.walBytes, first.wal.PageSize())
-	fmt.Printf("byte comparison run 1 vs run 2: sizes %d and %d\n", comparison.SizeA, comparison.SizeB)
 	for r := walfile.RegionHeaderMagic; r <= walfile.RegionBeyondShorterFile; r++ {
-		changed := comparison.ByRegion[r] > 0
-		fmt.Printf("  %-40s %s\n", r.String()+":", map[bool]string{true: "differs", false: "same"}[changed])
+		tables.regions.Row(int(r), r.String(), comparison.ByRegion[r] > 0)
+		tables.infoRegionBytes.Row(int(r), r.String(), comparison.ByRegion[r])
 	}
-	fmt.Printf("INFO: differing bytes per region: %s\n", comparison)
-	check(!comparison.Identical() && comparison.OnlyIn(walfile.RegionHeaderSalt, walfile.RegionHeaderChecksum, walfile.RegionFrameSalt, walfile.RegionFrameChecksum),
+	check("B", !comparison.Identical() && comparison.OnlyIn(walfile.RegionHeaderSalt, walfile.RegionHeaderChecksum, walfile.RegionFrameSalt, walfile.RegionFrameChecksum),
 		"the two WALs differ, and only inside the salt and checksum fields")
 	equal, at := walfile.EqualTuples(first.wal.Tuples(true), second.wal.Tuples(true))
-	fmt.Printf("frame sequences as (page, page sha256, commit size): equal %v (first difference at frame %d, 0 = none)\n", equal, at)
-	check(equal, "the two runs wrote the same pages, with the same images, in the same order, with the same commit sizes")
+	sequenceRow("B", "run 2", sqlitex.SyncFull, second, equal, at)
+	check("B", equal, "the two runs wrote the same pages, with the same images, in the same order, with the same commit sizes")
 
-	fmt.Println()
-	fmt.Println("== C. other synchronous levels write the same frames")
 	for _, level := range []string{sqlitex.SyncNormal, sqlitex.SyncOff} {
 		other := buildRun(ctx, dir, "sync-"+strings.ToLower(level), level)
 		equal, at := walfile.EqualTuples(first.wal.Tuples(true), other.wal.Tuples(true))
-		fmt.Printf("synchronous=%s: %d frames, %d commits; frame sequence equal to synchronous=FULL: %v (first difference at frame %d)\n",
-			level, len(other.wal.Frames), len(other.wal.Commits()), equal, at)
-		check(equal, fmt.Sprintf("synchronous=%s changes when SQLite syncs, not which frames it writes", level))
+		sequenceRow("C", "sync-"+strings.ToLower(level), level, other, equal, at)
+		check("C", equal, fmt.Sprintf("synchronous=%s changes when SQLite syncs, not which frames it writes", level))
 	}
 }
 
@@ -235,17 +236,11 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("5.1")
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
+	set = results.MustOpen(dir)
+	openTables()
 	first := partA(ctx, dir)
 	partB(ctx, dir, first)
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("WAL INSPECTOR FAILED: %d claim(s) did not hold\n", len(failures))
-		for _, f := range failures {
-			fmt.Printf("  - %s\n", f)
-		}
-		os.Exit(1)
-	}
-	fmt.Println("WAL INSPECTOR OK")
+	set.Finish("WAL INSPECTOR")
 }
 
 func displayPath(path string) string {

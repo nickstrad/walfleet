@@ -1,0 +1,13 @@
+seq,mode,reader,restarted,file_salt1,checkpoint_seq,wal_bytes,mx_frame,valid_frames,frames_in_file
+1,PASSIVE,no reader,true,+1,+1,156592,23,23,38
+2,PASSIVE,reader behind,false,same,same,251352,61,61,61
+3,PASSIVE,reader current,true,+1,+1,156592,23,23,38
+4,FULL,no reader,true,+1,+1,156592,23,23,38
+5,FULL,reader behind,false,same,same,251352,61,61,61
+6,FULL,reader current,true,+1,+1,156592,23,23,38
+7,RESTART,no reader,true,+1,+1,156592,23,23,38
+8,RESTART,reader behind,false,same,same,251352,61,61,61
+9,RESTART,reader current,true,+1,+1,156592,23,23,38
+10,TRUNCATE,no reader,true,new value,same,94792,23,23,23
+11,TRUNCATE,reader behind,false,same,same,251352,61,61,61
+12,TRUNCATE,reader current,true,+1,+1,156592,23,23,38

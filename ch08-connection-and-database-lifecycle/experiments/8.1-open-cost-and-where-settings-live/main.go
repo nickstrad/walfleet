@@ -2,12 +2,14 @@
 // statement for 1-, 100-, and 1,000-table schemas (Part A), and determines
 // empirically which course settings persist in the database file header versus
 // per connection across a plain copy and VACUUM INTO (Part B).
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 8.1
 package main
 
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +21,7 @@ import (
 	"time"
 
 	"github.com/nickstrad/walfleet/internal/connmgr"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 )
@@ -28,22 +31,37 @@ const (
 	pageSize       = 4096
 	firstStatement = "SELECT count(*) FROM t0001"
 	markPrefix     = "MARK "
-	shownEvents    = 8
 )
 
 var (
-	failures    []string
 	tableCounts = []int{1, 100, 1000}
 	phases      = []string{"open", "first statement", "close"}
 )
 
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. part labels
+// the claims written while a part runs.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		schemas, events, schemaPages, settings, placements, files, special, skipped, infoTiming *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
+)
+
+func openTables() {
+	tables.schemas = set.Table("schemas", "tables", "file_pages", "schema_used_after_open", "schema_used_after_first")
+	tables.events = set.Table("io_events", "tables", "phase", "seq", "op", "file", "byte_offset", "nbytes", "returned")
+	tables.schemaPages = set.Table("schema_pages", "tables", "page", "role")
+	tables.settings = set.Table("settings", "seq", "setting", "pragma", "value_set", "on_original", "fresh_default", "on_copy", "on_vacuum_into", "lives_in")
+	tables.placements = set.Table("placements", "seq", "name", "pragma", "home", "header_bytes")
+	tables.files = set.Table("files", "seq", "file", "at_rest", "bytes", "sha256")
+	tables.special = set.Table("special_cases", "seq", "case_name", "observed", "value")
+	tables.skipped = set.Table("skipped", "part", "what")
+	tables.infoTiming = set.Table("info_first_statement", "tables", "elapsed_us")
+}
+
+func check(ok bool, claim string) {
+	set.Check(part, ok, claim)
 }
 
 func fatal(what string, err error) {
@@ -131,6 +149,7 @@ func childOpen(path string) {
 }
 
 type phaseIO struct {
+	calls      []trace.Syscall
 	events     []string
 	opens      []string
 	readsByDB  []trace.Syscall
@@ -156,9 +175,11 @@ func splitPhases(log *trace.StraceLog, dir string) (map[string]*phaseIO, error) 
 		base := filepath.Base(call.Path)
 		switch call.Name {
 		case "open", "openat":
+			phase.calls = append(phase.calls, call)
 			phase.opens = append(phase.opens, base)
 			phase.events = append(phase.events, "open "+base)
 		case "pread64", "read":
+			phase.calls = append(phase.calls, call)
 			if strings.HasSuffix(base, ".db") {
 				phase.readsByDB = append(phase.readsByDB, call)
 				if call.Offset%pageSize == 0 && call.Length == pageSize {
@@ -179,6 +200,20 @@ func splitPhases(log *trace.StraceLog, dir string) (map[string]*phaseIO, error) 
 	return result, nil
 }
 
+// writeEvents writes one io_events row per open or read of a file under the
+// work directory, in trace order.
+func writeEvents(tableCount int, byPhase map[string]*phaseIO) {
+	for _, name := range phases {
+		for i, call := range byPhase[name].calls {
+			if call.Name == "open" || call.Name == "openat" {
+				tables.events.Row(tableCount, name, i+1, "open", filepath.Base(call.Path), nil, nil, nil)
+			} else {
+				tables.events.Row(tableCount, name, i+1, "read", filepath.Base(call.Path), call.Offset, call.Length, call.Result)
+			}
+		}
+	}
+}
+
 // pagesOf converts aligned, whole 4,096-byte reads into 1-based page numbers
 // and reports whether every read in the slice was a complete aligned page read.
 func pagesOf(reads []trace.Syscall) ([]int, bool) {
@@ -194,29 +229,9 @@ func pagesOf(reads []trace.Syscall) ([]int, bool) {
 	return pages, whole
 }
 
-func ranges(pages []int) string {
-	if len(pages) == 0 {
-		return "none"
-	}
-	sorted := slices.Clone(pages)
-	slices.Sort(sorted)
-	var parts []string
-	for i := 0; i < len(sorted); {
-		j := i
-		for j+1 < len(sorted) && sorted[j+1] == sorted[j]+1 {
-			j++
-		}
-		if j == i {
-			parts = append(parts, strconv.Itoa(sorted[i]))
-		} else {
-			parts = append(parts, fmt.Sprintf("%d-%d", sorted[i], sorted[j]))
-		}
-		i = j + 1
-	}
-	return strings.Join(parts, ",")
-}
-
-func schemaTreePages(ctx context.Context, path string) []int {
+// schemaTreePages returns the pages of the sqlite_schema b-tree (from dbstat)
+// followed by t0001's root page, and writes them to schema_pages.
+func schemaTreePages(ctx context.Context, path string, tableCount int) []int {
 	db, conn := plainConnection(ctx, path)
 	defer closePlain(db, conn)
 	rows, err := conn.QueryContext(ctx, "SELECT pageno FROM dbstat WHERE name = 'sqlite_schema' ORDER BY pageno")
@@ -231,6 +246,7 @@ func schemaTreePages(ctx context.Context, path string) []int {
 			fatal("dbstat scan", err)
 		}
 		pages = append(pages, page)
+		tables.schemaPages.Row(tableCount, page, "sqlite_schema")
 	}
 	if err := rows.Err(); err != nil {
 		fatal("dbstat rows", err)
@@ -239,24 +255,26 @@ func schemaTreePages(ctx context.Context, path string) []int {
 	if err := conn.QueryRowContext(ctx, "SELECT rootpage FROM sqlite_schema WHERE name = 't0001'").Scan(&root); err != nil {
 		fatal("rootpage", err)
 	}
+	tables.schemaPages.Row(tableCount, root, "t0001 root")
 	return append(pages, root)
 }
 
 func partA(ctx context.Context, work string) {
-	fmt.Println("\n== A. what open reads and what the first statement reads ==")
-	fmt.Printf("each database: WAL mode, at rest, N tables of 4 columns, all empty; first statement: %s\n", firstStatement)
+	part = "A"
 	if !trace.Supported {
 		trace.PrintLinuxOnly("strace read counts per phase", packagePath)
+		tables.skipped.Row("A", "strace read counts per phase (needs Linux)")
 	}
-	for _, tables := range tableCounts {
-		path := schemaPath(work, tables)
-		buildSchema(ctx, path, tables)
+	for _, tableCount := range tableCounts {
+		path := schemaPath(work, tableCount)
+		buildSchema(ctx, path, tableCount)
 		info, err := os.Stat(path)
 		if err != nil {
 			fatal("stat", err)
 		}
-		fmt.Printf("\n%d table(s): file %d pages\n", tables, info.Size()/pageSize)
-		measureSchemaMemory(ctx, path, tables)
+		atOpen, afterFirst := measureSchemaMemory(ctx, path, tableCount)
+		tables.schemas.Row(tableCount, info.Size()/pageSize, atOpen, afterFirst)
+		wantPages := schemaTreePages(ctx, path, tableCount)
 		if !trace.Supported {
 			continue
 		}
@@ -275,44 +293,17 @@ func partA(ctx context.Context, work string) {
 		if err != nil {
 			fatal("phases", err)
 		}
-		for _, name := range phases {
-			p := byPhase[name]
-			shown := p.events
-			more := 0
-			if len(shown) > shownEvents {
-				shown, more = shown[:shownEvents], len(shown)-shownEvents
-			}
-			listed := strings.Join(shown, ", ")
-			if len(shown) == 0 {
-				listed = "none"
-			}
-			line := fmt.Sprintf("  %-16s %d event(s): %s", name, len(p.events), listed)
-			if more > 0 {
-				line += fmt.Sprintf(", ... %d more", more)
-			}
-			fmt.Println(line)
-			if pages, _ := pagesOf(p.readsByDB); len(pages) > 0 {
-				fmt.Printf("  %-16s whole-page reads of the .db file: %d, distinct pages %d: %s\n", "", len(pages), len(sortedUnique(pages)), ranges(sortedUnique(pages)))
-			}
-			if len(p.otherReads) > 0 {
-				var others []string
-				for _, file := range slices.Sorted(mapsKeys(p.otherReads)) {
-					others = append(others, fmt.Sprintf("%s %d", file, p.otherReads[file]))
-				}
-				fmt.Printf("  %-16s reads of other files: %s\n", "", strings.Join(others, ", "))
-			}
-		}
+		writeEvents(tableCount, byPhase)
 		// sqlite3BtreeOpen (src/btree.c:2532-2825) reads only the 100-byte file
 		// header via sqlite3PagerReadFileheader; no schema or WAL files are
 		// touched at open.
 		open := byPhase["open"]
 		check(len(open.opens) == 1 && open.opens[0] == filepath.Base(path) && len(open.readsByDB) == 1 && open.readsByDB[0].Offset == 0 && open.readsByDB[0].Length == 100 && open.readsByDB[0].Result == 100 && len(open.otherReads) == 0,
-			fmt.Sprintf("%d table(s): open opens only the database file and reads only its 100-byte header", tables))
+			fmt.Sprintf("%d table(s): open opens only the database file and reads only its 100-byte header", tableCount))
 		first := byPhase["first statement"]
 		firstPages, firstWhole := pagesOf(first.readsByDB)
-		wantPages := schemaTreePages(ctx, path)
 		check(firstWhole && slices.Equal(sortedUnique(firstPages), sortedUnique(wantPages)),
-			fmt.Sprintf("%d table(s): the first statement reads exactly the sqlite_schema b-tree pages (%d, from dbstat) plus t0001's root page", tables, len(wantPages)-1))
+			fmt.Sprintf("%d table(s): the first statement reads exactly the sqlite_schema b-tree pages (%d, from dbstat) plus t0001's root page", tableCount, len(wantPages)-1))
 		// In WAL mode, lockBtree (src/btree.c:3282-3459) reads page 1, sees
 		// header byte 19 == 2, opens -wal and -shm, and drops page 1 so
 		// btreeBeginTrans (src/btree.c:3598-3804) re-reads page 1 through WAL.
@@ -324,20 +315,10 @@ func partA(ctx context.Context, work string) {
 			}
 		}
 		check(pageOneReads == 2 && len(first.events) > 0 && first.events[0] == "read page 1" && walOpen > 0 && slices.Index(first.events[walOpen:], "read page 1") > 0,
-			fmt.Sprintf("%d table(s): page 1 is read twice: once before the -wal is opened (header byte 19 = 2 sends lockBtree to open the WAL) and once after", tables))
-		check(len(first.otherReads) == 0, fmt.Sprintf("%d table(s): nothing is read from the -wal or -shm (the -wal is empty; the -shm is mapped, not read)", tables))
+			fmt.Sprintf("%d table(s): page 1 is read twice: once before the -wal is opened (header byte 19 = 2 sends lockBtree to open the WAL) and once after", tableCount))
+		check(len(first.otherReads) == 0, fmt.Sprintf("%d table(s): nothing is read from the -wal or -shm (the -wal is empty; the -shm is mapped, not read)", tableCount))
 		check(slices.Contains(first.opens, filepath.Base(path)+"-wal") && slices.Contains(first.opens, filepath.Base(path)+"-shm"),
-			fmt.Sprintf("%d table(s): the -wal and -shm files are opened at the first statement, not at open", tables))
-	}
-}
-
-func mapsKeys(m map[string]int) func(func(string) bool) {
-	return func(yield func(string) bool) {
-		for k := range m {
-			if !yield(k) {
-				return
-			}
-		}
+			fmt.Sprintf("%d table(s): the -wal and -shm files are opened at the first statement, not at open", tableCount))
 	}
 }
 
@@ -349,7 +330,7 @@ func sortedUnique(pages []int) []int {
 
 var schemaUsed = map[int][2]int{}
 
-func measureSchemaMemory(ctx context.Context, path string, tables int) {
+func measureSchemaMemory(ctx context.Context, path string, tableCount int) (int, int) {
 	db, conn := plainConnection(ctx, path)
 	defer closePlain(db, conn)
 	read := func() int {
@@ -367,32 +348,22 @@ func measureSchemaMemory(ctx context.Context, path string, tables int) {
 	}
 	elapsed := time.Since(started)
 	afterFirst := read()
-	schemaUsed[tables] = [2]int{atOpen, afterFirst}
-	fmt.Printf("  SCHEMA_USED: %d bytes after open, %d bytes after the first statement (%d bytes per table)\n", atOpen, afterFirst, afterFirst/tables)
-	fmt.Printf("INFO: first statement on %d table(s) took %s in this process\n", tables, elapsed.Round(time.Microsecond))
+	schemaUsed[tableCount] = [2]int{atOpen, afterFirst}
+	tables.infoTiming.Row(tableCount, elapsed.Microseconds())
+	return atOpen, afterFirst
 }
 
 func checkSchemaMemory() {
 	growing := true
-	for i, tables := range tableCounts {
-		if schemaUsed[tables][0] != 0 {
+	for i, tableCount := range tableCounts {
+		if schemaUsed[tableCount][0] != 0 {
 			growing = false
 		}
-		if i > 0 && schemaUsed[tables][1] <= schemaUsed[tableCounts[i-1]][1] {
+		if i > 0 && schemaUsed[tableCount][1] <= schemaUsed[tableCounts[i-1]][1] {
 			growing = false
 		}
 	}
 	check(growing, "SCHEMA_USED is 0 after open for every schema, and after the first statement it grows with the table count (1 < 100 < 1000)")
-}
-
-type observed struct {
-	Setting    string                   `json:"setting"`
-	Home       sqlitex.SettingHome      `json:"home"`
-	Set        string                   `json:"set_on_original"`
-	Default    string                   `json:"fresh_connection_default"`
-	Copy       string                   `json:"read_on_copy"`
-	VacuumInto string                   `json:"read_on_vacuum_into"`
-	Placement  sqlitex.SettingPlacement `json:"placement"`
 }
 
 func readPragma(ctx context.Context, conn *sql.Conn, pragma string) string {
@@ -441,7 +412,7 @@ type settingCase struct {
 }
 
 func partB(ctx context.Context, work string) {
-	fmt.Println("\n== B. which settings live in the file and which belong to the connection ==")
+	part = "B"
 	dir := filepath.Join(work, "B")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		fatal("mkdir", err)
@@ -491,13 +462,15 @@ func partB(ctx context.Context, work string) {
 	if err != nil {
 		fatal("at rest", err)
 	}
-	check(status.AtRest, "the original is at rest after its last connection closed: "+status.String())
+	tables.files.Row(1, "original.db", status.AtRest, status.Size, status.SHA256)
+	check(status.AtRest, "the original is at rest after its last connection closed")
 	copyPath := filepath.Join(dir, "copy.db")
 	copyFile(original, copyPath)
 	copied, err := connmgr.CheckAtRest(copyPath)
 	if err != nil {
 		fatal("hash copy", err)
 	}
+	tables.files.Row(2, "copy.db", copied.AtRest, copied.Size, copied.SHA256)
 	check(copied.AtRest && copied.SHA256 == status.SHA256, "a plain copy of the closed file has the same sha256 (rung R5: capture = the file at rest, rebuild = copy)")
 	vacuumPath := filepath.Join(dir, "vacuum-into.db")
 	vdb, vconn := plainConnection(ctx, original)
@@ -513,11 +486,9 @@ func partB(ctx context.Context, work string) {
 	defaults := readPragmas(ctx, freshPath, pragmas)
 	onCopy := readPragmas(ctx, copyPath, pragmas)
 	onVacuum := readPragmas(ctx, vacuumPath, pragmas)
-	fmt.Println("set on the original with sqlitex.Open, then closed; each file reopened with a plain driver connection (no settings applied)")
-	fmt.Printf("  %-20s %-12s %-12s %-12s %-12s %s\n", "setting", "original", "default", "copy", "VACUUM INTO", "lives in")
-	var table []observed
 	allAsDeclared := true
-	for _, c := range cases {
+	inFileKept := true
+	for i, c := range cases {
 		home := sqlitex.SettingPerConnection
 		if onCopy[c.pragma] == c.set {
 			home = sqlitex.SettingInFile
@@ -529,23 +500,26 @@ func partB(ctx context.Context, work string) {
 		if placement.Home != home || onOriginal[c.name] != c.set || defaults[c.pragma] == c.set {
 			allAsDeclared = false
 		}
-		fmt.Printf("  %-20s %-12s %-12s %-12s %-12s %s\n", c.name, onOriginal[c.name], defaults[c.pragma], onCopy[c.pragma], onVacuum[c.pragma], home)
-		table = append(table, observed{Setting: c.name, Home: home, Set: onOriginal[c.name], Default: defaults[c.pragma], Copy: onCopy[c.pragma], VacuumInto: onVacuum[c.pragma], Placement: placement})
-	}
-	check(allAsDeclared, "every value set differs from the fresh default, and every setting that survived the copy is exactly a setting sqlitex.SettingPlacements declares as living in the file")
-	inFileKept := true
-	for _, row := range table {
-		if row.Home == sqlitex.SettingInFile && row.Setting != "journal_mode=wal" && row.VacuumInto != row.Set {
+		if home == sqlitex.SettingInFile && c.name != "journal_mode=wal" && onVacuum[c.pragma] != onOriginal[c.name] {
 			inFileKept = false
 		}
+		tables.settings.Row(i+1, c.name, c.pragma, c.set, onOriginal[c.name], defaults[c.pragma], onCopy[c.pragma], onVacuum[c.pragma], string(home))
 	}
+	for i, p := range sqlitex.SettingPlacements() {
+		var headerBytes any
+		if p.HeaderBytes != "" {
+			headerBytes = p.HeaderBytes
+		}
+		tables.placements.Row(i+1, p.Name, p.Pragma, string(p.Home), headerBytes)
+	}
+	check(allAsDeclared, "every value set differs from the fresh default, and every setting that survived the copy is exactly a setting sqlitex.SettingPlacements declares as living in the file")
 	vacuumHeader, err := os.ReadFile(vacuumPath)
 	if err != nil || len(vacuumHeader) < 100 {
 		fatal("read VACUUM INTO header", fmt.Errorf("%d bytes, %v", len(vacuumHeader), err))
 	}
+	tables.special.Row(1, "VACUUM INTO output", "header bytes 18-19", fmt.Sprintf("%d %d", vacuumHeader[18], vacuumHeader[19]))
 	check(inFileKept && onVacuum["journal_mode"] == sqlitex.JournalDelete && vacuumHeader[18] == 1 && vacuumHeader[19] == 1, "VACUUM INTO keeps every file setting except journal_mode: its output is a rollback-mode file (header bytes 18-19 = 1)")
 
-	fmt.Println("\nthe two journal_mode cases and the deprecated default_cache_size:")
 	persistPath := filepath.Join(dir, "persist.db")
 	pdb, pconn := plainConnection(ctx, persistPath)
 	if mode := readPragma(ctx, pconn, "journal_mode=persist"); mode != sqlitex.JournalPersist {
@@ -556,7 +530,7 @@ func partB(ctx context.Context, work string) {
 	}
 	closePlain(pdb, pconn)
 	persistReopened := readPragmas(ctx, persistPath, []string{"journal_mode"})["journal_mode"]
-	fmt.Printf("  journal_mode=persist set on a new file, reopened: %s\n", persistReopened)
+	tables.special.Row(2, "journal_mode=persist set on a new file, reopened", "journal_mode", persistReopened)
 	cachePath := filepath.Join(dir, "default-cache-size.db")
 	cdb, cconn := plainConnection(ctx, cachePath)
 	if _, err := cconn.ExecContext(ctx, "PRAGMA default_cache_size=777; CREATE TABLE t(x)"); err != nil {
@@ -574,19 +548,12 @@ func partB(ctx context.Context, work string) {
 	// (BTREE_DEFAULT_CACHE_SIZE) when a connection has not set cache_size yet,
 	// so the deprecated PRAGMA default_cache_size persists in the file header.
 	stored := int32(uint32(header[48])<<24 | uint32(header[49])<<16 | uint32(header[50])<<8 | uint32(header[51]))
-	fmt.Printf("  PRAGMA default_cache_size=777, then a copy opened: default_cache_size %s, cache_size %s, header bytes 48-51 = %d\n", reopened["default_cache_size"], reopened["cache_size"], stored)
+	const cacheCase = "PRAGMA default_cache_size=777, then a copy opened"
+	tables.special.Row(3, cacheCase, "default_cache_size", reopened["default_cache_size"])
+	tables.special.Row(4, cacheCase, "cache_size", reopened["cache_size"])
+	tables.special.Row(5, cacheCase, "header bytes 48-51", stored)
 	check(persistReopened == sqlitex.JournalDelete, "a rollback journal mode (persist) does not survive a reopen: it is per connection; only wal is stored in the file")
 	check(reopened["cache_size"] == "777" && stored == 777, "the deprecated PRAGMA default_cache_size is stored in header bytes 48-51 and becomes the starting cache_size of every new connection to the file")
-
-	document := struct {
-		Placements []sqlitex.SettingPlacement `json:"placements"`
-		Observed   []observed                 `json:"observed"`
-	}{sqlitex.SettingPlacements(), table}
-	encoded, err := json.Marshal(document)
-	if err != nil {
-		fatal("json", err)
-	}
-	fmt.Printf("settings-json: %s\n", encoded)
 }
 
 func main() {
@@ -597,12 +564,10 @@ func main() {
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
 	work := sqlitex.MustWorkDir("8.1")
+	set = results.MustOpen(work)
+	openTables()
 	partA(ctx, work)
 	checkSchemaMemory()
 	partB(ctx, work)
-	if len(failures) > 0 {
-		fmt.Printf("\n%d check(s) FAILED\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("\nall checks passed")
+	set.Finish("OPEN COST AND WHERE SETTINGS LIVE")
 }

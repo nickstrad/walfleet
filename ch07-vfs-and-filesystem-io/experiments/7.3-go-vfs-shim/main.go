@@ -6,9 +6,9 @@
 // SQLITE_IOERR in both journal modes and verifies SQLite rolls back cleanly to
 // the exact pre-step database bytes.
 //
-// Run from the repo root (requires the pinned CLI via go run ./cmd/course build-tools):
-//
-//	go run ./ch07-vfs-and-filesystem-io/experiments/7.3-go-vfs-shim
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 7.3 (it needs the pinned CLI,
+// from go run ./cmd/course build-tools).
 package main
 
 import (
@@ -17,11 +17,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/nickstrad/walfleet/internal/govfs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 )
@@ -50,16 +50,14 @@ var configs = []config{
 	{sqlitex.JournalWAL, sqlitex.SyncFull},
 }
 
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 7.3" runs both.
+var (
+	set    *results.Set
+	tables struct {
+		aCalls, bSteps, bCleanCalls, bTrials *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
-}
+)
 
 func fatal(what string, err error) {
 	fmt.Printf("FATAL %s: %v\n", what, err)
@@ -76,30 +74,23 @@ func main() {
 	if err != nil {
 		fatal("register", err)
 	}
-	fmt.Printf("registered Go VFS %q (io_methods version %d) forwarding to the default VFS; self-check passed\n", v.Name(), v.IOVersion())
+	set = results.MustOpen(dir)
+	set.Table("vfs", "name", "io_version", "forwards_to").Row(v.Name(), v.IOVersion(), "the default VFS (self-check passed)")
+	tables.aCalls = set.Table("a_calls", "journal", "sync", "seq", "method", "call", "sync_flags", "vfstrace_label", "go_key", "cli_method", "cli_key")
+	tables.bSteps = set.Table("b_steps", "journal", "synchronous", "seed", "base_step", "base_bytes", "step", "summary", "marker_id")
+	tables.bCleanCalls = set.Table("b_clean_calls", "journal", "seq", "method", "file", "amount", "call")
+	tables.bTrials = set.Table("b_trials", "journal", "method", "n", "fired", "target", "step_error", "step_code", "error_at", "close_error", "user_version", "marker_row", "integrity", "file_state", "held")
 
-	fmt.Println()
-	fmt.Println("== part A: VFS calls of one committed INSERT, Go driver through the Go VFS vs the C CLI's -vfstrace ==")
-	fmt.Printf("setup (not measured): %s\nmeasured: %s\n", setupSQL, measureSQL)
-	table := map[config]govfs.Counts{}
 	for _, c := range configs {
-		table[c] = partA(ctx, cli, v, dir, c)
+		partA(ctx, cli, v, dir, c)
 	}
-	printCountTable(table)
-
-	fmt.Println()
-	fmt.Println("== part B: fail the N-th xWrite or xSync of one recipe commit with SQLITE_IOERR, for every N ==")
 	for _, journal := range []string{sqlitex.JournalWAL, sqlitex.JournalDelete} {
 		partB(ctx, v, dir, journal)
 	}
 	if err := v.Err(); err != nil {
-		check(false, "the Go VFS reported no internal error: "+err.Error())
+		set.Check("B", false, "the Go VFS reported no internal error: "+err.Error())
 	}
-	if len(failures) > 0 {
-		fmt.Printf("FAIL: %d claim(s) did not hold\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("ALL CHECKS PASSED")
+	set.Finish("GO VFS SHIM")
 }
 
 func goOptions(c config) sqlitex.Options {
@@ -266,7 +257,7 @@ func renameFiles(calls []govfs.Call, from, to string) []govfs.Call {
 	return out
 }
 
-func partA(ctx context.Context, cli sqlitex.CLI, v *govfs.VFS, dir string, c config) govfs.Counts {
+func partA(ctx context.Context, cli sqlitex.CLI, v *govfs.VFS, dir string, c config) {
 	goCalls, err := runGo(ctx, v, dir, c)
 	if err != nil {
 		fatal("go "+c.String(), err)
@@ -278,15 +269,6 @@ func partA(ctx context.Context, cli sqlitex.CLI, v *govfs.VFS, dir string, c con
 	name := "go-" + strings.ToLower(c.journal+"-"+c.sync) + ".db"
 	goCalls = renameFiles(goCalls, name, dbName)
 	cliName := "cli-" + strings.ToLower(c.journal+"-"+c.sync) + ".db"
-	fmt.Println()
-	fmt.Printf("-- journal_mode=%s synchronous=%s: %d VFS calls through the Go VFS (file shown as %s) --\n", c.journal, c.sync, len(goCalls), dbName)
-	for _, call := range goCalls {
-		line := call.String()
-		if call.Method == "xSync" {
-			line += fmt.Sprintf("   [vfstrace would print %s]", govfs.VFSTraceSyncLabel(call.Flags))
-		}
-		fmt.Printf("  %3d %s\n", call.Seq, line)
-	}
 	goKeys := make([]string, len(goCalls))
 	for i, call := range goCalls {
 		goKeys[i] = goKey(call)
@@ -295,12 +277,25 @@ func partA(ctx context.Context, cli sqlitex.CLI, v *govfs.VFS, dir string, c con
 	for i, call := range cliCalls {
 		cliKeys[i] = strings.Replace(cliKey(call), cliName, dbName, 1)
 	}
+	for i := range max(len(goCalls), len(cliCalls)) {
+		var method, text, flags, label, goK, cliMethod, cliK any
+		if i < len(goCalls) {
+			call := goCalls[i]
+			method, text, goK = call.Method, call.String(), goKeys[i]
+			if call.Method == "xSync" {
+				flags = fmt.Sprintf("0x%x(%s)", call.Flags, govfs.SyncFlagsString(call.Flags))
+				label = govfs.VFSTraceSyncLabel(call.Flags)
+			}
+		}
+		if i < len(cliCalls) {
+			cliMethod, cliK = cliCalls[i].Method, cliKeys[i]
+		}
+		tables.aCalls.Row(c.journal, c.sync, i+1, method, text, flags, label, goK, cliMethod, cliK)
+	}
 	same := len(goKeys) == len(cliKeys)
-	first := -1
 	for i := range min(len(goKeys), len(cliKeys)) {
 		if goKeys[i] != cliKeys[i] {
 			same = false
-			first = i
 			break
 		}
 	}
@@ -309,68 +304,7 @@ func partA(ctx context.Context, cli sqlitex.CLI, v *govfs.VFS, dir string, c con
 	for _, call := range cliCalls {
 		cliCounts[call.Method]++
 	}
-	fmt.Printf("  Go VFS counts:        %s\n", goCounts)
-	fmt.Printf("  CLI -vfstrace counts: %s\n", cliCounts)
-	if !same {
-		if first < 0 {
-			first = min(len(goKeys), len(cliKeys))
-		}
-		at := func(list []string, i int) string {
-			if i < len(list) {
-				return list[i]
-			}
-			return "(none)"
-		}
-		fmt.Printf("  first difference at call %d: Go %q, CLI %q\n", first+1, at(goKeys, first), at(cliKeys, first))
-	}
-	check(same && len(goCalls) > 0 && goCounts.String() == cliCounts.String(), fmt.Sprintf("%s: the Go driver makes the same %d VFS calls, in the same order with the same files, offsets, lengths, lock levels and sync labels, as the C CLI", c, len(goCalls)))
-	var flags []string
-	for _, call := range goCalls {
-		if call.Method == "xSync" {
-			flags = append(flags, fmt.Sprintf("%s=0x%x(%s)", call.File, call.Flags, govfs.SyncFlagsString(call.Flags)))
-		}
-	}
-	if len(flags) > 0 {
-		fmt.Printf("  xSync flags SQLite passed: %s\n", strings.Join(flags, " "))
-	}
-	return goCounts
-}
-
-func printCountTable(table map[config]govfs.Counts) {
-	methods := map[string]bool{}
-	for _, counts := range table {
-		for m := range counts {
-			methods[m] = true
-		}
-	}
-	names := make([]string, 0, len(methods))
-	for m := range methods {
-		names = append(names, m)
-	}
-	sort.Strings(names)
-	fmt.Println()
-	fmt.Println("per-commit VFS calls, one committed single-row INSERT (Go driver = CLI where the checks above passed):")
-	fmt.Printf("  %-24s", "method")
-	for _, c := range configs {
-		fmt.Printf(" %14s", c)
-	}
-	fmt.Println()
-	for _, m := range names {
-		fmt.Printf("  %-24s", m)
-		for _, c := range configs {
-			fmt.Printf(" %14d", table[c][m])
-		}
-		fmt.Println()
-	}
-	fmt.Printf("  %-24s", "total")
-	for _, c := range configs {
-		total := 0
-		for _, n := range table[c] {
-			total += n
-		}
-		fmt.Printf(" %14d", total)
-	}
-	fmt.Println()
+	set.Check("A", same && len(goCalls) > 0 && goCounts.String() == cliCounts.String(), fmt.Sprintf("%s: the Go driver makes the same %d VFS calls, in the same order with the same files, offsets, lengths, lock levels and sync labels, as the C CLI", c, len(goCalls)))
 }
 
 type outcome struct {
@@ -403,22 +337,6 @@ func trialHeld(n, total int, fired bool, o outcome) bool {
 		return fired && o.rolledBack()
 	}
 	return !fired && o.committed()
-}
-
-func (o outcome) String() string {
-	stmt := "step committed"
-	if o.stepErr != "" {
-		stmt = fmt.Sprintf("error at %s: %s", o.where, o.stepErr)
-	}
-	row := "absent"
-	if o.rowPresent {
-		row = "present"
-	}
-	text := fmt.Sprintf("%s | reopen: user_version=%d, marker row %s, integrity %s, file = %s", stmt, o.userVersion, row, o.integrity, o.match)
-	if o.closeErr != "" {
-		text += " | close: " + o.closeErr
-	}
-	return text
 }
 
 func copyFile(from, to string) error {
@@ -557,9 +475,7 @@ func partB(ctx context.Context, v *govfs.VFS, dir, journal string) {
 	if err != nil {
 		fatal("stat base", err)
 	}
-	fmt.Println()
-	fmt.Printf("-- %s, synchronous=%s: recipe seed %d, the database after step %d (%d bytes, at rest) gets step %d through the Go VFS --\n", journal, r.SQLiteOptions().Conn.Synchronous, r.Seed, faultStep-1, baseInfo.Size(), faultStep)
-	fmt.Printf("step %d: %s; marker row: events id %d (inserted by this step)\n", faultStep, step.Summary(), markerID)
+	tables.bSteps.Row(journal, r.SQLiteOptions().Conn.Synchronous, r.Seed, faultStep-1, baseInfo.Size(), faultStep, step.Summary(), markerID)
 
 	clean := filepath.Join(dir, "clean-"+journal+".db")
 	if err := copyFile(base, clean); err != nil {
@@ -570,28 +486,13 @@ func partB(ctx context.Context, v *govfs.VFS, dir, journal string) {
 		fatal("clean run", fmt.Errorf("%v / %v", stepErr, closeErr))
 	}
 	cleanOutcome := inspect(ctx, r, clean, markerID)
-	writes := govfs.Filter(calls, govfs.Methods("xWrite"))
-	syncs := govfs.Filter(calls, govfs.Methods("xSync"))
-	byFile := map[string][2]int64{}
-	for _, w := range writes {
-		agg := byFile[w.File]
-		agg[0]++
-		agg[1] += w.Amount
-		byFile[w.File] = agg
+	for _, call := range calls {
+		call.File = strings.Replace(call.File, "clean-"+journal+".db", dbName, 1)
+		tables.bCleanCalls.Row(journal, call.Seq, call.Method, call.File, call.Amount, call.String())
 	}
-	files := make([]string, 0, len(byFile))
-	for f := range byFile {
-		files = append(files, f)
-	}
-	sort.Strings(files)
-	fmt.Printf("clean run: %d xWrite, %d xSync; %s\n", len(writes), len(syncs), cleanOutcome)
-	for _, f := range files {
-		fmt.Printf("  xWrite to %s: %d calls, %d bytes\n", strings.Replace(f, "clean-"+journal+".db", dbName, 1), byFile[f][0], byFile[f][1])
-	}
-	for _, s := range syncs {
-		fmt.Printf("  %s (call %d of %d in the step)\n", strings.Replace(s.String(), "clean-"+journal+".db", dbName, 1), s.Seq, len(calls))
-	}
-	check(cleanOutcome.match.Step == faultStep && cleanOutcome.match.Exact && cleanOutcome.rowPresent, fmt.Sprintf("%s: without a fault the step commits and the file equals recipe step %d exactly", journal, faultStep))
+	cleanHeld := cleanOutcome.match.Step == faultStep && cleanOutcome.match.Exact && cleanOutcome.rowPresent
+	trialRow(journal, "none", 0, false, nil, cleanOutcome, cleanHeld)
+	set.Check("B", cleanHeld, fmt.Sprintf("%s: without a fault the step commits and the file equals recipe step %d exactly", journal, faultStep))
 
 	for _, method := range []string{"xWrite", "xSync"} {
 		total := len(govfs.Filter(calls, govfs.Methods(method)))
@@ -612,18 +513,19 @@ func partB(ctx context.Context, v *govfs.VFS, dir, journal string) {
 			if closeErr != nil {
 				o.closeErr = errorText(closeErr)
 			}
-			target := "never reached (the step has fewer calls)"
+			var target any
 			if report.Fired {
 				target = strings.Replace(report.Call.String(), filepath.Base(trial), dbName, 1)
 			}
-			fmt.Printf("  %s #%d -> %s\n      %s\n", method, n, target, o)
+			held := trialHeld(n, total, report.Fired, o)
+			trialRow(journal, method, n, report.Fired, target, o, held)
 			if n <= total {
-				if !trialHeld(n, total, report.Fired, o) {
+				if !held {
 					allRolledBack = false
 					summary = append(summary, fmt.Sprintf("%s #%d", method, n))
 				}
 			} else {
-				check(trialHeld(n, total, report.Fired, o), fmt.Sprintf("%s: with %s #%d never reached, the step commits normally", journal, method, n))
+				set.Check("B", held, fmt.Sprintf("%s: with %s #%d never reached, the step commits normally", journal, method, n))
 			}
 			if err := recipe.RemoveDatabase(trial); err != nil {
 				fatal("remove", err)
@@ -633,6 +535,23 @@ func partB(ctx context.Context, v *govfs.VFS, dir, journal string) {
 		if !allRolledBack {
 			claim += "; exceptions: " + strings.Join(summary, ", ")
 		}
-		check(allRolledBack && total > 0, claim)
+		set.Check("B", allRolledBack && total > 0, claim)
 	}
+}
+
+// trialRow writes one run of the fault step: method "none" is the run
+// without a fault.
+func trialRow(journal, method string, n int, fired bool, target any, o outcome, held bool) {
+	var stepErr, code, where, closeErr any
+	if o.stepErr != "" {
+		stepErr, code, where = o.stepErr, o.stepCode, o.where
+	}
+	if o.closeErr != "" {
+		closeErr = o.closeErr
+	}
+	row := "absent"
+	if o.rowPresent {
+		row = "present"
+	}
+	tables.bTrials.Row(journal, method, n, fired, target, stepErr, code, where, closeErr, o.userVersion, row, o.integrity, o.match.String(), held)
 }

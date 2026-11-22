@@ -1,0 +1,25 @@
+seq,part,status,claim
+1,A,ok,"bounded: at every sample the process held exactly 3 descriptors per open connection, at most 192; none after Close"
+2,A,ok,bounded: never more than 64 connections open
+3,A,ok,"bounded: every eviction left the file at rest, and every reopen matched the sha256 recorded at its eviction"
+4,A,ok,"bounded: every read saw the model's step, and every final file equals the recipe state for its step"
+5,A,ok,bounded: peak process-memory growth stayed within K x (2 x cache budget + 256 KiB) + 32 MiB
+6,A,ok,"unbounded: at every sample the process held exactly 3 descriptors per open connection, at most 2598; none after Close"
+7,A,ok,unbounded: never more than 1000 connections open
+8,A,ok,"unbounded: every eviction left the file at rest, and every reopen matched the sha256 recorded at its eviction"
+9,A,ok,"unbounded: every read saw the model's step, and every final file equals the recipe state for its step"
+10,A,ok,the unbounded run's peak descriptors exceed the bounded run's limit 3 x K = 192
+11,A,ok,the unbounded run's peak process-memory growth exceeds the bounded run's (SHAPE)
+12,B,ok,"B1: the manager's close could not checkpoint or delete the WAL (another connection holds a lock), so the file is reported not at rest"
+13,B,ok,"B1: the last connection to close (the other process) checkpointed and deleted the WAL: at rest, holding step 1"
+14,B,ok,"B2: database/sql cannot close a connection that a statement still uses, so DB.Close returned and the file is not at rest"
+15,B,ok,"B2: closing the rows let the connection close: at rest, holding step 1"
+16,B,ok,B3: a killed writer leaves a -wal with its committed frames and a -shm
+17,B,ok,B3: a copy of the database file alone is a valid database WITHOUT the committed step 1 (it is still in the -wal)
+18,B,ok,"B3: one clean open and close recovers the WAL, checkpoints it and deletes it: at rest, holding step 1"
+19,B,ok,"B4: with PERSIST_WAL the close checkpoints but keeps the -wal (with its bytes) and the -shm, so the manager refuses to call it at rest"
+20,B,ok,"B4: the refusal is conservative here: the close did checkpoint, so the database file alone already holds step 1; a rule based on which files exist cannot see that"
+21,B,ok,B5: the manager reports the database file missing at its path
+22,B,ok,B5: a -wal with content stays behind at the old name
+23,B,ok,"B5: the moved file looks at rest but holds step 0: close saw the file had moved, skipped the checkpoint, and step 1 stayed in the -wal under the old name"
+24,B,ok,"B6: a write made outside the manager while the file was closed changes its sha256, and the manager refuses to reopen it"

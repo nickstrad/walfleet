@@ -12,24 +12,22 @@
 
 > **How to run the experiments**
 >
-> - **Prerequisites:** Go 1.26 (`go.mod` specifies `go 1.26.0`). On Linux, `strace` is required for Experiment 9.2's syscall cross-check and kill sweep. None of Chapter 9's four experiments invokes the C `sqlite3` CLI (`go run ./cmd/course build-tools` is only needed if you run the adversarial script `capture-falsify`, which reproduces CLI `.backup` lock contention).
-> - **Fetch the pinned SQLite source tree** into `_src/sqlite-3.53.4` (or point `SQLITE_SRC` at an existing checkout of tag `version-3.53.4`) if you want to inspect the linked C files locally:
+> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to start the runner from the host. Build the `lab` image once, from the repository root:
 >   ```text
->   go run ./cmd/course fetch-source
+>   docker compose build lab
 >   ```
-> - **Run an experiment** from the repository root:
+>   The image already contains the pinned SQLite `3.53.4` source tree (for inspecting the linked C files), the C tools (none of Chapter 9's four experiments invokes the C `sqlite3` CLI; only the adversarial script `capture-falsify` does, to reproduce CLI `.backup` lock contention), `strace` (Experiment 9.2's syscall cross-check and kill sweep), and the DuckDB CLI that presents the results.
+> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment in it, and prints its walkthrough; add `-i` (`go run ./cmd/course run -i 9.4`) to stay in DuckDB afterwards with the tables loaded:
 >   ```text
->   go run ./ch09-backup-crash-recovery-integrity/experiments/9.1-capture-comparison
->   go run ./ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss
->   go run ./ch09-backup-crash-recovery-integrity/experiments/9.3-integrity-check-limits
->   go run ./ch09-backup-crash-recovery-integrity/experiments/9.4-point-in-time-rebuild
+>   go run ./cmd/course run 9.1
+>   go run ./cmd/course run 9.2
+>   go run ./cmd/course run 9.3
+>   go run ./cmd/course run 9.4
 >   ```
->   Experiment 9.2 also accepts `-portable` to run the non-`strace` path on Linux. Scratch files are written under `_work/9.1/` through `_work/9.4/`, which are git-ignored and safe to delete.
-> - **Linux-only parts and the macOS route:** Experiments 9.1, 9.3, and 9.4, plus `internal/walship` and Experiment 9.2's power-cut model (Part B's rule calculation and recovery), are portable. Experiment 9.2's `strace` confirmation of synced bytes (Part B) and syscall kill sweep (Part A) are **Linux only**. On macOS, Experiment 9.2 runs the process-crash test and the rule-based power-cut model natively and prints `LINUX-ONLY:` notices for the `strace` parts. To run the full Linux-only checks from macOS, use the repository's Linux container:
->   ```text
->   docker compose run --rm lab go run ./ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss
->   ```
-> - **Measurement environment:** All evidence files, `strace` counts, and kill sweeps were measured on Linux (`linux/amd64`, Go 1.26, `strace` 6.8, ext4). All four experiments also ran inside the Debian `lab` container with identical non-`INFO:` output. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; nothing was run on macOS.
+>   Experiment 9.2 also accepts `-portable` to run the non-`strace` path on Linux. `course run` cannot pass experiment flags, so run that variant directly in the container: `docker compose run --rm lab go run ./ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss -portable`. In the container, scratch files and tables are written under `/work/9.1/` through `/work/9.4/` (the `lab-work` volume); run directly, under `_work/9.1/` through `_work/9.4/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch09-backup-crash-recovery-integrity/experiments/9.4-point-in-time-rebuild`). Run this way it prints only its verdict and leaves its tables under `_work/9.4/results/`.
+> - **Linux-only parts and macOS:** Experiments 9.1, 9.3, and 9.4, plus `internal/walship` and Experiment 9.2's power-cut model (Part B's rule calculation and recovery), are portable. Experiment 9.2's `strace` confirmation of synced bytes (Part B) and syscall kill sweep (Part A) are **Linux only**; `course run` runs them in the Linux `lab` container. Run directly on macOS, Experiment 9.2 runs the process-crash test and the rule-based power-cut model natively and prints `LINUX-ONLY:` notices for the `strace` parts.
+> - **Measurement environment:** The stored evidence in this chapter, including the `strace` counts and kill sweeps, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). The checked values are identical to the earlier `linux/amd64` capture. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; nothing was run on macOS.
 
 ---
 
@@ -198,7 +196,7 @@ Every span cited below is listed in [`SPANS.txt`](SPANS.txt) and verified agains
 ### 3.5 Experiment 9.1 — `capture-comparison`
 
 - **Claim:** On a quiet WAL database, closed-file copy, `sqlite_dbpage` in one read transaction, and file+WAL replay all reach **E1 bytes**; the online backup API reaches **E2 pages** (differing at header bytes `27`, `43`, `95` inside `24–27`, `40–43`, `92–99`) and does **not** reach E1 after `VACUUM INTO` because `backup.c:448` resets the destination schema cookie (`1` vs source `4`, leaving byte `43` different after `VACUUM INTO`); and `VACUUM INTO` reaches **E3 except `journal_mode`** (producing a rollback file) and **E1 between canonical forms**. Under an active writer committing recipe steps: a plain file copy of `.db` without `-wal` yields a valid but **stale** older state; `sqlite_dbpage`, file+WAL under a held read transaction, `VACUUM INTO` (running while the writer holds an uncommitted write transaction), and the backup API all return exact recipe states at their expected levels without blocking the writer. In a stepped backup, same-connection **commits** advance the copied count (`pagecount - remaining`) steadily (`5, 10, 15, 20, 25`) even as `remaining` rises when the database grows; a commit by another connection restarts the backup from page `1` (`copied` drops back to `5`), and a commit by another connection after every step prevents the backup from finishing. (A same-connection write followed by `ROLLBACK` does restart the backup via `src/pager.c:3185`, shown in `CAP-03a`.)
-- **Evidence form:** `EXACT`.
+- **Evidence form:** `EXACT` (every stored table must match on every run).
 
 <!-- include: experiments/9.1-capture-comparison/main.go -->
 ```go
@@ -211,6 +209,9 @@ Every span cited below is listed in [`SPANS.txt`](SPANS.txt) and verified agains
 // place via sqlite3BackupUpdate, src/backup.c:688-715) from other-connection
 // commits (which restart from page 1 via sqlite3BackupRestart,
 // src/backup.c:728-734).
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 9.1
 package main
 
 import (
@@ -230,6 +231,7 @@ import (
 	"github.com/nickstrad/walfleet/internal/equal"
 	"github.com/nickstrad/walfleet/internal/procs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walfile"
 	"github.com/nickstrad/walfleet/internal/walship"
@@ -253,26 +255,43 @@ var errGaveUp = errors.New("gave up")
 
 type levels struct{ e1, e2, e3, e3ExceptJournalMode, canonical bool }
 
-func (l levels) String() string {
-	mark := func(b bool) string {
-		if b {
-			return "yes"
-		}
-		return "no "
-	}
-	return fmt.Sprintf("E1 %s  E2 %s  E3 %s  E3-except-journal_mode %s  E1-after-VACUUM-INTO %s", mark(l.e1), mark(l.e2), mark(l.e3), mark(l.e3ExceptJournalMode), mark(l.canonical))
-}
+var levelColumns = []string{"e1", "e2", "e3", "e3_except_journal_mode", "e1_after_vacuum_into"}
+
+func (l levels) values() []any { return []any{l.e1, l.e2, l.e3, l.e3ExceptJournalMode, l.canonical} }
 
 type run struct {
-	ctx    context.Context
-	lab    *procs.Lab
-	r      recipe.Recipe
-	dir    string
-	live   string
-	writer *procs.Child
-	source *sqlitex.DB
-	conn   *sql.Conn
-	next   int
+	ctx      context.Context
+	lab      *procs.Lab
+	r        recipe.Recipe
+	dir      string
+	live     string
+	writer   *procs.Child
+	source   *sqlitex.DB
+	conn     *sql.Conn
+	next     int
+	set      *results.Set
+	captures int
+	during   string
+	tables   struct {
+		expected, quiet, header, details, steps, captures, backupSteps, summary *results.Table
+	}
+}
+
+func (x *run) openTables() {
+	x.tables.expected = x.set.Table("expected_levels", append([]string{"method"}, levelColumns...)...)
+	x.tables.quiet = x.set.Table("quiet_captures", append([]string{"seq", "method"}, levelColumns...)...)
+	x.tables.header = x.set.Table("backup_header", "seq", "comparison", "equal_ignoring_header_bytes", "ignored_header_bytes", "differing_header_bytes")
+	x.tables.details = x.set.Table("quiet_details", "seq", "name", "value")
+	x.tables.steps = x.set.Table("steps", "step", "during", "child", "action", "outcome")
+	x.tables.captures = x.set.Table("writer_captures", append([]string{"seq", "method", "latest_commit", "equals_step", "want_step"}, levelColumns...)...)
+	x.tables.backupSteps = x.set.Table("backup_steps", "run", "step", "remaining", "page_count", "copied", "then_committed_by", "committed_step")
+	x.tables.summary = x.set.Table("summary", "seq", "method", "strongest_level", "safe_under_writer", "blocks_the_writer")
+}
+
+// must runs one action on the writer child and records it in the steps table.
+func (x *run) must(action string, args ...string) {
+	result := x.lab.Must(x.writer, action, args...)
+	x.tables.steps.Row(result.Step, x.during, x.writer.Name, procs.ActionText(action, args), result.Outcome())
 }
 
 func (x *run) ref(k int) string { return filepath.Join(x.dir, "ref", fmt.Sprintf("step-%02d.db", k)) }
@@ -392,7 +411,7 @@ func (x *run) stateOf(capture string, vacuumed bool) (int, levels) {
 }
 
 func (x *run) commit() int {
-	x.lab.Must(x.writer, "recipe-session", strconv.Itoa(x.next))
+	x.must("recipe-session", strconv.Itoa(x.next))
 	x.next++
 	return x.next - 1
 }
@@ -453,7 +472,6 @@ func (x *run) copyLive(suffix, name string) {
 func (x *run) path(name string) string { return filepath.Join(x.dir, name) }
 
 func (x *run) quiet() {
-	fmt.Printf("== part A: a quiet database (recipe step %d, no writer)\n", quietStep)
 	if err := copyFile(x.ref(quietStep), x.live); err != nil {
 		x.lab.Fatal("live copy", err)
 	}
@@ -486,36 +504,51 @@ func (x *run) quiet() {
 		methodPages:  {true, true, true, true, true},
 		methodFile:   {true, true, true, true, true},
 	}
-	for _, c := range []struct{ method, file string }{
+	for i, c := range []struct{ method, file string }{
 		{methodCopy, "a-copy.db"}, {methodBackup, "a-backup.db"}, {methodVacuum, "a-vacuum.db"}, {methodPages, "a-pages.db"}, {methodFile, "a-replayed.db"},
 	} {
 		got := x.compare(x.path(c.file), quietStep, c.method == methodVacuum)
-		fmt.Printf("%-36s vs the source: %s\n", c.method, got)
-		x.lab.Check(got == want[c.method], fmt.Sprintf("%s reaches exactly the expected levels on a quiet database", c.method))
+		x.tables.expected.Row(append([]any{c.method}, want[c.method].values()...)...)
+		x.tables.quiet.Row(append([]any{i + 1, c.method}, got.values()...)...)
+		x.set.Check("A", got == want[c.method], fmt.Sprintf("%s reaches exactly the expected levels on a quiet database", c.method))
 	}
 	backup, err := equal.ComparePageFiles(x.path("a-backup.db"), x.ref(quietStep), pageSize)
 	if err != nil {
 		x.lab.Fatal("E2", err)
 	}
-	fmt.Printf("backup API: %s\n", backup)
+	x.headerRow(1, "backup copy vs the source", backup)
 	backupCanonical, err := equal.ComparePageFiles(x.canonicalCapture(x.path("a-backup.db")), x.canonicalRef(quietStep), pageSize)
 	if err != nil {
 		x.lab.Fatal("E2 canonical", err)
 	}
-	fmt.Printf("backup API after VACUUM INTO vs the source after VACUUM INTO: %s\n", backupCanonical)
+	x.headerRow(2, "both after VACUUM INTO", backupCanonical)
 	// Read the backup's schema cookie (header bytes 40-43) to show why its
 	// canonical form still differs from the source's at byte 43:
 	// sqlite3_backup_step sets the destination's cookie to old+1 (src/backup.c:448),
 	// and VACUUM INTO carries that offset forward by adding 1 again (src/vacuum.c:359).
 	backupCookie, sourceCookie := schemaCookie(x, x.path("a-backup.db")), schemaCookie(x, x.ref(quietStep))
-	fmt.Printf("schema cookie: backup %d, source %d\n", backupCookie, sourceCookie)
-	x.lab.Check(backupCanonical.Equal && slices.Equal(backupCanonical.IgnoredDiffering, []int{schemaCookieLowByte}) && backupCookie != sourceCookie,
+	x.tables.details.Row(1, "schema cookie of the backup", backupCookie)
+	x.tables.details.Row(2, "schema cookie of the source", sourceCookie)
+	x.set.Check("A", backupCanonical.Equal && slices.Equal(backupCanonical.IgnoredDiffering, []int{schemaCookieLowByte}) && backupCookie != sourceCookie,
 		fmt.Sprintf("the backup's VACUUM INTO form differs from the source's only at byte %d, the schema cookie", schemaCookieLowByte))
 	_, logical, vacuumed, err := equal.CompareLogicalFiles(x.ctx, x.path("a-vacuum.db"), x.ref(quietStep))
 	if err != nil {
 		x.lab.Fatal("E3", err)
 	}
-	fmt.Printf("VACUUM INTO: E3 differs only in journal_mode: %s for the copy, %s for the source\n", pragma(logical, "journal_mode"), pragma(vacuumed, "journal_mode"))
+	x.tables.details.Row(3, "journal_mode of the VACUUM INTO copy", pragma(logical, "journal_mode"))
+	x.tables.details.Row(4, "journal_mode of the source", pragma(vacuumed, "journal_mode"))
+}
+
+func (x *run) headerRow(seq int, comparison string, r equal.Result) {
+	ignored := make([]string, len(r.Ignored))
+	for i, b := range r.Ignored {
+		ignored[i] = b.String()
+	}
+	differing := make([]string, len(r.IgnoredDiffering))
+	for i, offset := range r.IgnoredDiffering {
+		differing[i] = strconv.Itoa(offset)
+	}
+	x.tables.header.Row(seq, comparison, r.Equal, strings.Join(ignored, " "), strings.Join(differing, " "))
 }
 
 func schemaCookie(x *run, path string) uint32 {
@@ -568,30 +601,33 @@ var (
 
 func (x *run) report(method, file string, vacuumed bool, want int, wantLevels levels) bool {
 	k, l := x.stateOf(x.path(file), vacuumed)
-	fmt.Printf("%-36s equals recipe step %d (want %d): %s\n", method, k, want, l)
+	x.captureRow(method, k, want, l)
 	ok := k == want && l == wantLevels
-	x.lab.Check(ok, fmt.Sprintf("under the writer, %s equals recipe step %d at exactly the expected levels", method, want))
+	x.set.Check("B", ok, fmt.Sprintf("under the writer, %s equals recipe step %d at exactly the expected levels", method, want))
 	return ok
 }
 
+func (x *run) captureRow(method string, k int, want any, l levels) {
+	x.captures++
+	x.tables.captures.Row(append([]any{x.captures, method, x.next - 1, k, want}, l.values()...)...)
+}
+
 func (x *run) underWriter() map[string]bool {
-	fmt.Println()
-	fmt.Println("== part B: the same database while a writer child commits recipe steps (one fresh connection per step, wal_autocheckpoint=0)")
 	x.writer = x.lab.SpawnSQL("writer", procs.SQLOptions{Path: x.live, JournalMode: sqlitex.JournalWAL, BusyTimeout: 5 * time.Second})
 	x.openSource()
 	x.next = quietStep + 1
 	safe := map[string]bool{}
 
-	fmt.Println("-- plain copy of the live database file (the -wal is not copied)")
+	x.during = "plain copy of the live file"
 	current := x.commit()
 	x.copyLive("", "b-copy.db")
 	stale, staleLevels := x.stateOf(x.path("b-copy.db"), false)
-	fmt.Printf("%-36s equals recipe step %d (the writer has committed %d): %s\n", "plain copy of the live file", stale, current, staleLevels)
-	x.lab.Check(stale >= 0 && stale < current && staleLevels == everyLevel,
+	x.captureRow(x.during, stale, nil, staleLevels)
+	x.set.Check("B", stale >= 0 && stale < current && staleLevels == everyLevel,
 		fmt.Sprintf("the plain copy is byte-identical (E1) to an older recipe step (%d), not to the committed step %d", stale, current))
 	safe[methodCopy] = stale == current
 
-	fmt.Println("-- every page through sqlite_dbpage in one read transaction, in two halves; the writer commits between them")
+	x.during = methodPages
 	seen := x.begin()
 	pages := x.pageCount()
 	image := x.readPages(1, pages/2)
@@ -603,7 +639,7 @@ func (x *run) underWriter() map[string]bool {
 	}
 	safe[methodPages] = x.report(methodPages, "b-pages.db", false, seen, everyLevel)
 
-	fmt.Println("-- copy of the database file, a commit, then a copy of the -wal, all inside one read transaction; rebuilt by WAL replay")
+	x.during = methodFile
 	seen = x.begin()
 	x.copyLive("", "b-file.db")
 	afterCopy := x.commit()
@@ -618,15 +654,14 @@ func (x *run) underWriter() map[string]bool {
 	// uncommitted step: sqlite3RunVacuum opens only a read transaction on the
 	// source when pOut != NULL (src/vacuum.c:270), so it neither blocks nor
 	// sees the uncommitted writes.
-	fmt.Println("-- VACUUM INTO while the writer child holds the write lock with step uncommitted, then the writer commits")
+	x.during = methodVacuum
 	before := x.next - 1
-	x.lab.Must(x.writer, "begin", "immediate")
-	x.lab.Must(x.writer, "recipe-exec", strconv.Itoa(x.next))
+	x.must("begin", "immediate")
+	x.must("recipe-exec", strconv.Itoa(x.next))
 	if _, err := x.conn.ExecContext(x.ctx, "VACUUM INTO ?", x.path("b-vacuum.db")); err != nil {
 		x.lab.Fatal("vacuum into", err)
 	}
-	fmt.Println("VACUUM INTO finished while the writer held its write transaction open")
-	x.lab.Must(x.writer, "commit")
+	x.must("commit")
 	x.next++
 	safe[methodVacuum] = x.report(methodVacuum, "b-vacuum.db", true, before, vacuumLevels)
 
@@ -641,14 +676,14 @@ func (x *run) underWriter() map[string]bool {
 // to contrast sqlite3BackupUpdate with sqlite3BackupRestart, and a second
 // where the writer child commits after every step to show starvation.
 func (x *run) backups() bool {
-	fmt.Printf("-- backup API, %d pages per step; after step 2 and step 3 the backup's own connection commits a recipe step, after step 5 the writer child does\n", backupPages)
+	x.during = methodBackup
 	var copied []int
 	steps, err := sqlitex.BackupWithSourceExec(x.ctx, x.conn, x.path("b-backup.db"), backupPages, func(step sqlitex.BackupStep, exec sqlitex.SourceExecer) error {
 		// Track PageCount-Remaining (= iNext-1) rather than Remaining alone:
 		// sqlite3_backup_step recomputes Remaining from the current source size
 		// (src/backup.c:428-429), so Remaining rises whenever a commit grows the database.
 		copied = append(copied, step.PageCount-step.Remaining)
-		note := ""
+		var by, committed any
 		switch step.Step {
 		case 2, 3:
 			planned, err := x.r.Step(x.next)
@@ -658,36 +693,35 @@ func (x *run) backups() bool {
 			if err := applyThrough(x.ctx, exec, planned); err != nil {
 				return err
 			}
-			note = fmt.Sprintf("; the backup's own connection commits step %d", x.next)
+			by, committed = "the backup's own connection", x.next
 			x.next++
 		case 5:
-			note = fmt.Sprintf("; the writer child commits step %d", x.next)
-			x.commit()
+			by, committed = "the writer child", x.commit()
 		}
-		fmt.Printf("   backup step %2d: remaining %3d of %3d, copied %3d%s\n", step.Step, step.Remaining, step.PageCount, step.PageCount-step.Remaining, note)
+		x.tables.backupSteps.Row(1, step.Step, step.Remaining, step.PageCount, step.PageCount-step.Remaining, by, committed)
 		return nil
 	})
 	if err != nil {
 		x.lab.Fatal("backup", err)
 	}
 	finished := steps[len(steps)-1].Remaining == 0
-	x.lab.Check(copied[0] == backupPages && copied[1] == 2*backupPages && copied[2] == 3*backupPages && copied[3] == 4*backupPages && copied[4] == 5*backupPages,
+	x.set.Check("B", copied[0] == backupPages && copied[1] == 2*backupPages && copied[2] == 3*backupPages && copied[3] == 4*backupPages && copied[4] == 5*backupPages,
 		fmt.Sprintf("through the backup's own commits the copy keeps advancing %d pages per step (no restart), although the remaining count rose when those commits grew the database", backupPages))
-	x.lab.Check(copied[5] == backupPages, "after the writer child's commit the next step starts again from page 1: the backup restarted")
+	x.set.Check("B", copied[5] == backupPages, "after the writer child's commit the next step starts again from page 1: the backup restarted")
 	var remaining []int
 	ok := x.report(methodBackup, "b-backup.db", false, x.next-1, backupLevels) && finished
 
-	fmt.Printf("-- backup API, %d pages per step, the writer child commits after every step; give up after %d steps\n", backupPages, giveUpAfter)
+	x.during = methodBackup + ", a commit after every step"
 	_, err = sqlitex.Backup(x.ctx, x.conn, x.path("b-backup-never.db"), backupPages, func(step sqlitex.BackupStep) error {
 		remaining = append(remaining, step.Remaining)
-		fmt.Printf("   backup step %2d: remaining %2d of %2d; the writer child commits step %d\n", step.Step, step.Remaining, step.PageCount, x.next)
+		x.tables.backupSteps.Row(2, step.Step, step.Remaining, step.PageCount, step.PageCount-step.Remaining, "the writer child", x.next)
 		x.commit()
 		if step.Step == giveUpAfter {
 			return errGaveUp
 		}
 		return nil
 	})
-	x.lab.Check(errors.Is(err, errGaveUp) && minimum(remaining) > 0, fmt.Sprintf("with a commit by another connection after every step the backup never finished: after %d steps the smallest remaining count was %d", giveUpAfter, minimum(remaining)))
+	x.set.Check("B", errors.Is(err, errGaveUp) && minimum(remaining) > 0, fmt.Sprintf("with a commit by another connection after every step the backup never finished: after %d steps the smallest remaining count was %d", giveUpAfter, minimum(remaining)))
 	return ok
 }
 
@@ -719,14 +753,14 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("9.1")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	x := &run{ctx: ctx, lab: procs.NewLab(os.Stdout), r: recipe.Default(), dir: dir, live: filepath.Join(dir, "live.db")}
+	lab := procs.NewLab(os.Stdout)
+	lab.Script.Out = nil // the steps table records each writer step
+	x := &run{ctx: ctx, lab: lab, r: recipe.Default(), dir: dir, live: filepath.Join(dir, "live.db"), set: results.MustOpen(dir)}
+	x.openTables()
 	x.buildReferences()
 	x.quiet()
 	safe := x.underWriter()
 
-	fmt.Println()
-	fmt.Println("== summary")
-	fmt.Printf("%-36s | %-34s | %-17s | %s\n", "method", "strongest level", "safe under writer", "blocks the writer")
 	rows := []struct{ method, level, blocks string }{
 		{methodCopy, "E1", "the database must be closed"},
 		{methodBackup, "E2", "no (commits ran between steps)"},
@@ -734,153 +768,375 @@ func main() {
 		{methodPages, "E1", "no (a commit ran inside the read transaction)"},
 		{methodFile, "E1 after WAL replay", "no (a commit ran inside the read transaction)"},
 	}
-	for _, row := range rows {
-		fmt.Printf("%-36s | %-34s | %-17s | %s\n", row.method, row.level, yesNo(safe[row.method]), row.blocks)
+	for i, row := range rows {
+		x.tables.summary.Row(i+1, row.method, row.level, safe[row.method], row.blocks)
 	}
-	x.lab.Check(!safe[methodCopy] && safe[methodBackup] && safe[methodVacuum] && safe[methodPages] && safe[methodFile],
+	x.set.Check("C", !safe[methodCopy] && safe[methodBackup] && safe[methodVacuum] && safe[methodPages] && safe[methodFile],
 		"under the writer every capture except the plain file copy equals the exact recipe state it should; the plain copy equals an older one")
-	x.lab.Report(strings.ToUpper("capture comparison"))
-}
-
-func yesNo(b bool) string {
-	if b {
-		return "yes"
-	}
-	return "no"
+	x.set.Finish(strings.ToUpper("capture comparison"))
 }
 ```
 
-Run from the repository root:
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/9.1-capture-comparison/report.sql -->
+```sql
+-- Walkthrough of experiment 9.1. Run it with:
+--   go run ./cmd/course run 9.1        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   expected_levels   one row per capture method: the equality levels it should reach
+--   quiet_captures    part A: one row per capture of the quiet database, the levels reached
+--   backup_header     part A: where the backup API copy's header differs from the source
+--   quiet_details     part A: schema cookies and journal modes behind those differences
+--   steps             part B: one row per step the writer child ran
+--   writer_captures   part B: one row per capture taken while the writer commits
+--   backup_steps      part B: one row per sqlite3_backup_step call (run 1 and run 2)
+--   summary           one row per method: strongest level, safe under a writer, blocking
+--   checks            every claim the experiment asserted (the runner lists it last)
+-- Levels: e1 = identical file bytes; e2 = identical pages, ignoring the header
+-- bytes SQLite rewrites on every copy (24-27, 40-43, 92-99); e3 = identical
+-- logical content (schema, rows, pragmas); e3_except_journal_mode = the same
+-- with journal_mode left out; e1_after_vacuum_into = identical bytes once both
+-- files are rewritten with VACUUM INTO.
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  9.1  Five ways to capture a live SQLite database'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'Five capture methods: a copy of the closed file, the online backup API,'
+.print 'VACUUM INTO, reading every page through sqlite_dbpage in one read'
+.print 'transaction, and copying the database file and its -wal while a read'
+.print 'transaction is held (rebuilt by WAL replay). Each capture is compared with'
+.print 'reference copies of the recipe database built to every step (4096-byte pages).'
+
+.print
+.print '── A. A quiet database (recipe step 6, no writer) ─────────────────────'
+.print
+.print 'A1. Each capture against the source. Three methods give the same bytes'
+.print '    (E1); the backup API gives the same pages but not the same header;'
+.print '    VACUUM INTO rewrites the file, so it matches only when journal_mode is'
+.print '    ignored, and byte for byte once the source is vacuumed too.'
+
+SELECT q.method, q.e1, q.e2, q.e3, q.e3_except_journal_mode AS e3_but_jm,
+       q.e1_after_vacuum_into AS e1_vacuumed,
+       (q.e1, q.e2, q.e3, q.e3_except_journal_mode, q.e1_after_vacuum_into)
+         = (e.e1, e.e2, e.e3, e.e3_except_journal_mode, e.e1_after_vacuum_into) AS as_expected
+FROM quiet_captures q JOIN expected_levels e USING (method)
+ORDER BY q.seq;
+
+.print
+.print 'A2. Where the backup copy differs: only in header bytes that E2 ignores.'
+.print '    After VACUUM INTO on both sides one byte still differs: byte 43, the'
+.print '    low byte of the schema cookie.'
+
+SELECT comparison, equal_ignoring_header_bytes AS e2_equal, ignored_header_bytes, differing_header_bytes
+FROM backup_header ORDER BY seq;
+
+.print
+.print 'A3. Why. sqlite3_backup_step sets the schema cookie of the copy to the'
+.print '    old value plus one (src/backup.c:448), and VACUUM INTO adds one to the'
+.print '    cookie it copies (src/vacuum.c:359), so the offset survives. VACUUM INTO'
+.print '    also leaves its copy in rollback mode, which is the one E3 difference.'
+
+SELECT name, value FROM quiet_details ORDER BY seq;
+
+.print
+.print '── B. The same database while a writer child commits ───────────────────'
+.print
+.print 'A child process commits recipe steps, one fresh connection per step'
+.print '(wal_autocheckpoint=0). The experiment captures between and during its'
+.print 'commits:'
+.print '  plain copy       a copy of the live database file only (no -wal)'
+.print '  pages            every page through sqlite_dbpage in one read transaction,'
+.print '                   in two halves; the writer commits between them'
+.print '  file + WAL       copy the database file, the writer commits, copy the -wal,'
+.print '                   all inside one read transaction; rebuilt by WAL replay'
+.print '  VACUUM INTO      run while the writer holds BEGIN IMMEDIATE with a step'
+.print '                   not yet committed; the writer commits afterwards'
+.print '  backup API       5 pages per step, commits in between (see B3)'
+.print
+.print 'B1. What the writer did, and during which capture:'
+
+SELECT step, during, action, outcome FROM steps WHERE during NOT LIKE '%every step' ORDER BY step;
+
+.print
+.print 'B2. The recipe step each capture equals, beside the newest step the writer'
+.print '    had committed when the comparison ran. The plain copy misses commits'
+.print '    still in the -wal and equals an older step. Every other method equals'
+.print '    the exact step its read transaction or last step saw, at the expected'
+.print '    levels (the same as in A1). VACUUM INTO finished while the writer held'
+.print '    its write transaction: it reads under a read transaction only'
+.print '    (src/vacuum.c:270).'
+
+SELECT w.method, w.latest_commit AS latest, w.equals_step AS equals, w.want_step AS want,
+       concat_ws(' ', CASE WHEN w.e1 THEN 'E1' END, CASE WHEN w.e2 THEN 'E2' END,
+                 CASE WHEN w.e3 THEN 'E3' END, CASE WHEN w.e3_except_journal_mode THEN 'E3-but-jm' END,
+                 CASE WHEN w.e1_after_vacuum_into THEN 'E1-vacuumed' END) AS levels_reached,
+       (w.e1, w.e2, w.e3, w.e3_except_journal_mode, w.e1_after_vacuum_into)
+         = (e.e1, e.e2, e.e3, e.e3_except_journal_mode, e.e1_after_vacuum_into) AS as_expected
+FROM writer_captures w
+JOIN expected_levels e ON e.method = CASE WHEN w.want_step IS NULL THEN 'closed-file copy' ELSE w.method END
+ORDER BY w.seq;
+
+.print
+.print 'B3. The backup API, 5 pages per step (run 1). After steps 2 and 3 the'
+.print '    connection being backed up commits: the copy keeps advancing 5 pages a'
+.print '    step (sqlite3BackupUpdate, src/backup.c:688-715) although remaining'
+.print '    rises as the database grows. After step 5 the writer child commits:'
+.print '    the next step starts again from page 1 (sqlite3BackupRestart,'
+.print '    src/backup.c:728-734). copied = page_count - remaining.'
+
+SELECT step, remaining, page_count, copied, then_committed_by, committed_step
+FROM backup_steps WHERE run = 1 ORDER BY step;
+
+.print
+.print 'B4. Run 2: the writer child commits after every step. Every commit'
+.print '    restarts the backup, and the database keeps growing, so remaining'
+.print '    never reaches 0. The experiment gives up after 8 steps.'
+
+SELECT step, remaining, page_count, then_committed_by, committed_step,
+       min(remaining) OVER () AS smallest_remaining
+FROM backup_steps WHERE run = 2 ORDER BY step;
+
+.print
+.print '── C. Summary ──────────────────────────────────────────────────────────'
+.print
+
+SELECT method, strongest_level, safe_under_writer FROM summary ORDER BY seq;
+
+.print
+.print 'Whether a method blocks the writer, from what happened in part B:'
+
+SELECT method, blocks_the_writer FROM summary ORDER BY seq;
+```
+
+Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./ch09-backup-crash-recovery-integrity/experiments/9.1-capture-comparison
+go run ./cmd/course run 9.1
 ```
 
-Captured evidence:
+Add `-i` (`go run ./cmd/course run -i 9.1`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/9.1-capture-comparison/`](evidence/9.1-capture-comparison/), and `go run ./cmd/course check evidence ch09` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/9.1-capture-comparison.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/9.1
-== part A: a quiet database (recipe step 6, no writer)
-closed-file copy                     vs the source: E1 yes  E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
-check ok: closed-file copy reaches exactly the expected levels on a quiet database
-backup API                           vs the source: E1 no   E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO no 
-check ok: backup API reaches exactly the expected levels on a quiet database
-VACUUM INTO                          vs the source: E1 no   E2 no   E3 no   E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
-check ok: VACUUM INTO reaches exactly the expected levels on a quiet database
-pages in a read transaction          vs the source: E1 yes  E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
-check ok: pages in a read transaction reaches exactly the expected levels on a quiet database
-file + WAL under a held transaction  vs the source: E1 yes  E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
-check ok: file + WAL under a held transaction reaches exactly the expected levels on a quiet database
-backup API: E2 pages: equal ignoring header bytes 24-27, 40-43, 92-99 (bytes differ only at [27 43 95])
-backup API after VACUUM INTO vs the source after VACUUM INTO: E2 pages: equal ignoring header bytes 24-27, 40-43, 92-99 (bytes differ only at [43])
-schema cookie: backup 1, source 4
-check ok: the backup's VACUUM INTO form differs from the source's only at byte 43, the schema cookie
-VACUUM INTO: E3 differs only in journal_mode: rollback for the copy, wal for the source
 
-== part B: the same database while a writer child commits recipe steps (one fresh connection per step, wal_autocheckpoint=0)
--- plain copy of the live database file (the -wal is not copied)
-step  1  writer     recipe-session 7                     -> SQLITE_OK
-plain copy of the live file          equals recipe step 6 (the writer has committed 7): E1 yes  E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
-check ok: the plain copy is byte-identical (E1) to an older recipe step (6), not to the committed step 7
--- every page through sqlite_dbpage in one read transaction, in two halves; the writer commits between them
-step  2  writer     recipe-session 8                     -> SQLITE_OK
-pages in a read transaction          equals recipe step 7 (want 7): E1 yes  E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
-check ok: under the writer, pages in a read transaction equals recipe step 7 at exactly the expected levels
--- copy of the database file, a commit, then a copy of the -wal, all inside one read transaction; rebuilt by WAL replay
-step  3  writer     recipe-session 9                     -> SQLITE_OK
-file + WAL under a held transaction  equals recipe step 9 (want 9): E1 yes  E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
-check ok: under the writer, file + WAL under a held transaction equals recipe step 9 at exactly the expected levels
--- VACUUM INTO while the writer child holds the write lock with step uncommitted, then the writer commits
-step  4  writer     begin immediate                      -> SQLITE_OK
-step  5  writer     recipe-exec 10                       -> SQLITE_OK
-VACUUM INTO finished while the writer held its write transaction open
-step  6  writer     commit                               -> SQLITE_OK
-VACUUM INTO                          equals recipe step 9 (want 9): E1 no   E2 no   E3 no   E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
-check ok: under the writer, VACUUM INTO equals recipe step 9 at exactly the expected levels
--- backup API, 5 pages per step; after step 2 and step 3 the backup's own connection commits a recipe step, after step 5 the writer child does
-   backup step  1: remaining  95 of 100, copied   5
-   backup step  2: remaining  90 of 100, copied  10; the backup's own connection commits step 11
-   backup step  3: remaining  93 of 108, copied  15; the backup's own connection commits step 12
-   backup step  4: remaining  98 of 118, copied  20
-step  7  writer     recipe-session 13                    -> SQLITE_OK
-   backup step  5: remaining  93 of 118, copied  25; the writer child commits step 13
-   backup step  6: remaining 119 of 124, copied   5
-   backup step  7: remaining 114 of 124, copied  10
-   backup step  8: remaining 109 of 124, copied  15
-   backup step  9: remaining 104 of 124, copied  20
-   backup step 10: remaining  99 of 124, copied  25
-   backup step 11: remaining  94 of 124, copied  30
-   backup step 12: remaining  89 of 124, copied  35
-   backup step 13: remaining  84 of 124, copied  40
-   backup step 14: remaining  79 of 124, copied  45
-   backup step 15: remaining  74 of 124, copied  50
-   backup step 16: remaining  69 of 124, copied  55
-   backup step 17: remaining  64 of 124, copied  60
-   backup step 18: remaining  59 of 124, copied  65
-   backup step 19: remaining  54 of 124, copied  70
-   backup step 20: remaining  49 of 124, copied  75
-   backup step 21: remaining  44 of 124, copied  80
-   backup step 22: remaining  39 of 124, copied  85
-   backup step 23: remaining  34 of 124, copied  90
-   backup step 24: remaining  29 of 124, copied  95
-   backup step 25: remaining  24 of 124, copied 100
-   backup step 26: remaining  19 of 124, copied 105
-   backup step 27: remaining  14 of 124, copied 110
-   backup step 28: remaining   9 of 124, copied 115
-   backup step 29: remaining   4 of 124, copied 120
-   backup step 30: remaining   0 of 124, copied 124
-check ok: through the backup's own commits the copy keeps advancing 5 pages per step (no restart), although the remaining count rose when those commits grew the database
-check ok: after the writer child's commit the next step starts again from page 1: the backup restarted
-backup API                           equals recipe step 13 (want 13): E1 no   E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO no 
-check ok: under the writer, backup API equals recipe step 13 at exactly the expected levels
--- backup API, 5 pages per step, the writer child commits after every step; give up after 8 steps
-   backup step  1: remaining 119 of 124; the writer child commits step 14
-step  8  writer     recipe-session 14                    -> SQLITE_OK
-   backup step  2: remaining 127 of 132; the writer child commits step 15
-step  9  writer     recipe-session 15                    -> SQLITE_OK
-   backup step  3: remaining 139 of 144; the writer child commits step 16
-step 10  writer     recipe-session 16                    -> SQLITE_OK
-   backup step  4: remaining 155 of 160; the writer child commits step 17
-step 11  writer     recipe-session 17                    -> SQLITE_OK
-   backup step  5: remaining 157 of 162; the writer child commits step 18
-step 12  writer     recipe-session 18                    -> SQLITE_OK
-   backup step  6: remaining 165 of 170; the writer child commits step 19
-step 13  writer     recipe-session 19                    -> SQLITE_OK
-   backup step  7: remaining 166 of 171; the writer child commits step 20
-step 14  writer     recipe-session 20                    -> SQLITE_OK
-   backup step  8: remaining 179 of 184; the writer child commits step 21
-step 15  writer     recipe-session 21                    -> SQLITE_OK
-check ok: with a commit by another connection after every step the backup never finished: after 8 steps the smallest remaining count was 119
+════════════════════════════════════════════════════════════════════════
+  9.1  Five ways to capture a live SQLite database
+════════════════════════════════════════════════════════════════════════
 
-== summary
-method                               | strongest level                    | safe under writer | blocks the writer
-closed-file copy                     | E1                                 | no                | the database must be closed
-backup API                           | E2                                 | yes               | no (commits ran between steps)
-VACUUM INTO                          | E3 but journal_mode; E1 canonical  | yes               | no (ran while the writer held its write transaction)
-pages in a read transaction          | E1                                 | yes               | no (a commit ran inside the read transaction)
-file + WAL under a held transaction  | E1 after WAL replay                | yes               | no (a commit ran inside the read transaction)
-check ok: under the writer every capture except the plain file copy equals the exact recipe state it should; the plain copy equals an older one
+Five capture methods: a copy of the closed file, the online backup API,
+VACUUM INTO, reading every page through sqlite_dbpage in one read
+transaction, and copying the database file and its -wal while a read
+transaction is held (rebuilt by WAL replay). Each capture is compared with
+reference copies of the recipe database built to every step (4096-byte pages).
 
-CAPTURE COMPARISON OK
+── A. A quiet database (recipe step 6, no writer) ─────────────────────
+
+A1. Each capture against the source. Three methods give the same bytes
+    (E1); the backup API gives the same pages but not the same header;
+    VACUUM INTO rewrites the file, so it matches only when journal_mode is
+    ignored, and byte for byte once the source is vacuumed too.
+┌─────────────────────────────────────┬───────┬───────┬───────┬───────────┬─────────────┬─────────────┐
+│               method                │  e1   │  e2   │  e3   │ e3_but_jm │ e1_vacuumed │ as_expected │
+├─────────────────────────────────────┼───────┼───────┼───────┼───────────┼─────────────┼─────────────┤
+│ closed-file copy                    │ true  │ true  │ true  │ true      │ true        │ true        │
+│ backup API                          │ false │ true  │ true  │ true      │ false       │ true        │
+│ VACUUM INTO                         │ false │ false │ false │ true      │ true        │ true        │
+│ pages in a read transaction         │ true  │ true  │ true  │ true      │ true        │ true        │
+│ file + WAL under a held transaction │ true  │ true  │ true  │ true      │ true        │ true        │
+└─────────────────────────────────────┴───────┴───────┴───────┴───────────┴─────────────┴─────────────┘
+
+A2. Where the backup copy differs: only in header bytes that E2 ignores.
+    After VACUUM INTO on both sides one byte still differs: byte 43, the
+    low byte of the schema cookie.
+┌───────────────────────────┬──────────┬──────────────────────┬────────────────────────┐
+│        comparison         │ e2_equal │ ignored_header_bytes │ differing_header_bytes │
+├───────────────────────────┼──────────┼──────────────────────┼────────────────────────┤
+│ backup copy vs the source │ true     │ 24-27 40-43 92-99    │ 27 43 95               │
+│ both after VACUUM INTO    │ true     │ 24-27 40-43 92-99    │ 43                     │
+└───────────────────────────┴──────────┴──────────────────────┴────────────────────────┘
+
+A3. Why. sqlite3_backup_step sets the schema cookie of the copy to the
+    old value plus one (src/backup.c:448), and VACUUM INTO adds one to the
+    cookie it copies (src/vacuum.c:359), so the offset survives. VACUUM INTO
+    also leaves its copy in rollback mode, which is the one E3 difference.
+┌──────────────────────────────────────┬──────────┐
+│                 name                 │  value   │
+├──────────────────────────────────────┼──────────┤
+│ schema cookie of the backup          │ 1        │
+│ schema cookie of the source          │ 4        │
+│ journal_mode of the VACUUM INTO copy │ rollback │
+│ journal_mode of the source           │ wal      │
+└──────────────────────────────────────┴──────────┘
+
+── B. The same database while a writer child commits ───────────────────
+
+A child process commits recipe steps, one fresh connection per step
+(wal_autocheckpoint=0). The experiment captures between and during its
+commits:
+  plain copy       a copy of the live database file only (no -wal)
+  pages            every page through sqlite_dbpage in one read transaction,
+                   in two halves; the writer commits between them
+  file + WAL       copy the database file, the writer commits, copy the -wal,
+                   all inside one read transaction; rebuilt by WAL replay
+  VACUUM INTO      run while the writer holds BEGIN IMMEDIATE with a step
+                   not yet committed; the writer commits afterwards
+  backup API       5 pages per step, commits in between (see B3)
+
+B1. What the writer did, and during which capture:
+┌──────┬─────────────────────────────────────┬───────────────────┬───────────┐
+│ step │               during                │      action       │  outcome  │
+├──────┼─────────────────────────────────────┼───────────────────┼───────────┤
+│ 1    │ plain copy of the live file         │ recipe-session 7  │ SQLITE_OK │
+│ 2    │ pages in a read transaction         │ recipe-session 8  │ SQLITE_OK │
+│ 3    │ file + WAL under a held transaction │ recipe-session 9  │ SQLITE_OK │
+│ 4    │ VACUUM INTO                         │ begin immediate   │ SQLITE_OK │
+│ 5    │ VACUUM INTO                         │ recipe-exec 10    │ SQLITE_OK │
+│ 6    │ VACUUM INTO                         │ commit            │ SQLITE_OK │
+│ 7    │ backup API                          │ recipe-session 13 │ SQLITE_OK │
+└──────┴─────────────────────────────────────┴───────────────────┴───────────┘
+
+B2. The recipe step each capture equals, beside the newest step the writer
+    had committed when the comparison ran. The plain copy misses commits
+    still in the -wal and equals an older step. Every other method equals
+    the exact step its read transaction or last step saw, at the expected
+    levels (the same as in A1). VACUUM INTO finished while the writer held
+    its write transaction: it reads under a read transaction only
+    (src/vacuum.c:270).
+┌─────────────────────────────────────┬────────┬────────┬──────┬────────────────────────────────┬─────────────┐
+│               method                │ latest │ equals │ want │         levels_reached         │ as_expected │
+├─────────────────────────────────────┼────────┼────────┼──────┼────────────────────────────────┼─────────────┤
+│ plain copy of the live file         │ 7      │ 6      │      │ E1 E2 E3 E3-but-jm E1-vacuumed │ true        │
+│ pages in a read transaction         │ 8      │ 7      │ 7    │ E1 E2 E3 E3-but-jm E1-vacuumed │ true        │
+│ file + WAL under a held transaction │ 9      │ 9      │ 9    │ E1 E2 E3 E3-but-jm E1-vacuumed │ true        │
+│ VACUUM INTO                         │ 10     │ 9      │ 9    │ E3-but-jm E1-vacuumed          │ true        │
+│ backup API                          │ 13     │ 13     │ 13   │ E2 E3 E3-but-jm                │ true        │
+└─────────────────────────────────────┴────────┴────────┴──────┴────────────────────────────────┴─────────────┘
+
+B3. The backup API, 5 pages per step (run 1). After steps 2 and 3 the
+    connection being backed up commits: the copy keeps advancing 5 pages a
+    step (sqlite3BackupUpdate, src/backup.c:688-715) although remaining
+    rises as the database grows. After step 5 the writer child commits:
+    the next step starts again from page 1 (sqlite3BackupRestart,
+    src/backup.c:728-734). copied = page_count - remaining.
+┌──────┬───────────┬────────────┬────────┬─────────────────────────────┬────────────────┐
+│ step │ remaining │ page_count │ copied │      then_committed_by      │ committed_step │
+├──────┼───────────┼────────────┼────────┼─────────────────────────────┼────────────────┤
+│ 1    │ 95        │ 100        │ 5      │                             │                │
+│ 2    │ 90        │ 100        │ 10     │ the backup's own connection │ 11             │
+│ 3    │ 93        │ 108        │ 15     │ the backup's own connection │ 12             │
+│ 4    │ 98        │ 118        │ 20     │                             │                │
+│ 5    │ 93        │ 118        │ 25     │ the writer child            │ 13             │
+│ 6    │ 119       │ 124        │ 5      │                             │                │
+│ 7    │ 114       │ 124        │ 10     │                             │                │
+│ 8    │ 109       │ 124        │ 15     │                             │                │
+│ 9    │ 104       │ 124        │ 20     │                             │                │
+│ 10   │ 99        │ 124        │ 25     │                             │                │
+│ 11   │ 94        │ 124        │ 30     │                             │                │
+│ 12   │ 89        │ 124        │ 35     │                             │                │
+│ 13   │ 84        │ 124        │ 40     │                             │                │
+│ 14   │ 79        │ 124        │ 45     │                             │                │
+│ 15   │ 74        │ 124        │ 50     │                             │                │
+│ 16   │ 69        │ 124        │ 55     │                             │                │
+│ 17   │ 64        │ 124        │ 60     │                             │                │
+│ 18   │ 59        │ 124        │ 65     │                             │                │
+│ 19   │ 54        │ 124        │ 70     │                             │                │
+│ 20   │ 49        │ 124        │ 75     │                             │                │
+│ 21   │ 44        │ 124        │ 80     │                             │                │
+│ 22   │ 39        │ 124        │ 85     │                             │                │
+│ 23   │ 34        │ 124        │ 90     │                             │                │
+│ 24   │ 29        │ 124        │ 95     │                             │                │
+│ 25   │ 24        │ 124        │ 100    │                             │                │
+│ 26   │ 19        │ 124        │ 105    │                             │                │
+│ 27   │ 14        │ 124        │ 110    │                             │                │
+│ 28   │ 9         │ 124        │ 115    │                             │                │
+│ 29   │ 4         │ 124        │ 120    │                             │                │
+│ 30   │ 0         │ 124        │ 124    │                             │                │
+└──────┴───────────┴────────────┴────────┴─────────────────────────────┴────────────────┘
+
+B4. Run 2: the writer child commits after every step. Every commit
+    restarts the backup, and the database keeps growing, so remaining
+    never reaches 0. The experiment gives up after 8 steps.
+┌──────┬───────────┬────────────┬───────────────────┬────────────────┬────────────────────┐
+│ step │ remaining │ page_count │ then_committed_by │ committed_step │ smallest_remaining │
+├──────┼───────────┼────────────┼───────────────────┼────────────────┼────────────────────┤
+│ 1    │ 119       │ 124        │ the writer child  │ 14             │ 119                │
+│ 2    │ 127       │ 132        │ the writer child  │ 15             │ 119                │
+│ 3    │ 139       │ 144        │ the writer child  │ 16             │ 119                │
+│ 4    │ 155       │ 160        │ the writer child  │ 17             │ 119                │
+│ 5    │ 157       │ 162        │ the writer child  │ 18             │ 119                │
+│ 6    │ 165       │ 170        │ the writer child  │ 19             │ 119                │
+│ 7    │ 166       │ 171        │ the writer child  │ 20             │ 119                │
+│ 8    │ 179       │ 184        │ the writer child  │ 21             │ 119                │
+└──────┴───────────┴────────────┴───────────────────┴────────────────┴────────────────────┘
+
+── C. Summary ──────────────────────────────────────────────────────────
+
+┌─────────────────────────────────────┬───────────────────────────────────┬───────────────────┐
+│               method                │          strongest_level          │ safe_under_writer │
+├─────────────────────────────────────┼───────────────────────────────────┼───────────────────┤
+│ closed-file copy                    │ E1                                │ false             │
+│ backup API                          │ E2                                │ true              │
+│ VACUUM INTO                         │ E3 but journal_mode; E1 canonical │ true              │
+│ pages in a read transaction         │ E1                                │ true              │
+│ file + WAL under a held transaction │ E1 after WAL replay               │ true              │
+└─────────────────────────────────────┴───────────────────────────────────┴───────────────────┘
+
+Whether a method blocks the writer, from what happened in part B:
+┌─────────────────────────────────────┬──────────────────────────────────────────────────────┐
+│               method                │                  blocks_the_writer                   │
+├─────────────────────────────────────┼──────────────────────────────────────────────────────┤
+│ closed-file copy                    │ the database must be closed                          │
+│ backup API                          │ no (commits ran between steps)                       │
+│ VACUUM INTO                         │ no (ran while the writer held its write transaction) │
+│ pages in a read transaction         │ no (a commit ran inside the read transaction)        │
+│ file + WAL under a held transaction │ no (a commit ran inside the read transaction)        │
+└─────────────────────────────────────┴──────────────────────────────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  closed-file copy reaches exactly the expected levels on a quiet database
+A  ✓  backup API reaches exactly the expected levels on a quiet database
+A  ✓  VACUUM INTO reaches exactly the expected levels on a quiet database
+A  ✓  pages in a read transaction reaches exactly the expected levels on a quiet database
+A  ✓  file + WAL under a held transaction reaches exactly the expected levels on a quiet database
+A  ✓  the backup's VACUUM INTO form differs from the source's only at byte 43, the schema cookie
+B  ✓  the plain copy is byte-identical (E1) to an older recipe step (6), not to the committed step 7
+B  ✓  under the writer, pages in a read transaction equals recipe step 7 at exactly the expected levels
+B  ✓  under the writer, file + WAL under a held transaction equals recipe step 9 at exactly the expected levels
+B  ✓  under the writer, VACUUM INTO equals recipe step 9 at exactly the expected levels
+B  ✓  through the backup's own commits the copy keeps advancing 5 pages per step (no restart), although the remaining count rose when those commits grew the database
+B  ✓  after the writer child's commit the next step starts again from page 1: the backup restarted
+B  ✓  under the writer, backup API equals recipe step 13 at exactly the expected levels
+B  ✓  with a commit by another connection after every step the backup never finished: after 8 steps the smallest remaining count was 119
+C  ✓  under the writer every capture except the plain file copy equals the exact recipe state it should; the plain copy equals an older one
+
+15 of 15 claims hold
+
+Experiment verdict: CAPTURE COMPARISON OK
 ```
 
 #### Reading the Experiment 9.1 evidence
 
-- **Lines 3–18 (Part A — quiet database at recipe step 6):**
-  - Closed-file copy, `sqlite_dbpage` pages in one read transaction, and file+WAL under a held transaction each print `yes` across all five columns (`E1`, `E2`, `E3`, `E3-except-journal_mode`, `E1-after-VACUUM-INTO`).
-  - **Backup API (lines 6, 14–17):** `E1 no`, `E2 yes`, `E3 yes`, `E3-except-journal_mode yes`, **`E1-after-VACUUM-INTO no`**. Line 14 shows the raw E2 difference is confined to bytes `[27 43 95]` (the low bytes of change counter `24–27`, schema cookie `40–43`, and version-valid-for `92–95`). Line 15–16 explains the outline correction discovered when `E1-after-VACUUM-INTO` was measured directly: after running `VACUUM INTO` on both the backup copy and the source, the two canonical files still differ at **byte 43** because `sqlite3_backup_step` set the backup's schema cookie to `1` (`0 + 1` at `src/backup.c:448`) while the source's cookie was `4`, and `VACUUM INTO` incremented both by `1` (`2` vs `5` at `src/vacuum.c:359`). A backup API capture reaches E2, never E1-after-`VACUUM INTO`.
-  - **`VACUUM INTO` (lines 8, 18):** `E1 no`, `E2 no`, **`E3 no`**, `E3-except-journal_mode yes`, `E1-after-VACUUM-INTO yes`. This is a second outline correction: because `equal.LogicalPragmas` records `journal_mode`, and `VACUUM INTO` writes a `rollback` file from a `wal` source (line 18), it reaches E3 except `journal_mode` and E1 between canonical forms.
-- **Lines 20–39 (Part B — live captures under a concurrent writer child):**
-  - **Plain copy of live `.db` (lines 21–24):** after the writer commits step `7`, copying `live.db` alone yields a valid database equal at E1 to **recipe step 6**—silently missing step 7, which still lives in `-wal`.
-  - **Pages in one read transaction (lines 25–28):** the parent opens a read transaction at step `7`, reads pages `1..N/2`, the writer commits step `8`, and the parent reads pages `N/2+1..N`. The assembled file equals **recipe step 7 at E1**.
-  - **File + WAL under a held read transaction (lines 29–32):** inside a read transaction opened at step `8`, the copier copies `live.db`, the writer commits step `9`, and the copier copies `-wal`. Replaying `-wal` onto the copied `live.db` produces **recipe step 9 at E1**.
-  - **`VACUUM INTO` under a held write transaction (lines 33–39):** the writer executes `BEGIN IMMEDIATE` and `recipe-exec 10` (holding the write lock with step 10 uncommitted). While that write transaction is open, the parent's `VACUUM INTO` completes without blocking (`VACUUM INTO finished while the writer held its write transaction open`), and after the writer commits step `10`, the output equals **recipe step 9** (the last committed state) at `E3-except-journal_mode` and `E1-after-VACUUM-INTO`.
-- **Lines 40–93 (Part B — stepped backup API, 5 pages per step):**
-  - **Same-connection commits vs another connection's commit (lines 41–75):** This demonstrates another outline correction. When the backup's own connection commits step `11` after step 2 and step `12` after step 3, the database grows (`100 -> 108 -> 118` pages), so `sqlite3_backup_remaining` **rises** (`95 -> 90 -> 93 -> 98 -> 93`) even though nothing restarted. Tracking `copied = pagecount - remaining` (`= iNext - 1`) shows steady progress: `5, 10, 15, 20, 25`. After step 5, the **writer child** commits step `13`; step 6 immediately drops `copied` back to **`5`** (`remaining 119 of 124`) because `pager_reset` called `sqlite3BackupRestart`. With no further external writes, steps `6..30` finish cleanly (`remaining 0 of 124`), matching **step 13 at E2**.
-  - **Starvation under a steady writer (lines 76–93):** with the writer child committing steps `14..21` after every 5-page backup step, `remaining` climbs `119, 127, 139, 155, 157, 165, 166, 179` across 8 steps before giving up. A stepped backup can starve indefinitely under continuous external writes.
-- **Lines 95–104 (summary):** All 15 checks pass (`CAPTURE COMPARISON OK`).
+- **A1–A3 (Part A — quiet database at recipe step 6):**
+  - Closed-file copy, `sqlite_dbpage` pages in one read transaction, and file+WAL under a held transaction each show `true` across all five columns (`e1`, `e2`, `e3`, `e3_but_jm` for E3-except-journal_mode, `e1_vacuumed` for E1-after-VACUUM-INTO).
+  - **Backup API (A1–A3):** E1 `false`, E2 `true`, E3 `true`, E3-except-journal_mode `true`, **E1-after-VACUUM-INTO `false`**. A2 shows the raw E2 difference is confined to bytes `[27 43 95]` (the low bytes of change counter `24–27`, schema cookie `40–43`, and version-valid-for `92–95`). A2 and A3 explain the outline correction discovered when `E1-after-VACUUM-INTO` was measured directly: after running `VACUUM INTO` on both the backup copy and the source, the two canonical files still differ at **byte 43** because `sqlite3_backup_step` set the backup's schema cookie to `1` (`0 + 1` at `src/backup.c:448`) while the source's cookie was `4`, and `VACUUM INTO` incremented both by `1` (`2` vs `5` at `src/vacuum.c:359`). A backup API capture reaches E2, never E1-after-`VACUUM INTO`.
+  - **`VACUUM INTO` (A1, A3):** E1 `false`, E2 `false`, **E3 `false`**, E3-except-journal_mode `true`, E1-after-VACUUM-INTO `true`. This is a second outline correction: because `equal.LogicalPragmas` records `journal_mode`, and `VACUUM INTO` writes a `rollback` file from a `wal` source (A3), it reaches E3 except `journal_mode` and E1 between canonical forms.
+- **B1–B2 (Part B — live captures under a concurrent writer child):**
+  - **Plain copy of live `.db`:** after the writer commits step `7`, copying `live.db` alone yields a valid database equal at E1 to **recipe step 6**—silently missing step 7, which still lives in `-wal`.
+  - **Pages in one read transaction:** the parent opens a read transaction at step `7`, reads pages `1..N/2`, the writer commits step `8`, and the parent reads pages `N/2+1..N`. The assembled file equals **recipe step 7 at E1**.
+  - **File + WAL under a held read transaction:** inside a read transaction opened at step `8`, the copier copies `live.db`, the writer commits step `9`, and the copier copies `-wal`. Replaying `-wal` onto the copied `live.db` produces **recipe step 9 at E1**.
+  - **`VACUUM INTO` under a held write transaction:** the writer executes `BEGIN IMMEDIATE` and `recipe-exec 10` (holding the write lock with step 10 uncommitted). While that write transaction is open, the parent's `VACUUM INTO` completes without blocking (`VACUUM INTO finished while the writer held its write transaction open`), and after the writer commits step `10`, the output equals **recipe step 9** (the last committed state) at `E3-except-journal_mode` and `E1-after-VACUUM-INTO`.
+- **B3–B4 (Part B — stepped backup API, 5 pages per step):**
+  - **Same-connection commits vs another connection's commit (B3):** This demonstrates another outline correction. When the backup's own connection commits step `11` after step 2 and step `12` after step 3, the database grows (`100 -> 108 -> 118` pages), so `sqlite3_backup_remaining` **rises** (`95 -> 90 -> 93 -> 98 -> 93`) even though nothing restarted. Tracking `copied = pagecount - remaining` (`= iNext - 1`) shows steady progress: `5, 10, 15, 20, 25`. After step 5, the **writer child** commits step `13`; step 6 immediately drops `copied` back to **`5`** (`remaining 119 of 124`) because `pager_reset` called `sqlite3BackupRestart`. With no further external writes, steps `6..30` finish cleanly (`remaining 0 of 124`), matching **step 13 at E2**.
+  - **Starvation under a steady writer (B4):** with the writer child committing steps `14..21` after every 5-page backup step, `remaining` climbs `119, 127, 139, 155, 157, 165, 166, 179` across 8 steps before giving up. A stepped backup can starve indefinitely under continuous external writes.
+- **Section C (summary):** All 15 checks pass (verdict `CAPTURE COMPARISON OK`).
 
 ---
 
@@ -955,11 +1211,8 @@ This section runs the crash-versus-power-loss lab (Experiment 9.2) and then walk
     - At `synchronous=NORMAL`: a consistent database that **loses the 4 acknowledged commits** written after the last checkpoint (recovers step `7`). When the checkpoint copied every frame (`74/74`) and the next commit restarted the WAL, the last WAL sync was the restarted 32-byte header (`cut = 32` of `321,392` bytes). When a concurrent reader from step `5` stopped the checkpoint early (`36/74` frames) so the WAL did **not** restart, the last WAL sync was the checkpoint's own WAL sync (`wal.c:2277`, `cut = 304,912` of `626,272` bytes), and the checkpoint left `15` unsynced writes in `.db` (`wal.c:2328-2335`); both the post-checkpoint `.db` and the pre-checkpoint `.db` recover step `7` because those pages are covered by synced WAL frames.
     - At `synchronous=OFF`: the WAL-truncation model **does not apply**, because the checkpoint wrote `44` unsynced `pwrite64`s to `.db` with `0` syncs on either `.db` or `-wal`, so a power cut can leave any arbitrary mix of old and new database pages.
 - **Scope statement:** The power-cut model shows **one** outcome of a power cut—the simplest one, where every synced byte survives and every unsynced byte disappears. It does not simulate torn sector writes, reordered writes, or disks that lie about `fsync`. SQLite's defenses against torn or reordered WAL writes (salts and per-frame cumulative checksums, `src/wal.c:1390-1614`) are read in the source rather than hardware-simulated. This experiment is the whole of the course's power-loss material.
-- **Evidence form:** `EXACT`.
-- **Linux only (Part B `strace` cross-check and Part A kill sweep):** The portable rule calculation and recovery run natively on Linux and macOS (try `-portable` on Linux to observe the non-`strace` path). On macOS, run the full `strace` cross-check and kill sweep in Docker:
-  ```text
-  docker compose run --rm lab go run ./ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss
-  ```
+- **Evidence form:** `EXACT` (every stored table must match on every run).
+- **Linux only (Part B `strace` cross-check and Part A kill sweep):** The portable rule calculation and recovery run natively on Linux and macOS (try `-portable` on Linux to observe the non-`strace` path). `course run` runs the full `strace` cross-check and kill sweep in the Linux `lab` container; the `-portable` variant is run directly in the container with `docker compose run --rm lab go run ./ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss -portable`.
 
 <!-- include: experiments/9.2-crash-versus-power-loss/main.go -->
 ```go
@@ -971,6 +1224,10 @@ This section runs the crash-versus-power-loss lab (Experiment 9.2) and then walk
 // src/wal.h:25-26, src/wal.c:2199-2395, 4038-4266) and cross-checked by strace
 // on Linux. Part A (Linux only) kills the writer child via strace --inject on
 // entry to every sync and six spread pwrite64 calls to verify crash recovery.
+//
+// It prints only its verdict (and LINUX-ONLY notices where strace is missing).
+// The measurements go to CSV tables that report.sql presents:
+// go run ./cmd/course run 9.2
 package main
 
 import (
@@ -989,6 +1246,7 @@ import (
 
 	"github.com/nickstrad/walfleet/internal/procs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 	"github.com/nickstrad/walfleet/internal/walfile"
@@ -1107,14 +1365,15 @@ func openReader(ctx context.Context, path string, options sqlitex.Options) (*sql
 }
 
 type writerRun struct {
-	lastAck      int
-	commitEnd    map[int]int64
-	generation   map[int]uint32
-	checkpoint   string
-	checkpointed int
-	logFrames    int
-	readerFrom   int
-	lastEvent    string
+	lastAck        int
+	commitEnd      map[int]int64
+	generation     map[int]uint32
+	checkpoint     string
+	checkpointBusy int
+	checkpointed   int
+	logFrames      int
+	readerFrom     int
+	lastEvent      string
 }
 
 func parseRun(stdout string) (writerRun, error) {
@@ -1137,8 +1396,7 @@ func parseRun(stdout string) (writerRun, error) {
 			}
 			run.commitEnd[k], run.generation[k] = end, generation
 		case strings.HasPrefix(line, "checkpoint "):
-			var busy int
-			if _, err := fmt.Sscanf(line, "checkpoint %d busy=%d log=%d checkpointed=%d", &k, &busy, &run.logFrames, &run.checkpointed); err != nil || k != checkpointAfter {
+			if _, err := fmt.Sscanf(line, "checkpoint %d busy=%d log=%d checkpointed=%d", &k, &run.checkpointBusy, &run.logFrames, &run.checkpointed); err != nil || k != checkpointAfter {
 				return run, fmt.Errorf("bad checkpoint line %q", line)
 			}
 			run.checkpoint, run.lastEvent = line, "checkpoint"
@@ -1204,6 +1462,28 @@ type lab struct {
 	r      recipe.Recipe
 	dir    string
 	base   string
+	set    *results.Set
+	cuts   int
+	tables struct {
+		runs, commits, syncs, rules, powerCuts, killPlans, kills, skipped *results.Table
+	}
+}
+
+func (x *lab) openTables() {
+	x.tables.runs = x.set.Table("runs", "seq", "variant", "synchronous", "reader_from", "first_acknowledged", "last_acknowledged", "checkpoint_after", "checkpoint_busy", "checkpoint_log", "checkpointed", "same_generation_after_checkpoint", "crash_integrity", "crash_recovered_step", "crash_exact_bytes")
+	x.tables.commits = x.set.Table("commits", "variant", "step", "wal_end", "wal_generation")
+	x.tables.syncs = x.set.Table("syncs", "variant", "file", "syncs", "writes_after_last_sync", "lowest_unsynced_offset")
+	x.tables.rules = x.set.Table("sync_rules", "variant", "wal_synced_up_to", "database_file_unsynced", "power_model_not_applicable")
+	x.tables.powerCuts = x.set.Table("power_cuts", "seq", "variant", "database_file", "wal_kept_bytes", "wal_bytes", "lost_commits", "integrity", "recovered_step", "exact_bytes")
+	x.tables.killPlans = x.set.Table("kill_plans", "synchronous", "sync_calls", "pwrite64_calls", "pwrite64_kills")
+	x.tables.kills = x.set.Table("kills", "synchronous", "kill_no", "syscall", "call_no", "killed_call", "signal", "acknowledged", "recovered_step", "exact_bytes", "integrity")
+	x.tables.skipped = x.set.Table("skipped", "part", "variant", "what")
+}
+
+// linuxOnly prints the LINUX-ONLY notice and records it in the skipped table.
+func (x *lab) linuxOnly(part string, variant any, what string) {
+	fmt.Println(trace.LinuxOnlyMessage(what, packagePath))
+	x.tables.skipped.Row(part, variant, what)
 }
 
 func copyFile(from, to string, limit int64) error {
@@ -1275,7 +1555,7 @@ func (x *lab) runWriter(dir string, v variant, kill *trace.KillAt) (string, *tra
 	return result.Stdout, result
 }
 
-func (x *lab) model(v variant) *trace.Result {
+func (x *lab) model(seq int, v variant) *trace.Result {
 	level := v.level
 	dir := filepath.Join(x.dir, "model-"+v.dirName())
 	stdout, result := x.runWriter(dir, v, nil)
@@ -1284,14 +1564,17 @@ func (x *lab) model(v variant) *trace.Result {
 		x.lab.Fatal("parse", err)
 	}
 	db := filepath.Join(dir, "r.db")
-	fmt.Printf("-- %s: the writer acknowledged steps %d-%d; %s; it exited without closing\n", v, baseStep+1, run.lastAck, run.checkpoint)
 	sameGeneration := run.generation[run.lastAck] == run.generation[checkpointAfter]
 	if v.readerFrom != 0 {
-		fmt.Printf("   the checkpoint copied %d of %d frames; the commits after it stayed in the same WAL generation: %t\n", run.checkpointed, run.logFrames, sameGeneration)
-		x.lab.Check(run.readerFrom == v.readerFrom && run.checkpointed > 0 && run.checkpointed < run.logFrames && sameGeneration,
+		x.set.Check("B", run.readerFrom == v.readerFrom && run.checkpointed > 0 && run.checkpointed < run.logFrames && sameGeneration,
 			fmt.Sprintf("%s: the reader stopped the checkpoint short of the end and the WAL did not restart", v))
-	} else {
-		fmt.Printf("   the checkpoint copied %d of %d frames; the commits after it stayed in the same WAL generation: %t\n", run.checkpointed, run.logFrames, sameGeneration)
+	}
+	generation := 0
+	for k := baseStep + 1; k <= run.lastAck; k++ {
+		if k == baseStep+1 || run.generation[k] != run.generation[k-1] {
+			generation++
+		}
+		x.tables.commits.Row(v.dirName(), k, run.commitEnd[k], generation)
 	}
 	for _, suffix := range []string{"", "-wal"} {
 		if err := copyFile(db+suffix, filepath.Join(dir, "crash", "r.db"+suffix), -1); err != nil {
@@ -1299,11 +1582,23 @@ func (x *lab) model(v variant) *trace.Result {
 		}
 	}
 	integrity, match := x.recover(filepath.Join(dir, "crash", "r.db"))
-	fmt.Printf("   process crash (files as the kernel holds them): integrity_check %s, recovered %s\n", integrity, match)
-	x.lab.Check(integrity == "ok" && match.Step == run.lastAck, fmt.Sprintf("%s: a process crash keeps every acknowledged step (%d)", v, run.lastAck))
+	var readerFrom any
+	if v.readerFrom != 0 {
+		readerFrom = v.readerFrom
+	}
+	x.tables.runs.Row(seq, v.dirName(), level, readerFrom, baseStep+1, run.lastAck, checkpointAfter, run.checkpointBusy, run.logFrames, run.checkpointed, sameGeneration, integrity, match.Step, match.Exact)
+	x.set.Check("B", integrity == "ok" && match.Step == run.lastAck, fmt.Sprintf("%s: a process crash keeps every acknowledged step (%d)", v, run.lastAck))
 
 	rule := ruleCut(level, run)
 	cut, hasCut, outside := rule.cut, rule.hasCut, rule.outside
+	var syncedUpTo, notApplicable any
+	if hasCut {
+		syncedUpTo = cut
+	}
+	if outside != "" {
+		notApplicable = outside
+	}
+	x.tables.rules.Row(v.dirName(), syncedUpTo, rule.databaseUnsynced, notApplicable)
 	if result != nil {
 		real, err := filepath.EvalSymlinks(db)
 		if err != nil {
@@ -1311,16 +1606,15 @@ func (x *lab) model(v variant) *trace.Result {
 		}
 		walSyncs := trace.SyncsOf(result.Log.Calls, real+"-wal")
 		dbSyncs := trace.SyncsOf(result.Log.Calls, real)
-		fmt.Printf("   strace: -wal %s\n", walSyncs)
-		fmt.Printf("   strace: database file %s\n", dbSyncs)
-		x.lab.Check(walSyncs.HasUnsynced == hasCut && (!hasCut || walSyncs.FirstUnsynced == cut) && dbSyncs.HasUnsynced == rule.databaseUnsynced,
+		x.syncRow(v, "-wal", walSyncs)
+		x.syncRow(v, "database file", dbSyncs)
+		x.set.Check("B", walSyncs.HasUnsynced == hasCut && (!hasCut || walSyncs.FirstUnsynced == cut) && dbSyncs.HasUnsynced == rule.databaseUnsynced,
 			fmt.Sprintf("%s: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced", v))
 	} else {
-		fmt.Println(trace.LinuxOnlyMessage("the strace confirmation of the synced bytes (the model below uses the rule read from wal.c and pager.c)", packagePath))
+		x.linuxOnly("B", v.dirName(), "the strace confirmation of the synced bytes (the model below uses the rule read from wal.c and pager.c)")
 	}
 	if outside != "" {
-		fmt.Printf("   power-cut model: not applicable at %s: %s, so a power cut can leave any mix of old and new database pages\n", level, outside)
-		x.lab.Check(level == "OFF", "only synchronous=OFF leaves database-file writes that were never synced")
+		x.set.Check("B", level == "OFF", "only synchronous=OFF leaves database-file writes that were never synced")
 		return result
 	}
 	walData, err := os.ReadFile(db + "-wal")
@@ -1342,26 +1636,35 @@ func (x *lab) model(v variant) *trace.Result {
 		x.lab.Fatal("copy", err)
 	}
 	integrity, match = x.recover(power)
-	fmt.Printf("   power-cut model: -wal kept up to byte %d of %d (everything after the last sync removed), no -shm: integrity_check %s, recovered %s; acknowledged commits past the cut: %d\n",
-		keep, len(walData), integrity, match, lost)
-	x.lab.Check(integrity == "ok" && match.Step == run.lastAck-lost, fmt.Sprintf("%s: the model recovers step %d, the last acknowledged step minus the %d commit(s) written after the last sync", v, run.lastAck-lost, lost))
+	x.cuts++
+	x.tables.powerCuts.Row(x.cuts, v.dirName(), "as written", keep, len(walData), lost, integrity, match.Step, match.Exact)
+	x.set.Check("B", integrity == "ok" && match.Step == run.lastAck-lost, fmt.Sprintf("%s: the model recovers step %d, the last acknowledged step minus the %d commit(s) written after the last sync", v, run.lastAck-lost, lost))
 	if rule.databaseUnsynced {
 		before := filepath.Join(dir, "power-before-checkpoint", "r.db")
 		if err := errors.Join(copyFile(db+beforeCheckpointSuffix, before, -1), copyFile(db+"-wal", before+"-wal", keep)); err != nil {
 			x.lab.Fatal("copy", err)
 		}
 		beforeIntegrity, beforeMatch := x.recover(before)
-		fmt.Printf("   the checkpoint copied only part of the WAL, so it did not sync the database file; the same model with the database file as it was before the checkpoint (none of those writes kept): integrity_check %s, recovered %s\n", beforeIntegrity, beforeMatch)
-		x.lab.Check(beforeIntegrity == "ok" && beforeMatch.Step == match.Step,
+		x.cuts++
+		x.tables.powerCuts.Row(x.cuts, v.dirName(), "as before the checkpoint", keep, len(walData), lost, beforeIntegrity, beforeMatch.Step, beforeMatch.Exact)
+		x.set.Check("B", beforeIntegrity == "ok" && beforeMatch.Step == match.Step,
 			fmt.Sprintf("%s: with or without the checkpoint's unsynced database writes the model recovers step %d, because the WAL frames they came from were synced before the checkpoint wrote them", v, match.Step))
 	}
 	if level == "NORMAL" {
-		x.lab.Check(lost > 0 && match.Step < run.lastAck && match.Step == checkpointAfter, fmt.Sprintf("%s: the acknowledged commits after the checkpoint at step %d are lost in the model, yet the database is consistent", v, checkpointAfter))
+		x.set.Check("B", lost > 0 && match.Step < run.lastAck && match.Step == checkpointAfter, fmt.Sprintf("%s: the acknowledged commits after the checkpoint at step %d are lost in the model, yet the database is consistent", v, checkpointAfter))
 	}
 	if level == "FULL" {
-		x.lab.Check(lost == 0 && match.Step == run.lastAck, "FULL: no acknowledged commit is lost in the model")
+		x.set.Check("B", lost == 0 && match.Step == run.lastAck, "FULL: no acknowledged commit is lost in the model")
 	}
 	return result
+}
+
+func (x *lab) syncRow(v variant, file string, r trace.SyncRecord) {
+	var lowest any
+	if r.HasUnsynced {
+		lowest = r.FirstUnsynced
+	}
+	x.tables.syncs.Row(v.dirName(), file, r.Syncs, len(r.Unsynced), lowest)
 }
 
 // writerThread identifies the OS thread (tid) that executed the writer's
@@ -1401,7 +1704,7 @@ func (x *lab) killSweep(level string, uninterrupted *trace.Result) {
 			writes++
 		}
 	}
-	fmt.Printf("-- synchronous=%s: the uninterrupted writer made %d sync call(s) and %d pwrite64 call(s); kill on entry to each sync and to %d of the writes\n", level, syncs, writes, pwriteKills)
+	x.tables.killPlans.Row(level, syncs, writes, pwriteKills)
 	var points []trace.KillAt
 	for i := 1; i <= syncs; i++ {
 		points = append(points, trace.KillAt{Syscalls: []string{"fsync", "fdatasync"}, When: i})
@@ -1423,8 +1726,8 @@ func (x *lab) killSweep(level string, uninterrupted *trace.Result) {
 			}
 		}
 		integrity, match := x.recover(filepath.Join(dir, "r.db"))
-		fmt.Printf("   kill at %s #%d (%s): acknowledged %d, recovered %s, integrity_check %s\n", point.Syscalls[0], point.When, killed, run.lastAck, match, integrity)
-		x.lab.Check(result.Killed == "SIGKILL" && integrity == "ok" && match.Found() && match.Step >= run.lastAck && match.Step <= run.lastAck+1,
+		x.tables.kills.Row(level, i+1, point.Syscalls[0], point.When, killed, result.Killed, run.lastAck, match.Step, match.Exact, integrity)
+		x.set.Check("A", result.Killed == "SIGKILL" && integrity == "ok" && match.Found() && match.Step >= run.lastAck && match.Step <= run.lastAck+1,
 			fmt.Sprintf("%s kill %d: integrity ok, recovered step %d is the last acknowledged step or the one being committed", level, i+1, match.Step))
 	}
 }
@@ -1443,178 +1746,468 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("9.2")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	x := &lab{traced: trace.Supported && !*portable, ctx: ctx, lab: procs.NewLab(os.Stdout), r: recipe.Default(), dir: dir, base: filepath.Join(dir, "base", "r.db")}
+	x := &lab{traced: trace.Supported && !*portable, ctx: ctx, lab: procs.NewLab(os.Stdout), r: recipe.Default(), dir: dir, base: filepath.Join(dir, "base", "r.db"), set: results.MustOpen(dir)}
+	x.openTables()
 	if err := os.MkdirAll(filepath.Dir(x.base), 0o755); err != nil {
 		x.lab.Fatal("mkdir", err)
 	}
 	if err := x.r.Build(ctx, x.base, baseStep); err != nil {
 		x.lab.Fatal("build", err)
 	}
-	fmt.Printf("== recipe built to step %d; a writer child commits steps %d-%d on one connection (wal_autocheckpoint=0) and runs one PASSIVE checkpoint after step %d\n", baseStep, baseStep+1, lastStep, checkpointAfter)
-	fmt.Println()
-	fmt.Println("== part B: what a process crash keeps, and what the simplest power cut keeps")
+	// Part B: what a process crash keeps, and what the simplest power cut keeps.
 	traces := map[variant]*trace.Result{}
-	for _, v := range modelVariants {
-		traces[v] = x.model(v)
+	for i, v := range modelVariants {
+		traces[v] = x.model(i+1, v)
 	}
-	fmt.Println()
-	fmt.Println("== part A: kill the writer at chosen syscalls, reopen, identify the state")
+	// Part A: kill the writer at chosen syscalls, reopen, identify the state.
 	if !x.traced {
-		fmt.Println(trace.LinuxOnlyMessage("killing the writer at a chosen syscall with strace", packagePath))
+		x.linuxOnly("A", nil, "killing the writer at a chosen syscall with strace")
 	} else {
 		for _, level := range levels {
 			x.killSweep(level, traces[variant{level, 0}])
 		}
 	}
-	x.lab.Report("CRASH VERSUS POWER LOSS")
+	x.set.Finish("CRASH VERSUS POWER LOSS")
 }
 ```
 
-Run from the repository root:
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
 
-```text
-go run ./ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss
+<!-- include: experiments/9.2-crash-versus-power-loss/report.sql -->
+```sql
+-- Walkthrough of experiment 9.2. Run it with:
+--   go run ./cmd/course run 9.2        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   runs         part B: one row per uninterrupted writer run (one per variant),
+--                with what a process crash at its end recovers
+--   commits      part B: one row per acknowledged commit of each run: where it
+--                ends in the -wal and which WAL generation it is in (1, 2, ...)
+--   sync_rules   part B: per variant, the bytes SQLite's sync rules say were synced
+--   syncs        part B: per variant and file, what strace recorded (Linux only)
+--   power_cuts   part B: one row per power-cut model: files cut back to the last sync
+--   kill_plans   part A: per synchronous level, the calls an uninterrupted writer made
+--   kills        part A: one row per writer killed at a chosen syscall (Linux only)
+--   skipped      one row per LINUX-ONLY notice (empty on Linux)
+--   checks       every claim the experiment asserted (the runner lists it last)
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  9.2  Crash versus power loss'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'The recipe database is built to step 3. A writer child process commits'
+.print 'steps 4-11 on one connection in WAL mode (wal_autocheckpoint=0), runs one'
+.print 'PASSIVE checkpoint after step 7, and exits without closing SQLite, so its'
+.print 'files stay exactly as a crashed process leaves them. It prints an'
+.print 'acknowledgement after each commit returns.'
+.print
+.print 'A process crash keeps what the kernel already holds. A power cut keeps'
+.print 'only what was synced. Part B compares the two for synchronous=OFF, NORMAL'
+.print 'and FULL, and for NORMAL with a second connection holding a read'
+.print 'transaction from step 5. Part A (Linux only) kills the writer at chosen'
+.print 'system calls.'
+.print
+.print 'Parts skipped on this platform (LINUX-ONLY notices):'
+
+SELECT part, coalesce(variant, '') AS variant, what FROM skipped
+UNION ALL
+SELECT 'none', '', 'strace ran: nothing was skipped' WHERE NOT EXISTS (SELECT 1 FROM skipped)
+ORDER BY part, variant;
+
+.print
+.print '── B. What a process crash keeps, and what the simplest power cut keeps'
+.print
+.print 'B1. The four runs. Each writer acknowledged steps 4-11. The checkpoint'
+.print '    copied every frame, so the next commit restarted the WAL, except with'
+.print '    the reader: it stopped the checkpoint short of the end, and the'
+.print '    commits after it stayed in the same WAL generation.'
+
+SELECT variant, synchronous, reader_from,
+       first_acknowledged || '-' || last_acknowledged AS acknowledged,
+       'after ' || checkpoint_after || ': busy=' || checkpoint_busy || ', copied ' || checkpointed || ' of ' || checkpoint_log AS checkpoint,
+       same_generation_after_checkpoint AS wal_not_restarted
+FROM runs ORDER BY seq;
+
+.print
+.print 'B2. A process crash: the database file and -wal copied as the kernel holds'
+.print '    them, then reopened. Every variant recovers every acknowledged step,'
+.print '    even synchronous=OFF. "exact_bytes = false" means equal to the recipe'
+.print '    step except the change counter (header bytes 24-27 and 92-95).'
+
+SELECT variant, last_acknowledged, crash_integrity AS integrity_check,
+       crash_recovered_step AS recovered_step, crash_exact_bytes AS exact_bytes
+FROM runs ORDER BY seq;
+
+.print
+.print 'B3. Which -wal bytes were synced. The rule column is read from the SQLite'
+.print '    sync rules (src/pager.c:3658-3704, src/wal.h:25-26, src/wal.c); the'
+.print '    strace columns are what the writer actually did. OFF never syncs;'
+.print '    NORMAL syncs only around the checkpoint (up to byte 32, the header of'
+.print '    the restarted WAL, or up to the checkpointed end when the reader kept'
+.print '    the WAL from restarting); FULL syncs every commit.'
+
+SELECT r.variant,
+       coalesce(CAST(r.wal_synced_up_to AS VARCHAR), 'all of it') AS rule_synced_up_to,
+       s.syncs, s.writes_after_last_sync,
+       s.lowest_unsynced_offset,
+       CASE WHEN s.variant IS NOT NULL
+            THEN coalesce(CAST(s.lowest_unsynced_offset AS BIGINT), -1) = coalesce(r.wal_synced_up_to, -1) END AS agree
+FROM sync_rules r LEFT JOIN syncs s ON s.variant = r.variant AND s.file = '-wal'
+JOIN runs u ON u.variant = r.variant
+ORDER BY u.seq;
+
+.print
+.print 'B4. The database file. A checkpoint that copies every frame syncs it; one'
+.print '    that stops short (the reader) does not, and at OFF nothing is synced.'
+
+SELECT r.variant, r.database_file_unsynced AS rule_unsynced_writes,
+       s.syncs, s.writes_after_last_sync, s.lowest_unsynced_offset,
+       r.database_file_unsynced = (CAST(s.writes_after_last_sync AS BIGINT) > 0) AS agree
+FROM sync_rules r LEFT JOIN syncs s ON s.variant = r.variant AND s.file = 'database file'
+JOIN runs u ON u.variant = r.variant
+ORDER BY u.seq;
+
+.print
+.print 'B5. Where each acknowledged commit ends in the -wal (byte offset, then'
+.print '    #WAL generation). A commit ending past the last sync in the newest'
+.print '    generation is marked "lost": the power-cut model removes it.'
+
+WITH cut AS (SELECT variant, wal_kept_bytes FROM power_cuts WHERE database_file = 'as written'),
+     last_gen AS (SELECT variant, max(wal_generation) AS g FROM commits GROUP BY variant),
+     marked AS (
+       SELECT c.variant, c.step,
+              c.wal_end || ' #' || c.wal_generation
+                || CASE WHEN c.wal_generation = l.g AND c.wal_end > cut.wal_kept_bytes THEN ' lost' ELSE '' END AS ends
+       FROM commits c JOIN last_gen l USING (variant) LEFT JOIN cut USING (variant))
+SELECT step,
+       first(ends) FILTER (variant = 'off')             AS "off",
+       first(ends) FILTER (variant = 'normal')          AS normal,
+       first(ends) FILTER (variant = 'full')            AS "full",
+       first(ends) FILTER (variant = 'normal-reader-5') AS "normal-reader-5"
+FROM marked GROUP BY step ORDER BY step;
+
+.print
+.print 'B6. The power-cut model: the database file as written, the -wal cut back'
+.print '    to the last sync, no -shm; then reopened. NORMAL loses the four commits'
+.print '    after the checkpoint but stays consistent; FULL loses nothing. With the'
+.print '    reader the checkpoint did not sync the database file, so the model also'
+.print '    runs with the file as it was before the checkpoint: the same step, since'
+.print '    the WAL frames those writes came from were synced first.'
+
+SELECT variant, database_file, wal_kept_bytes || ' of ' || wal_bytes AS wal_bytes_kept,
+       lost_commits AS lost, integrity, recovered_step AS recovered, exact_bytes AS exact
+FROM power_cuts ORDER BY seq;
+
+.print
+.print '    At OFF there is no model: the checkpoint wrote the database file and'
+.print '    nothing was ever synced, so a power cut can leave any mix of old and'
+.print '    new database pages.'
+
+SELECT variant, power_model_not_applicable AS why_not
+FROM sync_rules WHERE power_model_not_applicable IS NOT NULL ORDER BY variant;
+
+.print
+.print '── A. Kill the writer at chosen syscalls, reopen, identify the state ──'
+.print
+.print 'A1. For each synchronous level, a fresh writer runs under strace and is'
+.print '    killed with SIGKILL on entry to one call: every fsync/fdatasync the'
+.print '    uninterrupted writer made, and 6 of its pwrite64 calls spread evenly.'
+
+SELECT synchronous, sync_calls, pwrite64_calls, pwrite64_kills,
+       CAST(sync_calls AS BIGINT) + CAST(pwrite64_kills AS BIGINT) AS kills
+FROM kill_plans ORDER BY CAST(sync_calls AS BIGINT);
+
+.print
+.print 'A2. Every kill. "recovered" is the recipe step the reopened database'
+.print '    equals: the last acknowledged step, or (at FULL, killed in the fsync of'
+.print '    a commit) the step being committed, whose frames were already written.'
+
+SELECT synchronous, kill_no, syscall || ' #' || call_no AS kill_at,
+       replace(killed_call, ' = ? (process killed)', '') AS killed_in,
+       acknowledged, recovered_step AS recovered, exact_bytes AS exact
+FROM kills
+ORDER BY CASE synchronous WHEN 'OFF' THEN 1 WHEN 'NORMAL' THEN 2 ELSE 3 END, CAST(kill_no AS BIGINT);
+
+.print
+.print 'A3. Summary. Every kill was a SIGKILL, every reopened database passed'
+.print '    integrity_check, and none lost an acknowledged step.'
+
+SELECT synchronous, count(*) AS kills,
+       count(*) FILTER (signal = 'SIGKILL')              AS sigkill,
+       count(*) FILTER (integrity = 'ok')                AS integrity_ok,
+       count(*) FILTER (recovered_step = acknowledged)     AS recovered_acknowledged,
+       count(*) FILTER (CAST(recovered_step AS BIGINT) = CAST(acknowledged AS BIGINT) + 1) AS recovered_one_more
+FROM kills GROUP BY synchronous
+ORDER BY CASE synchronous WHEN 'OFF' THEN 1 WHEN 'NORMAL' THEN 2 ELSE 3 END;
 ```
 
-Captured evidence (measured on Linux):
+Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
+
+```text
+go run ./cmd/course run 9.2
+```
+
+Add `-i` (`go run ./cmd/course run -i 9.2`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/9.2-crash-versus-power-loss/`](evidence/9.2-crash-versus-power-loss/), and `go run ./cmd/course check evidence ch09` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/9.2-crash-versus-power-loss.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/9.2
-== recipe built to step 3; a writer child commits steps 4-11 on one connection (wal_autocheckpoint=0) and runs one PASSIVE checkpoint after step 7
 
-== part B: what a process crash keeps, and what the simplest power cut keeps
--- synchronous=OFF: the writer acknowledged steps 4-11; checkpoint 7 busy=0 log=74 checkpointed=74; it exited without closing
-   the checkpoint copied 74 of 74 frames; the commits after it stayed in the same WAL generation: false
-   process crash (files as the kernel holds them): integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: synchronous=OFF: a process crash keeps every acknowledged step (11)
-   strace: -wal 0 sync(s); 306 write(s) after the last one, the lowest at offset 0
-   strace: database file 0 sync(s); 44 write(s) after the last one, the lowest at offset 0
-check ok: synchronous=OFF: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
-   power-cut model: not applicable at OFF: the checkpoint wrote the database file and nothing was ever synced, so a power cut can leave any mix of old and new database pages
-check ok: only synchronous=OFF leaves database-file writes that were never synced
--- synchronous=NORMAL: the writer acknowledged steps 4-11; checkpoint 7 busy=0 log=74 checkpointed=74; it exited without closing
-   the checkpoint copied 74 of 74 frames; the commits after it stayed in the same WAL generation: false
-   process crash (files as the kernel holds them): integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: synchronous=NORMAL: a process crash keeps every acknowledged step (11)
-   strace: -wal 3 sync(s); 156 write(s) after the last one, the lowest at offset 32
-   strace: database file 1 sync(s); no write after the last one
-check ok: synchronous=NORMAL: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
-   power-cut model: -wal kept up to byte 32 of 321392 (everything after the last sync removed), no -shm: integrity_check ok, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95); acknowledged commits past the cut: 4
-check ok: synchronous=NORMAL: the model recovers step 7, the last acknowledged step minus the 4 commit(s) written after the last sync
-check ok: synchronous=NORMAL: the acknowledged commits after the checkpoint at step 7 are lost in the model, yet the database is consistent
--- synchronous=FULL: the writer acknowledged steps 4-11; checkpoint 7 busy=0 log=74 checkpointed=74; it exited without closing
-   the checkpoint copied 74 of 74 frames; the commits after it stayed in the same WAL generation: false
-   process crash (files as the kernel holds them): integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: synchronous=FULL: a process crash keeps every acknowledged step (11)
-   strace: -wal 11 sync(s); no write after the last one
-   strace: database file 1 sync(s); no write after the last one
-check ok: synchronous=FULL: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
-   power-cut model: -wal kept up to byte 321392 of 321392 (everything after the last sync removed), no -shm: integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95); acknowledged commits past the cut: 0
-check ok: synchronous=FULL: the model recovers step 11, the last acknowledged step minus the 0 commit(s) written after the last sync
-check ok: FULL: no acknowledged commit is lost in the model
--- synchronous=NORMAL with a second connection holding a read transaction from step 5: the writer acknowledged steps 4-11; checkpoint 7 busy=0 log=74 checkpointed=36; it exited without closing
-   the checkpoint copied 36 of 74 frames; the commits after it stayed in the same WAL generation: true
-check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: the reader stopped the checkpoint short of the end and the WAL did not restart
-   process crash (files as the kernel holds them): integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: a process crash keeps every acknowledged step (11)
-   strace: -wal 2 sync(s); 156 write(s) after the last one, the lowest at offset 304912
-   strace: database file 0 sync(s); 15 write(s) after the last one, the lowest at offset 73728
-check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
-   power-cut model: -wal kept up to byte 304912 of 626272 (everything after the last sync removed), no -shm: integrity_check ok, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95); acknowledged commits past the cut: 4
-check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: the model recovers step 7, the last acknowledged step minus the 4 commit(s) written after the last sync
-   the checkpoint copied only part of the WAL, so it did not sync the database file; the same model with the database file as it was before the checkpoint (none of those writes kept): integrity_check ok, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: with or without the checkpoint's unsynced database writes the model recovers step 7, because the WAL frames they came from were synced before the checkpoint wrote them
-check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: the acknowledged commits after the checkpoint at step 7 are lost in the model, yet the database is consistent
+════════════════════════════════════════════════════════════════════════
+  9.2  Crash versus power loss
+════════════════════════════════════════════════════════════════════════
 
-== part A: kill the writer at chosen syscalls, reopen, identify the state
--- synchronous=OFF: the uninterrupted writer made 0 sync call(s) and 357 pwrite64 call(s); kill on entry to each sync and to 6 of the writes
-   kill at pwrite64 #1 (pwrite64 r.db-shm off=4095 len=1 = ? (process killed)): acknowledged 3, recovered step 3 (exact bytes), integrity_check ok
-check ok: OFF kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
-   kill at pwrite64 #72 (pwrite64 r.db-wal off=127752 len=24 = ? (process killed)): acknowledged 4, recovered step 4 (exact bytes), integrity_check ok
-check ok: OFF kill 2: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
-   kill at pwrite64 #143 (pwrite64 r.db-wal off=271976 len=4096 = ? (process killed)): acknowledged 6, recovered step 6 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: OFF kill 3: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
-   kill at pwrite64 #214 (pwrite64 r.db-wal off=24752 len=24 = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: OFF kill 4: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at pwrite64 #285 (pwrite64 r.db-wal off=168976 len=4096 = ? (process killed)): acknowledged 8, recovered step 8 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: OFF kill 5: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
-   kill at pwrite64 #357 (pwrite64 r.db-wal off=317296 len=4096 = ? (process killed)): acknowledged 10, recovered step 10 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: OFF kill 6: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
--- synchronous=NORMAL: the uninterrupted writer made 5 sync call(s) and 357 pwrite64 call(s); kill on entry to each sync and to 6 of the writes
-   kill at fsync #1 (fsync r.db-wal = ? (process killed)): acknowledged 3, recovered step 3 (exact bytes), integrity_check ok
-check ok: NORMAL kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
-   kill at fsync #2 (fsync . = ? (process killed)): acknowledged 3, recovered step 3 (exact bytes), integrity_check ok
-check ok: NORMAL kill 2: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
-   kill at fsync #3 (fsync r.db-wal = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: NORMAL kill 3: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at fsync #4 (fsync r.db = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: NORMAL kill 4: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at fsync #5 (fsync r.db-wal = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: NORMAL kill 5: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at pwrite64 #1 (pwrite64 r.db-shm off=4095 len=1 = ? (process killed)): acknowledged 3, recovered step 3 (exact bytes), integrity_check ok
-check ok: NORMAL kill 6: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
-   kill at pwrite64 #72 (pwrite64 r.db-wal off=127752 len=24 = ? (process killed)): acknowledged 4, recovered step 4 (exact bytes), integrity_check ok
-check ok: NORMAL kill 7: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
-   kill at pwrite64 #143 (pwrite64 r.db-wal off=271976 len=4096 = ? (process killed)): acknowledged 6, recovered step 6 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: NORMAL kill 8: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
-   kill at pwrite64 #214 (pwrite64 r.db-wal off=24752 len=24 = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: NORMAL kill 9: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at pwrite64 #285 (pwrite64 r.db-wal off=168976 len=4096 = ? (process killed)): acknowledged 8, recovered step 8 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: NORMAL kill 10: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
-   kill at pwrite64 #357 (pwrite64 r.db-wal off=317296 len=4096 = ? (process killed)): acknowledged 10, recovered step 10 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: NORMAL kill 11: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
--- synchronous=FULL: the uninterrupted writer made 13 sync call(s) and 357 pwrite64 call(s); kill on entry to each sync and to 6 of the writes
-   kill at fsync #1 (fsync r.db-wal = ? (process killed)): acknowledged 3, recovered step 3 (exact bytes), integrity_check ok
-check ok: FULL kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
-   kill at fsync #2 (fsync . = ? (process killed)): acknowledged 3, recovered step 3 (exact bytes), integrity_check ok
-check ok: FULL kill 2: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
-   kill at fsync #3 (fsync r.db-wal = ? (process killed)): acknowledged 3, recovered step 4 (exact bytes), integrity_check ok
-check ok: FULL kill 3: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
-   kill at fsync #4 (fsync r.db-wal = ? (process killed)): acknowledged 4, recovered step 5 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 4: integrity ok, recovered step 5 is the last acknowledged step or the one being committed
-   kill at fsync #5 (fsync r.db-wal = ? (process killed)): acknowledged 5, recovered step 6 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 5: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
-   kill at fsync #6 (fsync r.db-wal = ? (process killed)): acknowledged 6, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 6: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at fsync #7 (fsync r.db-wal = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 7: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at fsync #8 (fsync r.db = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 8: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at fsync #9 (fsync r.db-wal = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 9: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at fsync #10 (fsync r.db-wal = ? (process killed)): acknowledged 7, recovered step 8 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 10: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
-   kill at fsync #11 (fsync r.db-wal = ? (process killed)): acknowledged 8, recovered step 9 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 11: integrity ok, recovered step 9 is the last acknowledged step or the one being committed
-   kill at fsync #12 (fsync r.db-wal = ? (process killed)): acknowledged 9, recovered step 10 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 12: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
-   kill at fsync #13 (fsync r.db-wal = ? (process killed)): acknowledged 10, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 13: integrity ok, recovered step 11 is the last acknowledged step or the one being committed
-   kill at pwrite64 #1 (pwrite64 r.db-shm off=4095 len=1 = ? (process killed)): acknowledged 3, recovered step 3 (exact bytes), integrity_check ok
-check ok: FULL kill 14: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
-   kill at pwrite64 #72 (pwrite64 r.db-wal off=127752 len=24 = ? (process killed)): acknowledged 4, recovered step 4 (exact bytes), integrity_check ok
-check ok: FULL kill 15: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
-   kill at pwrite64 #143 (pwrite64 r.db-wal off=271976 len=4096 = ? (process killed)): acknowledged 6, recovered step 6 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 16: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
-   kill at pwrite64 #214 (pwrite64 r.db-wal off=24752 len=24 = ? (process killed)): acknowledged 7, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 17: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
-   kill at pwrite64 #285 (pwrite64 r.db-wal off=168976 len=4096 = ? (process killed)): acknowledged 8, recovered step 8 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 18: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
-   kill at pwrite64 #357 (pwrite64 r.db-wal off=317296 len=4096 = ? (process killed)): acknowledged 10, recovered step 10 (equal except the change counter at bytes 24-27 and 92-95), integrity_check ok
-check ok: FULL kill 19: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
+The recipe database is built to step 3. A writer child process commits
+steps 4-11 on one connection in WAL mode (wal_autocheckpoint=0), runs one
+PASSIVE checkpoint after step 7, and exits without closing SQLite, so its
+files stay exactly as a crashed process leaves them. It prints an
+acknowledgement after each commit returns.
 
-CRASH VERSUS POWER LOSS OK
+A process crash keeps what the kernel already holds. A power cut keeps
+only what was synced. Part B compares the two for synchronous=OFF, NORMAL
+and FULL, and for NORMAL with a second connection holding a read
+transaction from step 5. Part A (Linux only) kills the writer at chosen
+system calls.
+
+Parts skipped on this platform (LINUX-ONLY notices):
+┌──────┬─────────┬─────────────────────────────────┐
+│ part │ variant │              what               │
+├──────┼─────────┼─────────────────────────────────┤
+│ none │         │ strace ran: nothing was skipped │
+└──────┴─────────┴─────────────────────────────────┘
+
+── B. What a process crash keeps, and what the simplest power cut keeps
+
+B1. The four runs. Each writer acknowledged steps 4-11. The checkpoint
+    copied every frame, so the next commit restarted the WAL, except with
+    the reader: it stopped the checkpoint short of the end, and the
+    commits after it stayed in the same WAL generation.
+┌─────────────────┬─────────────┬─────────────┬──────────────┬──────────────────────────────────┬───────────────────┐
+│     variant     │ synchronous │ reader_from │ acknowledged │            checkpoint            │ wal_not_restarted │
+├─────────────────┼─────────────┼─────────────┼──────────────┼──────────────────────────────────┼───────────────────┤
+│ off             │ OFF         │             │ 4-11         │ after 7: busy=0, copied 74 of 74 │ false             │
+│ normal          │ NORMAL      │             │ 4-11         │ after 7: busy=0, copied 74 of 74 │ false             │
+│ full            │ FULL        │             │ 4-11         │ after 7: busy=0, copied 74 of 74 │ false             │
+│ normal-reader-5 │ NORMAL      │ 5           │ 4-11         │ after 7: busy=0, copied 36 of 74 │ true              │
+└─────────────────┴─────────────┴─────────────┴──────────────┴──────────────────────────────────┴───────────────────┘
+
+B2. A process crash: the database file and -wal copied as the kernel holds
+    them, then reopened. Every variant recovers every acknowledged step,
+    even synchronous=OFF. "exact_bytes = false" means equal to the recipe
+    step except the change counter (header bytes 24-27 and 92-95).
+┌─────────────────┬───────────────────┬─────────────────┬────────────────┬─────────────┐
+│     variant     │ last_acknowledged │ integrity_check │ recovered_step │ exact_bytes │
+├─────────────────┼───────────────────┼─────────────────┼────────────────┼─────────────┤
+│ off             │ 11                │ ok              │ 11             │ false       │
+│ normal          │ 11                │ ok              │ 11             │ false       │
+│ full            │ 11                │ ok              │ 11             │ false       │
+│ normal-reader-5 │ 11                │ ok              │ 11             │ false       │
+└─────────────────┴───────────────────┴─────────────────┴────────────────┴─────────────┘
+
+B3. Which -wal bytes were synced. The rule column is read from the SQLite
+    sync rules (src/pager.c:3658-3704, src/wal.h:25-26, src/wal.c); the
+    strace columns are what the writer actually did. OFF never syncs;
+    NORMAL syncs only around the checkpoint (up to byte 32, the header of
+    the restarted WAL, or up to the checkpointed end when the reader kept
+    the WAL from restarting); FULL syncs every commit.
+┌─────────────────┬───────────────────┬───────┬────────────────────────┬────────────────────────┬───────┐
+│     variant     │ rule_synced_up_to │ syncs │ writes_after_last_sync │ lowest_unsynced_offset │ agree │
+├─────────────────┼───────────────────┼───────┼────────────────────────┼────────────────────────┼───────┤
+│ off             │ 0                 │ 0     │ 306                    │ 0                      │ true  │
+│ normal          │ 32                │ 3     │ 156                    │ 32                     │ true  │
+│ full            │ all of it         │ 11    │ 0                      │                        │ true  │
+│ normal-reader-5 │ 304912            │ 2     │ 156                    │ 304912                 │ true  │
+└─────────────────┴───────────────────┴───────┴────────────────────────┴────────────────────────┴───────┘
+
+B4. The database file. A checkpoint that copies every frame syncs it; one
+    that stops short (the reader) does not, and at OFF nothing is synced.
+┌─────────────────┬──────────────────────┬───────┬────────────────────────┬────────────────────────┬───────┐
+│     variant     │ rule_unsynced_writes │ syncs │ writes_after_last_sync │ lowest_unsynced_offset │ agree │
+├─────────────────┼──────────────────────┼───────┼────────────────────────┼────────────────────────┼───────┤
+│ off             │ true                 │ 0     │ 44                     │ 0                      │ true  │
+│ normal          │ false                │ 1     │ 0                      │                        │ true  │
+│ full            │ false                │ 1     │ 0                      │                        │ true  │
+│ normal-reader-5 │ true                 │ 0     │ 15                     │ 73728                  │ true  │
+└─────────────────┴──────────────────────┴───────┴────────────────────────┴────────────────────────┴───────┘
+
+B5. Where each acknowledged commit ends in the -wal (byte offset, then
+    #WAL generation). A commit ending past the last sync in the newest
+    generation is marked "lost": the power-cut model removes it.
+┌──────┬───────────┬────────────────┬───────────┬─────────────────┐
+│ step │    off    │     normal     │   full    │ normal-reader-5 │
+├──────┼───────────┼────────────────┼───────────┼─────────────────┤
+│ 4    │ 103032 #1 │ 103032 #1      │ 103032 #1 │ 103032 #1       │
+│ 5    │ 148352 #1 │ 148352 #1      │ 148352 #1 │ 148352 #1       │
+│ 6    │ 238992 #1 │ 238992 #1      │ 238992 #1 │ 238992 #1       │
+│ 7    │ 304912 #1 │ 304912 #1      │ 304912 #1 │ 304912 #1       │
+│ 8    │ 94792 #2  │ 94792 #2 lost  │ 94792 #2  │ 399672 #1 lost  │
+│ 9    │ 189552 #2 │ 189552 #2 lost │ 189552 #2 │ 494432 #1 lost  │
+│ 10   │ 259592 #2 │ 259592 #2 lost │ 259592 #2 │ 564472 #1 lost  │
+│ 11   │ 321392 #2 │ 321392 #2 lost │ 321392 #2 │ 626272 #1 lost  │
+└──────┴───────────┴────────────────┴───────────┴─────────────────┘
+
+B6. The power-cut model: the database file as written, the -wal cut back
+    to the last sync, no -shm; then reopened. NORMAL loses the four commits
+    after the checkpoint but stays consistent; FULL loses nothing. With the
+    reader the checkpoint did not sync the database file, so the model also
+    runs with the file as it was before the checkpoint: the same step, since
+    the WAL frames those writes came from were synced first.
+┌─────────────────┬──────────────────────────┬──────────────────┬──────┬───────────┬───────────┬───────┐
+│     variant     │      database_file       │  wal_bytes_kept  │ lost │ integrity │ recovered │ exact │
+├─────────────────┼──────────────────────────┼──────────────────┼──────┼───────────┼───────────┼───────┤
+│ normal          │ as written               │ 32 of 321392     │ 4    │ ok        │ 7         │ false │
+│ full            │ as written               │ 321392 of 321392 │ 0    │ ok        │ 11        │ false │
+│ normal-reader-5 │ as written               │ 304912 of 626272 │ 4    │ ok        │ 7         │ false │
+│ normal-reader-5 │ as before the checkpoint │ 304912 of 626272 │ 4    │ ok        │ 7         │ false │
+└─────────────────┴──────────────────────────┴──────────────────┴──────┴───────────┴───────────┴───────┘
+
+    At OFF there is no model: the checkpoint wrote the database file and
+    nothing was ever synced, so a power cut can leave any mix of old and
+    new database pages.
+┌─────────┬────────────────────────────────────────────────────────────────────┐
+│ variant │                              why_not                               │
+├─────────┼────────────────────────────────────────────────────────────────────┤
+│ off     │ the checkpoint wrote the database file and nothing was ever synced │
+└─────────┴────────────────────────────────────────────────────────────────────┘
+
+── A. Kill the writer at chosen syscalls, reopen, identify the state ──
+
+A1. For each synchronous level, a fresh writer runs under strace and is
+    killed with SIGKILL on entry to one call: every fsync/fdatasync the
+    uninterrupted writer made, and 6 of its pwrite64 calls spread evenly.
+┌─────────────┬────────────┬────────────────┬────────────────┬───────┐
+│ synchronous │ sync_calls │ pwrite64_calls │ pwrite64_kills │ kills │
+├─────────────┼────────────┼────────────────┼────────────────┼───────┤
+│ OFF         │ 0          │ 357            │ 6              │ 6     │
+│ NORMAL      │ 5          │ 357            │ 6              │ 11    │
+│ FULL        │ 13         │ 357            │ 6              │ 19    │
+└─────────────┴────────────┴────────────────┴────────────────┴───────┘
+
+A2. Every kill. "recovered" is the recipe step the reopened database
+    equals: the last acknowledged step, or (at FULL, killed in the fsync of
+    a commit) the step being committed, whose frames were already written.
+┌─────────────┬─────────┬───────────────┬───────────────────────────────────────┬──────────────┬───────────┬───────┐
+│ synchronous │ kill_no │    kill_at    │               killed_in               │ acknowledged │ recovered │ exact │
+├─────────────┼─────────┼───────────────┼───────────────────────────────────────┼──────────────┼───────────┼───────┤
+│ OFF         │ 1       │ pwrite64 #1   │ pwrite64 r.db-shm off=4095 len=1      │ 3            │ 3         │ true  │
+│ OFF         │ 2       │ pwrite64 #72  │ pwrite64 r.db-wal off=127752 len=24   │ 4            │ 4         │ true  │
+│ OFF         │ 3       │ pwrite64 #143 │ pwrite64 r.db-wal off=271976 len=4096 │ 6            │ 6         │ false │
+│ OFF         │ 4       │ pwrite64 #214 │ pwrite64 r.db-wal off=24752 len=24    │ 7            │ 7         │ false │
+│ OFF         │ 5       │ pwrite64 #285 │ pwrite64 r.db-wal off=168976 len=4096 │ 8            │ 8         │ false │
+│ OFF         │ 6       │ pwrite64 #357 │ pwrite64 r.db-wal off=317296 len=4096 │ 10           │ 10        │ false │
+│ NORMAL      │ 1       │ fsync #1      │ fsync r.db-wal                        │ 3            │ 3         │ true  │
+│ NORMAL      │ 2       │ fsync #2      │ fsync .                               │ 3            │ 3         │ true  │
+│ NORMAL      │ 3       │ fsync #3      │ fsync r.db-wal                        │ 7            │ 7         │ false │
+│ NORMAL      │ 4       │ fsync #4      │ fsync r.db                            │ 7            │ 7         │ false │
+│ NORMAL      │ 5       │ fsync #5      │ fsync r.db-wal                        │ 7            │ 7         │ false │
+│ NORMAL      │ 6       │ pwrite64 #1   │ pwrite64 r.db-shm off=4095 len=1      │ 3            │ 3         │ true  │
+│ NORMAL      │ 7       │ pwrite64 #72  │ pwrite64 r.db-wal off=127752 len=24   │ 4            │ 4         │ true  │
+│ NORMAL      │ 8       │ pwrite64 #143 │ pwrite64 r.db-wal off=271976 len=4096 │ 6            │ 6         │ false │
+│ NORMAL      │ 9       │ pwrite64 #214 │ pwrite64 r.db-wal off=24752 len=24    │ 7            │ 7         │ false │
+│ NORMAL      │ 10      │ pwrite64 #285 │ pwrite64 r.db-wal off=168976 len=4096 │ 8            │ 8         │ false │
+│ NORMAL      │ 11      │ pwrite64 #357 │ pwrite64 r.db-wal off=317296 len=4096 │ 10           │ 10        │ false │
+│ FULL        │ 1       │ fsync #1      │ fsync r.db-wal                        │ 3            │ 3         │ true  │
+│ FULL        │ 2       │ fsync #2      │ fsync .                               │ 3            │ 3         │ true  │
+│ FULL        │ 3       │ fsync #3      │ fsync r.db-wal                        │ 3            │ 4         │ true  │
+│ FULL        │ 4       │ fsync #4      │ fsync r.db-wal                        │ 4            │ 5         │ false │
+│ FULL        │ 5       │ fsync #5      │ fsync r.db-wal                        │ 5            │ 6         │ false │
+│ FULL        │ 6       │ fsync #6      │ fsync r.db-wal                        │ 6            │ 7         │ false │
+│ FULL        │ 7       │ fsync #7      │ fsync r.db-wal                        │ 7            │ 7         │ false │
+│ FULL        │ 8       │ fsync #8      │ fsync r.db                            │ 7            │ 7         │ false │
+│ FULL        │ 9       │ fsync #9      │ fsync r.db-wal                        │ 7            │ 7         │ false │
+│ FULL        │ 10      │ fsync #10     │ fsync r.db-wal                        │ 7            │ 8         │ false │
+│ FULL        │ 11      │ fsync #11     │ fsync r.db-wal                        │ 8            │ 9         │ false │
+│ FULL        │ 12      │ fsync #12     │ fsync r.db-wal                        │ 9            │ 10        │ false │
+│ FULL        │ 13      │ fsync #13     │ fsync r.db-wal                        │ 10           │ 11        │ false │
+│ FULL        │ 14      │ pwrite64 #1   │ pwrite64 r.db-shm off=4095 len=1      │ 3            │ 3         │ true  │
+│ FULL        │ 15      │ pwrite64 #72  │ pwrite64 r.db-wal off=127752 len=24   │ 4            │ 4         │ true  │
+│ FULL        │ 16      │ pwrite64 #143 │ pwrite64 r.db-wal off=271976 len=4096 │ 6            │ 6         │ false │
+│ FULL        │ 17      │ pwrite64 #214 │ pwrite64 r.db-wal off=24752 len=24    │ 7            │ 7         │ false │
+│ FULL        │ 18      │ pwrite64 #285 │ pwrite64 r.db-wal off=168976 len=4096 │ 8            │ 8         │ false │
+│ FULL        │ 19      │ pwrite64 #357 │ pwrite64 r.db-wal off=317296 len=4096 │ 10           │ 10        │ false │
+└─────────────┴─────────┴───────────────┴───────────────────────────────────────┴──────────────┴───────────┴───────┘
+
+A3. Summary. Every kill was a SIGKILL, every reopened database passed
+    integrity_check, and none lost an acknowledged step.
+┌─────────────┬───────┬─────────┬──────────────┬────────────────────────┬────────────────────┐
+│ synchronous │ kills │ sigkill │ integrity_ok │ recovered_acknowledged │ recovered_one_more │
+├─────────────┼───────┼─────────┼──────────────┼────────────────────────┼────────────────────┤
+│ OFF         │ 6     │ 6       │ 6            │ 6                      │ 0                  │
+│ NORMAL      │ 11    │ 11      │ 11           │ 11                     │ 0                  │
+│ FULL        │ 19    │ 19      │ 19           │ 11                     │ 8                  │
+└─────────────┴───────┴─────────┴──────────────┴────────────────────────┴────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+B  ✓  synchronous=OFF: a process crash keeps every acknowledged step (11)
+B  ✓  synchronous=OFF: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+B  ✓  only synchronous=OFF leaves database-file writes that were never synced
+B  ✓  synchronous=NORMAL: a process crash keeps every acknowledged step (11)
+B  ✓  synchronous=NORMAL: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+B  ✓  synchronous=NORMAL: the model recovers step 7, the last acknowledged step minus the 4 commit(s) written after the last sync
+B  ✓  synchronous=NORMAL: the acknowledged commits after the checkpoint at step 7 are lost in the model, yet the database is consistent
+B  ✓  synchronous=FULL: a process crash keeps every acknowledged step (11)
+B  ✓  synchronous=FULL: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+B  ✓  synchronous=FULL: the model recovers step 11, the last acknowledged step minus the 0 commit(s) written after the last sync
+B  ✓  FULL: no acknowledged commit is lost in the model
+B  ✓  synchronous=NORMAL with a second connection holding a read transaction from step 5: the reader stopped the checkpoint short of the end and the WAL did not restart
+B  ✓  synchronous=NORMAL with a second connection holding a read transaction from step 5: a process crash keeps every acknowledged step (11)
+B  ✓  synchronous=NORMAL with a second connection holding a read transaction from step 5: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+B  ✓  synchronous=NORMAL with a second connection holding a read transaction from step 5: the model recovers step 7, the last acknowledged step minus the 4 commit(s) written after the last sync
+B  ✓  synchronous=NORMAL with a second connection holding a read transaction from step 5: with or without the checkpoint's unsynced database writes the model recovers step 7, because the WAL frames they came from were synced before the checkpoint wrote them
+B  ✓  synchronous=NORMAL with a second connection holding a read transaction from step 5: the acknowledged commits after the checkpoint at step 7 are lost in the model, yet the database is consistent
+A  ✓  OFF kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
+A  ✓  OFF kill 2: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
+A  ✓  OFF kill 3: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
+A  ✓  OFF kill 4: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  OFF kill 5: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
+A  ✓  OFF kill 6: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 2: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 3: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 4: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 5: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 6: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 7: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 8: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 9: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 10: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
+A  ✓  NORMAL kill 11: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 2: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 3: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 4: integrity ok, recovered step 5 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 5: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 6: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 7: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 8: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 9: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 10: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 11: integrity ok, recovered step 9 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 12: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 13: integrity ok, recovered step 11 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 14: integrity ok, recovered step 3 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 15: integrity ok, recovered step 4 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 16: integrity ok, recovered step 6 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 17: integrity ok, recovered step 7 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 18: integrity ok, recovered step 8 is the last acknowledged step or the one being committed
+A  ✓  FULL kill 19: integrity ok, recovered step 10 is the last acknowledged step or the one being committed
+
+53 of 53 claims hold
+
+Experiment verdict: CRASH VERSUS POWER LOSS OK
 ```
 
 #### Reading the Experiment 9.2 evidence
 
-- **Lines 5–14 (Part B — `synchronous=OFF`):** The writer commits steps `4–11`, checkpoints all `74` frames after step `7`, restarts the WAL for steps `8–11`, and calls `os.Exit(0)` without closing. Copying `.db` and `-wal` as left recovers **step 11** (`integrity_check ok`; the change-counter-only note is because one connection committed multiple steps, Chapter 1 correction 1). `strace` records **`0` syncs** on `-wal` (`306` unsynced writes from offset `0`) and **`0` syncs** on `.db` (`44` unsynced writes from offset `0`), matching `ruleCut`. Because `.db` itself was modified without syncing either `.db` or `-wal`, the power-cut model is marked not applicable. (Note on line 14's check wording: `"only synchronous=OFF leaves database-file writes that were never synced"` was written before the fourth model run was added in the repair round; as line 41 shows, a reader-pinned partial checkpoint at `NORMAL` also leaves unsynced `.db` writes, but at `OFF` uniquely the backing WAL frames were *also* never synced, leaving the power-cut outcome undefined.)
-- **Lines 15–24 (Part B — `synchronous=NORMAL`, full checkpoint):** Process crash again recovers **step 11**. `strace` counts **`3` syncs** on `-wal` (initial header, checkpoint WAL sync, restarted header) with `156` unsynced writes starting at byte `32`, and **`1` sync** on `.db` (checkpoint DB sync, zero writes after). Truncating `-wal` to byte `32` of `321,392` and removing `-shm` recovers **step 7** (`integrity_check ok`): all **4** acknowledged commits after the checkpoint (steps `8–11`) vanish, while the database stays consistent.
-- **Lines 25–34 (Part B — `synchronous=FULL`):** Process crash recovers **step 11**. `strace` counts **`11` syncs** on `-wal` (the `3` from `NORMAL` plus `8` per-commit syncs) and `1` sync on `.db`, with **zero** writes after the last sync of either file. Keeping all `321,392` bytes of `-wal` recovers **step 11** with `0` acknowledged commits lost.
-- **Lines 35–47 (Part B — `synchronous=NORMAL` with a reader from step `5`, repair-round addition):** The reader holds a read mark at step `5`, so the `PASSIVE` checkpoint copies only **`36` of `74` frames** and steps `8–11` stay in the **same WAL generation** (`same WAL generation: true`). `strace` confirms the corrected `NORMAL` rule: `-wal` has **`2` syncs** (initial header + checkpoint's `wal.c:2277` sync), leaving `156` unsynced writes starting at offset **`304,912`** (the exact end of step 7's commit frame, not byte `32`), and `.db` has **`0` syncs** with `15` unsynced writes from offset `73,728` (because `wal.c:2328-2335` skips syncing `.db` on a partial checkpoint). Truncating `-wal` to `304,912` of `626,272` bytes recovers **step 7** (`4` commits lost), and substituting the pre-checkpoint `.db` (dropping all `15` unsynced `.db` writes) also recovers **step 7** (`integrity_check ok`), because every page the partial checkpoint touched was already synced in `-wal` first.
-- **Lines 49–126 (Part A — `strace --inject=SIGKILL` sweep, Linux only):** Across **`36` kill runs** (`6` at `OFF`: `0` syncs + `6` `pwrite64`s; `11` at `NORMAL`: `5` syncs including directory `fsync .` + `6` `pwrite64`s; `19` at `FULL`: `13` syncs including directory `fsync .` + `6` `pwrite64`s), every single kill recovers `integrity_check ok` and an exact recipe step equal to `acknowledged` or `acknowledged + 1`. Look closely at `FULL` kills `#3–#6` and `#10–#13` (lines `91–98`, `105–112`): killing on entry to a commit's `fsync r.db-wal` recovers the step **being committed** (`acknowledged 3 -> recovered step 4`, up to `acknowledged 10 -> recovered step 11`). All 53 checks pass (`CRASH VERSUS POWER LOSS OK`).
+- **Section B, variant `off` (Part B — `synchronous=OFF`):** The writer commits steps `4–11`, checkpoints all `74` frames after step `7`, restarts the WAL for steps `8–11`, and calls `os.Exit(0)` without closing. Copying `.db` and `-wal` as left recovers **step 11** (`integrity_check ok`; the change-counter-only note is because one connection committed multiple steps, Chapter 1 correction 1). `strace` records **`0` syncs** on `-wal` (`306` unsynced writes from offset `0`) and **`0` syncs** on `.db` (`44` unsynced writes from offset `0`), matching `ruleCut`. Because `.db` itself was modified without syncing either `.db` or `-wal`, the power-cut model is marked not applicable. (Note on the wording of the Part B check `"only synchronous=OFF leaves database-file writes that were never synced"`: it was written before the fourth model run was added in the repair round; as B4 shows, a reader-pinned partial checkpoint at `NORMAL` also leaves unsynced `.db` writes, but at `OFF` uniquely the backing WAL frames were *also* never synced, leaving the power-cut outcome undefined.)
+- **Variant `normal` (Part B — `synchronous=NORMAL`, full checkpoint):** Process crash again recovers **step 11**. `strace` counts **`3` syncs** on `-wal` (initial header, checkpoint WAL sync, restarted header) with `156` unsynced writes starting at byte `32`, and **`1` sync** on `.db` (checkpoint DB sync, zero writes after). Truncating `-wal` to byte `32` of `321,392` and removing `-shm` recovers **step 7** (`integrity_check ok`): all **4** acknowledged commits after the checkpoint (steps `8–11`) vanish, while the database stays consistent.
+- **Variant `full` (Part B — `synchronous=FULL`):** Process crash recovers **step 11**. `strace` counts **`11` syncs** on `-wal` (the `3` from `NORMAL` plus `8` per-commit syncs) and `1` sync on `.db`, with **zero** writes after the last sync of either file. Keeping all `321,392` bytes of `-wal` recovers **step 11** with `0` acknowledged commits lost.
+- **Variant `normal-reader-5` (Part B — `synchronous=NORMAL` with a reader from step `5`, repair-round addition):** The reader holds a read mark at step `5`, so the `PASSIVE` checkpoint copies only **`36` of `74` frames** and steps `8–11` stay in the **same WAL generation** (`wal_not_restarted` `true` in B1). `strace` confirms the corrected `NORMAL` rule: `-wal` has **`2` syncs** (initial header + checkpoint's `wal.c:2277` sync), leaving `156` unsynced writes starting at offset **`304,912`** (the exact end of step 7's commit frame, not byte `32`), and `.db` has **`0` syncs** with `15` unsynced writes from offset `73,728` (because `wal.c:2328-2335` skips syncing `.db` on a partial checkpoint). Truncating `-wal` to `304,912` of `626,272` bytes recovers **step 7** (`4` commits lost), and substituting the pre-checkpoint `.db` (dropping all `15` unsynced `.db` writes) also recovers **step 7** (`integrity_check ok`), because every page the partial checkpoint touched was already synced in `-wal` first.
+- **A1–A3 (Part A — `strace --inject=SIGKILL` sweep, Linux only):** Across **`36` kill runs** (`6` at `OFF`: `0` syncs + `6` `pwrite64`s; `11` at `NORMAL`: `5` syncs including directory `fsync .` + `6` `pwrite64`s; `19` at `FULL`: `13` syncs including directory `fsync .` + `6` `pwrite64`s), every single kill recovers `integrity_check ok` and an exact recipe step equal to `acknowledged` or `acknowledged + 1`. Look closely at `FULL` kills `#3–#6` and `#10–#13` in A2: killing on entry to a commit's `fsync r.db-wal` recovers the step **being committed** (acknowledged `3`, recovered `4`, up to acknowledged `10`, recovered `11`). All 53 checks pass (verdict `CRASH VERSUS POWER LOSS OK`).
 
 ---
 
@@ -3389,7 +3982,7 @@ func (s *Shipper) closeConnections() error {
 ### 6.1 Experiment 9.3 — `integrity-check-limits`
 
 - **Claim:** `PRAGMA integrity_check` verifies B-tree structure and index-to-table consistency, not row content or unused pages: it catches a damaged B-tree page header and an indexed-column mismatch against its index, but returns `ok` when a byte is flipped inside an unindexed column or a freelist leaf page. `PRAGMA quick_check` skips index checks (`src/pragma.c:2058`) and misses the indexed-column mismatch too. The E3 logical hash catches every data-value change but misses the freelist leaf. Only the Chapter 2 per-page SHA-256 manifest (`capture.VerifyImage`) detects all four sites and names the exact damaged page.
-- **Evidence form:** `EXACT`.
+- **Evidence form:** `EXACT` (every stored table must match on every run).
 - **Why kept:** "The restore passed `integrity_check`" is the usual proof offered for a rebuilt database, and it is not one. The Rebuild Ladder's hashes are.
 
 <!-- include: experiments/9.3-integrity-check-limits/main.go -->
@@ -3401,6 +3994,9 @@ func (s *Shipper) closeConnections() error {
 // integer column, and a freelist leaf page) and compares integrity_check
 // (src/btree.c:11144-11295, src/pragma.c:1850-1857, 2084-2090), quick_check,
 // the E3 logical hash, and a Chapter 2 per-page SHA-256 manifest.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 9.3
 package main
 
 import (
@@ -3409,12 +4005,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/nickstrad/walfleet/internal/capture"
 	"github.com/nickstrad/walfleet/internal/dbfile"
 	"github.com/nickstrad/walfleet/internal/equal"
 	"github.com/nickstrad/walfleet/internal/procs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -3433,8 +4031,10 @@ type site struct {
 }
 
 type verdicts struct {
-	integrity, quick, logical, manifest string
-	caught                              [4]bool
+	integrity, quick []string
+	logical          int
+	differing        []int
+	caught           [4]bool
 }
 
 // findSites uses internal/dbfile to locate four deterministic single-byte
@@ -3532,19 +4132,18 @@ func check(ctx context.Context, path string, original equal.Manifest, originalLo
 	}
 	logicalDiff := equal.CompareLogical(originalLogical, logical)
 	v := verdicts{
-		integrity: procs.IntegritySummary(inspection.Integrity),
-		quick:     inspection.Values[0],
-		logical:   "equal",
-		manifest:  "equal",
-	}
-	if !logicalDiff.Equal {
-		v.logical = fmt.Sprintf("differs (%d difference(s))", len(logicalDiff.Differences))
-	}
-	if len(differing) > 0 {
-		v.manifest = fmt.Sprintf("page(s) %v differ", differing)
+		integrity: procs.IntegrityProblems(inspection.Integrity),
+		quick:     procs.IntegrityProblems(inspection.Values[0]),
+		logical:   len(logicalDiff.Differences),
+		differing: differing,
 	}
 	v.caught = [4]bool{inspection.Integrity != "ok", inspection.Values[0] != "ok", !logicalDiff.Equal, len(differing) > 0}
 	return v, nil
+}
+
+func fatal(what string, err error) {
+	fmt.Printf("FATAL %s: %v\n", what, err)
+	os.Exit(1)
 }
 
 func main() {
@@ -3552,121 +4151,293 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("9.3")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	lab := procs.NewLab(os.Stdout)
+	set := results.MustOpen(dir)
+	originalTable := set.Table("original", "recipe_step", "pages", "manifest_sha256")
+	sitesTable := set.Table("sites", "seq", "site", "location", "file_offset", "xor_mask")
+	verdictsTable := set.Table("verdicts", "seq", "file", "site",
+		"caught_integrity", "caught_quick", "caught_e3", "caught_manifest",
+		"expected_integrity", "expected_quick", "expected_e3", "expected_manifest",
+		"e3_differences", "differing_pages")
+	problemsTable := set.Table("problems", "seq", "file", "pragma", "problem_no", "problem")
+	record := func(seq int, file, site string, v verdicts, want [4]bool) {
+		verdictsTable.Row(seq, file, site, v.caught[0], v.caught[1], v.caught[2], v.caught[3], want[0], want[1], want[2], want[3], v.logical, joinInts(v.differing))
+		for i, problem := range v.integrity {
+			problemsTable.Row(seq, file, "integrity_check", i+1, problem)
+		}
+		for i, problem := range v.quick {
+			problemsTable.Row(seq, file, "quick_check", i+1, problem)
+		}
+	}
+
 	r := recipe.Default()
 	db := filepath.Join(dir, "original.db")
 	if err := r.Build(ctx, db, step); err != nil {
-		lab.Fatal("build", err)
+		fatal("build", err)
 	}
 	original, err := os.ReadFile(db)
 	if err != nil {
-		lab.Fatal("read", err)
+		fatal("read", err)
 	}
 	f, err := dbfile.Open(db)
 	if err != nil {
-		lab.Fatal("open", err)
+		fatal("open", err)
 	}
 	manifest, err := capture.BuildManifest(f)
 	if err != nil {
-		lab.Fatal("manifest", err)
+		fatal("manifest", err)
 	}
 	sites, err := findSites(f)
 	if closeErr := f.Close(); err != nil || closeErr != nil {
-		lab.Fatal("sites", errors.Join(err, closeErr))
+		fatal("sites", errors.Join(err, closeErr))
 	}
 	logical, err := equal.LogicalHashFile(ctx, db)
 	if err != nil {
-		lab.Fatal("logical hash", err)
+		fatal("logical hash", err)
 	}
 	baseline, err := check(ctx, db, manifest, logical)
 	if err != nil {
-		lab.Fatal("baseline", err)
+		fatal("baseline", err)
 	}
-	fmt.Printf("original: recipe step %d, %d pages, manifest sha256 %s; integrity_check %s, quick_check %s\n", step, manifest.PageCount(), manifest.SHA256()[:16], baseline.integrity, baseline.quick)
-	lab.Check(baseline.caught == [4]bool{}, "every check passes on the undamaged file")
+	originalTable.Row(step, manifest.PageCount(), manifest.SHA256()[:16])
+	record(0, "original.db", "none (the undamaged file)", baseline, [4]bool{})
+	set.Check("A", baseline.caught == [4]bool{}, "every check passes on the undamaged file")
 	want := map[string][4]bool{
 		sites[0].name: {true, true, true, true},
 		sites[1].name: {false, false, true, true},
 		sites[2].name: {true, false, true, true},
 		sites[3].name: {false, false, false, true},
 	}
-	fmt.Println()
-	fmt.Printf("%-36s | %-24s | %-24s | %-26s | %s\n", "one byte flipped in", "integrity_check", "quick_check", "E3 logical hash", "page manifest")
 	for i, s := range sites {
-		path := filepath.Join(dir, fmt.Sprintf("site-%d.db", i+1))
+		name := fmt.Sprintf("site-%d.db", i+1)
+		path := filepath.Join(dir, name)
 		if err := corruptCopy(original, s, path); err != nil {
-			lab.Fatal("corrupt", err)
+			fatal("corrupt", err)
 		}
 		v, err := check(ctx, path, manifest, logical)
 		if err != nil {
-			lab.Fatal(s.name, err)
+			fatal(s.name, err)
 		}
-		fmt.Printf("%-36s | %-24s | %-24s | %-26s | %s\n", s.name, clip(v.integrity), clip(v.quick), v.logical, v.manifest)
-		fmt.Printf("    where: %s\n", s.detail)
-		fmt.Printf("    integrity_check said: %s\n", v.integrity)
-		lab.Check(v.caught == want[s.name], fmt.Sprintf("%s: caught by integrity_check %t, quick_check %t, E3 %t, manifest %t", s.name, want[s.name][0], want[s.name][1], want[s.name][2], want[s.name][3]))
+		sitesTable.Row(i+1, s.name, s.detail, s.offset, s.mask)
+		record(i+1, name, s.name, v, want[s.name])
+		set.Check("B", v.caught == want[s.name], fmt.Sprintf("%s: caught by integrity_check %t, quick_check %t, E3 %t, manifest %t", s.name, want[s.name][0], want[s.name][1], want[s.name][2], want[s.name][3]))
 	}
-	lab.Report("INTEGRITY CHECK LIMITS")
+	set.Finish("INTEGRITY CHECK LIMITS")
 }
 
-func clip(s string) string {
-	if len(s) > 24 {
-		return s[:21] + "..."
+func joinInts(values []int) string {
+	text := make([]string, len(values))
+	for i, v := range values {
+		text[i] = fmt.Sprint(v)
 	}
-	return s
+	return strings.Join(text, " ")
 }
 ```
 
-Run from the repository root:
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/9.3-integrity-check-limits/report.sql -->
+```sql
+-- Walkthrough of experiment 9.3. Run it with:
+--   go run ./cmd/course run 9.3        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   original   the undamaged recipe database (one row)
+--   sites      one row per single-byte flip: where it is and what it changes
+--   verdicts   one row per file checked (the original, then one per flip):
+--              which of the four checks caught it, and which were expected to
+--   problems   one row per problem line PRAGMA integrity_check or quick_check reported
+--   checks     every claim the experiment asserted (the runner lists it last)
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  9.3  What does integrity_check not catch?'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'The experiment builds the recipe database to one step, then makes four'
+.print 'copies, each with one byte flipped in a different place. Every file is'
+.print 'checked four ways: PRAGMA integrity_check, PRAGMA quick_check, the E3'
+.print 'logical hash (every row and schema object), and the per-page SHA-256'
+.print 'manifest of Chapter 2 taken from the original. No check changes the file.'
+
+.print
+.print '── A. The undamaged file ───────────────────────────────────────────────'
+.print
+.print 'A1. The original, and the manifest every copy is compared with:'
+
+SELECT recipe_step, pages, manifest_sha256 FROM original ORDER BY recipe_step;
+
+.print
+.print 'A2. Every check passes on it (caught = false everywhere, no problem lines):'
+
+SELECT file, caught_integrity, caught_quick, caught_e3, caught_manifest,
+       (SELECT count(*) FROM problems p WHERE p.seq = v.seq) AS problem_lines
+FROM verdicts v WHERE seq = 0 ORDER BY seq;
+
+.print
+.print '── B. One byte flipped ─────────────────────────────────────────────────'
+.print
+.print 'B1. The four places. The cell count is B-tree structure; the note and'
+.print '    account_id are row data, and only account_id has an index; the'
+.print '    freelist page belongs to no table at all.'
+
+SELECT seq, site, location, file_offset, printf('0x%02x', xor_mask) AS xor_mask FROM sites ORDER BY seq;
+
+.print
+.print 'B2. Which check caught which flip, measured against expected. Only the'
+.print '    page manifest catches all four. integrity_check misses the unindexed'
+.print '    column and the freelist page; quick_check catches only the header.'
+
+SELECT site,
+       caught_integrity AS integrity_check,
+       caught_quick     AS quick_check,
+       caught_e3        AS e3_logical,
+       caught_manifest  AS manifest,
+       (caught_integrity, caught_quick, caught_e3, caught_manifest)
+         = (expected_integrity, expected_quick, expected_e3, expected_manifest) AS as_expected
+FROM verdicts WHERE seq > 0 ORDER BY seq;
+
+.print
+.print 'B3. How much each check reported. The freelist flip changes no row, schema'
+.print '    object or pragma, so the E3 hash sees no difference; only the page'
+.print '    manifest sees it.'
+
+SELECT v.site,
+       count(*) FILTER (p.pragma = 'integrity_check') AS integrity_problems,
+       count(*) FILTER (p.pragma = 'quick_check')     AS quick_problems,
+       v.e3_differences,
+       v.differing_pages                              AS manifest_pages_differ
+FROM verdicts v LEFT JOIN problems p USING (seq)
+WHERE v.seq > 0
+GROUP BY v.seq, v.site, v.e3_differences, v.differing_pages
+ORDER BY v.seq;
+
+.print
+.print 'B4. What the two pragmas said, problem by problem. integrity_check reads'
+.print '    every index against its table, so it finds the row missing from'
+.print '    events_by_account; quick_check skips that comparison.'
+
+SELECT v.site, p.pragma, p.problem
+FROM problems p JOIN verdicts v USING (seq)
+ORDER BY p.seq, p.pragma, p.problem_no;
+```
+
+Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./ch09-backup-crash-recovery-integrity/experiments/9.3-integrity-check-limits
+go run ./cmd/course run 9.3
 ```
 
-Captured evidence:
+Add `-i` (`go run ./cmd/course run -i 9.3`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/9.3-integrity-check-limits/`](evidence/9.3-integrity-check-limits/), and `go run ./cmd/course check evidence ch09` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/9.3-integrity-check-limits.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/9.3
-original: recipe step 12, 118 pages, manifest sha256 5a2143ca7f8bc869; integrity_check ok, quick_check ok
-check ok: every check passes on the undamaged file
 
-one byte flipped in                  | integrity_check          | quick_check              | E3 logical hash            | page manifest
-b-tree page header (cell count)      | 2 problem(s), the fir... | *** in database main ... | differs (2 difference(s))  | page(s) [26] differ
-    where: page 26 (events leaf), header byte 4
-    integrity_check said: 2 problem(s), the first: Fragmentation of 46 bytes reported as 0 on page 26
-check ok: b-tree page header (cell count): caught by integrity_check true, quick_check true, E3 true, manifest true
-unindexed column (events.note)       | ok                       | ok                       | differs (1 difference(s))  | page(s) [27] differ
-    where: page 27, row 76, letter 'q' -> 'Q'
-    integrity_check said: ok
-check ok: unindexed column (events.note): caught by integrity_check false, quick_check false, E3 true, manifest true
-indexed column (events.account_id)   | 1 problem(s), the fir... | ok                       | differs (2 difference(s))  | page(s) [27] differ
-    where: page 27, row 76, account_id 8 -> 9
-    integrity_check said: 1 problem(s), the first: row 66 missing from index events_by_account
-check ok: indexed column (events.account_id): caught by integrity_check true, quick_check false, E3 true, manifest true
-freelist leaf page                   | ok                       | ok                       | equal                      | page(s) [24] differ
-    where: page 24, byte 2048
-    integrity_check said: ok
-check ok: freelist leaf page: caught by integrity_check false, quick_check false, E3 false, manifest true
+════════════════════════════════════════════════════════════════════════
+  9.3  What does integrity_check not catch?
+════════════════════════════════════════════════════════════════════════
 
-INTEGRITY CHECK LIMITS OK
+The experiment builds the recipe database to one step, then makes four
+copies, each with one byte flipped in a different place. Every file is
+checked four ways: PRAGMA integrity_check, PRAGMA quick_check, the E3
+logical hash (every row and schema object), and the per-page SHA-256
+manifest of Chapter 2 taken from the original. No check changes the file.
+
+── A. The undamaged file ───────────────────────────────────────────────
+
+A1. The original, and the manifest every copy is compared with:
+┌─────────────┬───────┬──────────────────┐
+│ recipe_step │ pages │ manifest_sha256  │
+├─────────────┼───────┼──────────────────┤
+│ 12          │ 118   │ 5a2143ca7f8bc869 │
+└─────────────┴───────┴──────────────────┘
+
+A2. Every check passes on it (caught = false everywhere, no problem lines):
+┌─────────────┬──────────────────┬──────────────┬───────────┬─────────────────┬───────────────┐
+│    file     │ caught_integrity │ caught_quick │ caught_e3 │ caught_manifest │ problem_lines │
+├─────────────┼──────────────────┼──────────────┼───────────┼─────────────────┼───────────────┤
+│ original.db │ false            │ false        │ false     │ false           │ 0             │
+└─────────────┴──────────────────┴──────────────┴───────────┴─────────────────┴───────────────┘
+
+── B. One byte flipped ─────────────────────────────────────────────────
+
+B1. The four places. The cell count is B-tree structure; the note and
+    account_id are row data, and only account_id has an index; the
+    freelist page belongs to no table at all.
+┌─────┬────────────────────────────────────┬──────────────────────────────────────┬─────────────┬──────────┐
+│ seq │                site                │               location               │ file_offset │ xor_mask │
+├─────┼────────────────────────────────────┼──────────────────────────────────────┼─────────────┼──────────┤
+│ 1   │ b-tree page header (cell count)    │ page 26 (events leaf), header byte 4 │ 102404      │ 0x01     │
+│ 2   │ unindexed column (events.note)     │ page 27, row 76, letter 'q' -> 'Q'   │ 110538      │ 0x20     │
+│ 3   │ indexed column (events.account_id) │ page 27, row 76, account_id 8 -> 9   │ 110527      │ 0x01     │
+│ 4   │ freelist leaf page                 │ page 24, byte 2048                   │ 96256       │ 0xff     │
+└─────┴────────────────────────────────────┴──────────────────────────────────────┴─────────────┴──────────┘
+
+B2. Which check caught which flip, measured against expected. Only the
+    page manifest catches all four. integrity_check misses the unindexed
+    column and the freelist page; quick_check catches only the header.
+┌────────────────────────────────────┬─────────────────┬─────────────┬────────────┬──────────┬─────────────┐
+│                site                │ integrity_check │ quick_check │ e3_logical │ manifest │ as_expected │
+├────────────────────────────────────┼─────────────────┼─────────────┼────────────┼──────────┼─────────────┤
+│ b-tree page header (cell count)    │ true            │ true        │ true       │ true     │ true        │
+│ unindexed column (events.note)     │ false           │ false       │ true       │ true     │ true        │
+│ indexed column (events.account_id) │ true            │ false       │ true       │ true     │ true        │
+│ freelist leaf page                 │ false           │ false       │ false      │ true     │ true        │
+└────────────────────────────────────┴─────────────────┴─────────────┴────────────┴──────────┴─────────────┘
+
+B3. How much each check reported. The freelist flip changes no row, schema
+    object or pragma, so the E3 hash sees no difference; only the page
+    manifest sees it.
+┌────────────────────────────────────┬────────────────────┬────────────────┬────────────────┬───────────────────────┐
+│                site                │ integrity_problems │ quick_problems │ e3_differences │ manifest_pages_differ │
+├────────────────────────────────────┼────────────────────┼────────────────┼────────────────┼───────────────────────┤
+│ b-tree page header (cell count)    │ 2                  │ 1              │ 2              │ 26                    │
+│ unindexed column (events.note)     │ 0                  │ 0              │ 1              │ 27                    │
+│ indexed column (events.account_id) │ 1                  │ 0              │ 2              │ 27                    │
+│ freelist leaf page                 │ 0                  │ 0              │ 0              │ 24                    │
+└────────────────────────────────────┴────────────────────┴────────────────┴────────────────┴───────────────────────┘
+
+B4. What the two pragmas said, problem by problem. integrity_check reads
+    every index against its table, so it finds the row missing from
+    events_by_account; quick_check skips that comparison.
+┌────────────────────────────────────┬─────────────────┬────────────────────────────────────────────────────┐
+│                site                │     pragma      │                      problem                       │
+├────────────────────────────────────┼─────────────────┼────────────────────────────────────────────────────┤
+│ b-tree page header (cell count)    │ integrity_check │ Fragmentation of 46 bytes reported as 0 on page 26 │
+│ b-tree page header (cell count)    │ integrity_check │ wrong # of entries in index events_by_account      │
+│ b-tree page header (cell count)    │ quick_check     │ Fragmentation of 46 bytes reported as 0 on page 26 │
+│ indexed column (events.account_id) │ integrity_check │ row 66 missing from index events_by_account        │
+└────────────────────────────────────┴─────────────────┴────────────────────────────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  every check passes on the undamaged file
+B  ✓  b-tree page header (cell count): caught by integrity_check true, quick_check true, E3 true, manifest true
+B  ✓  unindexed column (events.note): caught by integrity_check false, quick_check false, E3 true, manifest true
+B  ✓  indexed column (events.account_id): caught by integrity_check true, quick_check false, E3 true, manifest true
+B  ✓  freelist leaf page: caught by integrity_check false, quick_check false, E3 false, manifest true
+
+5 of 5 claims hold
+
+Experiment verdict: INTEGRITY CHECK LIMITS OK
 ```
 
 #### Reading the Experiment 9.3 evidence
 
-- **Lines 3–4 (baseline):** The undamaged step-12 recipe database has `118` pages, manifest SHA-256 `5a2143ca7f8bc869`, and passes `integrity_check` and `quick_check` with `ok`.
-- **Lines 7–10 (site 1 — B-tree page header cell count, page `26`, header byte `4`):** Flipping `0x01` alters the page's cell count, leaving `46` bytes unaccounted for. All four checks catch it (`integrity_check` reports `2 problem(s), the first: Fragmentation of 46 bytes reported as 0 on page 26`; `quick_check` fails; E3 differs; manifest names `page(s) [26]`).
-- **Lines 11–14 (site 2 — unindexed column `events.note`, page `27`, row `76`, `'q' -> 'Q'`):** Both `integrity_check` and `quick_check` print **`ok`**. The B-tree structure and every index remain valid while stored user data is silently altered. E3 logical hashing catches the changed text (`1 difference(s)`), and the manifest pins it to `page(s) [27]`.
-- **Lines 15–18 (site 3 — indexed column `events.account_id`, page `27`, row `76`, `8 -> 9`):** Because `events_by_account` indexes `account_id`, `integrity_check` catches the table-versus-index disagreement (`1 problem(s), the first: row 66 missing from index events_by_account`), while `quick_check` still prints **`ok`** because it skips index cross-checks. Notice `"row 66"` for rowid `76`: `pragma.c:1850-1857` and `2084-2090` print the table-scan row counter, not the `rowid`. Both E3 (`2 difference(s)`) and the manifest (`page(s) [27]`) catch it.
-- **Lines 19–22 (site 4 — freelist leaf page `24`, byte `2048`):** `integrity_check`, `quick_check`, and E3 logical hashing all report **`ok` / `equal`** because a freelist leaf holds no live rows and `sqlite3BtreeIntegrityCheck` never inspects its body. Only the page manifest catches it (`page(s) [24]`). All 5 checks pass (`INTEGRITY CHECK LIMITS OK`).
+- **A1–A2 (baseline):** The undamaged step-12 recipe database has `118` pages, manifest SHA-256 `5a2143ca7f8bc869`, and passes `integrity_check` and `quick_check` with `ok`.
+- **Site 1 in B1–B4 (B-tree page header cell count, page `26`, header byte `4`):** Flipping `0x01` alters the page's cell count, leaving `46` bytes unaccounted for. All four checks catch it (`integrity_check` reports `2` problems, the first `Fragmentation of 46 bytes reported as 0 on page 26`; `quick_check` fails; E3 differs; manifest names page `26`).
+- **Site 2 (unindexed column `events.note`, page `27`, row `76`, `'q' -> 'Q'`):** Both `integrity_check` and `quick_check` report **no problem** (caught `false`). The B-tree structure and every index remain valid while stored user data is silently altered. E3 logical hashing catches the changed text (`1` difference), and the manifest pins it to page `27`.
+- **Site 3 (indexed column `events.account_id`, page `27`, row `76`, `8 -> 9`):** Because `events_by_account` indexes `account_id`, `integrity_check` catches the table-versus-index disagreement (`1` problem: `row 66 missing from index events_by_account`), while `quick_check` still reports **no problem** because it skips index cross-checks. Notice `"row 66"` for rowid `76`: `pragma.c:1850-1857` and `2084-2090` print the table-scan row counter, not the `rowid`. Both E3 (`2` differences) and the manifest (page `27`) catch it.
+- **Site 4 (freelist leaf page `24`, byte `2048`):** `integrity_check`, `quick_check`, and E3 logical hashing all report **no problem / no difference** because a freelist leaf holds no live rows and `sqlite3BtreeIntegrityCheck` never inspects its body. Only the page manifest catches it (page `24`). All 5 checks pass (verdict `INTEGRITY CHECK LIMITS OK`).
 
 ---
 
 ### 6.2 Experiment 9.4 — `point-in-time-rebuild` (rung R6)
 
 - **Claim:** One base snapshot plus ordered WAL segments captured continuously across shipper-owned checkpoints and WAL restarts (`internal/walship`) can rebuild the database as of **any** shipped commit, byte-identical (**E1 bytes**) to the recipe's checkpointed state for that step. Restoring from the newest snapshot before a target never replays more than `SnapshotEvery` (`3`) segments and agrees byte for byte with restoring from older reachable snapshots. An outside `TRUNCATE` checkpoint while the shipper is down causes the reopened shipper to detect the unvouched WAL header change and re-base with a discontinuity snapshot (losing only the intermediate commits folded away while it was stopped, never silently corrupting the chain). Missing, swapped, or byte-flipped segments are rejected during `Catalog.Plan` before any page is applied.
-- **Evidence form:** `EXACT`.
+- **Evidence form:** `EXACT` (every stored table must match on every run).
 
 <!-- include: experiments/9.4-point-in-time-rebuild/main.go -->
 ```go
@@ -3677,6 +4448,9 @@ INTEGRITY CHECK LIMITS OK
 // point-in-time restore of every shipped position from both newest and older
 // snapshots, and pre-replay rejection of missing, swapped, and corrupted
 // segments.
+//
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 9.4
 package main
 
 import (
@@ -3687,10 +4461,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nickstrad/walfleet/internal/procs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walship"
 )
@@ -3713,6 +4489,32 @@ type run struct {
 	writer   *procs.Child
 	outsider *procs.Child
 	names    walship.GenerationNames
+	set      *results.Set
+	part     string
+	cycles   int
+	tampers  int
+	tables   struct {
+		steps, starts, cycles, snapshots, store, restores, final, tampered *results.Table
+	}
+}
+
+func (x *run) openTables() {
+	x.tables.steps = x.set.Table("steps", "step", "part", "next_cycle", "child", "action", "outcome")
+	x.tables.starts = x.set.Table("shipper_starts", "part", "started", "position")
+	x.tables.cycles = x.set.Table("cycles", "cycle", "part", "wal", "segment", "first_position", "last_position", "first_frame", "last_frame", "generation", "first_user_version", "last_user_version", "before_sha256", "after_sha256", "checkpoint_busy", "checkpoint_log", "checkpointed", "every_frame_copied")
+	x.tables.snapshots = x.set.Table("snapshots", "cycle", "part", "snapshot", "reason", "position", "pages", "user_version", "state_sha256", "after_frame", "generation")
+	x.tables.store = x.set.Table("store", "snapshots", "snapshot_positions", "segments", "damaged")
+	x.tables.restores = x.set.Table("restores", "position", "snapshot", "segments", "user_version", "sha256", "recipe_sha256", "e1_equal", "older_snapshots", "older_same_bytes", "older_cannot_reach")
+	x.tables.final = x.set.Table("final", "file", "position", "integrity_check", "recipe_step", "exact_bytes")
+	x.tables.tampered = x.set.Table("tampered", "seq", "damage", "restore_to", "refused_while_planning", "error")
+}
+
+func (x *run) generation(g walship.Generation) string {
+	return strings.TrimPrefix(x.names.Name(g), "WAL generation ")
+}
+
+func (x *run) snapshotRow(cycle any, m walship.SnapshotMeta) {
+	x.tables.snapshots.Row(cycle, x.part, walship.SnapshotKey(m.Position), m.Reason, m.Position, m.Pages, m.UserVersion, m.StateSHA256[:16], m.WAL.Frame, x.generation(m.WAL.Generation))
 }
 
 func (x *run) openShipper() {
@@ -3722,15 +4524,22 @@ func (x *run) openShipper() {
 	}
 	x.shipper = shipper
 	if snapshot := shipper.OpenSnapshot(); snapshot != nil {
-		fmt.Printf("shipper opened: %s\n", walship.DescribeSnapshot(*snapshot, x.names.Name))
+		x.tables.starts.Row(x.part, "opened on an empty store: initial snapshot", snapshot.Position)
+		x.snapshotRow(nil, *snapshot)
 	} else {
-		fmt.Printf("shipper reopened: resumed from the store at position %d\n", shipper.Position())
+		x.tables.starts.Row(x.part, "reopened: resumed from the store", shipper.Position())
 	}
+}
+
+func (x *run) must(child *procs.Child, action string, args ...string) procs.Result {
+	result := x.lab.Must(child, action, args...)
+	x.tables.steps.Row(result.Step, x.part, x.cycles+1, child.Name, procs.ActionText(action, args), result.Outcome())
+	return result
 }
 
 func (x *run) commit(steps ...int) {
 	for _, k := range steps {
-		x.lab.Must(x.writer, "recipe-session", strconv.Itoa(k))
+		x.must(x.writer, "recipe-session", strconv.Itoa(k))
 	}
 }
 
@@ -3739,8 +4548,20 @@ func (x *run) cycle() walship.CycleReport {
 	if err != nil {
 		x.lab.Fatal("ship cycle", err)
 	}
-	for _, line := range report.Lines(x.names.Name) {
-		fmt.Printf("   ship: %s\n", line)
+	x.cycles++
+	wal := report.Change.String()
+	if report.Reason != "" {
+		wal += ": " + report.Reason
+	}
+	cp := report.Checkpoint
+	if m := report.Segment; m != nil {
+		x.tables.cycles.Row(x.cycles, x.part, wal, walship.SegmentKey(m.FirstPosition), m.FirstPosition, m.LastPosition, m.FirstFrame, m.LastFrame, x.generation(m.Generation),
+			m.Commits[0].UserVersion, m.Commits[len(m.Commits)-1].UserVersion, m.BeforeSHA256[:16], m.AfterSHA256[:16], cp.Busy, cp.LogFrames, cp.Checkpointed, report.FullBackfill)
+	} else {
+		x.tables.cycles.Row(x.cycles, x.part, wal, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, cp.Busy, cp.LogFrames, cp.Checkpointed, report.FullBackfill)
+	}
+	if report.Snapshot != nil {
+		x.snapshotRow(x.cycles, *report.Snapshot)
 	}
 	return report
 }
@@ -3795,11 +4616,11 @@ func (x *run) restoreEveryPosition(catalog *walship.Catalog, hashes []recipe.Fil
 		}
 		digest := walship.SHA256Hex(image)
 		equal := step < len(hashes) && digest == hashes[step].Exact
-		fmt.Printf("position %2d: snapshot %2d + %d segment(s) -> user_version %2d, sha256 %s, recipe step %2d sha256 %s, E1 equal %t; older snapshots: %d give the same bytes, %d cannot reach it\n",
-			position, plan.Snapshot.Meta.Position, len(plan.Segments), step, digest[:16], step, hashes[step].Exact[:16], equal, same, refused)
-		x.lab.Check(equal && same+refused == countOlder(catalog, plan.Snapshot.Meta.Position), fmt.Sprintf("position %d restores byte-identical to recipe step %d from every snapshot that reaches it", position, step))
+		older := countOlder(catalog, plan.Snapshot.Meta.Position)
+		x.tables.restores.Row(position, plan.Snapshot.Meta.Position, len(plan.Segments), step, digest[:16], hashes[step].Exact[:16], equal, older, same, refused)
+		x.set.Check(x.part, equal && same+refused == older, fmt.Sprintf("position %d restores byte-identical to recipe step %d from every snapshot that reaches it", position, step))
 	}
-	x.lab.Check(worst <= snapshotEvery, fmt.Sprintf("a restore from the newest snapshot never replays more than %d segments (worst here: %d)", snapshotEvery, worst))
+	x.set.Check(x.part, worst <= snapshotEvery, fmt.Sprintf("a restore from the newest snapshot never replays more than %d segments (worst here: %d)", snapshotEvery, worst))
 	return steps
 }
 
@@ -3832,8 +4653,14 @@ func (x *run) tamper(label string, target int64, damage func(walship.Store) erro
 		x.lab.Fatal("catalog", err)
 	}
 	_, err = catalog.Plan(target)
-	fmt.Printf("%s; restore to position %d: %v\n", label, target, err)
-	x.lab.Check(errors.Is(err, walship.ErrBrokenChain), fmt.Sprintf("%s: refused while planning, before any page is applied", label))
+	refused := errors.Is(err, walship.ErrBrokenChain)
+	var text any
+	if err != nil {
+		text = err.Error()
+	}
+	x.tampers++
+	x.tables.tampered.Row(x.tampers, label, target, refused, text)
+	x.set.Check(x.part, refused, fmt.Sprintf("%s: refused while planning, before any page is applied", label))
 }
 
 func swap(ctx context.Context, store walship.Store, a, b string) error {
@@ -3872,7 +4699,9 @@ func main() {
 	dir := sqlitex.MustWorkDir("9.4")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
 	lab := procs.NewLab(os.Stdout)
-	x := &run{ctx: ctx, lab: lab, r: recipe.Default(), dir: dir, db: filepath.Join(dir, "live", "r.db")}
+	lab.Script.Out = nil // the steps table records each child step
+	x := &run{ctx: ctx, lab: lab, r: recipe.Default(), dir: dir, db: filepath.Join(dir, "live", "r.db"), set: results.MustOpen(dir), part: "A"}
+	x.openTables()
 	if err := os.MkdirAll(filepath.Dir(x.db), 0o755); err != nil {
 		lab.Fatal("mkdir", err)
 	}
@@ -3885,37 +4714,36 @@ func main() {
 	}
 	x.store = store
 	options := procs.SQLOptions{Path: x.db, JournalMode: sqlitex.JournalWAL, BusyTimeout: 5 * time.Second}
-	fmt.Printf("== recipe built to step %d; writer and outsider each hold a connection (wal_autocheckpoint=0); the writer commits every step on a fresh connection\n", baseStep)
 	x.writer = lab.SpawnSQL("writer", options)
 	x.outsider = lab.SpawnSQL("outsider", options)
 	x.openShipper()
 
-	fmt.Println()
-	fmt.Printf("== phase 1: the writer commits steps %d-%d in batches; the shipper runs one cycle after each batch (snapshot every %d segments)\n", baseStep+1, 14, snapshotEvery)
+	// Part A: the writer commits steps 3-14 in batches; the shipper runs one cycle after each batch.
 	generations := map[walship.Generation]bool{}
 	for _, batch := range shippedBatches {
 		x.commit(batch...)
 		report := x.cycle()
 		last := batch[len(batch)-1]
 		segment := report.Segment
-		lab.Check(segment != nil && segment.LastPosition == int64(last) && len(segment.Commits) == len(batch) && segment.Commits[len(batch)-1].UserVersion == uint32(last) && report.FullBackfill,
+		x.set.Check("A", segment != nil && segment.LastPosition == int64(last) && len(segment.Commits) == len(batch) && segment.Commits[len(batch)-1].UserVersion == uint32(last) && report.FullBackfill,
 			fmt.Sprintf("steps %v shipped as one segment of %d commit(s), then the shipper's checkpoint copied every frame", batch, len(batch)))
 		if segment != nil {
 			generations[segment.Generation] = true
 		}
 	}
-	lab.Check(len(generations) == len(shippedBatches), fmt.Sprintf("every segment came from a new WAL generation: the WAL restarted after each shipper checkpoint (%d generations)", len(generations)))
+	x.set.Check("A", len(generations) == len(shippedBatches), fmt.Sprintf("every segment came from a new WAL generation: the WAL restarted after each shipper checkpoint (%d generations)", len(generations)))
 
-	fmt.Println()
-	fmt.Println("== phase 2: the shipper stops; the writer commits 15 and 16; the outsider runs a TRUNCATE checkpoint; the writer commits 17; the shipper restarts")
+	// Part B: the shipper stops; the writer commits 15 and 16; the outsider runs
+	// a TRUNCATE checkpoint; the writer commits 17; the shipper restarts.
+	x.part = "B"
 	x.closeShipper()
 	x.commit(15, 16)
-	truncate := lab.Must(x.outsider, "checkpoint", sqlitex.CheckpointTruncate)
-	lab.Check(truncate.Value == "busy=0 log=0 checkpointed=0", "the outsider's TRUNCATE checkpoint copied steps 15-16 into the database file and emptied the WAL")
+	truncate := x.must(x.outsider, "checkpoint", sqlitex.CheckpointTruncate)
+	x.set.Check("B", truncate.Value == "busy=0 log=0 checkpointed=0", "the outsider's TRUNCATE checkpoint copied steps 15-16 into the database file and emptied the WAL")
 	x.commit(17)
 	x.openShipper()
 	report := x.cycle()
-	lab.Check(report.Change == walship.WALDiscontinuity && report.Snapshot != nil && report.Snapshot.Reason == walship.ReasonDiscontinuity && report.Snapshot.UserVersion == 17 && report.Segment == nil,
+	x.set.Check("B", report.Change == walship.WALDiscontinuity && report.Snapshot != nil && report.Snapshot.Reason == walship.ReasonDiscontinuity && report.Snapshot.UserVersion == 17 && report.Segment == nil,
 		"the restarted shipper sees a WAL header it did not ship, cannot vouch for what happened in between, and takes a new snapshot (it holds step 17)")
 	x.commit(18)
 	x.cycle()
@@ -3924,13 +4752,13 @@ func main() {
 	x.closeShipper()
 	lab.StopChildren()
 
-	fmt.Println()
-	fmt.Println("== restore every position from the store and compare with the recipe")
+	// Part C: restore every position from the store and compare with the recipe.
+	x.part = "C"
 	catalog, err := walship.LoadCatalog(ctx, store)
 	if err != nil {
 		lab.Fatal("catalog", err)
 	}
-	fmt.Printf("store: %d snapshot(s) at positions %v, %d segment(s), %d damaged object(s)\n", len(catalog.Snapshots), snapshotPositions(catalog), len(catalog.Segments), len(catalog.Damaged))
+	x.tables.store.Row(len(catalog.Snapshots), joinPositions(snapshotPositions(catalog)), len(catalog.Segments), len(catalog.Damaged))
 	hashes, err := x.r.StepHashes(ctx)
 	if err != nil {
 		lab.Fatal("recipe hashes", err)
@@ -3942,8 +4770,7 @@ func main() {
 			missing = append(missing, k)
 		}
 	}
-	fmt.Printf("recipe steps with no restore point: %v\n", missing)
-	lab.Check(slices.Equal(missing, []int{15, 16}), "only steps 15 and 16 have no restore point: they were committed and checkpointed away while the shipper was down")
+	x.set.Check("C", slices.Equal(missing, []int{15, 16}), "only steps 15 and 16 have no restore point: they were committed and checkpointed away while the shipper was down")
 
 	last, _ := catalog.LastPosition()
 	plan, err := catalog.Plan(last)
@@ -3970,15 +4797,24 @@ func main() {
 	if err != nil {
 		lab.Fatal("match live", err)
 	}
-	fmt.Printf("restored.db (position %d): integrity_check %s, equals recipe %s; the live database after every process closed equals recipe %s\n", last, procs.IntegritySummary(inspection.Integrity), restoredMatch, liveMatch)
-	lab.Check(inspection.Integrity == "ok" && restoredMatch.Exact && restoredMatch.Step == 20 && liveMatch.Exact && liveMatch.Step == 20, "the newest restore point, written to a file, opens, passes integrity_check and equals the live database's final state (step 20)")
+	x.tables.final.Row("restored.db", last, procs.IntegritySummary(inspection.Integrity), restoredMatch.Step, restoredMatch.Exact)
+	x.tables.final.Row("the live database after every process closed", nil, nil, liveMatch.Step, liveMatch.Exact)
+	x.set.Check("C", inspection.Integrity == "ok" && restoredMatch.Exact && restoredMatch.Step == 20 && liveMatch.Exact && liveMatch.Step == 20, "the newest restore point, written to a file, opens, passes integrity_check and equals the live database's final state (step 20)")
 
-	fmt.Println()
-	fmt.Println("== damaged stores (each a copy of the store above)")
+	// Part D: damaged stores, each a copy of the store above.
+	x.part = "D"
 	x.tamper("segment 7 deleted", 9, func(s walship.Store) error { return s.Delete(ctx, walship.SegmentKey(7)) })
 	x.tamper("segments 10 and 11 swapped", 11, func(s walship.Store) error { return swap(ctx, s, walship.SegmentKey(10), walship.SegmentKey(11)) })
 	x.tamper("one byte of segment 13 flipped", 13, func(s walship.Store) error { return flipByte(ctx, s, walship.SegmentKey(13)) })
-	lab.Report("POINT IN TIME")
+	x.set.Finish("POINT IN TIME")
+}
+
+func joinPositions(positions []int64) string {
+	text := make([]string, len(positions))
+	for i, p := range positions {
+		text[i] = fmt.Sprint(p)
+	}
+	return strings.Join(text, " ")
 }
 
 func snapshotPositions(catalog *walship.Catalog) []int64 {
@@ -3990,152 +4826,472 @@ func snapshotPositions(catalog *walship.Catalog) []int64 {
 }
 ```
 
-Run from the repository root:
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
 
-```text
-go run ./ch09-backup-crash-recovery-integrity/experiments/9.4-point-in-time-rebuild
+<!-- include: experiments/9.4-point-in-time-rebuild/report.sql -->
+```sql
+-- Walkthrough of experiment 9.4. Run it with:
+--   go run ./cmd/course run 9.4        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   steps            one row per step a child process ran (writer or outsider);
+--                    next_cycle is the shipper cycle that ran after it
+--   shipper_starts   one row per time the shipper was opened
+--   cycles           one row per shipper cycle: what it saw in the WAL, the segment
+--                    it shipped (if any) and its PASSIVE checkpoint
+--   snapshots        one row per snapshot the shipper stored (cycle is empty for
+--                    the one taken when the shipper opened)
+--   store            the store as the restore reads it (one row)
+--   restores         one row per stream position restored from the store
+--   final            the newest restore written to a file, and the live database
+--   tampered         one row per damaged copy of the store
+--   checks           every claim the experiment asserted (the runner lists it last)
+-- Hashes are the first 16 hex digits of a SHA-256. WAL generations are numbered
+-- in the order they appear, because their salts are random.
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  9.4  Point-in-time rebuild from a snapshot and WAL segments'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'The recipe database is built to step 2. Two child processes, writer and'
+.print 'outsider, each hold a connection (wal_autocheckpoint=0); the writer commits'
+.print 'every step on a fresh connection. A shipper (internal/walship) copies each'
+.print 'new run of committed WAL frames to a store as one segment, then runs a'
+.print 'PASSIVE checkpoint, and stores a snapshot every 3 segments. A stream'
+.print 'position counts the commits the shipper has shipped.'
+
+.print
+.print '── A. Phase 1: shipping steps 3-14 ─────────────────────────────────────'
+.print
+.print 'A1. The shipper opens on an empty store and takes the initial snapshot.'
+
+SELECT snapshot, reason, position, pages, user_version, state_sha256,
+       CASE WHEN generation = 'no WAL' THEN 'none (no WAL yet)'
+            ELSE after_frame || ' of ' || generation END AS after_wal_frame
+FROM snapshots WHERE cycle IS NULL ORDER BY position;
+
+.print
+.print 'A2. The writer commits a batch of steps, then the shipper runs one cycle.'
+.print '    Each batch becomes one segment. The checkpoint copies every frame, so'
+.print '    the next commit restarts the WAL: every segment is a new generation'
+.print '    and starts at frame 1.'
+
+SELECT c.cycle,
+       (SELECT string_agg(split_part(s.action, ' ', 2), ' ' ORDER BY s.step)
+        FROM steps s WHERE s.next_cycle = c.cycle AND s.child = 'writer') AS steps_committed,
+       c.segment,
+       c.first_position || '-' || c.last_position         AS positions,
+       c.first_frame || '-' || c.last_frame               AS frames,
+       c.generation,
+       c.first_user_version || '-' || c.last_user_version AS user_version,
+       'copied ' || c.checkpointed || ' of ' || c.checkpoint_log AS checkpoint
+FROM cycles c WHERE c.part = 'A' ORDER BY c.cycle;
+
+.print
+.print 'A3. After every third segment the shipper also stores a snapshot of the'
+.print '    state that segment leaves:'
+
+SELECT cycle, snapshot, reason, position, pages, user_version, state_sha256,
+       after_frame || ' of ' || generation AS after_wal_frame
+FROM snapshots WHERE part = 'A' AND cycle IS NOT NULL ORDER BY cycle;
+
+.print
+.print '── B. Phase 2: the shipper is down while another process checkpoints ──'
+.print
+.print 'B1. With the shipper closed, the writer commits 15 and 16, the outsider'
+.print '    runs a TRUNCATE checkpoint (it copies them into the database file and'
+.print '    empties the WAL), and the writer commits 17.'
+
+SELECT step, child, action, outcome FROM steps WHERE part = 'B' AND next_cycle = 9 ORDER BY step;
+
+.print
+.print 'B2. The shipper reopens from the store, which ends at position 14:'
+
+SELECT started, position FROM shipper_starts WHERE part = 'B' ORDER BY position;
+
+.print
+.print 'B3. Its first cycle finds a WAL header it never shipped. It cannot know'
+.print '    what was committed in between, so it ships no segment and stores a'
+.print '    new snapshot instead. That snapshot holds step 17 at position 15.'
+
+SELECT cycle, wal, coalesce(segment, 'none') AS segment,
+       'copied ' || checkpointed || ' of ' || checkpoint_log AS checkpoint
+FROM cycles WHERE part = 'B' AND segment IS NULL ORDER BY cycle;
+
+SELECT cycle, snapshot, reason, position, pages, user_version, state_sha256,
+       after_frame || ' of ' || generation AS after_wal_frame
+FROM snapshots WHERE part = 'B' ORDER BY cycle;
+
+.print
+.print 'B4. Shipping resumes from the new snapshot: steps 18-20 become positions'
+.print '    16-18. From here on the position and the recipe step differ by 2.'
+
+SELECT c.cycle,
+       (SELECT string_agg(split_part(s.action, ' ', 2), ' ' ORDER BY s.step)
+        FROM steps s WHERE s.next_cycle = c.cycle AND s.child = 'writer') AS steps_committed,
+       c.segment,
+       c.first_position || '-' || c.last_position         AS positions,
+       c.first_frame || '-' || c.last_frame               AS frames,
+       c.generation,
+       c.first_user_version || '-' || c.last_user_version AS user_version,
+       'copied ' || c.checkpointed || ' of ' || c.checkpoint_log AS checkpoint
+FROM cycles c WHERE c.part = 'B' AND c.segment IS NOT NULL ORDER BY c.cycle;
+
+.print
+.print 'B5. Each segment names the database state it starts from and the state'
+.print '    it leaves. Every segment starts from the state the store held just'
+.print '    before it: the previous segment, or the snapshot after the gap.'
+
+WITH states AS (
+    SELECT cycle, segment AS object, after_sha256 AS sha256 FROM cycles WHERE segment IS NOT NULL
+    UNION ALL
+    SELECT coalesce(cycle, 0), snapshot, state_sha256 FROM snapshots
+)
+SELECT c.cycle, c.segment, c.before_sha256, c.after_sha256,
+       (SELECT object FROM states s WHERE s.cycle < c.cycle
+        ORDER BY s.cycle DESC, s.object LIMIT 1)       AS starts_from,
+       c.before_sha256 = (SELECT sha256 FROM states s WHERE s.cycle < c.cycle
+                          ORDER BY s.cycle DESC, s.object LIMIT 1) AS links
+FROM cycles c WHERE c.segment IS NOT NULL ORDER BY c.cycle;
+
+.print
+.print '── C. Restore every position ───────────────────────────────────────────'
+.print
+.print 'C1. What the store holds (every object passed its checks):'
+
+SELECT snapshots, snapshot_positions, segments, damaged FROM store ORDER BY snapshots;
+
+.print
+.print 'C2. Each position restored from the newest snapshot at or before it, then'
+.print '    compared with the recipe built to the same step. Every restore is'
+.print '    byte-identical (E1), and none replays more than 3 segments.'
+
+SELECT position, snapshot, segments, user_version, sha256, recipe_sha256, e1_equal
+FROM restores ORDER BY position;
+
+.print
+.print 'C3. The same positions restored from every older snapshot. Before the'
+.print '    discontinuity the older snapshots give the same bytes; after it no'
+.print '    segment chain leads from them to position 15 or later, and the plan'
+.print '    refuses.'
+
+SELECT position, snapshot AS newest_snapshot, older_snapshots, older_same_bytes, older_cannot_reach
+FROM restores ORDER BY position;
+
+.print
+.print 'C4. Recipe steps with no restore point: the two that were committed and'
+.print '    checkpointed away while the shipper was down.'
+
+SELECT step AS recipe_step
+FROM range(2, 21) t(step)
+WHERE step NOT IN (SELECT user_version FROM restores)
+ORDER BY step;
+
+.print
+.print 'C5. The newest position written out as a file, beside the live database'
+.print '    once every process has closed it. Both are recipe step 20, byte for byte.'
+
+SELECT file, position, integrity_check, recipe_step, exact_bytes FROM final ORDER BY position NULLS LAST;
+
+.print
+.print '── D. Damaged stores ───────────────────────────────────────────────────'
+.print
+.print 'D1. Three copies of the store, each damaged one way. Every restore is'
+.print '    refused while planning, before any page is applied.'
+
+SELECT seq, damage, restore_to, refused_while_planning FROM tampered ORDER BY seq;
+
+.print
+.print 'D2. Why each was refused. Every error is walship.ErrBrokenChain; each'
+.print '    further line is the cause of the line above it.'
+
+WITH parts AS (SELECT seq, damage, string_split(error, ': ') AS p FROM tampered)
+SELECT CASE WHEN i = 1 THEN damage ELSE '' END AS damage,
+       repeat('  ', i - 1) || p[i]           AS error
+FROM parts, range(1, 10) r(i)
+WHERE i <= len(p)
+ORDER BY seq, i;
 ```
 
-Captured evidence:
+Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
+
+```text
+go run ./cmd/course run 9.4
+```
+
+Add `-i` (`go run ./cmd/course run -i 9.4`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/9.4-point-in-time-rebuild/`](evidence/9.4-point-in-time-rebuild/), and `go run ./cmd/course check evidence ch09` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/9.4-point-in-time-rebuild.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/9.4
-== recipe built to step 2; writer and outsider each hold a connection (wal_autocheckpoint=0); the writer commits every step on a fresh connection
-shipper opened: snapshot snapshots/000000000002 (initial): position 2, 29 pages, user_version 2, state 69490a2dc9c1980f, after frame 0 of no WAL
 
-== phase 1: the writer commits steps 3-14 in batches; the shipper runs one cycle after each batch (snapshot every 3 segments)
-step  1  writer     recipe-session 3                     -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000003: positions 3-3, frames 1-18 of WAL generation #1, user_version 3-3, before 69490a2dc9c1980f after 329eb15614fee435
-   ship: checkpoint PASSIVE: busy=0 log=18 checkpointed=18; every shipped frame copied: true
-check ok: steps [3] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
-step  2  writer     recipe-session 4                     -> SQLITE_OK
-step  3  writer     recipe-session 5                     -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000004: positions 4-5, frames 1-36 of WAL generation #2, user_version 4-5, before 329eb15614fee435 after 4078a0bbc3758ed2
-   ship: checkpoint PASSIVE: busy=0 log=36 checkpointed=36; every shipped frame copied: true
-check ok: steps [4 5] shipped as one segment of 2 commit(s), then the shipper's checkpoint copied every frame
-step  4  writer     recipe-session 6                     -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000006: positions 6-6, frames 1-22 of WAL generation #3, user_version 6-6, before 4078a0bbc3758ed2 after 2d7996f5c596c99e
-   ship: checkpoint PASSIVE: busy=0 log=22 checkpointed=22; every shipped frame copied: true
-   ship: snapshot snapshots/000000000006 (periodic): position 6, 60 pages, user_version 6, state 2d7996f5c596c99e, after frame 22 of WAL generation #3
-check ok: steps [6] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
-step  5  writer     recipe-session 7                     -> SQLITE_OK
-step  6  writer     recipe-session 8                     -> SQLITE_OK
-step  7  writer     recipe-session 9                     -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000007: positions 7-9, frames 1-62 of WAL generation #4, user_version 7-9, before 2d7996f5c596c99e after ca22a3f016ee31e4
-   ship: checkpoint PASSIVE: busy=0 log=62 checkpointed=62; every shipped frame copied: true
-check ok: steps [7 8 9] shipped as one segment of 3 commit(s), then the shipper's checkpoint copied every frame
-step  8  writer     recipe-session 10                    -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000010: positions 10-10, frames 1-17 of WAL generation #5, user_version 10-10, before ca22a3f016ee31e4 after 044c77909ad64db8
-   ship: checkpoint PASSIVE: busy=0 log=17 checkpointed=17; every shipped frame copied: true
-check ok: steps [10] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
-step  9  writer     recipe-session 11                    -> SQLITE_OK
-step 10  writer     recipe-session 12                    -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000011: positions 11-12, frames 1-44 of WAL generation #6, user_version 11-12, before 044c77909ad64db8 after 649990133c619869
-   ship: checkpoint PASSIVE: busy=0 log=44 checkpointed=44; every shipped frame copied: true
-   ship: snapshot snapshots/000000000012 (periodic): position 12, 118 pages, user_version 12, state 649990133c619869, after frame 44 of WAL generation #6
-check ok: steps [11 12] shipped as one segment of 2 commit(s), then the shipper's checkpoint copied every frame
-step 11  writer     recipe-session 13                    -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000013: positions 13-13, frames 1-22 of WAL generation #7, user_version 13-13, before 649990133c619869 after cf469938e5222774
-   ship: checkpoint PASSIVE: busy=0 log=22 checkpointed=22; every shipped frame copied: true
-check ok: steps [13] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
-step 12  writer     recipe-session 14                    -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000014: positions 14-14, frames 1-18 of WAL generation #8, user_version 14-14, before cf469938e5222774 after e7f84f8b8cd28ab5
-   ship: checkpoint PASSIVE: busy=0 log=18 checkpointed=18; every shipped frame copied: true
-check ok: steps [14] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
-check ok: every segment came from a new WAL generation: the WAL restarted after each shipper checkpoint (8 generations)
+════════════════════════════════════════════════════════════════════════
+  9.4  Point-in-time rebuild from a snapshot and WAL segments
+════════════════════════════════════════════════════════════════════════
 
-== phase 2: the shipper stops; the writer commits 15 and 16; the outsider runs a TRUNCATE checkpoint; the writer commits 17; the shipper restarts
-step 13  writer     recipe-session 15                    -> SQLITE_OK
-step 14  writer     recipe-session 16                    -> SQLITE_OK
-step 15  outsider   checkpoint TRUNCATE                  -> SQLITE_OK busy=0 log=0 checkpointed=0
-check ok: the outsider's TRUNCATE checkpoint copied steps 15-16 into the database file and emptied the WAL
-step 16  writer     recipe-session 17                    -> SQLITE_OK
-shipper reopened: resumed from the store at position 14
-   ship: wal: discontinuity: the WAL header changed while the shipper held no read mark
-   ship: segment: none
-   ship: checkpoint PASSIVE: busy=0 log=13 checkpointed=13; every shipped frame copied: true
-   ship: snapshot snapshots/000000000015 (discontinuity): position 15, 162 pages, user_version 17, state 4a1f971701e2b5cd, after frame 13 of WAL generation #9
-check ok: the restarted shipper sees a WAL header it did not ship, cannot vouch for what happened in between, and takes a new snapshot (it holds step 17)
-step 17  writer     recipe-session 18                    -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000016: positions 16-16, frames 1-25 of WAL generation #10, user_version 18-18, before 4a1f971701e2b5cd after 055a4f7a088f1c76
-   ship: checkpoint PASSIVE: busy=0 log=25 checkpointed=25; every shipped frame copied: true
-step 18  writer     recipe-session 19                    -> SQLITE_OK
-step 19  writer     recipe-session 20                    -> SQLITE_OK
-   ship: wal: new WAL generation after the shipper's full checkpoint
-   ship: segment segments/000000000017: positions 17-18, frames 1-36 of WAL generation #11, user_version 19-20, before 055a4f7a088f1c76 after e769f5c3b1663de2
-   ship: checkpoint PASSIVE: busy=0 log=36 checkpointed=36; every shipped frame copied: true
+The recipe database is built to step 2. Two child processes, writer and
+outsider, each hold a connection (wal_autocheckpoint=0); the writer commits
+every step on a fresh connection. A shipper (internal/walship) copies each
+new run of committed WAL frames to a store as one segment, then runs a
+PASSIVE checkpoint, and stores a snapshot every 3 segments. A stream
+position counts the commits the shipper has shipped.
 
-== restore every position from the store and compare with the recipe
-store: 4 snapshot(s) at positions [2 6 12 15], 10 segment(s), 0 damaged object(s)
-position  2: snapshot  2 + 0 segment(s) -> user_version  2, sha256 69490a2dc9c1980f, recipe step  2 sha256 69490a2dc9c1980f, E1 equal true; older snapshots: 0 give the same bytes, 0 cannot reach it
-check ok: position 2 restores byte-identical to recipe step 2 from every snapshot that reaches it
-position  3: snapshot  2 + 1 segment(s) -> user_version  3, sha256 329eb15614fee435, recipe step  3 sha256 329eb15614fee435, E1 equal true; older snapshots: 0 give the same bytes, 0 cannot reach it
-check ok: position 3 restores byte-identical to recipe step 3 from every snapshot that reaches it
-position  4: snapshot  2 + 2 segment(s) -> user_version  4, sha256 e6aa5f4e37fde0be, recipe step  4 sha256 e6aa5f4e37fde0be, E1 equal true; older snapshots: 0 give the same bytes, 0 cannot reach it
-check ok: position 4 restores byte-identical to recipe step 4 from every snapshot that reaches it
-position  5: snapshot  2 + 2 segment(s) -> user_version  5, sha256 4078a0bbc3758ed2, recipe step  5 sha256 4078a0bbc3758ed2, E1 equal true; older snapshots: 0 give the same bytes, 0 cannot reach it
-check ok: position 5 restores byte-identical to recipe step 5 from every snapshot that reaches it
-position  6: snapshot  6 + 0 segment(s) -> user_version  6, sha256 2d7996f5c596c99e, recipe step  6 sha256 2d7996f5c596c99e, E1 equal true; older snapshots: 1 give the same bytes, 0 cannot reach it
-check ok: position 6 restores byte-identical to recipe step 6 from every snapshot that reaches it
-position  7: snapshot  6 + 1 segment(s) -> user_version  7, sha256 7d8ae978254856c0, recipe step  7 sha256 7d8ae978254856c0, E1 equal true; older snapshots: 1 give the same bytes, 0 cannot reach it
-check ok: position 7 restores byte-identical to recipe step 7 from every snapshot that reaches it
-position  8: snapshot  6 + 1 segment(s) -> user_version  8, sha256 f27921ff12ecd673, recipe step  8 sha256 f27921ff12ecd673, E1 equal true; older snapshots: 1 give the same bytes, 0 cannot reach it
-check ok: position 8 restores byte-identical to recipe step 8 from every snapshot that reaches it
-position  9: snapshot  6 + 1 segment(s) -> user_version  9, sha256 ca22a3f016ee31e4, recipe step  9 sha256 ca22a3f016ee31e4, E1 equal true; older snapshots: 1 give the same bytes, 0 cannot reach it
-check ok: position 9 restores byte-identical to recipe step 9 from every snapshot that reaches it
-position 10: snapshot  6 + 2 segment(s) -> user_version 10, sha256 044c77909ad64db8, recipe step 10 sha256 044c77909ad64db8, E1 equal true; older snapshots: 1 give the same bytes, 0 cannot reach it
-check ok: position 10 restores byte-identical to recipe step 10 from every snapshot that reaches it
-position 11: snapshot  6 + 3 segment(s) -> user_version 11, sha256 6ced94850b7f17c8, recipe step 11 sha256 6ced94850b7f17c8, E1 equal true; older snapshots: 1 give the same bytes, 0 cannot reach it
-check ok: position 11 restores byte-identical to recipe step 11 from every snapshot that reaches it
-position 12: snapshot 12 + 0 segment(s) -> user_version 12, sha256 649990133c619869, recipe step 12 sha256 649990133c619869, E1 equal true; older snapshots: 2 give the same bytes, 0 cannot reach it
-check ok: position 12 restores byte-identical to recipe step 12 from every snapshot that reaches it
-position 13: snapshot 12 + 1 segment(s) -> user_version 13, sha256 cf469938e5222774, recipe step 13 sha256 cf469938e5222774, E1 equal true; older snapshots: 2 give the same bytes, 0 cannot reach it
-check ok: position 13 restores byte-identical to recipe step 13 from every snapshot that reaches it
-position 14: snapshot 12 + 2 segment(s) -> user_version 14, sha256 e7f84f8b8cd28ab5, recipe step 14 sha256 e7f84f8b8cd28ab5, E1 equal true; older snapshots: 2 give the same bytes, 0 cannot reach it
-check ok: position 14 restores byte-identical to recipe step 14 from every snapshot that reaches it
-position 15: snapshot 15 + 0 segment(s) -> user_version 17, sha256 4a1f971701e2b5cd, recipe step 17 sha256 4a1f971701e2b5cd, E1 equal true; older snapshots: 0 give the same bytes, 3 cannot reach it
-check ok: position 15 restores byte-identical to recipe step 17 from every snapshot that reaches it
-position 16: snapshot 15 + 1 segment(s) -> user_version 18, sha256 055a4f7a088f1c76, recipe step 18 sha256 055a4f7a088f1c76, E1 equal true; older snapshots: 0 give the same bytes, 3 cannot reach it
-check ok: position 16 restores byte-identical to recipe step 18 from every snapshot that reaches it
-position 17: snapshot 15 + 2 segment(s) -> user_version 19, sha256 e57cb4d4d450456a, recipe step 19 sha256 e57cb4d4d450456a, E1 equal true; older snapshots: 0 give the same bytes, 3 cannot reach it
-check ok: position 17 restores byte-identical to recipe step 19 from every snapshot that reaches it
-position 18: snapshot 15 + 2 segment(s) -> user_version 20, sha256 e769f5c3b1663de2, recipe step 20 sha256 e769f5c3b1663de2, E1 equal true; older snapshots: 0 give the same bytes, 3 cannot reach it
-check ok: position 18 restores byte-identical to recipe step 20 from every snapshot that reaches it
-check ok: a restore from the newest snapshot never replays more than 3 segments (worst here: 3)
-recipe steps with no restore point: [15 16]
-check ok: only steps 15 and 16 have no restore point: they were committed and checkpointed away while the shipper was down
-restored.db (position 18): integrity_check ok, equals recipe step 20 (exact bytes); the live database after every process closed equals recipe step 20 (exact bytes)
-check ok: the newest restore point, written to a file, opens, passes integrity_check and equals the live database's final state (step 20)
+── A. Phase 1: shipping steps 3-14 ─────────────────────────────────────
 
-== damaged stores (each a copy of the store above)
-segment 7 deleted; restore to position 9: segment chain is broken: no segment starts at position 7
-check ok: segment 7 deleted: refused while planning, before any page is applied
-segments 10 and 11 swapped; restore to position 11: segment chain is broken: the segment starting at position 10 is damaged: malformed walship object: key names first position 10, metadata says 11
-check ok: segments 10 and 11 swapped: refused while planning, before any page is applied
-one byte of segment 13 flipped; restore to position 13: segment chain is broken: the segment starting at position 13 is damaged: malformed walship object: body sha256 does not match its metadata
-check ok: one byte of segment 13 flipped: refused while planning, before any page is applied
+A1. The shipper opens on an empty store and takes the initial snapshot.
+┌────────────────────────┬─────────┬──────────┬───────┬──────────────┬──────────────────┬───────────────────┐
+│        snapshot        │ reason  │ position │ pages │ user_version │   state_sha256   │  after_wal_frame  │
+├────────────────────────┼─────────┼──────────┼───────┼──────────────┼──────────────────┼───────────────────┤
+│ snapshots/000000000002 │ initial │ 2        │ 29    │ 2            │ 69490a2dc9c1980f │ none (no WAL yet) │
+└────────────────────────┴─────────┴──────────┴───────┴──────────────┴──────────────────┴───────────────────┘
 
-POINT IN TIME OK
+A2. The writer commits a batch of steps, then the shipper runs one cycle.
+    Each batch becomes one segment. The checkpoint copies every frame, so
+    the next commit restarts the WAL: every segment is a new generation
+    and starts at frame 1.
+┌───────┬─────────────────┬───────────────────────┬───────────┬────────┬────────────┬──────────────┬─────────────────┐
+│ cycle │ steps_committed │        segment        │ positions │ frames │ generation │ user_version │   checkpoint    │
+├───────┼─────────────────┼───────────────────────┼───────────┼────────┼────────────┼──────────────┼─────────────────┤
+│ 1     │ 3               │ segments/000000000003 │ 3-3       │ 1-18   │ #1         │ 3-3          │ copied 18 of 18 │
+│ 2     │ 4 5             │ segments/000000000004 │ 4-5       │ 1-36   │ #2         │ 4-5          │ copied 36 of 36 │
+│ 3     │ 6               │ segments/000000000006 │ 6-6       │ 1-22   │ #3         │ 6-6          │ copied 22 of 22 │
+│ 4     │ 7 8 9           │ segments/000000000007 │ 7-9       │ 1-62   │ #4         │ 7-9          │ copied 62 of 62 │
+│ 5     │ 10              │ segments/000000000010 │ 10-10     │ 1-17   │ #5         │ 10-10        │ copied 17 of 17 │
+│ 6     │ 11 12           │ segments/000000000011 │ 11-12     │ 1-44   │ #6         │ 11-12        │ copied 44 of 44 │
+│ 7     │ 13              │ segments/000000000013 │ 13-13     │ 1-22   │ #7         │ 13-13        │ copied 22 of 22 │
+│ 8     │ 14              │ segments/000000000014 │ 14-14     │ 1-18   │ #8         │ 14-14        │ copied 18 of 18 │
+└───────┴─────────────────┴───────────────────────┴───────────┴────────┴────────────┴──────────────┴─────────────────┘
+
+A3. After every third segment the shipper also stores a snapshot of the
+    state that segment leaves:
+┌───────┬────────────────────────┬──────────┬──────────┬───────┬──────────────┬──────────────────┬─────────────────┐
+│ cycle │        snapshot        │  reason  │ position │ pages │ user_version │   state_sha256   │ after_wal_frame │
+├───────┼────────────────────────┼──────────┼──────────┼───────┼──────────────┼──────────────────┼─────────────────┤
+│ 3     │ snapshots/000000000006 │ periodic │ 6        │ 60    │ 6            │ 2d7996f5c596c99e │ 22 of #3        │
+│ 6     │ snapshots/000000000012 │ periodic │ 12       │ 118   │ 12           │ 649990133c619869 │ 44 of #6        │
+└───────┴────────────────────────┴──────────┴──────────┴───────┴──────────────┴──────────────────┴─────────────────┘
+
+── B. Phase 2: the shipper is down while another process checkpoints ──
+
+B1. With the shipper closed, the writer commits 15 and 16, the outsider
+    runs a TRUNCATE checkpoint (it copies them into the database file and
+    empties the WAL), and the writer commits 17.
+┌──────┬──────────┬─────────────────────┬───────────────────────────────────────┐
+│ step │  child   │       action        │                outcome                │
+├──────┼──────────┼─────────────────────┼───────────────────────────────────────┤
+│ 13   │ writer   │ recipe-session 15   │ SQLITE_OK                             │
+│ 14   │ writer   │ recipe-session 16   │ SQLITE_OK                             │
+│ 15   │ outsider │ checkpoint TRUNCATE │ SQLITE_OK busy=0 log=0 checkpointed=0 │
+│ 16   │ writer   │ recipe-session 17   │ SQLITE_OK                             │
+└──────┴──────────┴─────────────────────┴───────────────────────────────────────┘
+
+B2. The shipper reopens from the store, which ends at position 14:
+┌──────────────────────────────────┬──────────┐
+│             started              │ position │
+├──────────────────────────────────┼──────────┤
+│ reopened: resumed from the store │ 14       │
+└──────────────────────────────────┴──────────┘
+
+B3. Its first cycle finds a WAL header it never shipped. It cannot know
+    what was committed in between, so it ships no segment and stores a
+    new snapshot instead. That snapshot holds step 17 at position 15.
+┌───────┬───────────────────────────────────────────────────────────────────────────┬─────────┬─────────────────┐
+│ cycle │                                    wal                                    │ segment │   checkpoint    │
+├───────┼───────────────────────────────────────────────────────────────────────────┼─────────┼─────────────────┤
+│ 9     │ discontinuity: the WAL header changed while the shipper held no read mark │ none    │ copied 13 of 13 │
+└───────┴───────────────────────────────────────────────────────────────────────────┴─────────┴─────────────────┘
+┌───────┬────────────────────────┬───────────────┬──────────┬───────┬──────────────┬──────────────────┬─────────────────┐
+│ cycle │        snapshot        │    reason     │ position │ pages │ user_version │   state_sha256   │ after_wal_frame │
+├───────┼────────────────────────┼───────────────┼──────────┼───────┼──────────────┼──────────────────┼─────────────────┤
+│ 9     │ snapshots/000000000015 │ discontinuity │ 15       │ 162   │ 17           │ 4a1f971701e2b5cd │ 13 of #9        │
+└───────┴────────────────────────┴───────────────┴──────────┴───────┴──────────────┴──────────────────┴─────────────────┘
+
+B4. Shipping resumes from the new snapshot: steps 18-20 become positions
+    16-18. From here on the position and the recipe step differ by 2.
+┌───────┬─────────────────┬───────────────────────┬───────────┬────────┬────────────┬──────────────┬─────────────────┐
+│ cycle │ steps_committed │        segment        │ positions │ frames │ generation │ user_version │   checkpoint    │
+├───────┼─────────────────┼───────────────────────┼───────────┼────────┼────────────┼──────────────┼─────────────────┤
+│ 10    │ 18              │ segments/000000000016 │ 16-16     │ 1-25   │ #10        │ 18-18        │ copied 25 of 25 │
+│ 11    │ 19 20           │ segments/000000000017 │ 17-18     │ 1-36   │ #11        │ 19-20        │ copied 36 of 36 │
+└───────┴─────────────────┴───────────────────────┴───────────┴────────┴────────────┴──────────────┴─────────────────┘
+
+B5. Each segment names the database state it starts from and the state
+    it leaves. Every segment starts from the state the store held just
+    before it: the previous segment, or the snapshot after the gap.
+┌───────┬───────────────────────┬──────────────────┬──────────────────┬────────────────────────┬───────┐
+│ cycle │        segment        │  before_sha256   │   after_sha256   │      starts_from       │ links │
+├───────┼───────────────────────┼──────────────────┼──────────────────┼────────────────────────┼───────┤
+│ 1     │ segments/000000000003 │ 69490a2dc9c1980f │ 329eb15614fee435 │ snapshots/000000000002 │ true  │
+│ 2     │ segments/000000000004 │ 329eb15614fee435 │ 4078a0bbc3758ed2 │ segments/000000000003  │ true  │
+│ 3     │ segments/000000000006 │ 4078a0bbc3758ed2 │ 2d7996f5c596c99e │ segments/000000000004  │ true  │
+│ 4     │ segments/000000000007 │ 2d7996f5c596c99e │ ca22a3f016ee31e4 │ segments/000000000006  │ true  │
+│ 5     │ segments/000000000010 │ ca22a3f016ee31e4 │ 044c77909ad64db8 │ segments/000000000007  │ true  │
+│ 6     │ segments/000000000011 │ 044c77909ad64db8 │ 649990133c619869 │ segments/000000000010  │ true  │
+│ 7     │ segments/000000000013 │ 649990133c619869 │ cf469938e5222774 │ segments/000000000011  │ true  │
+│ 8     │ segments/000000000014 │ cf469938e5222774 │ e7f84f8b8cd28ab5 │ segments/000000000013  │ true  │
+│ 10    │ segments/000000000016 │ 4a1f971701e2b5cd │ 055a4f7a088f1c76 │ snapshots/000000000015 │ true  │
+│ 11    │ segments/000000000017 │ 055a4f7a088f1c76 │ e769f5c3b1663de2 │ segments/000000000016  │ true  │
+└───────┴───────────────────────┴──────────────────┴──────────────────┴────────────────────────┴───────┘
+
+── C. Restore every position ───────────────────────────────────────────
+
+C1. What the store holds (every object passed its checks):
+┌───────────┬────────────────────┬──────────┬─────────┐
+│ snapshots │ snapshot_positions │ segments │ damaged │
+├───────────┼────────────────────┼──────────┼─────────┤
+│ 4         │ 2 6 12 15          │ 10       │ 0       │
+└───────────┴────────────────────┴──────────┴─────────┘
+
+C2. Each position restored from the newest snapshot at or before it, then
+    compared with the recipe built to the same step. Every restore is
+    byte-identical (E1), and none replays more than 3 segments.
+┌──────────┬──────────┬──────────┬──────────────┬──────────────────┬──────────────────┬──────────┐
+│ position │ snapshot │ segments │ user_version │      sha256      │  recipe_sha256   │ e1_equal │
+├──────────┼──────────┼──────────┼──────────────┼──────────────────┼──────────────────┼──────────┤
+│ 2        │ 2        │ 0        │ 2            │ 69490a2dc9c1980f │ 69490a2dc9c1980f │ true     │
+│ 3        │ 2        │ 1        │ 3            │ 329eb15614fee435 │ 329eb15614fee435 │ true     │
+│ 4        │ 2        │ 2        │ 4            │ e6aa5f4e37fde0be │ e6aa5f4e37fde0be │ true     │
+│ 5        │ 2        │ 2        │ 5            │ 4078a0bbc3758ed2 │ 4078a0bbc3758ed2 │ true     │
+│ 6        │ 6        │ 0        │ 6            │ 2d7996f5c596c99e │ 2d7996f5c596c99e │ true     │
+│ 7        │ 6        │ 1        │ 7            │ 7d8ae978254856c0 │ 7d8ae978254856c0 │ true     │
+│ 8        │ 6        │ 1        │ 8            │ f27921ff12ecd673 │ f27921ff12ecd673 │ true     │
+│ 9        │ 6        │ 1        │ 9            │ ca22a3f016ee31e4 │ ca22a3f016ee31e4 │ true     │
+│ 10       │ 6        │ 2        │ 10           │ 044c77909ad64db8 │ 044c77909ad64db8 │ true     │
+│ 11       │ 6        │ 3        │ 11           │ 6ced94850b7f17c8 │ 6ced94850b7f17c8 │ true     │
+│ 12       │ 12       │ 0        │ 12           │ 649990133c619869 │ 649990133c619869 │ true     │
+│ 13       │ 12       │ 1        │ 13           │ cf469938e5222774 │ cf469938e5222774 │ true     │
+│ 14       │ 12       │ 2        │ 14           │ e7f84f8b8cd28ab5 │ e7f84f8b8cd28ab5 │ true     │
+│ 15       │ 15       │ 0        │ 17           │ 4a1f971701e2b5cd │ 4a1f971701e2b5cd │ true     │
+│ 16       │ 15       │ 1        │ 18           │ 055a4f7a088f1c76 │ 055a4f7a088f1c76 │ true     │
+│ 17       │ 15       │ 2        │ 19           │ e57cb4d4d450456a │ e57cb4d4d450456a │ true     │
+│ 18       │ 15       │ 2        │ 20           │ e769f5c3b1663de2 │ e769f5c3b1663de2 │ true     │
+└──────────┴──────────┴──────────┴──────────────┴──────────────────┴──────────────────┴──────────┘
+
+C3. The same positions restored from every older snapshot. Before the
+    discontinuity the older snapshots give the same bytes; after it no
+    segment chain leads from them to position 15 or later, and the plan
+    refuses.
+┌──────────┬─────────────────┬─────────────────┬──────────────────┬────────────────────┐
+│ position │ newest_snapshot │ older_snapshots │ older_same_bytes │ older_cannot_reach │
+├──────────┼─────────────────┼─────────────────┼──────────────────┼────────────────────┤
+│ 2        │ 2               │ 0               │ 0                │ 0                  │
+│ 3        │ 2               │ 0               │ 0                │ 0                  │
+│ 4        │ 2               │ 0               │ 0                │ 0                  │
+│ 5        │ 2               │ 0               │ 0                │ 0                  │
+│ 6        │ 6               │ 1               │ 1                │ 0                  │
+│ 7        │ 6               │ 1               │ 1                │ 0                  │
+│ 8        │ 6               │ 1               │ 1                │ 0                  │
+│ 9        │ 6               │ 1               │ 1                │ 0                  │
+│ 10       │ 6               │ 1               │ 1                │ 0                  │
+│ 11       │ 6               │ 1               │ 1                │ 0                  │
+│ 12       │ 12              │ 2               │ 2                │ 0                  │
+│ 13       │ 12              │ 2               │ 2                │ 0                  │
+│ 14       │ 12              │ 2               │ 2                │ 0                  │
+│ 15       │ 15              │ 3               │ 0                │ 3                  │
+│ 16       │ 15              │ 3               │ 0                │ 3                  │
+│ 17       │ 15              │ 3               │ 0                │ 3                  │
+│ 18       │ 15              │ 3               │ 0                │ 3                  │
+└──────────┴─────────────────┴─────────────────┴──────────────────┴────────────────────┘
+
+C4. Recipe steps with no restore point: the two that were committed and
+    checkpointed away while the shipper was down.
+┌─────────────┐
+│ recipe_step │
+├─────────────┤
+│ 15          │
+│ 16          │
+└─────────────┘
+
+C5. The newest position written out as a file, beside the live database
+    once every process has closed it. Both are recipe step 20, byte for byte.
+┌──────────────────────────────────────────────┬──────────┬─────────────────┬─────────────┬─────────────┐
+│                     file                     │ position │ integrity_check │ recipe_step │ exact_bytes │
+├──────────────────────────────────────────────┼──────────┼─────────────────┼─────────────┼─────────────┤
+│ restored.db                                  │ 18       │ ok              │ 20          │ true        │
+│ the live database after every process closed │          │                 │ 20          │ true        │
+└──────────────────────────────────────────────┴──────────┴─────────────────┴─────────────┴─────────────┘
+
+── D. Damaged stores ───────────────────────────────────────────────────
+
+D1. Three copies of the store, each damaged one way. Every restore is
+    refused while planning, before any page is applied.
+┌─────┬────────────────────────────────┬────────────┬────────────────────────┐
+│ seq │             damage             │ restore_to │ refused_while_planning │
+├─────┼────────────────────────────────┼────────────┼────────────────────────┤
+│ 1   │ segment 7 deleted              │ 9          │ true                   │
+│ 2   │ segments 10 and 11 swapped     │ 11         │ true                   │
+│ 3   │ one byte of segment 13 flipped │ 13         │ true                   │
+└─────┴────────────────────────────────┴────────────┴────────────────────────┘
+
+D2. Why each was refused. Every error is walship.ErrBrokenChain; each
+    further line is the cause of the line above it.
+┌────────────────────────────────┬─────────────────────────────────────────────────────┐
+│             damage             │                        error                        │
+├────────────────────────────────┼─────────────────────────────────────────────────────┤
+│ segment 7 deleted              │ segment chain is broken                             │
+│                                │   no segment starts at position 7                   │
+│ segments 10 and 11 swapped     │ segment chain is broken                             │
+│                                │   the segment starting at position 10 is damaged    │
+│                                │     malformed walship object                        │
+│                                │       key names first position 10, metadata says 11 │
+│ one byte of segment 13 flipped │ segment chain is broken                             │
+│                                │   the segment starting at position 13 is damaged    │
+│                                │     malformed walship object                        │
+│                                │       body sha256 does not match its metadata       │
+└────────────────────────────────┴─────────────────────────────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  steps [3] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  steps [4 5] shipped as one segment of 2 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  steps [6] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  steps [7 8 9] shipped as one segment of 3 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  steps [10] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  steps [11 12] shipped as one segment of 2 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  steps [13] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  steps [14] shipped as one segment of 1 commit(s), then the shipper's checkpoint copied every frame
+A  ✓  every segment came from a new WAL generation: the WAL restarted after each shipper checkpoint (8 generations)
+B  ✓  the outsider's TRUNCATE checkpoint copied steps 15-16 into the database file and emptied the WAL
+B  ✓  the restarted shipper sees a WAL header it did not ship, cannot vouch for what happened in between, and takes a new snapshot (it holds step 17)
+C  ✓  position 2 restores byte-identical to recipe step 2 from every snapshot that reaches it
+C  ✓  position 3 restores byte-identical to recipe step 3 from every snapshot that reaches it
+C  ✓  position 4 restores byte-identical to recipe step 4 from every snapshot that reaches it
+C  ✓  position 5 restores byte-identical to recipe step 5 from every snapshot that reaches it
+C  ✓  position 6 restores byte-identical to recipe step 6 from every snapshot that reaches it
+C  ✓  position 7 restores byte-identical to recipe step 7 from every snapshot that reaches it
+C  ✓  position 8 restores byte-identical to recipe step 8 from every snapshot that reaches it
+C  ✓  position 9 restores byte-identical to recipe step 9 from every snapshot that reaches it
+C  ✓  position 10 restores byte-identical to recipe step 10 from every snapshot that reaches it
+C  ✓  position 11 restores byte-identical to recipe step 11 from every snapshot that reaches it
+C  ✓  position 12 restores byte-identical to recipe step 12 from every snapshot that reaches it
+C  ✓  position 13 restores byte-identical to recipe step 13 from every snapshot that reaches it
+C  ✓  position 14 restores byte-identical to recipe step 14 from every snapshot that reaches it
+C  ✓  position 15 restores byte-identical to recipe step 17 from every snapshot that reaches it
+C  ✓  position 16 restores byte-identical to recipe step 18 from every snapshot that reaches it
+C  ✓  position 17 restores byte-identical to recipe step 19 from every snapshot that reaches it
+C  ✓  position 18 restores byte-identical to recipe step 20 from every snapshot that reaches it
+C  ✓  a restore from the newest snapshot never replays more than 3 segments (worst here: 3)
+C  ✓  only steps 15 and 16 have no restore point: they were committed and checkpointed away while the shipper was down
+C  ✓  the newest restore point, written to a file, opens, passes integrity_check and equals the live database's final state (step 20)
+D  ✓  segment 7 deleted: refused while planning, before any page is applied
+D  ✓  segments 10 and 11 swapped: refused while planning, before any page is applied
+D  ✓  one byte of segment 13 flipped: refused while planning, before any page is applied
+
+34 of 34 claims hold
+
+Experiment verdict: POINT IN TIME OK
 ```
 
 #### Reading the Experiment 9.4 evidence
 
-- **Line 4 (initial snapshot):** Opening the shipper against an empty store at recipe step `2` captures `snapshots/000000000002 (initial)` (`29` pages, `user_version 2`, state `69490a2dc9c1980f`, `after frame 0 of no WAL`).
-- **Lines 6–53 (Phase 1 — continuous shipping across 8 checkpoints and 8 WAL generations):** The writer commits steps `3–14` in batches `{3}`, `{4,5}`, `{6}`, `{7,8,9}`, `{10}`, `{11,12}`, `{13}`, `{14}`. After every batch, `Cycle` reports `new WAL generation after the shipper's full checkpoint`, publishes one segment chained by `before`/`after` state hashes (for example, segment `segments/000000000004` covers positions `4–5`, frames `1–36` of `WAL generation #2`, `before 329eb15614fee435 after 4078a0bbc3758ed2`), runs `PASSIVE` checkpoint with `every shipped frame copied: true`, and writes periodic snapshots every `3` segments: `snapshots/000000000006` (`60` pages, state `2d7996f5c596c99e`) and `snapshots/000000000012` (`118` pages, state `649990133c619869`). All 8 segments come from 8 distinct WAL generations because the writer restarted the WAL after each full backfill.
-- **Lines 55–75 (Phase 2 — shipper stopped + outside `TRUNCATE` checkpoint):** While the shipper is closed, the writer commits steps `15` and `16`, `outsider` runs `checkpoint TRUNCATE` (`busy=0 log=0 checkpointed=0`), folding steps `15–16` into `.db` and emptying `-wal`, and the writer commits step `17`. When the shipper reopens (`resumed from the store at position 14`), `Cycle` sees `WAL generation #9` without a held read mark (`discontinuity: the WAL header changed while the shipper held no read mark`), ships no segment, checkpoints its `13` frames, and publishes `snapshots/000000000015 (discontinuity)` (`162` pages, `user_version 17`, state `4a1f971701e2b5cd`). Steps `18` and `19–20` then ship normally as segments `16` (`WAL generation #10`, `25` frames) and `17–18` (`WAL generation #11`, `36` frames).
-- **Lines 77–117 (point-in-time restore across all 17 positions):** The store holds `4` snapshots (`[2 6 12 15]`), `10` segments, and `0` damaged objects. Every position `2..18` restores byte-identical (**E1 equal `true`**) to `recipe.StepHashes` for its `user_version`. Every older snapshot before the discontinuity restores identical bytes for positions `2..14`, and all `3` pre-discontinuity snapshots (`2`, `6`, `12`) refuse to cross the gap to positions `15..18` (`3 cannot reach it`). Worst-case replay from the newest snapshot is `3` segments (`== snapshotEvery`). Only steps `[15 16]` lack restore points. Writing position `18` to `restored.db` yields `integrity_check ok` and exact E1 bytes equal to the closed live database (step `20`, `e769f5c3b1663de2`).
-- **Lines 119–127 (damaged stores refused at plan time):** Deleting segment `7` (`no segment starts at position 7`), swapping segments `10` and `11` (`key names first position 10, metadata says 11`), and flipping one byte of segment `13` (`body sha256 does not match its metadata`) are each rejected with `ErrBrokenChain` during `Catalog.Plan`, before any page is replayed. All 34 checks pass (`POINT IN TIME OK`).
+- **A1 (initial snapshot):** Opening the shipper against an empty store at recipe step `2` captures `snapshots/000000000002` (reason `initial`; `29` pages, `user_version` `2`, state `69490a2dc9c1980f`, after WAL frame `none (no WAL yet)`).
+- **A2–A3 (Phase 1 — continuous shipping across 8 checkpoints and 8 WAL generations):** The writer commits steps `3–14` in batches `{3}`, `{4,5}`, `{6}`, `{7,8,9}`, `{10}`, `{11,12}`, `{13}`, `{14}`. After every batch, `Cycle` finds a new WAL generation after the shipper's full checkpoint, publishes one segment chained by `before`/`after` state hashes (for example, segment `segments/000000000004` covers positions `4–5`, frames `1–36` of WAL generation `#2`, before `329eb15614fee435`, after `4078a0bbc3758ed2`; B5 lists the chain), runs a `PASSIVE` checkpoint that copies every shipped frame (`copied 36 of 36`), and writes periodic snapshots every `3` segments: `snapshots/000000000006` (`60` pages, state `2d7996f5c596c99e`) and `snapshots/000000000012` (`118` pages, state `649990133c619869`). All 8 segments come from 8 distinct WAL generations because the writer restarted the WAL after each full backfill.
+- **B1–B5 (Phase 2 — shipper stopped + outside `TRUNCATE` checkpoint):** While the shipper is closed, the writer commits steps `15` and `16`, `outsider` runs `checkpoint TRUNCATE` (`busy=0 log=0 checkpointed=0`), folding steps `15–16` into `.db` and emptying `-wal`, and the writer commits step `17`. When the shipper reopens (resumed from the store at position `14`), `Cycle` sees WAL generation `#9` without a held read mark (`discontinuity: the WAL header changed while the shipper held no read mark`), ships no segment, checkpoints its `13` frames, and publishes `snapshots/000000000015` (reason `discontinuity`; `162` pages, `user_version` `17`, state `4a1f971701e2b5cd`). Steps `18` and `19–20` then ship normally as segments `16` (WAL generation `#10`, `25` frames) and `17–18` (WAL generation `#11`, `36` frames).
+- **C1–C5 (point-in-time restore across all 17 positions):** The store holds `4` snapshots (`2 6 12 15`), `10` segments, and `0` damaged objects. Every position `2..18` restores byte-identical (**E1 equal `true`**) to `recipe.StepHashes` for its `user_version`. Every older snapshot before the discontinuity restores identical bytes for positions `2..14`, and all `3` pre-discontinuity snapshots (`2`, `6`, `12`) refuse to cross the gap to positions `15..18` (`older_cannot_reach` `3` in C3). Worst-case replay from the newest snapshot is `3` segments (`== snapshotEvery`). Only steps `15` and `16` lack restore points (C4). Writing position `18` to `restored.db` yields `integrity_check` `ok` and exact E1 bytes equal to the closed live database (step `20`, `e769f5c3b1663de2`).
+- **D1–D2 (damaged stores refused at plan time):** Deleting segment `7` (`no segment starts at position 7`), swapping segments `10` and `11` (`key names first position 10, metadata says 11`), and flipping one byte of segment `13` (`body sha256 does not match its metadata`) are each rejected with `ErrBrokenChain` during `Catalog.Plan`, before any page is replayed. All 34 checks pass (verdict `POINT IN TIME OK`).
 
 ---
 
@@ -4206,7 +5362,7 @@ Every rule below follows directly from this chapter's experiments and adversaria
 Answers are in [answers.md](answers.md).
 
 1. In Experiment 9.1 Part B, why did `sqlite3_backup_remaining` **rise** from `90` to `98` across two same-connection commits even though the backup did not restart, why did the writer child's commit drop `copied` back to `5`, and why does a same-connection `ROLLBACK` (`CAP-03a`) behave differently from a same-connection `COMMIT`?
-2. In Experiment 9.1 Part A, why does a backup-API copy reach **E2** (`bytes [27 43 95]`) yet print **`E1-after-VACUUM-INTO no`**, and why does `VACUUM INTO` of a WAL database print `E3 no` yet `E3-except-journal_mode yes` and `E1-after-VACUUM-INTO yes`?
+2. In Experiment 9.1 Part A, why does a backup-API copy reach **E2** (bytes `27 43 95`) yet show **E1-after-VACUUM-INTO `false`**, and why does `VACUUM INTO` of a WAL database show E3 `false` yet E3-except-journal_mode `true` and E1-after-VACUUM-INTO `true`?
 3. In Experiment 9.2, why does killing a `synchronous=FULL` writer on entry to `fsync #3` recover **step 4** when only step `3` was acknowledged, and why did adding a concurrent reader from step `5` change the `synchronous=NORMAL` power-cut offset from byte `32` to byte `304,912` while leaving `15` unsynced writes in `.db` that did not break recovery?
 4. In Experiment 9.3, why did `PRAGMA integrity_check` return `ok` on the flipped `events.note` byte and freelist leaf page, why did `PRAGMA quick_check` also return `ok` on the flipped `events.account_id` byte, and why did `integrity_check` report **`row 66`** when the mutated row had `rowid = 76`?
 5. In `internal/walship` and Experiment 9.4, why can the shipper safely read `-wal` with `os.ReadFile` inside the same process that holds SQLite connections, why can a read mark on slot `0` allow the WAL to restart after every cycle without losing unshipped frames, and why must `Shipper.classify` hash live pages when resuming with no WAL?

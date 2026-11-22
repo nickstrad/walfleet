@@ -1,141 +1,309 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/1.3
-recipe: seed=1 steps=30 journal_mode=wal (index created at step 5, settings: page_size=4096 auto_vacuum=NONE encoding=UTF-8 application_id=1397836120 user_version=0 journal_mode=wal; synchronous=FULL foreign_keys=ON secure_delete=ON cache_size=-2000 wal_autocheckpoint=1000 busy_timeout=5000ms)
-  step 0: schema=3 inserts=0 updates=0 deletes=0 indexes=0
-  step 1: schema=0 inserts=65 updates=6 deletes=0 indexes=0
-  step 2: schema=0 inserts=65 updates=3 deletes=0 indexes=0
-  step 3: schema=0 inserts=53 updates=5 deletes=5 indexes=0
-  step 4: schema=0 inserts=48 updates=6 deletes=1 indexes=0
-  step 5: schema=0 inserts=39 updates=5 deletes=0 indexes=1
-  step 6: schema=0 inserts=52 updates=3 deletes=10 indexes=0
-  step 7: schema=0 inserts=46 updates=4 deletes=0 indexes=0
-  step 8: schema=0 inserts=60 updates=2 deletes=1 indexes=0
-  step 9: schema=0 inserts=53 updates=4 deletes=5 indexes=0
-  step 10: schema=0 inserts=57 updates=5 deletes=0 indexes=0
-  step 11: schema=0 inserts=50 updates=4 deletes=0 indexes=0
-  step 12: schema=0 inserts=42 updates=5 deletes=11 indexes=0
-  step 13: schema=0 inserts=50 updates=5 deletes=0 indexes=0
-  step 14: schema=0 inserts=58 updates=4 deletes=0 indexes=0
-  step 15: schema=0 inserts=49 updates=3 deletes=9 indexes=0
-  step 16: schema=0 inserts=48 updates=5 deletes=1 indexes=0
-  step 17: schema=0 inserts=67 updates=5 deletes=0 indexes=0
-  step 18: schema=0 inserts=44 updates=6 deletes=7 indexes=0
-  step 19: schema=0 inserts=54 updates=3 deletes=0 indexes=0
-  step 20: schema=0 inserts=40 updates=3 deletes=1 indexes=0
-  step 21: schema=0 inserts=45 updates=6 deletes=5 indexes=0
-  step 22: schema=0 inserts=48 updates=5 deletes=0 indexes=0
-  step 23: schema=0 inserts=50 updates=3 deletes=0 indexes=0
-  step 24: schema=0 inserts=39 updates=4 deletes=7 indexes=0
-  step 25: schema=0 inserts=49 updates=5 deletes=0 indexes=0
-  step 26: schema=0 inserts=56 updates=3 deletes=0 indexes=0
-  step 27: schema=0 inserts=39 updates=4 deletes=9 indexes=0
-  step 28: schema=0 inserts=61 updates=5 deletes=1 indexes=0
-  step 29: schema=0 inserts=44 updates=4 deletes=0 indexes=0
-  step 30: schema=0 inserts=67 updates=4 deletes=9 indexes=0
 
-== R0: rebuild the recipe twice ==
-INFO: one build of 30 steps took 792ms
-run 1 (run-1/recipe.db): 270 pages, sha256 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74
-run 2 (run-2/elsewhere/another-name.db): 270 pages, sha256 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74
-check ok: two builds of the recipe in different directories under different names are byte-identical
-per-step state hashes (sha256 of the closed file after step k):
-  step  0 7470585af706eb3de499f126d74bdc98396e1e9853ee11643e2e85f61ef0cdb9
-  step  1 6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924
-  step  2 69490a2dc9c1980f70afed4f5830799677937b011bde64c3110f823273389a06
-  step  3 329eb15614fee4358f812e8d6a6de68d94290293ca299a1dfaf330b376075743
-  step  4 e6aa5f4e37fde0bec12117bbf43aaaab9ae3c2a4658ac08f62232ea53392bc3b
-  step  5 4078a0bbc3758ed2c3dfb9940680976d78095f60bcb3ecf02337daddb400dfd0
-  step  6 2d7996f5c596c99e89eb92668f4f21d7ed16c02c070ea5a908e96ead99d414ff
-  step  7 7d8ae978254856c015f1013bf6d30327b4794698e16173acf34ce855580817ae
-  step  8 f27921ff12ecd673f0324f01e5a137662b3ac90468c82a2d67c01c3937c60029
-  step  9 ca22a3f016ee31e4b931389762f5f81853955dbf7dc474a7cf69299242706100
-  step 10 044c77909ad64db80354ff810692fab25d4a4d3762e37c6b224db38d92694373
-  step 11 6ced94850b7f17c89188ed4204039ea37f7c068cd856599e048ee9125f1cf55a
-  step 12 649990133c61986974c4381e8ac21e47901c900ed2092fc2f6a1f4af2ce94d67
-  step 13 cf469938e5222774d468c99a3077c4fb5da52b52fadf2209e8f8de53c4529a35
-  step 14 e7f84f8b8cd28ab54ec7070180962525131963e7405bf78849280e889319fc60
-  step 15 52519800be453b8441a0e85177720f26696494d2bfdb8a95a7751bba36113711
-  step 16 a672af8472ba30db9d772a74d770e51308eac909f7bbddec05547df6def83b85
-  step 17 4a1f971701e2b5cd8f8d1728f3455ddf2740bf60d235ee34131706f5ad5f6f37
-  step 18 055a4f7a088f1c7644a6cf6d01b3d5be28dadd7d1db2d3868ee2dd37ddf10f82
-  step 19 e57cb4d4d450456a89a051eada1dded6452f5f8c0edd967dced5aec486d58805
-  step 20 e769f5c3b1663de2ea40fdfa8d787b2ef9538e2db2797c3d6c23097616d90945
-  step 21 a965f7823f589a7b849f556324e456d8a6f31bfed438e577ea277108ef171080
-  step 22 3b125736931aa27cbf8da8b2384070b6a2d36ae5b953f631b83275fc6210e4fc
-  step 23 92a22043ecd9caafbfbf70d54b0d14c672d579aa0dfe14b8c54d4e6057a1340f
-  step 24 46cb974cc3fe3c9eaa09a41a846beba23663cb067429062496e6c38c8c016d3a
-  step 25 d0996ac06958dd0c8134783b28ebe6ec2ffa862929ca06c1f79a8f0b654fe396
-  step 26 13bd55ed7dc6a4353a8a57da2d8001eae83335e9d8f3990a7d349fccab93d80e
-  step 27 f1eba6ade98188aab20f91e2b2b493703ca1b752b1ef79b543d744bd86b6f8c6
-  step 28 c7df2bec238b874e0c8b75a63268fcced2362eff11dd7ab579e556282a6fa61d
-  step 29 d1c0ab40c89015537992199e56aaa7ebe35049b65a21ad00809a52c0be003a0b
-  step 30 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74
-check ok: the per-step hash lists of the two runs are identical (31 states)
-check ok: every step leaves a different file, so a hash names exactly one step
-check ok: recipe.StepHashes (the cached list later chapters use) equals the list just built
-lookup: a database built to step 12 is step 12 (exact bytes)
-check ok: recipe.MatchStep names the step a database equals
-same recipe in rollback mode (journal_mode=delete): sha256 0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57
-check ok: the rollback-mode recipe also rebuilds byte for byte at every step
-WAL build vs rollback build of the same recipe: differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [18 19 27 95]
+════════════════════════════════════════════════════════════════════════
+  1.3  Does rebuilding the recipe give the same bytes, and what breaks it?
+════════════════════════════════════════════════════════════════════════
 
-== broken variants: recipe to step 6, then one extra transaction, each run twice into fresh files ==
-INFO: random sha256 run 1 3f43fbf252fe772596ad60d293d7ea996ab736c9566952af8d835b292ce86909, run 2 b5e3b209fa48e8849d51c6b5196c317aa2d150cceb2c4e0e14bcdebbfe8bc9f6
-1. SQL random() in a value: differ: first differing page 59, 1 page(s) differ [59]
-check ok: SQL random() makes two runs differ
-INFO: timestamp sha256 run 1 72f9b8b17796cb3161c8c663eabf852d431397175b38d25c59c32148c5a6542d, run 2 72f9b8b17796cb3161c8c663eabf852d431397175b38d25c59c32148c5a6542d, run 3 cf27091b103d740d1e49d2ec86b28ec4bedee04aecf44d6837da9ac35ec932e4
-2. current_timestamp in a value, two runs inside one wall-clock second: identical
-   current_timestamp in a value, third run one second later: differ: first differing page 59, 1 page(s) differ [59]
-check ok: current_timestamp makes runs differ once the wall clock's second changes (its resolution is one second, so two fast runs can still match)
-INFO: unordered sha256 run 1 073f75d26ea8b7496e87e0a0629b15fa1f8227a2264ed1dfd83857cbd2014934, run 2 073f75d26ea8b7496e87e0a0629b15fa1f8227a2264ed1dfd83857cbd2014934
-3. INSERT ... SELECT without ORDER BY (rowids from scan order), same plan twice: identical
-   the same statement, run 2 with a different scan order (PRAGMA reverse_unordered_selects=ON): differ: first differing page 29, 1 page(s) differ [29]
-   with ORDER BY id, run 2 with reverse_unordered_selects=ON: identical
-check ok: FINDING: an unordered INSERT ... SELECT run twice on the same build with the same plan gives identical files
-check ok: an unordered INSERT ... SELECT changes the file when the scan order changes; ORDER BY removes the dependence
-INFO: batches wal-secure-delete-on sha256 one-per-step 7f0afb01e63c55dd8aee74d9decfb6ac1ee14fc9329cc2b9aa79dbd2853e8841, merged 7f0afb01e63c55dd8aee74d9decfb6ac1ee14fc9329cc2b9aa79dbd2853e8841
-4. steps 0-6 on one connection, steps 2+3 and 4+5 each committed as one transaction instead of two:
-   WAL mode, recipe settings (secure_delete=ON): identical
-INFO: batches wal-secure-delete-off sha256 one-per-step 66275210a293663b2aa81d5aa0f7e57a92fefdb5fc0b53063a64899807fafe24, merged cd4078b5d267a2388bbb4c3da65d844f863955c3af3ea35ebad5ad516cc9d375
-   WAL mode, secure_delete=OFF: differ: first differing page 24, 2 page(s) differ [24 28]
-     page 24: 357 bytes (b-tree page, unallocated space and freeblocks)
-     page 28: 1207 bytes (b-tree page, unallocated space and freeblocks)
-INFO: batches delete-secure-delete-on sha256 one-per-step 575d9182d7fb04693ee2c9b68711b568851d3ebd3617bcd50cb443c8582b0aa8, merged f5f792baf06711182a7cc105ef079f2b1328b0c968bec0cb5df9b475674e0d95
-   rollback mode, secure_delete=ON: differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [27 95]
-check ok: FINDING: in WAL mode on one connection with secure_delete=ON, different transaction batches give identical files
-check ok: with secure_delete=OFF different batches differ, and only in bytes no cell uses (stale content left in unallocated space, freeblocks or freelist pages)
-check ok: in rollback mode different batches differ, and with secure_delete=ON only in the change counter (it counts commits)
-INFO: batches wal-secure-delete-fast sha256 one-per-step c70c03e0801ba6505e410bed031c6c20a7d6a155275102961d58295191c634b0, merged c70c03e0801ba6505e410bed031c6c20a7d6a155275102961d58295191c634b0
-   WAL mode, one transaction per step, secure_delete=FAST vs secure_delete=ON: differ: first differing page 29, 3 page(s) differ [29 36 37]
-     page 29: 4079 bytes (freelist leaf page)
-     page 36: 4067 bytes (freelist trunk page, bytes after the leaf list)
-     page 37: 4078 bytes (freelist leaf page)
-check ok: secure_delete=FAST is not ON: on the same history FAST leaves old bytes in the unused space of freelist pages that ON zeroes
-INFO: rowid sha256 run 1 aeada78bf8108d06fe68930a74da54cbb701bb2f10068769c74798712c55b0b0, run 2 0d3552f984f93139b216b4ed3a44c0330f595e21195ec1ff95193e697afdb346
-5. an insert without an id after rowid 9223372036854775807 (SQLite picks a random unused rowid): differ: first differing page 29, 1 page(s) differ [29]
-check ok: rowid assignment past the maximum rowid makes two runs differ
+The seeded recipe builds a database in 30 steps from a fixed seed. Part A
+builds it twice, in different directories under different names, and
+compares the files after every step. Parts B to D then add one source of
+variation at a time to the recipe at step 6 and compare two runs: random()
+and the clock, scan order, transaction batches, secure_delete, the rowid
+past the maximum, connection sessions and a rolled-back SAVEPOINT.
 
-== a source of variation the outline did not list: connection sessions ==
-INFO: page1-untouched sha256 one-per-commit 3be0cc6f304da7158723b63e0f17bdc2e91837e0d39221f7224fdef91af275a2, one-for-all 3be0cc6f304da7158723b63e0f17bdc2e91837e0d39221f7224fdef91af275a2
-6. WAL mode, steps 0-6 one connection per step vs one connection for all steps: differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [27 95]
-   rollback mode, the same comparison: identical
-check ok: FINDING: in WAL mode the number of connection sessions changes the file, and only the change counter (bytes 24-27 and 92-95)
-check ok: in rollback mode the number of connection sessions does not change the file
-   WAL mode, recipe to step 6, then 3 commits that never write page 1, one connection per commit vs one connection for all: identical
-check ok: in WAL mode only a commit that writes page 1 writes the change counter: sessions whose commits never touch page 1 leave the file identical
+The recipe and its settings:
+┌────────────┬──────────────────────────────────┐
+│    key     │              value               │
+├────────────┼──────────────────────────────────┤
+│ index_step │ 5                                │
+│ recipe     │ seed=1 steps=30 journal_mode=wal │
+└────────────┴──────────────────────────────────┘
+┌───────────────┬───┬───────────────────────────┐
+│   settings    │ n │          setting          │
+├───────────────┼───┼───────────────────────────┤
+│ conn_settings │ 1 │ synchronous=FULL          │
+│ conn_settings │ 2 │ foreign_keys=ON           │
+│ conn_settings │ 3 │ secure_delete=ON          │
+│ conn_settings │ 4 │ cache_size=-2000          │
+│ conn_settings │ 5 │ wal_autocheckpoint=1000   │
+│ conn_settings │ 6 │ busy_timeout=5000ms       │
+│ file_settings │ 1 │ page_size=4096            │
+│ file_settings │ 2 │ auto_vacuum=NONE          │
+│ file_settings │ 3 │ encoding=UTF-8            │
+│ file_settings │ 4 │ application_id=1397836120 │
+│ file_settings │ 5 │ user_version=0            │
+│ file_settings │ 6 │ journal_mode=wal          │
+└───────────────┴───┴───────────────────────────┘
 
-== a source of variation the outline did not list: rolled-back work inside a committed transaction ==
-INFO: savepoint wal sha256 never-run f4d051654dbbff5e532b65f049385252dc4ff188f8a2aab50166ce0ed2ce2ba0, rolled-back 2e97dc78909aca485fce61adcef1af5cc57a6c19543e4148e07ff4e1c7da3b45
-INFO: savepoint delete sha256 never-run 0e6c5435b1d6ff1baed4562465ad0525b1e173713d0ab0a269eb7fe413ce9d86, rolled-back bf30bffe6771b77812d06882c34b1804bed0730f8aaad99227533bb693999ddf
-7. recipe to step 6, then one transaction committing one INSERT; run 2 first inserts 10 documents of 12000 bytes inside a SAVEPOINT and rolls back to it
-   WAL mode, secure_delete=ON: differ: first differing page 1, 3 page(s) differ [1 29 37], page 1 bytes [27 95]
-     page 1: 2 bytes (b-tree page, unallocated space and freeblocks; 2 of these bytes are outside unused space)
-     page 29: 4092 bytes (freelist leaf page)
-     page 37: 4093 bytes (freelist leaf page)
-   rollback mode, secure_delete=ON: differ: first differing page 29, 2 page(s) differ [29 37]
-     page 29: 4092 bytes (freelist leaf page)
-     page 37: 4093 bytes (freelist leaf page)
-check ok: WAL mode: a rolled-back SAVEPOINT changes the committed file even with secure_delete=ON: reused freelist leaf pages keep the rolled-back bytes, and page 1's change counter moves
-check ok: rollback mode: a rolled-back SAVEPOINT leaves the rolled-back bytes in reused freelist leaf pages (secure_delete=ON does not clear them)
+What each step does (statements by kind; step 0 creates the three tables):
+┌──────┬────────┬─────────┬─────────┬─────────┬─────────┐
+│ step │ schema │ inserts │ updates │ deletes │ indexes │
+├──────┼────────┼─────────┼─────────┼─────────┼─────────┤
+│ 0    │ 3      │ 0       │ 0       │ 0       │ 0       │
+│ 1    │ 0      │ 65      │ 6       │ 0       │ 0       │
+│ 2    │ 0      │ 65      │ 3       │ 0       │ 0       │
+│ 3    │ 0      │ 53      │ 5       │ 5       │ 0       │
+│ 4    │ 0      │ 48      │ 6       │ 1       │ 0       │
+│ 5    │ 0      │ 39      │ 5       │ 0       │ 1       │
+│ 6    │ 0      │ 52      │ 3       │ 10      │ 0       │
+│ 7    │ 0      │ 46      │ 4       │ 0       │ 0       │
+│ 8    │ 0      │ 60      │ 2       │ 1       │ 0       │
+│ 9    │ 0      │ 53      │ 4       │ 5       │ 0       │
+│ 10   │ 0      │ 57      │ 5       │ 0       │ 0       │
+│ 11   │ 0      │ 50      │ 4       │ 0       │ 0       │
+│ 12   │ 0      │ 42      │ 5       │ 11      │ 0       │
+│ 13   │ 0      │ 50      │ 5       │ 0       │ 0       │
+│ 14   │ 0      │ 58      │ 4       │ 0       │ 0       │
+│ 15   │ 0      │ 49      │ 3       │ 9       │ 0       │
+│ 16   │ 0      │ 48      │ 5       │ 1       │ 0       │
+│ 17   │ 0      │ 67      │ 5       │ 0       │ 0       │
+│ 18   │ 0      │ 44      │ 6       │ 7       │ 0       │
+│ 19   │ 0      │ 54      │ 3       │ 0       │ 0       │
+│ 20   │ 0      │ 40      │ 3       │ 1       │ 0       │
+│ 21   │ 0      │ 45      │ 6       │ 5       │ 0       │
+│ 22   │ 0      │ 48      │ 5       │ 0       │ 0       │
+│ 23   │ 0      │ 50      │ 3       │ 0       │ 0       │
+│ 24   │ 0      │ 39      │ 4       │ 7       │ 0       │
+│ 25   │ 0      │ 49      │ 5       │ 0       │ 0       │
+│ 26   │ 0      │ 56      │ 3       │ 0       │ 0       │
+│ 27   │ 0      │ 39      │ 4       │ 9       │ 0       │
+│ 28   │ 0      │ 61      │ 5       │ 1       │ 0       │
+│ 29   │ 0      │ 44      │ 4       │ 0       │ 0       │
+│ 30   │ 0      │ 67      │ 4       │ 9       │ 0       │
+└──────┴────────┴─────────┴─────────┴─────────┴─────────┘
 
-RECIPE REBUILD OK
+── A. Rebuild the recipe twice ─────────────────────────────────────────
+
+A1. Run 1 and run 2 build the recipe in different directories under
+different names. Per mode, the two files must have the same hash:
+┌────────┬─────┬─────────────────────────────────┬───────┬──────────────────────────────────────────────────────────────────┐
+│  mode  │ run │              path               │ pages │                              sha256                              │
+├────────┼─────┼─────────────────────────────────┼───────┼──────────────────────────────────────────────────────────────────┤
+│ wal    │ 1   │ run-1/recipe.db                 │ 270   │ 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74 │
+│ wal    │ 2   │ run-2/elsewhere/another-name.db │ 270   │ 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74 │
+│ delete │ 1   │ run-1/recipe-delete.db          │ 270   │ 0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57 │
+│ delete │ 2   │ run-2/recipe-delete.db          │ 270   │ 0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57 │
+└────────┴─────┴─────────────────────────────────┴───────┴──────────────────────────────────────────────────────────────────┘
+
+A2. The hash of the closed file after every step. Each step must leave a
+different file (a hash names one step), run 2 must repeat run 1 at every step
+and, in WAL mode, the cached list (recipe.StepHashes) must match as well.
+The second table lists the first 16 hex digits of every state; the CSV has all 64:
+┌────────┬────────┬─────────────────┬───────────┬─────────────┐
+│  mode  │ states │ distinct_hashes │ run2_same │ cached_same │
+├────────┼────────┼─────────────────┼───────────┼─────────────┤
+│ wal    │ 31     │ 31              │ true      │ true        │
+│ delete │ 31     │ 31              │ true      │             │
+└────────┴────────┴─────────────────┴───────────┴─────────────┘
+┌──────┬───────────────────┬──────────────────────┐
+│ step │ wal_sha256_prefix │ delete_sha256_prefix │
+├──────┼───────────────────┼──────────────────────┤
+│ 0    │ 7470585af706eb3d  │ e551bbfca2c05cd9     │
+│ 1    │ 6d8cfc77d5f514b2  │ 6207fb74284d25e8     │
+│ 2    │ 69490a2dc9c1980f  │ b8a0bd0796442099     │
+│ 3    │ 329eb15614fee435  │ 0ef90bd0e64af1e3     │
+│ 4    │ e6aa5f4e37fde0be  │ b4a4adf14dbe4826     │
+│ 5    │ 4078a0bbc3758ed2  │ 704dd8125826662d     │
+│ 6    │ 2d7996f5c596c99e  │ 575d9182d7fb0469     │
+│ 7    │ 7d8ae978254856c0  │ c4574af084896634     │
+│ 8    │ f27921ff12ecd673  │ 20bf39d8a49cf840     │
+│ 9    │ ca22a3f016ee31e4  │ ecf8f6d400de9601     │
+│ 10   │ 044c77909ad64db8  │ ade615114d37b8dc     │
+│ 11   │ 6ced94850b7f17c8  │ 67f0fa2bb53de1ba     │
+│ 12   │ 649990133c619869  │ 239d48653ebbd393     │
+│ 13   │ cf469938e5222774  │ ce74350fd7e57b7f     │
+│ 14   │ e7f84f8b8cd28ab5  │ 08ed8fb6eb9befea     │
+│ 15   │ 52519800be453b84  │ 8fe1be42a8e27b29     │
+│ 16   │ a672af8472ba30db  │ fc65fbb4f7617732     │
+│ 17   │ 4a1f971701e2b5cd  │ ea538ee4b2f31442     │
+│ 18   │ 055a4f7a088f1c76  │ 443f6584e34022e7     │
+│ 19   │ e57cb4d4d450456a  │ d14c21fe37761265     │
+│ 20   │ e769f5c3b1663de2  │ 95258618e9e31028     │
+│ 21   │ a965f7823f589a7b  │ bf6c17cf88f35e54     │
+│ 22   │ 3b125736931aa27c  │ 88534c0275b2ff71     │
+│ 23   │ 92a22043ecd9caaf  │ 6fed2ab1918e3b14     │
+│ 24   │ 46cb974cc3fe3c9e  │ 9acc88a8e8868779     │
+│ 25   │ d0996ac06958dd0c  │ ac55f82d5457478d     │
+│ 26   │ 13bd55ed7dc6a435  │ 9d9bf656076f8c1b     │
+│ 27   │ f1eba6ade98188aa  │ e53e8aeb3871210d     │
+│ 28   │ c7df2bec238b874e  │ ee008d3d9d9ddccd     │
+│ 29   │ d1c0ab40c8901553  │ 752f34c38f1c7f76     │
+│ 30   │ 24aa158fdf713808  │ 0b5b4111fb994632     │
+└──────┴───────────────────┴──────────────────────┘
+
+A3. A database built to step 12 is found again from its bytes alone:
+┌───────────────┬──────────────┬─────────────┐
+│ built_to_step │ matched_step │ exact_bytes │
+├───────────────┼──────────────┼─────────────┤
+│ 12            │ 12           │ true        │
+└───────────────┴──────────────┴─────────────┘
+
+A4. The two journal modes build different files from the same recipe, but
+only page 1 differs. Bytes 18 and 19 are the file-format write and read
+versions (2 for WAL, 1 for rollback); 27 and 95 are the low bytes of the
+change counter and of version-valid-for:
+┌────┬────────┬────────────┬──────────────┬─────────────┬────────────┬────────────────────────────────────────────────┐
+│ id │ result │ first_page │ pages_differ │ page1_bytes │ file_pages │                      what                      │
+├────┼────────┼────────────┼──────────────┼─────────────┼────────────┼────────────────────────────────────────────────┤
+│ 0  │ differ │ 1          │ 1            │ 18 19 27 95 │ 270        │ WAL build vs rollback build of the same recipe │
+└────┴────────┴────────────┴──────────────┴─────────────┴────────────┴────────────────────────────────────────────────┘
+
+── B. One extra transaction after step 6 ──────────────────────────────
+
+Each variant builds the recipe to step 6, runs one more transaction, and
+does it twice into fresh files. Rules 1 to 5 are the determinism rules
+these variants test.
+
+B1. SQL random() (1) and the clock (2). current_timestamp has a one-second
+resolution, so two runs inside one second match and a run one second later
+does not:
+┌────┬───────────┬──────────────────────────────────────────────────────────┐
+│ id │  result   │                           what                           │
+├────┼───────────┼──────────────────────────────────────────────────────────┤
+│ 1  │ differ    │ SQL random() in a value                                  │
+│ 2a │ identical │ current_timestamp, two runs inside one wall-clock second │
+│ 2b │ differ    │ current_timestamp, third run one second later            │
+└────┴───────────┴──────────────────────────────────────────────────────────┘
+┌────┬────────────┬──────────────┬─────────────────┬────────────┐
+│ id │ first_page │ pages_differ │ differing_pages │ file_pages │
+├────┼────────────┼──────────────┼─────────────────┼────────────┤
+│ 1  │ 59         │ 1            │ 59              │ 60         │
+│ 2a │            │ 0            │                 │ 60         │
+│ 2b │ 59         │ 1            │ 59              │ 60         │
+└────┴────────────┴──────────────┴─────────────────┴────────────┘
+
+B2. INSERT ... SELECT (3) takes its rowids from scan order. The same plan
+twice gives the same file; a different scan order changes the file, and
+ORDER BY id removes the dependence:
+┌────┬───────────┬───────────────────────────────────────────────────────────┐
+│ id │  result   │                           what                            │
+├────┼───────────┼───────────────────────────────────────────────────────────┤
+│ 3a │ identical │ INSERT ... SELECT without ORDER BY, same plan twice       │
+│ 3b │ differ    │ same statement, run 2 with reverse_unordered_selects=ON   │
+│ 3c │ identical │ with ORDER BY id, run 2 with reverse_unordered_selects=ON │
+└────┴───────────┴───────────────────────────────────────────────────────────┘
+┌────┬────────────┬──────────────┬─────────────────┬────────────┐
+│ id │ first_page │ pages_differ │ differing_pages │ file_pages │
+├────┼────────────┼──────────────┼─────────────────┼────────────┤
+│ 3a │            │ 0            │                 │ 60         │
+│ 3b │ 29         │ 1            │ 29              │ 60         │
+│ 3c │            │ 0            │                 │ 60         │
+└────┴────────────┴──────────────┴─────────────────┴────────────┘
+
+B3. Transaction batches (4). Steps 0-6 on one connection, with steps 2+3 and
+4+5 each committed as one transaction instead of two. 4d compares two
+one-transaction-per-step builds that differ only in secure_delete.
+┌────┬───────────┬─────────────────────────────────────────────────────────┐
+│ id │  result   │                          what                           │
+├────┼───────────┼─────────────────────────────────────────────────────────┤
+│ 4a │ identical │ WAL, recipe settings (secure_delete=ON)                 │
+│ 4b │ differ    │ WAL, secure_delete=OFF                                  │
+│ 4c │ differ    │ rollback, secure_delete=ON                              │
+│ 4d │ differ    │ WAL, one transaction per step: secure_delete=FAST vs ON │
+└────┴───────────┴─────────────────────────────────────────────────────────┘
+┌────┬────────────┬──────────────┬─────────────────┬─────────────┬────────────┐
+│ id │ first_page │ pages_differ │ differing_pages │ page1_bytes │ file_pages │
+├────┼────────────┼──────────────┼─────────────────┼─────────────┼────────────┤
+│ 4a │            │ 0            │                 │             │ 60         │
+│ 4b │ 24         │ 2            │ 24 28           │             │ 60         │
+│ 4c │ 1          │ 1            │ 1               │ 27 95       │ 60         │
+│ 4d │ 29         │ 3            │ 29 36 37        │             │ 60         │
+└────┴────────────┴──────────────┴─────────────────┴─────────────┴────────────┘
+
+B4. Where the bytes differ in 4b (secure_delete=OFF: stale content left in
+unused space) and 4d (FAST leaves old bytes in freelist pages that ON zeroes).
+bytes_outside_unused counts differing bytes that sit in live data:
+┌────┬──────┬─────────────────┬──────────────────────┬────────────────────────────────────────────────┐
+│ id │ page │ bytes_differing │ bytes_outside_unused │                      kind                      │
+├────┼──────┼─────────────────┼──────────────────────┼────────────────────────────────────────────────┤
+│ 4b │ 24   │ 357             │ 0                    │ b-tree page, unallocated space and freeblocks  │
+│ 4b │ 28   │ 1207            │ 0                    │ b-tree page, unallocated space and freeblocks  │
+│ 4d │ 29   │ 4079            │ 0                    │ freelist leaf page                             │
+│ 4d │ 36   │ 4067            │ 0                    │ freelist trunk page, bytes after the leaf list │
+│ 4d │ 37   │ 4078            │ 0                    │ freelist leaf page                             │
+└────┴──────┴─────────────────┴──────────────────────┴────────────────────────────────────────────────┘
+
+B5. A rowid past the maximum (5): SQLite picks a random unused rowid:
+┌────┬────────┬────────────┬──────────────┬─────────────────┬──────────────────────────────────────────────┐
+│ id │ result │ first_page │ pages_differ │ differing_pages │                     what                     │
+├────┼────────┼────────────┼──────────────┼─────────────────┼──────────────────────────────────────────────┤
+│ 5  │ differ │ 29         │ 1            │ 29              │ insert without an id after the maximum rowid │
+└────┴────────┴────────────┴──────────────┴─────────────────┴──────────────────────────────────────────────┘
+
+── C. Connection sessions ──────────────────────────────────────────────
+
+C1. Steps 0-6 with one connection per step against one connection for all
+steps (6a, 6b). In WAL mode the change counter differs, and only it; in
+rollback mode nothing differs. 6c: three commits that never write page 1
+leave the files identical, because only a commit that writes page 1 writes
+the change counter.
+┌────┬───────────┬────────────────────────────────────────────────────────────────────────────┐
+│ id │  result   │                                    what                                    │
+├────┼───────────┼────────────────────────────────────────────────────────────────────────────┤
+│ 6a │ differ    │ WAL, one connection per step vs one for all steps                          │
+│ 6b │ identical │ rollback, the same comparison                                              │
+│ 6c │ identical │ WAL, 3 commits that never write page 1: one connection each vs one for all │
+└────┴───────────┴────────────────────────────────────────────────────────────────────────────┘
+┌────┬────────────┬──────────────┬─────────────────┬─────────────┬────────────┐
+│ id │ first_page │ pages_differ │ differing_pages │ page1_bytes │ file_pages │
+├────┼────────────┼──────────────┼─────────────────┼─────────────┼────────────┤
+│ 6a │ 1          │ 1            │ 1               │ 27 95       │ 60         │
+│ 6b │            │ 0            │                 │             │ 60         │
+│ 6c │            │ 0            │                 │             │ 60         │
+└────┴────────────┴──────────────┴─────────────────┴─────────────┴────────────┘
+
+── D. Rolled-back work inside a committed transaction ──────────────────
+
+D1. Run 2 first inserts 10 documents of 12000 bytes inside a SAVEPOINT and
+rolls back to it, then commits the same INSERT as run 1. Freelist pages that
+the committed insert reuses keep the rolled-back bytes, even with
+secure_delete=ON:
+┌────┬────────┬────────────────────────────┐
+│ id │ result │            what            │
+├────┼────────┼────────────────────────────┤
+│ 7a │ differ │ WAL, secure_delete=ON      │
+│ 7b │ differ │ rollback, secure_delete=ON │
+└────┴────────┴────────────────────────────┘
+┌────┬────────────┬──────────────┬─────────────────┬─────────────┬────────────┐
+│ id │ first_page │ pages_differ │ differing_pages │ page1_bytes │ file_pages │
+├────┼────────────┼──────────────┼─────────────────┼─────────────┼────────────┤
+│ 7a │ 1          │ 3            │ 1 29 37         │ 27 95       │ 60         │
+│ 7b │ 29         │ 2            │ 29 37           │             │ 60         │
+└────┴────────────┴──────────────┴─────────────────┴─────────────┴────────────┘
+┌────┬──────┬─────────────────┬──────────────────────┬───────────────────────────────────────────────┐
+│ id │ page │ bytes_differing │ bytes_outside_unused │                     kind                      │
+├────┼──────┼─────────────────┼──────────────────────┼───────────────────────────────────────────────┤
+│ 7a │ 1    │ 2               │ 2                    │ b-tree page, unallocated space and freeblocks │
+│ 7a │ 29   │ 4092            │ 0                    │ freelist leaf page                            │
+│ 7a │ 37   │ 4093            │ 0                    │ freelist leaf page                            │
+│ 7b │ 29   │ 4092            │ 0                    │ freelist leaf page                            │
+│ 7b │ 37   │ 4093            │ 0                    │ freelist leaf page                            │
+└────┴──────┴─────────────────┴──────────────────────┴───────────────────────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  two builds of the recipe in different directories under different names are byte-identical
+A  ✓  the per-step hash lists of the two runs are identical (31 states)
+A  ✓  every step leaves a different file, so a hash names exactly one step
+A  ✓  recipe.StepHashes (the cached list later chapters use) equals the list just built
+A  ✓  recipe.MatchStep names the step a database equals
+A  ✓  the rollback-mode recipe also rebuilds byte for byte at every step
+B  ✓  SQL random() makes two runs differ
+B  ✓  current_timestamp makes runs differ once the wall clock's second changes (its resolution is one second, so two fast runs can still match)
+B  ✓  FINDING: an unordered INSERT ... SELECT run twice on the same build with the same plan gives identical files
+B  ✓  an unordered INSERT ... SELECT changes the file when the scan order changes; ORDER BY removes the dependence
+B  ✓  FINDING: in WAL mode on one connection with secure_delete=ON, different transaction batches give identical files
+B  ✓  with secure_delete=OFF different batches differ, and only in bytes no cell uses (stale content left in unallocated space, freeblocks or freelist pages)
+B  ✓  in rollback mode different batches differ, and with secure_delete=ON only in the change counter (it counts commits)
+B  ✓  secure_delete=FAST is not ON: on the same history FAST leaves old bytes in the unused space of freelist pages that ON zeroes
+B  ✓  rowid assignment past the maximum rowid makes two runs differ
+C  ✓  FINDING: in WAL mode the number of connection sessions changes the file, and only the change counter (bytes 24-27 and 92-95)
+C  ✓  in rollback mode the number of connection sessions does not change the file
+C  ✓  in WAL mode only a commit that writes page 1 writes the change counter: sessions whose commits never touch page 1 leave the file identical
+D  ✓  WAL mode: a rolled-back SAVEPOINT changes the committed file even with secure_delete=ON: reused freelist leaf pages keep the rolled-back bytes, and page 1's change counter moves
+D  ✓  rollback mode: a rolled-back SAVEPOINT leaves the rolled-back bytes in reused freelist leaf pages (secure_delete=ON does not clear them)
+
+20 of 20 claims hold
+
+Experiment verdict: RECIPE REBUILD OK

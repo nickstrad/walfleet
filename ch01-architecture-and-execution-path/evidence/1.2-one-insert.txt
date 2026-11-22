@@ -1,284 +1,501 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/1.2
-sqlite3 CLI sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-EXPLAIN INSERT INTO t(id, v) VALUES(2, 'two')
-  addr opcode           p1   p2   p3 p4           p5
-  0    Init              0   14    0              0
-  1    OpenWrite         0    2    0 2            0
-  2    SoftNull          2    0    0              0
-  3    String8           0    3    0 two          0
-  4    Integer           2    1    0              0
-  5    NotNull           1    7    0              0
-  6    NewRowid          0    1    0              0
-  7    MustBeInt         1    0    0              0
-  8    HaltIfNull     1299    2    3 t.v          1
-  9    NotExists         0   11    1              0
-  10   Halt           1555    2    0 t.id         2
-  11   MakeRecord        2    2    4 DB           0
-  12   Insert            0    4    1 t            49
-  13   Halt              0    0    0              0
-  14   Transaction       0    1    1 0            1
-  15   Goto              0    1    0              0
 
-== rollback journal (journal_mode=delete) ==
-base: table t with 1 row, 2 pages, sha256 0aec0e95a3f65e0c
-pages changed by the INSERT (sha256 of each page through sqlite_dbpage, before -> after): [1 2]
-  page 1: bb133eb73b58bce5 -> 0ba56047337c7717
-  page 2: 5d68aacbd116afe8 -> b21207c95d70a25b
-check ok: the INSERT changes page 1 (the change counter in the header) and page 2 (table t's leaf): [1 2]
-Go driver (modernc), file syscalls of the INSERT (33):
-  fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1 = 0
-  fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0
-  fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1 = 0
-  pread64 t.db off=24 len=16 = 16
-  fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1 = 0
-  pread64 t.db off=4096 len=4096 = 4096
-  open t.db-journal O_RDWR|O_CREAT|O_LARGEFILE|O_NOFOLLOW|O_CLOEXEC = fd
-  fcntl t.db-journal F_SETFD = 0
-  pwrite64 t.db-journal off=0 len=512 = 512
-  pwrite64 t.db-journal off=512 len=4 = 4
-  pwrite64 t.db-journal off=516 len=4096 = 4096
-  pwrite64 t.db-journal off=4612 len=4 = 4
-  fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1 = 0
-  fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510 = 0
-  pwrite64 t.db-journal off=4616 len=4 = 4
-  pwrite64 t.db-journal off=4620 len=4096 = 4096
-  pwrite64 t.db-journal off=8716 len=4 = 4
-  pread64 t.db-journal off=9216 len=8 = 0
-  fsync t.db-journal = 0
-  open . O_RDONLY|O_LARGEFILE|O_CLOEXEC = fd
-  fcntl . F_SETFD = 0
-  fsync . = 0
-  close . = 0
-  pwrite64 t.db-journal off=0 len=12 = 12
-  fsync t.db-journal = 0
-  pwrite64 t.db off=0 len=4096 = 4096
-  pwrite64 t.db off=4096 len=4096 = 4096
-  fsync t.db = 0
-  close t.db-journal = 0
-  unlink t.db-journal = 0
-  fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0
-  fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2 = 0
-  fcntl t.db F_SETLK F_UNLCK start=0 len=0 = 0
-  db write at offset 0 = (page 1 - 1) * 4096
-  db write at offset 4096 = (page 2 - 1) * 4096
-check ok: rollback mode: each pwrite64 on t.db is one whole page at offset (page-1)*4096, and the pages written are exactly the changed pages [1 2]
-C CLI, file syscalls of the same INSERT (31, open/openat shown as open, fsync/fdatasync as sync):
-  fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
-  fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
-  fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
-  pread64 t.db off=24 len=16
-  fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
-  pread64 t.db off=4096 len=4096
-  open t.db-journal
-  pwrite64 t.db-journal off=0 len=512
-  pwrite64 t.db-journal off=512 len=4
-  pwrite64 t.db-journal off=516 len=4096
-  pwrite64 t.db-journal off=4612 len=4
-  fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
-  fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
-  pwrite64 t.db-journal off=4616 len=4
-  pwrite64 t.db-journal off=4620 len=4096
-  pwrite64 t.db-journal off=8716 len=4
-  pread64 t.db-journal off=9216 len=8 = 0
-  sync t.db-journal
-  open .
-  sync .
-  close .
-  pwrite64 t.db-journal off=0 len=12
-  sync t.db-journal
-  pwrite64 t.db off=0 len=4096
-  pwrite64 t.db off=4096 len=4096
-  sync t.db
-  close t.db-journal
-  unlink t.db-journal
-  fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
-  fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
-  fcntl t.db F_SETLK F_UNLCK start=0 len=0
-INFO: sync syscall used: Go driver fsync, CLI fsync (/usr/local/bin/sqlite3)
-twin writes (file, offset, length, order): identical (10 calls)
-twin syncs (file, order): identical (4 calls)
-check ok: twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order
-twin difference: fcntl F_SETFD calls, Go driver 2 [fcntl t.db-journal F_SETFD; fcntl . F_SETFD], CLI 0 []
-twin every other file syscall (opens, reads, writes, syncs, locks, unlinks, closes): identical (31 calls)
-check ok: apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)
-check ok: the database file after the INSERT is byte-identical from both builds (sha256 47bae5ed0c8207f2)
-call path, measured: the C CLI with -vfstrace under strace runs BEGIN IMMEDIATE; INSERT; COMMIT with a marker between statements.
-Each phase lists the VFS calls (VFS) and the syscalls each one made (SYS, indented under its VFS call).
-phase BEGIN IMMEDIATE | opcode OP_Transaction | sqlite3BtreeBeginTrans -> sqlite3PagerSharedLock, sqlite3PagerBegin
-  VFS xLock(t.db,SHARED) -> SQLITE_OK
-      SYS fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
-      SYS fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
-      SYS fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
-  VFS xAccess("t.db-journal",0) -> SQLITE_OK, out=0
-  VFS xRead(t.db,n=16,ofst=24) -> SQLITE_OK
-      SYS pread64 t.db off=24 len=16
-  VFS xAccess("t.db-wal",0) -> SQLITE_OK, out=0
-  VFS xFileSize(t.db) -> SQLITE_OK, size=8192
-  VFS xLock(t.db,RESERVED) -> SQLITE_OK
-      SYS fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
-phase INSERT INTO t(id, v) VALUES(2, 'two') | opcode OP_Insert | sqlite3BtreeInsert -> sqlite3PagerWrite
-  VFS xRead(t.db,n=4096,ofst=4096) -> SQLITE_OK
-      SYS pread64 t.db off=4096 len=4096
-  VFS xFileControl(t.db,HAS_MOVED) -> SQLITE_OK, 0
-  SYS open t.db-journal
-  VFS xOpen(t.db-journal,flags=0x806) -> SQLITE_OK
-  VFS xDeviceCharacteristics(t.db) -> 0x00009000
-  VFS xWrite(t.db-journal,n=512,ofst=0) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=0 len=512
-  VFS xWrite(t.db-journal,n=4,ofst=512) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=512 len=4
-  VFS xWrite(t.db-journal,n=4096,ofst=516) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=516 len=4096
-  VFS xWrite(t.db-journal,n=4,ofst=4612) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=4612 len=4
-phase COMMIT | opcode OP_AutoCommit (OP_Halt in an autocommit INSERT) | sqlite3VdbeHalt -> vdbeCommit -> sqlite3BtreeCommitPhaseOne/PhaseTwo -> sqlite3PagerCommitPhaseOne/PhaseTwo
-  VFS xLock(t.db,EXCLUSIVE) -> SQLITE_OK
-      SYS fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
-      SYS fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
-  VFS xWrite(t.db-journal,n=4,ofst=4616) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=4616 len=4
-  VFS xWrite(t.db-journal,n=4096,ofst=4620) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=4620 len=4096
-  VFS xWrite(t.db-journal,n=4,ofst=8716) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=8716 len=4
-  VFS xDeviceCharacteristics(t.db) -> 0x00009000
-  VFS xRead(t.db-journal,n=8,ofst=9216) -> SQLITE_IOERR_SHORT_READ
-      SYS pread64 t.db-journal off=9216 len=8 = 0
-  VFS xSync(t.db-journal,FULL) -> 0
-      SYS sync t.db-journal
-      SYS open .
-      SYS sync .
-      SYS close .
-  VFS xWrite(t.db-journal,n=12,ofst=0) -> SQLITE_OK
-      SYS pwrite64 t.db-journal off=0 len=12
-  VFS xSync(t.db-journal,FULL) -> 0
-      SYS sync t.db-journal
-  VFS xWrite(t.db,n=4096,ofst=0) -> SQLITE_OK
-      SYS pwrite64 t.db off=0 len=4096
-  VFS xWrite(t.db,n=4096,ofst=4096) -> SQLITE_OK
-      SYS pwrite64 t.db off=4096 len=4096
-  VFS xFileControl(t.db,SYNC) -> SQLITE_NOTFOUND
-  VFS xSync(t.db,FULL) -> 0
-      SYS sync t.db
-  VFS xClose(t.db-journal) -> SQLITE_OK
-      SYS close t.db-journal
-  VFS xDelete("t.db-journal",0) -> SQLITE_OK
-      SYS unlink t.db-journal
-  VFS xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
-  VFS xUnlock(t.db,SHARED) -> SQLITE_OK
-      SYS fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
-      SYS fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
-  VFS xDeviceCharacteristics(t.db) -> 0x00009000
-  VFS xUnlock(t.db,NONE) -> SQLITE_OK
-      SYS fcntl t.db F_SETLK F_UNLCK start=0 len=0
-check ok: the three phases together make exactly the file syscalls of the autocommit INSERT (so the per-opcode split above is the INSERT's own I/O)
-check ok: BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT
+════════════════════════════════════════════════════════════════════════
+  1.2  What does one committed INSERT do, layer by layer?
+════════════════════════════════════════════════════════════════════════
 
-== write-ahead log (journal_mode=wal, the platform default) ==
-base: table t with 1 row, 2 pages, sha256 5de4f3aefd26bcea
-pages changed by the INSERT (sha256 of each page through sqlite_dbpage, before -> after): [2]
-  page 2: 5d68aacbd116afe8 -> b21207c95d70a25b
-check ok: the INSERT changes only page 2 (table t's leaf); page 1 is not written, so its change counter stays: [2]
-Go driver (modernc), file syscalls of the INSERT (18):
-  fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1 = 0
-  fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1 = 0
-  pread64 t.db off=4096 len=4096 = 4096
-  fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1 = 0
-  fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1 = 0
-  fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0
-  fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1 = 0
-  pwrite64 t.db-wal off=0 len=32 = 32
-  fsync t.db-wal = 0
-  open . O_RDONLY|O_LARGEFILE|O_CLOEXEC = fd
-  fcntl . F_SETFD = 0
-  fsync . = 0
-  close . = 0
-  pwrite64 t.db-wal off=32 len=24 = 24
-  pwrite64 t.db-wal off=56 len=4096 = 4096
-  fsync t.db-wal = 0
-  fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1 = 0
-  fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0
-check ok: WAL mode: the commit writes nothing to t.db itself (database-file pwrite64 calls during the INSERT: 0)
-  WAL frame 1: page 2, commit size 2, header at offset 32, page image at offset 56
-check ok: WAL mode: the commit writes the 32-byte WAL header at offset 0 of the new t.db-wal, then one frame per changed page [2] (frame header 24 bytes, then the page at offset 32 + (frame-1)*4120 + 24), and nothing else; the last frame carries the commit size
-C CLI, file syscalls of the same INSERT (17, open/openat shown as open, fsync/fdatasync as sync):
-  fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1
-  fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1
-  pread64 t.db off=4096 len=4096
-  fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1
-  fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1
-  fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1
-  fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1
-  pwrite64 t.db-wal off=0 len=32
-  sync t.db-wal
-  open .
-  sync .
-  close .
-  pwrite64 t.db-wal off=32 len=24
-  pwrite64 t.db-wal off=56 len=4096
-  sync t.db-wal
-  fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1
-  fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1
-INFO: sync syscall used: Go driver fsync, CLI fsync (/usr/local/bin/sqlite3)
-twin writes (file, offset, length, order): identical (3 calls)
-twin syncs (file, order): identical (3 calls)
-check ok: twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order
-twin difference: fcntl F_SETFD calls, Go driver 1 [fcntl . F_SETFD], CLI 0 []
-twin every other file syscall (opens, reads, writes, syncs, locks, unlinks, closes): identical (17 calls)
-check ok: apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)
-check ok: the database file after the INSERT is byte-identical from both builds (sha256 1afce8154bf3124c)
-call path, measured: the C CLI with -vfstrace under strace runs BEGIN IMMEDIATE; INSERT; COMMIT with a marker between statements.
-Each phase lists the VFS calls (VFS) and the syscalls each one made (SYS, indented under its VFS call).
-phase BEGIN IMMEDIATE | opcode OP_Transaction | sqlite3BtreeBeginTrans -> sqlite3PagerSharedLock, sqlite3PagerBegin
-  VFS xShmBarrier(t.db)
-  VFS xShmLock(t.db,ofst=3(READ0),n=1,LOCK|SHARED) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1
-  VFS xShmBarrier(t.db)
-  VFS xFileSize(t.db) -> SQLITE_OK, size=8192
-  VFS xShmLock(t.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1
-phase INSERT INTO t(id, v) VALUES(2, 'two') | opcode OP_Insert | sqlite3BtreeInsert -> sqlite3PagerWrite
-  VFS xRead(t.db,n=4096,ofst=4096) -> SQLITE_OK
-      SYS pread64 t.db off=4096 len=4096
-phase COMMIT | opcode OP_AutoCommit (OP_Halt in an autocommit INSERT) | sqlite3VdbeHalt -> vdbeCommit -> sqlite3BtreeCommitPhaseOne -> sqlite3PagerCommitPhaseOne -> pagerWalFrames -> sqlite3WalFrames
-  VFS xShmLock(t.db,ofst=3(READ0),n=1,UNLOCK|SHARED) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1
-  VFS xShmLock(t.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1
-  VFS xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1
-  VFS xShmLock(t.db,ofst=4(READ1),n=1,LOCK|SHARED) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1
-  VFS xShmBarrier(t.db)
-  VFS xWrite(t.db-wal,n=32,ofst=0) -> SQLITE_OK
-      SYS pwrite64 t.db-wal off=0 len=32
-  VFS xSync(t.db-wal,FULL) -> 0
-      SYS sync t.db-wal
-      SYS open .
-      SYS sync .
-      SYS close .
-  VFS xWrite(t.db-wal,n=24,ofst=32) -> SQLITE_OK
-      SYS pwrite64 t.db-wal off=32 len=24
-  VFS xWrite(t.db-wal,n=4096,ofst=56) -> SQLITE_OK
-      SYS pwrite64 t.db-wal off=56 len=4096
-  VFS xSync(t.db-wal,FULL) -> 0
-      SYS sync t.db-wal
-  VFS xShmBarrier(t.db)
-  VFS xShmLock(t.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1
-  VFS xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
-  VFS xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|SHARED) -> SQLITE_OK
-      SYS fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1
-check ok: the three phases together make exactly the file syscalls of the autocommit INSERT (so the per-opcode split above is the INSERT's own I/O)
-check ok: BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT
+One INSERT of the row (2, "two") into table t(id, v), which already holds
+one row (2 pages: page 1 for sqlite_schema, page 2 for t), followed down the
+layers: VDBE bytecode, the B-tree pages it changes, the file syscalls of the
+Go driver (modernc, traced with strace), the same INSERT in the C sqlite3 CLI
+(the twin check), and the CLI with -vfstrace, which names the VFS call behind
+each syscall. Parts B and C do this in rollback-journal and in WAL mode;
+part D shows where the twin check stops being valid.
 
-== a limit of the twin check: compile options that change file contents ==
-base: table s with 100 rows and index s_by_k, built twice by the Go driver, sha256 cd808b1713871cd6 and cd808b1713871cd6
-ENABLE_STAT4 compiled in: Go driver 1, CLI 0
-after ANALYZE: Go driver file sha256 2f6ce76122bda45c, statistics tables [sqlite_stat1 sqlite_stat4]
-after ANALYZE: C CLI file sha256 490d8405dea7402c, statistics tables [sqlite_stat1]
-check ok: both copies start byte-identical
-check ok: twin check limit: the driver is compiled with ENABLE_STAT4 and this CLI is not, so the same ANALYZE writes a sqlite_stat4 table only in the driver and the two files differ
+── A. The bytecode ─────────────────────────────────────────────────────
 
-ONE INSERT OK
+A1. EXPLAIN of the INSERT. OpenWrite opens the table b-tree (root page 2);
+MakeRecord builds the row; Insert (p5=49) puts it in the leaf; Transaction
+at addr 14 is where the write lock is taken.
+┌──────┬─────────────┬──────┬────┬────┬──────┬────┐
+│ addr │   opcode    │  p1  │ p2 │ p3 │  p4  │ p5 │
+├──────┼─────────────┼──────┼────┼────┼──────┼────┤
+│ 0    │ Init        │ 0    │ 14 │ 0  │      │ 0  │
+│ 1    │ OpenWrite   │ 0    │ 2  │ 0  │ 2    │ 0  │
+│ 2    │ SoftNull    │ 2    │ 0  │ 0  │      │ 0  │
+│ 3    │ String8     │ 0    │ 3  │ 0  │ two  │ 0  │
+│ 4    │ Integer     │ 2    │ 1  │ 0  │      │ 0  │
+│ 5    │ NotNull     │ 1    │ 7  │ 0  │      │ 0  │
+│ 6    │ NewRowid    │ 0    │ 1  │ 0  │      │ 0  │
+│ 7    │ MustBeInt   │ 1    │ 0  │ 0  │      │ 0  │
+│ 8    │ HaltIfNull  │ 1299 │ 2  │ 3  │ t.v  │ 1  │
+│ 9    │ NotExists   │ 0    │ 11 │ 1  │      │ 0  │
+│ 10   │ Halt        │ 1555 │ 2  │ 0  │ t.id │ 2  │
+│ 11   │ MakeRecord  │ 2    │ 2  │ 4  │ DB   │ 0  │
+│ 12   │ Insert      │ 0    │ 4  │ 1  │ t    │ 49 │
+│ 13   │ Halt        │ 0    │ 0  │ 0  │      │ 0  │
+│ 14   │ Transaction │ 0    │ 1  │ 1  │ 0    │ 1  │
+│ 15   │ Goto        │ 0    │ 1  │ 0  │      │ 0  │
+└──────┴─────────────┴──────┴────┴────┴──────┴────┘
+
+── B. Rollback journal (journal_mode=delete) ───────────────────────────
+
+B1. The base database, and the pages the INSERT changed (sha256 prefix of
+each page, read through sqlite_dbpage before and after).
+Page 1 changes too: the change counter in its header.
+┌────────┬──────────────┬──────────────────┬──────┬──────────────────┬──────────────────┐
+│  mode  │ pages_before │   file_sha256    │ page │  before_sha256   │   after_sha256   │
+├────────┼──────────────┼──────────────────┼──────┼──────────────────┼──────────────────┤
+│ delete │ 2            │ 0aec0e95a3f65e0c │ 1    │ bb133eb73b58bce5 │ 0ba56047337c7717 │
+│ delete │ 2            │ 0aec0e95a3f65e0c │ 2    │ 5d68aacbd116afe8 │ b21207c95d70a25b │
+└────────┴──────────────┴──────────────────┴──────┴──────────────────┴──────────────────┘
+
+B2. The file syscalls the Go driver made for the INSERT, in order
+(open/openat and unlink/unlinkat are written open and unlink; "= fd" stands
+for the descriptor number, which varies):
+┌─────┬────────────────────────────────────────────────────────────────────────┐
+│ seq │                                  call                                  │
+├─────┼────────────────────────────────────────────────────────────────────────┤
+│ 1   │ fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1 = 0                  │
+│ 2   │ fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0                │
+│ 3   │ fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1 = 0                  │
+│ 4   │ pread64 t.db off=24 len=16 = 16                                        │
+│ 5   │ fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1 = 0                  │
+│ 6   │ pread64 t.db off=4096 len=4096 = 4096                                  │
+│ 7   │ open t.db-journal O_RDWR|O_CREAT|O_LARGEFILE|O_NOFOLLOW|O_CLOEXEC = fd │
+│ 8   │ fcntl t.db-journal F_SETFD = 0                                         │
+│ 9   │ pwrite64 t.db-journal off=0 len=512 = 512                              │
+│ 10  │ pwrite64 t.db-journal off=512 len=4 = 4                                │
+│ 11  │ pwrite64 t.db-journal off=516 len=4096 = 4096                          │
+│ 12  │ pwrite64 t.db-journal off=4612 len=4 = 4                               │
+│ 13  │ fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1 = 0                  │
+│ 14  │ fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510 = 0                │
+│ 15  │ pwrite64 t.db-journal off=4616 len=4 = 4                               │
+│ 16  │ pwrite64 t.db-journal off=4620 len=4096 = 4096                         │
+│ 17  │ pwrite64 t.db-journal off=8716 len=4 = 4                               │
+│ 18  │ pread64 t.db-journal off=9216 len=8 = 0                                │
+│ 19  │ fsync t.db-journal = 0                                                 │
+│ 20  │ open . O_RDONLY|O_LARGEFILE|O_CLOEXEC = fd                             │
+│ 21  │ fcntl . F_SETFD = 0                                                    │
+│ 22  │ fsync . = 0                                                            │
+│ 23  │ close . = 0                                                            │
+│ 24  │ pwrite64 t.db-journal off=0 len=12 = 12                                │
+│ 25  │ fsync t.db-journal = 0                                                 │
+│ 26  │ pwrite64 t.db off=0 len=4096 = 4096                                    │
+│ 27  │ pwrite64 t.db off=4096 len=4096 = 4096                                 │
+│ 28  │ fsync t.db = 0                                                         │
+│ 29  │ close t.db-journal = 0                                                 │
+│ 30  │ unlink t.db-journal = 0                                                │
+│ 31  │ fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0                │
+│ 32  │ fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2 = 0                  │
+│ 33  │ fcntl t.db F_SETLK F_UNLCK start=0 len=0 = 0                           │
+└─────┴────────────────────────────────────────────────────────────────────────┘
+
+B3. Where the bytes land. Each pwrite64 on t.db is one whole page at
+offset (page - 1) * 4096; the pages written are the pages that changed:
+┌────────────────────────────────────────┬─────────────┬──────┬────────┐
+│                  call                  │ file_offset │ page │ length │
+├────────────────────────────────────────┼─────────────┼──────┼────────┤
+│ pwrite64 t.db off=0 len=4096 = 4096    │ 0           │ 1    │ 4096   │
+│ pwrite64 t.db off=4096 len=4096 = 4096 │ 4096        │ 2    │ 4096   │
+└────────────────────────────────────────┴─────────────┴──────┴────────┘
+
+B4. The C CLI runs the same INSERT under strace. Its syscalls, normalized
+(open/openat as open, fsync/fdatasync as sync); read and write lengths are
+kept, so a short transfer would show:
+┌─────┬─────────────────────────────────────────────────────┐
+│ seq │                        norm                         │
+├─────┼─────────────────────────────────────────────────────┤
+│ 1   │ fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1   │
+│ 2   │ fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 │
+│ 3   │ fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1   │
+│ 4   │ pread64 t.db off=24 len=16                          │
+│ 5   │ fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1   │
+│ 6   │ pread64 t.db off=4096 len=4096                      │
+│ 7   │ open t.db-journal                                   │
+│ 8   │ pwrite64 t.db-journal off=0 len=512                 │
+│ 9   │ pwrite64 t.db-journal off=512 len=4                 │
+│ 10  │ pwrite64 t.db-journal off=516 len=4096              │
+│ 11  │ pwrite64 t.db-journal off=4612 len=4                │
+│ 12  │ fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1   │
+│ 13  │ fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510 │
+│ 14  │ pwrite64 t.db-journal off=4616 len=4                │
+│ 15  │ pwrite64 t.db-journal off=4620 len=4096             │
+│ 16  │ pwrite64 t.db-journal off=8716 len=4                │
+│ 17  │ pread64 t.db-journal off=9216 len=8 = 0             │
+│ 18  │ sync t.db-journal                                   │
+│ 19  │ open .                                              │
+│ 20  │ sync .                                              │
+│ 21  │ close .                                             │
+│ 22  │ pwrite64 t.db-journal off=0 len=12                  │
+│ 23  │ sync t.db-journal                                   │
+│ 24  │ pwrite64 t.db off=0 len=4096                        │
+│ 25  │ pwrite64 t.db off=4096 len=4096                     │
+│ 26  │ sync t.db                                           │
+│ 27  │ close t.db-journal                                  │
+│ 28  │ unlink t.db-journal                                 │
+│ 29  │ fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 │
+│ 30  │ fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2   │
+│ 31  │ fcntl t.db F_SETLK F_UNLCK start=0 len=0            │
+└─────┴─────────────────────────────────────────────────────┘
+
+B5. The twin check: the Go driver and the CLI compared category by category.
+Writes and syncs must be identical, and so must every call apart from the
+fcntl(F_SETFD) that the libc of modernc adds after each O_CLOEXEC open:
+┌──────────────────────────────────────┬──────────┬───────────┬───────────┐
+│               category               │ go_calls │ cli_calls │ identical │
+├──────────────────────────────────────┼──────────┼───────────┼───────────┤
+│ writes (file, offset, length, order) │ 10       │ 10        │ true      │
+│ syncs (file, order)                  │ 4        │ 4         │ true      │
+│ every call except fcntl F_SETFD      │ 31       │ 31        │ true      │
+│ fcntl F_SETFD only                   │ 2        │ 0         │           │
+└──────────────────────────────────────┴──────────┴───────────┴───────────┘
+
+The F_SETFD calls only the Go driver makes:
+┌─────┬────────────────────────────────┐
+│ seq │              call              │
+├─────┼────────────────────────────────┤
+│ 8   │ fcntl t.db-journal F_SETFD = 0 │
+│ 21  │ fcntl . F_SETFD = 0            │
+└─────┴────────────────────────────────┘
+
+B6. The database file after each run, as a hash. The Go driver and the CLI
+must leave the same bytes, and the INSERT split into three statements must
+leave the same bytes as the autocommit INSERT:
+┌────────────┬──────────────────┐
+│    what    │      sha256      │
+├────────────┼──────────────────┤
+│ base       │ 0aec0e95a3f65e0c │
+│ go_insert  │ 47bae5ed0c8207f2 │
+│ cli_insert │ 47bae5ed0c8207f2 │
+│ cli_split  │ 47bae5ed0c8207f2 │
+└────────────┴──────────────────┘
+
+B7. The measured call path. The CLI runs BEGIN IMMEDIATE; INSERT; COMMIT with
+a marker file opened between the statements, so each VFS call and syscall is
+assigned to the statement that caused it. SYS lines indented under a VFS line
+are the syscalls that VFS call made. xRandomness calls are left out (info.sql).
+┌───────┬───────────────────────────────────────┬─────────────────────────────────────────────────┐
+│ phase │               statement               │                     opcode                      │
+├───────┼───────────────────────────────────────┼─────────────────────────────────────────────────┤
+│ 1     │ BEGIN IMMEDIATE                       │ OP_Transaction                                  │
+│ 2     │ INSERT INTO t(id, v) VALUES(2, 'two') │ OP_Insert                                       │
+│ 3     │ COMMIT                                │ OP_AutoCommit (OP_Halt in an autocommit INSERT) │
+└───────┴───────────────────────────────────────┴─────────────────────────────────────────────────┘
+
+The C functions behind each statement, outermost first:
+┌───────┬───┬───────────────────────────────────────────┐
+│ phase │ n │                c_function                 │
+├───────┼───┼───────────────────────────────────────────┤
+│ 1     │ 1 │ sqlite3BtreeBeginTrans                    │
+│ 1     │ 2 │ sqlite3PagerSharedLock, sqlite3PagerBegin │
+│ 2     │ 1 │ sqlite3BtreeInsert                        │
+│ 2     │ 2 │ sqlite3PagerWrite                         │
+│ 3     │ 1 │ sqlite3VdbeHalt                           │
+│ 3     │ 2 │ vdbeCommit                                │
+│ 3     │ 3 │ sqlite3BtreeCommitPhaseOne/PhaseTwo       │
+│ 3     │ 4 │ sqlite3PagerCommitPhaseOne/PhaseTwo       │
+└───────┴───┴───────────────────────────────────────────┘
+
+The calls of each statement, in order:
+┌───────┬──────┬──────────────────────────────────────────────────────────────┐
+│ phase │ kind │                             call                             │
+├───────┼──────┼──────────────────────────────────────────────────────────────┤
+│ 1     │ VFS  │ xLock(t.db,SHARED) -> SQLITE_OK                              │
+│ 1     │ SYS  │     fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1        │
+│ 1     │ SYS  │     fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510      │
+│ 1     │ SYS  │     fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1        │
+│ 1     │ VFS  │ xAccess("t.db-journal",0) -> SQLITE_OK, out=0                │
+│ 1     │ VFS  │ xRead(t.db,n=16,ofst=24) -> SQLITE_OK                        │
+│ 1     │ SYS  │     pread64 t.db off=24 len=16                               │
+│ 1     │ VFS  │ xAccess("t.db-wal",0) -> SQLITE_OK, out=0                    │
+│ 1     │ VFS  │ xFileSize(t.db) -> SQLITE_OK, size=8192                      │
+│ 1     │ VFS  │ xLock(t.db,RESERVED) -> SQLITE_OK                            │
+│ 1     │ SYS  │     fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1        │
+│ 2     │ VFS  │ xRead(t.db,n=4096,ofst=4096) -> SQLITE_OK                    │
+│ 2     │ SYS  │     pread64 t.db off=4096 len=4096                           │
+│ 2     │ VFS  │ xFileControl(t.db,HAS_MOVED) -> SQLITE_OK, 0                 │
+│ 2     │ SYS  │ open t.db-journal                                            │
+│ 2     │ VFS  │ xOpen(t.db-journal,flags=0x806) -> SQLITE_OK                 │
+│ 2     │ VFS  │ xDeviceCharacteristics(t.db) -> 0x00009000                   │
+│ 2     │ VFS  │ xWrite(t.db-journal,n=512,ofst=0) -> SQLITE_OK               │
+│ 2     │ SYS  │     pwrite64 t.db-journal off=0 len=512                      │
+│ 2     │ VFS  │ xWrite(t.db-journal,n=4,ofst=512) -> SQLITE_OK               │
+│ 2     │ SYS  │     pwrite64 t.db-journal off=512 len=4                      │
+│ 2     │ VFS  │ xWrite(t.db-journal,n=4096,ofst=516) -> SQLITE_OK            │
+│ 2     │ SYS  │     pwrite64 t.db-journal off=516 len=4096                   │
+│ 2     │ VFS  │ xWrite(t.db-journal,n=4,ofst=4612) -> SQLITE_OK              │
+│ 2     │ SYS  │     pwrite64 t.db-journal off=4612 len=4                     │
+│ 3     │ VFS  │ xLock(t.db,EXCLUSIVE) -> SQLITE_OK                           │
+│ 3     │ SYS  │     fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1        │
+│ 3     │ SYS  │     fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510      │
+│ 3     │ VFS  │ xWrite(t.db-journal,n=4,ofst=4616) -> SQLITE_OK              │
+│ 3     │ SYS  │     pwrite64 t.db-journal off=4616 len=4                     │
+│ 3     │ VFS  │ xWrite(t.db-journal,n=4096,ofst=4620) -> SQLITE_OK           │
+│ 3     │ SYS  │     pwrite64 t.db-journal off=4620 len=4096                  │
+│ 3     │ VFS  │ xWrite(t.db-journal,n=4,ofst=8716) -> SQLITE_OK              │
+│ 3     │ SYS  │     pwrite64 t.db-journal off=8716 len=4                     │
+│ 3     │ VFS  │ xDeviceCharacteristics(t.db) -> 0x00009000                   │
+│ 3     │ VFS  │ xRead(t.db-journal,n=8,ofst=9216) -> SQLITE_IOERR_SHORT_READ │
+│ 3     │ SYS  │     pread64 t.db-journal off=9216 len=8 = 0                  │
+│ 3     │ VFS  │ xSync(t.db-journal,FULL) -> 0                                │
+│ 3     │ SYS  │     sync t.db-journal                                        │
+│ 3     │ SYS  │     open .                                                   │
+│ 3     │ SYS  │     sync .                                                   │
+│ 3     │ SYS  │     close .                                                  │
+│ 3     │ VFS  │ xWrite(t.db-journal,n=12,ofst=0) -> SQLITE_OK                │
+│ 3     │ SYS  │     pwrite64 t.db-journal off=0 len=12                       │
+│ 3     │ VFS  │ xSync(t.db-journal,FULL) -> 0                                │
+│ 3     │ SYS  │     sync t.db-journal                                        │
+│ 3     │ VFS  │ xWrite(t.db,n=4096,ofst=0) -> SQLITE_OK                      │
+│ 3     │ SYS  │     pwrite64 t.db off=0 len=4096                             │
+│ 3     │ VFS  │ xWrite(t.db,n=4096,ofst=4096) -> SQLITE_OK                   │
+│ 3     │ SYS  │     pwrite64 t.db off=4096 len=4096                          │
+│ 3     │ VFS  │ xFileControl(t.db,SYNC) -> SQLITE_NOTFOUND                   │
+│ 3     │ VFS  │ xSync(t.db,FULL) -> 0                                        │
+│ 3     │ SYS  │     sync t.db                                                │
+│ 3     │ VFS  │ xClose(t.db-journal) -> SQLITE_OK                            │
+│ 3     │ SYS  │     close t.db-journal                                       │
+│ 3     │ VFS  │ xDelete("t.db-journal",0) -> SQLITE_OK                       │
+│ 3     │ SYS  │     unlink t.db-journal                                      │
+│ 3     │ VFS  │ xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND        │
+│ 3     │ VFS  │ xUnlock(t.db,SHARED) -> SQLITE_OK                            │
+│ 3     │ SYS  │     fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510      │
+│ 3     │ SYS  │     fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2        │
+│ 3     │ VFS  │ xDeviceCharacteristics(t.db) -> 0x00009000                   │
+│ 3     │ VFS  │ xUnlock(t.db,NONE) -> SQLITE_OK                              │
+│ 3     │ SYS  │     fcntl t.db F_SETLK F_UNLCK start=0 len=0                 │
+└───────┴──────┴──────────────────────────────────────────────────────────────┘
+
+The three phases together make exactly the syscalls of the autocommit INSERT:
+┌───────────────┐
+│ same_syscalls │
+├───────────────┤
+│ true          │
+└───────────────┘
+
+── C. Write-ahead log (journal_mode=wal, the default) ──────────────────
+
+C1. The base database, and the pages the INSERT changed (sha256 prefix of
+each page, read through sqlite_dbpage before and after).
+Page 1 is not written, so its change counter stays.
+┌──────┬──────────────┬──────────────────┬──────┬──────────────────┬──────────────────┐
+│ mode │ pages_before │   file_sha256    │ page │  before_sha256   │   after_sha256   │
+├──────┼──────────────┼──────────────────┼──────┼──────────────────┼──────────────────┤
+│ wal  │ 2            │ 5de4f3aefd26bcea │ 2    │ 5d68aacbd116afe8 │ b21207c95d70a25b │
+└──────┴──────────────┴──────────────────┴──────┴──────────────────┴──────────────────┘
+
+C2. The file syscalls the Go driver made for the INSERT, in order
+(open/openat and unlink/unlinkat are written open and unlink; "= fd" stands
+for the descriptor number, which varies):
+┌─────┬────────────────────────────────────────────────────┐
+│ seq │                        call                        │
+├─────┼────────────────────────────────────────────────────┤
+│ 1   │ fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1 = 0 │
+│ 2   │ fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1 = 0 │
+│ 3   │ pread64 t.db off=4096 len=4096 = 4096              │
+│ 4   │ fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1 = 0 │
+│ 5   │ fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1 = 0 │
+│ 6   │ fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0 │
+│ 7   │ fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1 = 0 │
+│ 8   │ pwrite64 t.db-wal off=0 len=32 = 32                │
+│ 9   │ fsync t.db-wal = 0                                 │
+│ 10  │ open . O_RDONLY|O_LARGEFILE|O_CLOEXEC = fd         │
+│ 11  │ fcntl . F_SETFD = 0                                │
+│ 12  │ fsync . = 0                                        │
+│ 13  │ close . = 0                                        │
+│ 14  │ pwrite64 t.db-wal off=32 len=24 = 24               │
+│ 15  │ pwrite64 t.db-wal off=56 len=4096 = 4096           │
+│ 16  │ fsync t.db-wal = 0                                 │
+│ 17  │ fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1 = 0 │
+│ 18  │ fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0 │
+└─────┴────────────────────────────────────────────────────┘
+
+C3. Where the bytes land. The commit writes nothing to t.db itself; it
+appends one frame per changed page to t.db-wal after a 32-byte WAL header.
+The frame table is read from the -wal file by the traced child; offsets are
+32 + (frame - 1) * 4120 for the 24-byte frame header, then +24 for the page:
+┌─────────────────┐
+│ pwrites_on_t_db │
+├─────────────────┤
+│ 0               │
+└─────────────────┘
+┌───────┬──────┬─────────────┬───────────┬───────────────┐
+│ frame │ page │ commit_size │ header_at │ page_image_at │
+├───────┼──────┼─────────────┼───────────┼───────────────┤
+│ 1     │ 2    │ 2           │ 32        │ 56            │
+└───────┴──────┴─────────────┴───────────┴───────────────┘
+
+C4. The C CLI runs the same INSERT under strace. Its syscalls, normalized
+(open/openat as open, fsync/fdatasync as sync); read and write lengths are
+kept, so a short transfer would show:
+┌─────┬────────────────────────────────────────────────┐
+│ seq │                      norm                      │
+├─────┼────────────────────────────────────────────────┤
+│ 1   │ fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1 │
+│ 2   │ fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1 │
+│ 3   │ pread64 t.db off=4096 len=4096                 │
+│ 4   │ fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1 │
+│ 5   │ fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1 │
+│ 6   │ fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 │
+│ 7   │ fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1 │
+│ 8   │ pwrite64 t.db-wal off=0 len=32                 │
+│ 9   │ sync t.db-wal                                  │
+│ 10  │ open .                                         │
+│ 11  │ sync .                                         │
+│ 12  │ close .                                        │
+│ 13  │ pwrite64 t.db-wal off=32 len=24                │
+│ 14  │ pwrite64 t.db-wal off=56 len=4096              │
+│ 15  │ sync t.db-wal                                  │
+│ 16  │ fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1 │
+│ 17  │ fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 │
+└─────┴────────────────────────────────────────────────┘
+
+C5. The twin check: the Go driver and the CLI compared category by category.
+Writes and syncs must be identical, and so must every call apart from the
+fcntl(F_SETFD) that the libc of modernc adds after each O_CLOEXEC open:
+┌──────────────────────────────────────┬──────────┬───────────┬───────────┐
+│               category               │ go_calls │ cli_calls │ identical │
+├──────────────────────────────────────┼──────────┼───────────┼───────────┤
+│ writes (file, offset, length, order) │ 3        │ 3         │ true      │
+│ syncs (file, order)                  │ 3        │ 3         │ true      │
+│ every call except fcntl F_SETFD      │ 17       │ 17        │ true      │
+│ fcntl F_SETFD only                   │ 1        │ 0         │           │
+└──────────────────────────────────────┴──────────┴───────────┴───────────┘
+
+The F_SETFD calls only the Go driver makes:
+┌─────┬─────────────────────┐
+│ seq │        call         │
+├─────┼─────────────────────┤
+│ 11  │ fcntl . F_SETFD = 0 │
+└─────┴─────────────────────┘
+
+C6. The database file after each run, as a hash. The Go driver and the CLI
+must leave the same bytes, and the INSERT split into three statements must
+leave the same bytes as the autocommit INSERT:
+┌────────────┬──────────────────┐
+│    what    │      sha256      │
+├────────────┼──────────────────┤
+│ base       │ 5de4f3aefd26bcea │
+│ go_insert  │ 1afce8154bf3124c │
+│ cli_insert │ 1afce8154bf3124c │
+│ cli_split  │ 1afce8154bf3124c │
+└────────────┴──────────────────┘
+
+C7. The measured call path. The CLI runs BEGIN IMMEDIATE; INSERT; COMMIT with
+a marker file opened between the statements, so each VFS call and syscall is
+assigned to the statement that caused it. SYS lines indented under a VFS line
+are the syscalls that VFS call made. xRandomness calls are left out (info.sql).
+┌───────┬───────────────────────────────────────┬─────────────────────────────────────────────────┐
+│ phase │               statement               │                     opcode                      │
+├───────┼───────────────────────────────────────┼─────────────────────────────────────────────────┤
+│ 1     │ BEGIN IMMEDIATE                       │ OP_Transaction                                  │
+│ 2     │ INSERT INTO t(id, v) VALUES(2, 'two') │ OP_Insert                                       │
+│ 3     │ COMMIT                                │ OP_AutoCommit (OP_Halt in an autocommit INSERT) │
+└───────┴───────────────────────────────────────┴─────────────────────────────────────────────────┘
+
+The C functions behind each statement, outermost first:
+┌───────┬───┬───────────────────────────────────────────┐
+│ phase │ n │                c_function                 │
+├───────┼───┼───────────────────────────────────────────┤
+│ 1     │ 1 │ sqlite3BtreeBeginTrans                    │
+│ 1     │ 2 │ sqlite3PagerSharedLock, sqlite3PagerBegin │
+│ 2     │ 1 │ sqlite3BtreeInsert                        │
+│ 2     │ 2 │ sqlite3PagerWrite                         │
+│ 3     │ 1 │ sqlite3VdbeHalt                           │
+│ 3     │ 2 │ vdbeCommit                                │
+│ 3     │ 3 │ sqlite3BtreeCommitPhaseOne                │
+│ 3     │ 4 │ sqlite3PagerCommitPhaseOne                │
+│ 3     │ 5 │ pagerWalFrames                            │
+│ 3     │ 6 │ sqlite3WalFrames                          │
+└───────┴───┴───────────────────────────────────────────┘
+
+The calls of each statement, in order:
+┌───────┬──────┬────────────────────────────────────────────────────────────────┐
+│ phase │ kind │                              call                              │
+├───────┼──────┼────────────────────────────────────────────────────────────────┤
+│ 1     │ VFS  │ xShmBarrier(t.db)                                              │
+│ 1     │ VFS  │ xShmLock(t.db,ofst=3(READ0),n=1,LOCK|SHARED) -> SQLITE_OK      │
+│ 1     │ SYS  │     fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1             │
+│ 1     │ VFS  │ xShmBarrier(t.db)                                              │
+│ 1     │ VFS  │ xFileSize(t.db) -> SQLITE_OK, size=8192                        │
+│ 1     │ VFS  │ xShmLock(t.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK   │
+│ 1     │ SYS  │     fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1             │
+│ 2     │ VFS  │ xRead(t.db,n=4096,ofst=4096) -> SQLITE_OK                      │
+│ 2     │ SYS  │     pread64 t.db off=4096 len=4096                             │
+│ 3     │ VFS  │ xShmLock(t.db,ofst=3(READ0),n=1,UNLOCK|SHARED) -> SQLITE_OK    │
+│ 3     │ SYS  │     fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1             │
+│ 3     │ VFS  │ xShmLock(t.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK   │
+│ 3     │ SYS  │     fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1             │
+│ 3     │ VFS  │ xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK │
+│ 3     │ SYS  │     fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1             │
+│ 3     │ VFS  │ xShmLock(t.db,ofst=4(READ1),n=1,LOCK|SHARED) -> SQLITE_OK      │
+│ 3     │ SYS  │     fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1             │
+│ 3     │ VFS  │ xShmBarrier(t.db)                                              │
+│ 3     │ VFS  │ xWrite(t.db-wal,n=32,ofst=0) -> SQLITE_OK                      │
+│ 3     │ SYS  │     pwrite64 t.db-wal off=0 len=32                             │
+│ 3     │ VFS  │ xSync(t.db-wal,FULL) -> 0                                      │
+│ 3     │ SYS  │     sync t.db-wal                                              │
+│ 3     │ SYS  │     open .                                                     │
+│ 3     │ SYS  │     sync .                                                     │
+│ 3     │ SYS  │     close .                                                    │
+│ 3     │ VFS  │ xWrite(t.db-wal,n=24,ofst=32) -> SQLITE_OK                     │
+│ 3     │ SYS  │     pwrite64 t.db-wal off=32 len=24                            │
+│ 3     │ VFS  │ xWrite(t.db-wal,n=4096,ofst=56) -> SQLITE_OK                   │
+│ 3     │ SYS  │     pwrite64 t.db-wal off=56 len=4096                          │
+│ 3     │ VFS  │ xSync(t.db-wal,FULL) -> 0                                      │
+│ 3     │ SYS  │     sync t.db-wal                                              │
+│ 3     │ VFS  │ xShmBarrier(t.db)                                              │
+│ 3     │ VFS  │ xShmLock(t.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK │
+│ 3     │ SYS  │     fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1             │
+│ 3     │ VFS  │ xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND          │
+│ 3     │ VFS  │ xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|SHARED) -> SQLITE_OK    │
+│ 3     │ SYS  │     fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1             │
+└───────┴──────┴────────────────────────────────────────────────────────────────┘
+
+The three phases together make exactly the syscalls of the autocommit INSERT:
+┌───────────────┐
+│ same_syscalls │
+├───────────────┤
+│ true          │
+└───────────────┘
+
+── D. A limit of the twin check ────────────────────────────────────────
+
+The twin check assumes both builds write the same bytes, which holds only
+if their compile options agree. The driver is compiled with ENABLE_STAT4
+and this CLI is not. Two copies of a 100-row indexed table start byte for
+byte identical; the Go driver and the CLI each run ANALYZE on one copy:
+┌───────────────┬────────┬──────────────────┬────────────────┬───────────────────────────┐
+│     stage     │  file  │      sha256      │ stat4_compiled │        stat_tables        │
+├───────────────┼────────┼──────────────────┼────────────────┼───────────────────────────┤
+│ base          │ cli.db │ cd808b1713871cd6 │                │                           │
+│ base          │ go.db  │ cd808b1713871cd6 │                │                           │
+│ after ANALYZE │ cli.db │ 490d8405dea7402c │ 0              │ sqlite_stat1              │
+│ after ANALYZE │ go.db  │ 2f6ce76122bda45c │ 1              │ sqlite_stat1 sqlite_stat4 │
+└───────────────┴────────┴──────────────────┴────────────────┴───────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+B  ✓  the INSERT changes page 1 (the change counter in the header) and page 2 (table t's leaf): [1 2]
+B  ✓  rollback mode: each pwrite64 on t.db is one whole page at offset (page-1)*4096, and the pages written are exactly the changed pages [1 2]
+B  ✓  twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order
+B  ✓  apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)
+B  ✓  the database file after the INSERT is byte-identical from both builds (sha256 47bae5ed0c8207f2)
+B  ✓  the three phases together make exactly the file syscalls of the autocommit INSERT (so the per-opcode split above is the INSERT's own I/O)
+B  ✓  BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT
+C  ✓  the INSERT changes only page 2 (table t's leaf); page 1 is not written, so its change counter stays: [2]
+C  ✓  WAL mode: the commit writes nothing to t.db itself (database-file pwrite64 calls during the INSERT: 0)
+C  ✓  WAL mode: the commit writes the 32-byte WAL header at offset 0 of the new t.db-wal, then one frame per changed page [2] (frame header 24 bytes, then the page at offset 32 + (frame-1)*4120 + 24), and nothing else; the last frame carries the commit size
+C  ✓  twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order
+C  ✓  apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)
+C  ✓  the database file after the INSERT is byte-identical from both builds (sha256 1afce8154bf3124c)
+C  ✓  the three phases together make exactly the file syscalls of the autocommit INSERT (so the per-opcode split above is the INSERT's own I/O)
+C  ✓  BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT
+D  ✓  both copies start byte-identical
+D  ✓  twin check limit: the driver is compiled with ENABLE_STAT4 and this CLI is not, so the same ANALYZE writes a sqlite_stat4 table only in the driver and the two files differ
+
+17 of 17 claims hold
+
+Experiment verdict: ONE INSERT OK

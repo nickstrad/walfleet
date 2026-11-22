@@ -1,0 +1,13 @@
+seq,name,value,how
+1,record_header_bytes,4,1 size varint + 1 type (NULL: the id is the rowid) + 2 type 2012 (blob of 1000 bytes)
+2,payload_bytes,1004,4 header + 1000 body
+3,max_local_payload,4061,table-leaf limit at usable size 4096; the payload is below it: no overflow
+4,cell_bytes_rowid_to_127,1009,2 payload-size varint + 1 rowid varint + 1004 payload + 2 cell pointer
+5,cell_bytes_rowid_from_128,1010,the rowid varint is 2 bytes for rowids 128..16383
+6,leaf_space_bytes,4088,4096 - 8 (leaf header)
+7,rows_per_leaf,4,"floor(4088 / 1010): 4 x 1010 = 4040 fits, 5 x 1009 = 5045 does not"
+8,first_split_insert,5,inserts 1..4 fill the root leaf; rowid 10 does not fit
+9,split_every_inserts,4,"a new leaf fills after 4 appends: splits at inserts #5, #9, #13, ..."
+10,root_space_bytes,4084,4096 - 12 (interior header)
+11,dividers_fit_in_root,512,15 dividers of 7 bytes (keys <= 127) + 497 of 8 bytes = 4081 bytes; no room for one more
+12,third_level_insert,2053,the split that brings divider 513 (rowid 4106): the root overflows

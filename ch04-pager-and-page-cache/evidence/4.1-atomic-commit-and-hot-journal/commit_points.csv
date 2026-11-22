@@ -1,0 +1,4 @@
+seq,journal_mode,commit_point,killed_on_entry,next_kind,killed_on_next
+1,delete,unlink t.db-journal,"before (pre-step, logical)",step-returned,after (post-step)
+2,truncate,ftruncate t.db-journal len=0,"before (pre-step, logical)",journal-sync,after (post-step)
+3,persist,pwrite64 t.db-journal off=0 len=28,"before (pre-step, logical)",journal-sync,after (post-step)

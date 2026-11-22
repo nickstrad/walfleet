@@ -1,0 +1,5 @@
+seq,variant,database_file,wal_kept_bytes,wal_bytes,lost_commits,integrity,recovered_step,exact_bytes
+1,normal,as written,32,321392,4,ok,7,false
+2,full,as written,321392,321392,0,ok,11,false
+3,normal-reader-5,as written,304912,626272,4,ok,7,false
+4,normal-reader-5,as before the checkpoint,304912,626272,4,ok,7,false

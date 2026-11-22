@@ -1,0 +1,5 @@
+key,value
+recipe,seed=1 steps=30 journal_mode=wal
+index_step,5
+file_settings,page_size=4096 auto_vacuum=NONE encoding=UTF-8 application_id=1397836120 user_version=0 journal_mode=wal
+conn_settings,synchronous=FULL foreign_keys=ON secure_delete=ON cache_size=-2000 wal_autocheckpoint=1000 busy_timeout=5000ms

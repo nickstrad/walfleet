@@ -1,0 +1,11 @@
+part,name,value,note
+B,table leaf maxLocal,4061,"usable-35, usable size 4096"
+B,table leaf minLocal,489,(usable-12)*32/255-23
+B,index maxLocal,1002,(usable-12)*64/255-23
+C,leaf numbers per trunk,254,usable/4-2 at page size 1024
+D,header byte 52 (largest root page),3,"not 0, so auto-vacuum is on: FULL"
+D,pointer-map spacing,205,"usable/5+1 pages, from page 2"
+E,in-header size (pages),16386,page 3 is a freelist trunk listing pages 4..16386 except the lock-byte page
+E,file size (bytes),1073872896,1 GiB is 1073741824; everything after page 3 is a hole
+E,lock-byte page,16385,1073741824/65536 + 1
+E,SQLite integrity_check,ok,"on the edited file, read-only"

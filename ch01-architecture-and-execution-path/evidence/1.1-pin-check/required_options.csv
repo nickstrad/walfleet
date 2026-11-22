@@ -1,0 +1,4 @@
+option,in_driver,in_cli
+ENABLE_DBPAGE_VTAB,true,true
+ENABLE_DBSTAT_VTAB,true,true
+DEFAULT_WAL_SYNCHRONOUS=2,true,true

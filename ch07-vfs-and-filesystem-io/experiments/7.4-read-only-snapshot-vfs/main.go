@@ -6,9 +6,11 @@
 // demonstrates why immutable=1 and a fully checkpointed file are both required
 // for WAL-format snapshots.
 //
-// Run from the repo root (add -s3 after docker compose up -d seaweedfs):
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 7.4. To read from S3 instead,
+// run docker compose up -d seaweedfs and then the package itself with -s3:
 //
-//	go run ./ch07-vfs-and-filesystem-io/experiments/7.4-read-only-snapshot-vfs
+//	go run ./ch07-vfs-and-filesystem-io/experiments/7.4-read-only-snapshot-vfs -s3
 package main
 
 import (
@@ -31,6 +33,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/nickstrad/walfleet/internal/rangefs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"modernc.org/sqlite/vfs"
 )
@@ -56,27 +59,35 @@ var queries = []query{
 	{"full scan", "SELECT count(*), sum(amount), sum(length(note)) FROM events"},
 }
 
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 7.4" runs both.
+var (
+	set    *results.Set
+	tables struct {
+		requests, opens *results.Table
 	}
-	fmt.Printf("check %s: %s\n", status, claim)
-}
+	requestSeq int
+)
 
 func fatal(what string, err error) {
 	fmt.Printf("FATAL %s: %v\n", what, err)
 	os.Exit(1)
 }
 
+// logRequests writes the remote requests of one connection (attempt) of a
+// part; phase says what the connection was doing when it made them.
+func logRequests(part string, attempt int, phase string, requests []rangefs.Request) {
+	for _, req := range requests {
+		requestSeq++
+		tables.requests.Row(requestSeq, part, attempt, phase, string(req.Kind), req.Name, req.Offset, req.Length, req.Found, req.Failed, req.String())
+	}
+}
+
 type publisher interface {
 	publish(ctx context.Context, name string, body []byte) error
 	remove(ctx context.Context, name string) error
 	source() rangefs.Source
-	describe() string
+	describe() (route, server, stat, read string)
 }
 
 type httpPublisher struct {
@@ -107,8 +118,8 @@ func (p *httpPublisher) source() rangefs.Source {
 	return rangefs.HTTPSource{BaseURL: p.server.URL, Client: p.server.Client()}
 }
 
-func (p *httpPublisher) describe() string {
-	return "http: an in-process HTTP server (net/http FileServer, which answers Range requests); HEAD for stat, GET with a Range header for each read"
+func (p *httpPublisher) describe() (route, server, stat, read string) {
+	return "http", "an in-process HTTP server (net/http FileServer, which answers Range requests)", "HEAD", "GET with a Range header"
 }
 
 type s3Publisher struct {
@@ -127,8 +138,8 @@ func (p *s3Publisher) source() rangefs.Source {
 	return rangefs.S3Source{Client: p.client, Bucket: s3Bucket, Prefix: s3Prefix}
 }
 
-func (p *s3Publisher) describe() string {
-	return fmt.Sprintf("s3: SeaweedFS from compose.yaml, bucket %q, keys %s/<name>; HeadObject for stat, GetObject with a Range header for each read", s3Bucket, s3Prefix)
+func (p *s3Publisher) describe() (route, server, stat, read string) {
+	return "s3", fmt.Sprintf("SeaweedFS from compose.yaml, bucket %q, keys %s/<name>", s3Bucket, s3Prefix), "HeadObject", "GetObject with a Range header"
 }
 
 func main() {
@@ -142,6 +153,9 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("7.4")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
+	set = results.MustOpen(dir)
+	tables.requests = set.Table("requests", "seq", "part", "attempt", "phase", "kind", "name", "offset", "length", "found", "failed", "request")
+	tables.opens = set.Table("opens", "part", "attempt", "file", "params", "result", "error_code")
 
 	var pub publisher
 	if *useS3 {
@@ -154,6 +168,7 @@ func main() {
 			fatal("S3 bucket", fmt.Errorf("%w (start the store with: docker compose up -d seaweedfs)", err))
 		}
 		fmt.Printf("INFO: S3 endpoint %s\n", cfg.Endpoint)
+		set.Table("info_s3", "endpoint").Row(cfg.Endpoint)
 		pub = &s3Publisher{client: client}
 	} else {
 		p, err := newHTTPPublisher(filepath.Join(dir, "published"))
@@ -163,7 +178,8 @@ func main() {
 		defer p.server.Close()
 		pub = p
 	}
-	fmt.Printf("route %s\n", pub.describe())
+	route, server, stat, read := pub.describe()
+	set.Table("route", "route", "server", "stat_request", "read_request").Row(route, server, stat, read)
 	for _, name := range []string{snapshotName, rollbackName, liveName, liveName + "-wal", liveName + "-journal", snapshotName + "-wal", snapshotName + "-journal"} {
 		if err := pub.remove(ctx, name); err != nil {
 			fatal("remove "+name, err)
@@ -183,33 +199,15 @@ func main() {
 		fatal("publish", err)
 	}
 
-	fmt.Println()
-	fmt.Println("== queries: local file vs the published snapshot read through modernc.org/sqlite/vfs + rangefs (immutable=1) ==")
-	for _, q := range queries {
-		runQuery(ctx, q, local, vfsName, remote)
+	queryTable := set.Table("queries", "query", "name", "sql", "plan", "cache_pages", "local_rows", "local_digest", "local_first_row", "remote_rows", "remote_digest", "remote_first_row")
+	for i, q := range queries {
+		runQuery(ctx, queryTable, i+1, q, local, vfsName, remote)
 	}
-
-	fmt.Println()
-	fmt.Printf("== immutable=1 keeps cached pages valid, not cached: the full scan again with PRAGMA cache_size=%d ==\n", smallCachePages)
 	smallCache(ctx, queries[len(queries)-1], vfsName, remote)
-
-	fmt.Println()
-	fmt.Println("== why immutable=1: the same WAL-format snapshot opened without it ==")
 	withoutImmutable(ctx, vfsName, remote, snapshotName, local)
-
-	fmt.Println()
-	fmt.Println("== the same bytes with header bytes 18-19 set to 1 (rollback format) open without immutable=1 ==")
 	rollbackFormat(ctx, pub, snapshot, vfsName, remote, local)
-
-	fmt.Println()
-	fmt.Println("== why a fully checkpointed file: a live database whose last commit is still in its -wal ==")
 	staleRead(ctx, r, dir, pub, vfsName, remote)
-
-	if len(failures) > 0 {
-		fmt.Printf("FAIL: %d claim(s) did not hold\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("ALL CHECKS PASSED")
+	set.Finish("READ-ONLY SNAPSHOT VFS")
 }
 
 func buildSnapshot(ctx context.Context, r recipe.Recipe, path string) []byte {
@@ -225,9 +223,9 @@ func buildSnapshot(ctx context.Context, r recipe.Recipe, path string) []byte {
 		fatal("read snapshot", err)
 	}
 	_, walErr := os.Stat(path + "-wal")
-	fmt.Printf("snapshot: recipe seed %d, %d steps, journal_mode=%s, closed by its last connection: %d bytes, %d pages, sha256 %s, equals %s\n", r.Seed, r.Steps, r.JournalMode, len(body), len(body)/pageSize, shortHash(body), match)
-	fmt.Printf("snapshot header bytes 18-19 (write/read format version): %d %d (2 = WAL); -wal file present: %t\n", body[18], body[19], walErr == nil)
-	check(body[18] == 2 && body[19] == 2 && os.IsNotExist(walErr) && match.Step == r.Steps && match.Exact, "the snapshot is a WAL-format database with every commit checkpointed into the main file and no -wal left")
+	set.Table("snapshot", "seed", "steps", "journal_mode", "bytes", "pages", "sha256_prefix", "file_state", "header_byte_18", "header_byte_19", "wal_present").
+		Row(r.Seed, r.Steps, r.JournalMode, len(body), len(body)/pageSize, shortHash(body), match.String(), body[18], body[19], walErr == nil)
+	set.Check("A", body[18] == 2 && body[19] == 2 && os.IsNotExist(walErr) && match.Step == r.Steps && match.Exact, "the snapshot is a WAL-format database with every commit checkpointed into the main file and no -wal left")
 	return body
 }
 
@@ -327,54 +325,33 @@ func localResult(ctx context.Context, path, query string) (int, string, string, 
 	return n, digest, first, plan
 }
 
-type pageRead struct {
-	header bool
-	page   int64
-}
-
-func classify(requests []rangefs.Request) (pages []pageRead, odd []string) {
+// oddReads returns the range requests that are neither one whole page nor the
+// 100-byte header.
+func oddReads(requests []rangefs.Request) []string {
+	var odd []string
 	for _, req := range requests {
 		if req.Kind != rangefs.KindRange {
 			continue
 		}
-		switch {
-		case req.Offset == 0 && req.Length == headerBytes:
-			pages = append(pages, pageRead{header: true})
-		case req.Offset%pageSize == 0 && req.Length == pageSize:
-			pages = append(pages, pageRead{page: req.Offset/pageSize + 1})
-		default:
+		header := req.Offset == 0 && req.Length == headerBytes
+		page := req.Offset%pageSize == 0 && req.Length == pageSize
+		if !header && !page {
 			odd = append(odd, req.String())
 		}
 	}
-	return pages, odd
+	return odd
 }
 
-func describePages(pages []pageRead) string {
-	parts := make([]string, len(pages))
-	for i, p := range pages {
-		if p.header {
-			parts[i] = "hdr"
-		} else {
-			parts[i] = fmt.Sprintf("%d", p.page)
-		}
-	}
-	return strings.Join(parts, " ")
-}
-
-func runQuery(ctx context.Context, q query, local, vfsName string, remote *rangefs.FS) {
+func runQuery(ctx context.Context, queryTable *results.Table, n int, q query, local, vfsName string, remote *rangefs.FS) {
 	localRows, localDigest, localFirst, plan := localResult(ctx, local, q.sql)
-	fmt.Println()
-	fmt.Printf("-- %s: %s\n", q.name, q.sql)
-	fmt.Printf("plan: %s\n", strings.Join(plan, "; "))
-	fmt.Printf("local file: %d row(s), digest %s, first row %s\n", localRows, localDigest, localFirst)
 
 	remote.TakeRequests()
 	db, err := openSingle(remoteDSN(vfsName, snapshotName, "immutable=1"))
 	if err != nil {
 		fatal("remote open", err)
 	}
-	var tables int
-	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema").Scan(&tables); err != nil {
+	var schemaRows int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema").Scan(&schemaRows); err != nil {
 		fatal("remote schema", err)
 	}
 	cachePages := mustCachePages(ctx, db)
@@ -391,21 +368,16 @@ func runQuery(ctx context.Context, q query, local, vfsName string, remote *range
 	if err := db.Close(); err != nil {
 		fatal("remote close", err)
 	}
-	fmt.Printf("remote snapshot: %d row(s), digest %s, first row %s\n", rows, digest, first)
+	queryTable.Row(n, q.name, q.sql, strings.Join(plan, "; "), cachePages, localRows, localDigest, localFirst, rows, digest, first)
+	logRequests("B", n, "open", openRequests)
+	logRequests("B", n, "query", queryRequests)
+	logRequests("B", n, "repeat", repeatRequests)
 	openStats, queryStats, repeatStats := rangefs.Summarize(openRequests), rangefs.Summarize(queryRequests), rangefs.Summarize(repeatRequests)
-	fmt.Printf("  open + schema load: %s\n", openStats)
-	for _, req := range openRequests {
-		fmt.Printf("    %s\n", req)
-	}
-	queryPages, odd := classify(queryRequests)
-	fmt.Printf("  query (cold cache): %s; pages read in order: %s\n", queryStats, describePages(queryPages))
-	fmt.Printf("  same query again on the same connection: %s\n", repeatStats)
-	fmt.Printf("  first query on a new connection, total: %d requests, %d bytes\n", openStats.Requests()+queryStats.Requests(), openStats.BytesRead+queryStats.BytesRead)
-	_, oddOpen := classify(openRequests)
-	check(rows > 0 && rows == localRows && digest == localDigest, fmt.Sprintf("%s: the remote result equals the local file's (%d row(s), digest %s)", q.name, rows, digest))
-	check(len(odd) == 0 && len(oddOpen) == 0 && queryStats.StatRequests == 0 && queryStats.RangeRequests > 0, fmt.Sprintf("%s: every read is one range request for one whole %d-byte page (or the %d-byte header): one request per page miss, no read-ahead", q.name, pageSize, headerBytes))
+	odd, oddOpen := oddReads(queryRequests), oddReads(openRequests)
+	set.Check("B", rows > 0 && rows == localRows && digest == localDigest, fmt.Sprintf("%s: the remote result equals the local file's (%d row(s), digest %s)", q.name, rows, digest))
+	set.Check("B", len(odd) == 0 && len(oddOpen) == 0 && queryStats.StatRequests == 0 && queryStats.RangeRequests > 0, fmt.Sprintf("%s: every read is one range request for one whole %d-byte page (or the %d-byte header): one request per page miss, no read-ahead", q.name, pageSize, headerBytes))
 	pagesHeld := openStats.RangeRequests + queryStats.RangeRequests
-	check(repeatStats.Requests() == 0 && pagesHeld <= cachePages, fmt.Sprintf("%s: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the %d reads so far fit in the %d-page cache)", q.name, pagesHeld, cachePages))
+	set.Check("B", repeatStats.Requests() == 0 && pagesHeld <= cachePages, fmt.Sprintf("%s: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the %d reads so far fit in the %d-page cache)", q.name, pagesHeld, cachePages))
 }
 
 // smallCachePages shrinks the page cache below the 18-page events scan to show
@@ -446,9 +418,11 @@ func smallCache(ctx context.Context, q query, vfsName string, remote *rangefs.FS
 	if err != nil {
 		fatal("small-cache repeat", err)
 	}
-	repeatStats := rangefs.Summarize(remote.TakeRequests())
-	fmt.Printf("%s with a %d-page cache, repeated on the same connection: %s\n", q.name, cachePages, repeatStats)
-	check(firstDigest == repeatDigest && repeatStats.RangeRequests > cachePages, fmt.Sprintf("%s: when the query reads more pages than the cache holds, the repeat reads evicted pages again (%d range requests); only pages still in the cache are free", q.name, repeatStats.RangeRequests))
+	repeat := remote.TakeRequests()
+	repeatStats := rangefs.Summarize(repeat)
+	set.Table("small_cache", "query", "cache_pages", "same_result").Row(q.name, cachePages, firstDigest == repeatDigest)
+	logRequests("C", 1, "repeat", repeat)
+	set.Check("C", firstDigest == repeatDigest && repeatStats.RangeRequests > cachePages, fmt.Sprintf("%s: when the query reads more pages than the cache holds, the repeat reads evicted pages again (%d range requests); only pages still in the cache are free", q.name, repeatStats.RangeRequests))
 }
 
 func errorLine(err error) string {
@@ -497,31 +471,33 @@ func localState(ctx context.Context, path string) string {
 	return fmt.Sprintf("user_version=%d events=%d", version, count)
 }
 
-func printRequests(requests []rangefs.Request) {
-	for _, req := range requests {
-		fmt.Printf("    %s\n", req)
+// openRow writes one remote open of part and its requests.
+func openRow(part string, attempt int, name, params, state string, err error, requests []rangefs.Request) {
+	var code any
+	if c, ok := sqlitex.ErrorCode(err); ok {
+		code = c
 	}
+	if params == "" {
+		params = "(no parameters)"
+	}
+	tables.opens.Row(part, attempt, name, params, fallback(state, err), code)
+	logRequests(part, attempt, "open", requests)
 }
 
 func withoutImmutable(ctx context.Context, vfsName string, remote *rangefs.FS, name, local string) {
-	for _, params := range []string{"", "mode=ro", "immutable=1"} {
+	for i, params := range []string{"", "mode=ro", "immutable=1"} {
 		label := params
 		if label == "" {
 			label = "(no parameters)"
 		}
 		state, err, requests := tryOpen(ctx, vfsName, remote, name, params)
-		if err != nil {
-			fmt.Printf("%s: %s; %s\n", label, errorLine(err), rangefs.Summarize(requests))
-		} else {
-			fmt.Printf("%s: %s; %s\n", label, state, rangefs.Summarize(requests))
-		}
-		printRequests(requests)
+		openRow("D", i+1, name, params, state, err, requests)
 		code, _ := sqlitex.ErrorCode(err)
 		switch params {
 		case "immutable=1":
-			check(err == nil && state == localState(ctx, local), "with immutable=1 the WAL-format snapshot opens and reads the same state as the local file")
+			set.Check("D", err == nil && state == localState(ctx, local), "with immutable=1 the WAL-format snapshot opens and reads the same state as the local file")
 		default:
-			check(code == 14, fmt.Sprintf("without immutable=1 (%s) the WAL-format snapshot fails to open with SQLITE_CANTOPEN (14)", label))
+			set.Check("D", code == 14, fmt.Sprintf("without immutable=1 (%s) the WAL-format snapshot fails to open with SQLITE_CANTOPEN (14)", label))
 		}
 	}
 }
@@ -538,16 +514,15 @@ func rollbackFormat(ctx context.Context, pub publisher, snapshot []byte, vfsName
 		fatal("publish", err)
 	}
 	state, err, requests := tryOpen(ctx, vfsName, remote, rollbackName, "")
-	fmt.Printf("(no parameters): %s; %s\n", fallback(state, err), rangefs.Summarize(requests))
-	printRequests(requests)
-	check(err == nil && state == localState(ctx, local), "a checkpointed snapshot with header bytes 18-19 rewritten to 1 opens without immutable=1 and reads the same state (the WAL flag in the header, not the content, is what demands shared memory)")
+	openRow("E", 1, rollbackName, "", state, err, requests)
+	set.Check("E", err == nil && state == localState(ctx, local), "a checkpointed snapshot with header bytes 18-19 rewritten to 1 opens without immutable=1 and reads the same state (the WAL flag in the header, not the content, is what demands shared memory)")
 	journalChecks := 0
 	for _, req := range requests {
 		if req.Kind == rangefs.KindStat && strings.HasSuffix(req.Name, "-journal") {
 			journalChecks++
 		}
 	}
-	check(journalChecks > 0, fmt.Sprintf("without immutable=1 SQLite checks for a hot journal (%d stat request(s) for %s-journal), which immutable=1 skips", journalChecks, rollbackName))
+	set.Check("E", journalChecks > 0, fmt.Sprintf("without immutable=1 SQLite checks for a hot journal (%d stat request(s) for %s-journal), which immutable=1 skips", journalChecks, rollbackName))
 }
 
 func fallback(state string, err error) string {
@@ -613,9 +588,8 @@ func staleRead(ctx context.Context, r recipe.Recipe, dir string, pub publisher, 
 	if err != nil {
 		fatal("read live wal", err)
 	}
-	fmt.Printf("a child process built %s to step %d, then committed step %d and keeps its connection open (no checkpoint yet)\n", liveName, r.Steps-1, r.Steps)
-	fmt.Printf("local read through SQLite (sees the -wal): %s\n", truth)
-	fmt.Printf("published %s (%d bytes) and %s-wal (%d bytes, %d frames) as they are on disk\n", liveName, len(dbBytes), liveName, len(walBytes), (len(walBytes)-32)/(24+pageSize))
+	liveTable := set.Table("live", "built_to_step", "committed_step", "local_state", "db_bytes", "wal_bytes", "wal_frames", "wal_deleted_after_close")
+	liveRow := []any{r.Steps - 1, r.Steps, truth, len(dbBytes), len(walBytes), (len(walBytes) - 32) / (24 + pageSize)}
 	if err := pub.publish(ctx, liveName, dbBytes); err != nil {
 		fatal("publish", err)
 	}
@@ -623,21 +597,21 @@ func staleRead(ctx context.Context, r recipe.Recipe, dir string, pub publisher, 
 		fatal("publish", err)
 	}
 	stale, err, requests := tryOpen(ctx, vfsName, remote, liveName, "immutable=1")
-	fmt.Printf("remote, immutable=1: %s; %s\n", fallback(stale, err), rangefs.Summarize(requests))
+	openRow("F", 1, liveName, "immutable=1", stale, err, requests)
 	walRequests := 0
 	for _, req := range requests {
 		if strings.HasSuffix(req.Name, "-wal") {
 			walRequests++
 		}
 	}
-	_, plainErr, _ := tryOpen(ctx, vfsName, remote, liveName, "")
-	fmt.Printf("remote, no parameters: %s\n", errorLine(plainErr))
+	_, plainErr, plainRequests := tryOpen(ctx, vfsName, remote, liveName, "")
+	openRow("F", 2, liveName, "", "", plainErr, plainRequests)
 	wantStale := fmt.Sprintf("user_version=%d", r.Steps-1)
-	check(err == nil && strings.HasPrefix(stale, wantStale+" ") && strings.HasPrefix(truth, fmt.Sprintf("user_version=%d ", r.Steps)) && stale != truth,
+	set.Check("F", err == nil && strings.HasPrefix(stale, wantStale+" ") && strings.HasPrefix(truth, fmt.Sprintf("user_version=%d ", r.Steps)) && stale != truth,
 		fmt.Sprintf("immutable=1 ignores the -wal: the remote read returns step %d's state while the writer has committed step %d (a stale read, no error)", r.Steps-1, r.Steps))
-	check(walRequests == 0, "with immutable=1 SQLite never asks for the -wal file (0 requests name it)")
+	set.Check("F", walRequests == 0, "with immutable=1 SQLite never asks for the -wal file (0 requests name it)")
 	code, _ := sqlitex.ErrorCode(plainErr)
-	check(code == 14, "without immutable=1 the live WAL database cannot be opened through the read-only VFS either (SQLITE_CANTOPEN)")
+	set.Check("F", code == 14, "without immutable=1 the live WAL database cannot be opened through the read-only VFS either (SQLITE_CANTOPEN)")
 
 	stdin.Close()
 	if err := child.Wait(); err != nil {
@@ -654,7 +628,8 @@ func staleRead(ctx context.Context, r recipe.Recipe, dir string, pub publisher, 
 	if err := pub.remove(ctx, liveName+"-wal"); err != nil {
 		fatal("remove", err)
 	}
-	fresh, err, _ := tryOpen(ctx, vfsName, remote, liveName, "immutable=1")
-	fmt.Printf("after the writer closed (last connection: checkpoint, -wal deleted: %t) and the main file was republished: remote, immutable=1: %s\n", os.IsNotExist(walErr), fallback(fresh, err))
-	check(err == nil && fresh == truth && os.IsNotExist(walErr), fmt.Sprintf("once the commit is checkpointed into the main file, the republished snapshot shows step %d", r.Steps))
+	fresh, err, freshRequests := tryOpen(ctx, vfsName, remote, liveName, "immutable=1")
+	openRow("F", 3, liveName, "immutable=1", fresh, err, freshRequests)
+	liveTable.Row(append(liveRow, os.IsNotExist(walErr))...)
+	set.Check("F", err == nil && fresh == truth && os.IsNotExist(walErr), fmt.Sprintf("once the commit is checkpointed into the main file, the republished snapshot shows step %d", r.Steps))
 }

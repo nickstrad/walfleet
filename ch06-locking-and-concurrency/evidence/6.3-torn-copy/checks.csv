@@ -1,0 +1,6 @@
+seq,part,status,claim
+1,A1,ok,the copy of the database file without its -wal opens cleanly and passes integrity_check
+2,A1,ok,"but it equals recipe step 8, the last checkpoint, not step 10, the last commit: commits 9-10 are silently missing"
+3,A2,ok,the checkpoint copied every WAL frame (steps 9-10) into the database file
+4,A2,ok,the torn copy fails integrity_check or equals no recipe state
+5,B,ok,the torn copy fails integrity_check or equals no recipe state

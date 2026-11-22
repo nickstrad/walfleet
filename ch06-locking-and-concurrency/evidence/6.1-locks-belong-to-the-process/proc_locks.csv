@@ -1,0 +1,22 @@
+part,after_step,file,process,class,type,bytes,lock
+A,2,database file,holder,POSIX,READ,1073741826-1073742335,SHARED
+A,2,database file,holder,POSIX,WRITE,1073741825,RESERVED
+A,7,database file,contender,POSIX,READ,1073741826-1073742335,SHARED
+A,7,database file,contender,POSIX,WRITE,1073741825,RESERVED
+B,11,-shm,contender,POSIX,READ,128,DMS
+B,11,-shm,holder,POSIX,READ,123,WAL_READ_LOCK(0)
+B,11,-shm,holder,POSIX,READ,128,DMS
+B,11,-shm,holder,POSIX,WRITE,120,WAL_WRITE_LOCK
+B,11,database file,contender,POSIX,READ,1073741826-1073742335,SHARED
+B,11,database file,holder,POSIX,READ,1073741826-1073742335,SHARED
+B,13,-shm,contender,POSIX,READ,128,DMS
+B,13,-shm,holder,POSIX,READ,123,WAL_READ_LOCK(0)
+B,13,-shm,holder,POSIX,READ,128,DMS
+B,13,-shm,holder,POSIX,WRITE,120,WAL_WRITE_LOCK
+B,13,database file,contender,POSIX,READ,1073741826-1073742335,SHARED
+B,15,-shm,contender,POSIX,READ,128,DMS
+C,23,-shm,contender,POSIX,READ,128,DMS
+C,23,-shm,holder,POSIX,READ,124,WAL_READ_LOCK(1)
+C,23,-shm,holder,POSIX,READ,128,DMS
+C,23,-shm,holder,POSIX,WRITE,120,WAL_WRITE_LOCK
+C,25,-shm,contender,POSIX,READ,128,DMS

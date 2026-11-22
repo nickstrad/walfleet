@@ -1,0 +1,13 @@
+seq,part,status,claim
+1,A,ok,journal_mode=delete: descriptors per state are [1 1 2 1 0]
+2,A,ok,journal_mode=wal: descriptors per state are [1 3 3 3 0]
+3,B,ok,200 idle WAL connections hold exactly 3 x 200 = 600 descriptors
+4,B,ok,"every connection reports the same SCHEMA_USED and the same STMT_USED (same schema, same statement)"
+5,B,ok,process memory grew by at least the sum of CACHE_USED + SCHEMA_USED + STMT_USED
+6,B,ok,process memory grew by at most that sum + 256 KiB per connection (the stated margin for memory the counters do not report)
+7,C,ok,shrink_memory on connection 0 alone lowered CACHE_USED on all 200 connections (this driver keeps every page cache in one shared group)
+8,C,ok,shrink_memory leaves SCHEMA_USED and STMT_USED unchanged on every connection
+9,C,ok,running shrink_memory on the other connections afterwards released nothing more
+10,C,ok,after shrink every connection's CACHE_USED is under 1/8 of what it was
+11,C,ok,"after closing all 200: 0 descriptors left and every file at rest (no -wal, -shm, -journal)"
+12,D,ok,"two connections share one -shm descriptor (5, not 6); the closed connection's database descriptor stays open (4, not 3) until the last connection to the file closes"

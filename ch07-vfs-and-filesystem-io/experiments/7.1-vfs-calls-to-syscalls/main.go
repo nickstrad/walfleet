@@ -6,9 +6,9 @@
 // syncs happen inside the first xSync of a new journal or WAL, and that
 // -wal/-shm are created at first use and removed at last close.
 //
-// Run from the repo root (Linux; on macOS, use docker compose run --rm lab):
-//
-//	go run ./ch07-vfs-and-filesystem-io/experiments/7.1-vfs-calls-to-syscalls
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 7.1 (the strace part needs
+// Linux, which the lab container provides).
 package main
 
 import (
@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 )
@@ -79,16 +80,12 @@ var tracedSyscalls = append(append([]string(nil), trace.DefaultSyscalls...), "fs
 // bytes, used to verify no database/journal/WAL/shm byte I/O escapes the VFS.
 var byteMovingSyscalls = []string{"pread64", "pwrite64", "read", "write", "writev"}
 
-var failures []string
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
-}
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 7.1" runs both.
+var (
+	set    *results.Set
+	stream *results.Table
+)
 
 func fatal(what string, err error) {
 	fmt.Printf("FATAL %s: %v\n", what, err)
@@ -106,32 +103,33 @@ func script() string {
 	return b.String()
 }
 
-func printStatements() {
-	fmt.Println("statements, one CLI session (.open --normal t.db first):")
-	for i, s := range statements {
-		if s.sql == "" {
-			fmt.Printf("  STEP %d %s: end of input, the CLI closes the database\n", i+1, s.label)
-			continue
-		}
-		fmt.Printf("  STEP %d %s: %s\n", i+1, s.label, s.sql)
-	}
-}
-
 func main() {
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("7.1")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
 	cli := sqlitex.MustLocateCLI(ctx)
-	printStatements()
+	set = results.MustOpen(dir)
+	steps := set.Table("statements", "step", "label", "sql")
+	for i, s := range statements {
+		sql := any(s.sql)
+		if s.sql == "" {
+			sql = "(end of input: the CLI closes the database)"
+		}
+		steps.Row(i+1, s.label, sql)
+	}
+	stream = set.Table("stream", "seq", "step", "kind", "nested", "charged_to", "call", "file", "text")
+	tracing := set.Table("tracing", "syscalls")
 	request := trace.CLITrace{Dir: dir, DB: filepath.Join(dir, dbName), SQL: script()}
 
 	if !trace.Supported {
+		tracing.Row(trace.LinuxOnlyMessage("strace of the CLI (VFS calls merged with syscalls)", packagePath))
 		portable(ctx, cli, request, dir)
 		trace.PrintLinuxOnly("strace of the CLI (VFS calls merged with syscalls)", packagePath)
-		finish()
+		set.Finish("VFS CALLS TO SYSCALLS")
 		return
 	}
+	tracing.Row("traced with strace")
 	merged, result, err := trace.RunCLIMerged(ctx, cli, request, trace.Options{Syscalls: tracedSyscalls})
 	if errors.Is(err, trace.ErrPtraceDenied) {
 		fatal("strace", fmt.Errorf("%w (run: docker compose run --rm lab go run ./%s)", err, packagePath))
@@ -143,15 +141,7 @@ func main() {
 		fatal("cli", fmt.Errorf("exit %d: %s", result.ExitCode, result.Stderr))
 	}
 	analyze(merged.Relative(dir), dir)
-	finish()
-}
-
-func finish() {
-	if len(failures) > 0 {
-		fmt.Printf("FAIL: %d claim(s) did not hold\n", len(failures))
-		os.Exit(1)
-	}
-	fmt.Println("ALL CHECKS PASSED")
+	set.Finish("VFS CALLS TO SYSCALLS")
 }
 
 func portable(ctx context.Context, cli sqlitex.CLI, request trace.CLITrace, dir string) {
@@ -160,16 +150,17 @@ func portable(ctx context.Context, cli sqlitex.CLI, request trace.CLITrace, dir 
 		fatal("vfstrace", err)
 	}
 	calls := trace.RelativeVFS(dir, vt.Calls)
-	fmt.Printf("VFS calls (CLI -vfstrace only, %d, xRandomness left out):\n", len(calls))
+	seq := 0
 	for _, c := range calls {
 		if c.Method == "xRandomness" {
 			continue
 		}
-		fmt.Printf("  %s\n", c.String())
+		seq++
+		stream.Row(seq, nil, "VFS", nil, nil, c.Method, c.File, c.String())
 	}
 	walOpen, walDelete, shmDelete := closeLifecycle(calls)
-	check(walOpen, "the -wal file is opened through xOpen")
-	check(walDelete && shmDelete, "at the last close the -wal is deleted (xDelete) and the -shm is unmapped with delFlag=1")
+	set.Check("D", walOpen, "the -wal file is opened through xOpen")
+	set.Check("D", walDelete && shmDelete, "at the last close the -wal is deleted (xDelete) and the -shm is unmapped with delFlag=1")
 }
 
 // closeLifecycle checks the VFS-only trace (used on non-Linux hosts) for WAL
@@ -196,21 +187,6 @@ func syscallLine(s trace.Syscall) string {
 	return s.Canonical().String()
 }
 
-func eventLine(e trace.Event) string {
-	switch e.Kind {
-	case trace.EventVFS:
-		return "VFS " + e.VFS.String()
-	case trace.EventSyscall:
-		if e.Enclosed >= 0 {
-			return "    SYS " + syscallLine(*e.Syscall)
-		}
-		return "SYS " + syscallLine(*e.Syscall)
-	case trace.EventOutput:
-		return "OUT " + e.Output
-	}
-	return "?"
-}
-
 func analyze(m *trace.Merged, dir string) {
 	relevant := onDisk
 	var kept []int
@@ -220,106 +196,118 @@ func analyze(m *trace.Merged, dir string) {
 		}
 		kept = append(kept, i)
 	}
-	vfsCount, sysCount := 0, 0
-	for _, i := range kept {
-		switch m.Events[i].Kind {
-		case trace.EventVFS:
-			vfsCount++
-		case trace.EventSyscall:
-			sysCount++
-		}
-	}
-	fmt.Println()
-	fmt.Printf("== merged stream: %d VFS calls and %d file syscalls in one order ==\n", vfsCount, sysCount)
-	fmt.Println("(VFS = a line of the CLI's -vfstrace; indented SYS = a syscall made while that VFS call ran;")
-	fmt.Println(" unindented SYS = a syscall outside any printed VFS call; OUT = CLI output;")
-	fmt.Println(" names normalized: open = open/openat, sync = fsync/fdatasync, stat = stat family, unlink = unlink/unlinkat)")
-	randomness := 0
-	for position, i := range kept {
-		e := m.Events[i]
-		// Omit xRandomness from the printed stream so evidence matches across
-		// CLI builds that seed SQLite's PRNG at different points.
-		if e.Kind == trace.EventVFS && e.VFS.Method == "xRandomness" {
-			randomness++
-			fmt.Printf("INFO: xRandomness at stream line %d: %s\n", position+1, e.VFS.String())
+
+	// charged maps each file syscall to the VFS call it is counted against:
+	// the call it ran inside, or, for xOpen, the unenclosed syscalls just
+	// before its line, because vfstraceOpen calls the underlying xOpen before
+	// printing its trace line (vfstrace.c:890-893).
+	charged := map[int]int{}
+	for i, e := range m.Events {
+		if e.Kind != trace.EventVFS {
 			continue
 		}
-		fmt.Println(eventLine(e))
-	}
-	fmt.Printf("(xRandomness: %d call(s), left out of the stream because where SQLite first asks the VFS for random bytes differs between CLI builds; seen: an installed CLI right after opening the database, a ./configure build of the pin right before the first journal header, whose checksum nonce is random)\n", randomness)
-
-	within := func(i int) []trace.Syscall {
-		var out []trace.Syscall
-		for _, s := range m.SyscallsWithin(i) {
-			if relevant(s) {
-				out = append(out, s.Canonical())
+		if e.VFS.Method != "xOpen" {
+			for j, s := range m.Events {
+				if s.Kind == trace.EventSyscall && s.Enclosed == i && relevant(*s.Syscall) {
+					charged[j] = i
+				}
 			}
+			continue
 		}
-		return out
-	}
-	// before collects unenclosed file syscalls immediately preceding an xOpen
-	// event, because vfstraceOpen calls the underlying xOpen before printing
-	// its trace line (vfstrace.c:890-893).
-	before := func(i int) []trace.Syscall {
-		var out []trace.Syscall
 		for j := i - 1; j >= 0; j-- {
-			e := m.Events[j]
-			if e.Kind == trace.EventVFS {
+			s := m.Events[j]
+			if s.Kind == trace.EventVFS {
 				break
 			}
-			if e.Kind == trace.EventSyscall && e.Enclosed < 0 && relevant(*e.Syscall) {
-				out = append([]trace.Syscall{e.Syscall.Canonical()}, out...)
+			if s.Kind == trace.EventSyscall && s.Enclosed < 0 && relevant(*s.Syscall) {
+				charged[j] = i
+			}
+		}
+	}
+	syscallsOf := func(i int) []trace.Syscall {
+		var out []trace.Syscall
+		for _, j := range kept {
+			if v, ok := charged[j]; ok && v == i {
+				out = append(out, m.Events[j].Syscall.Canonical())
 			}
 		}
 		return out
 	}
 
-	type methodStats struct {
-		calls    int
-		syscalls map[string]int
+	// xRandomness is left out of the stream table: where SQLite first asks the
+	// VFS for random bytes differs between CLI builds. Its position goes to an
+	// info table.
+	infoRandomness := set.Table("info_randomness", "after_seq", "call")
+	seqOf := map[int]int{}
+	seq := 0
+	for _, i := range kept {
+		e := m.Events[i]
+		if e.Kind == trace.EventVFS && e.VFS.Method == "xRandomness" {
+			infoRandomness.Row(seq, e.VFS.String())
+			continue
+		}
+		seq++
+		seqOf[i] = seq
 	}
-	stats := map[string]*methodStats{}
+	step := 0
+	for _, i := range kept {
+		n, ok := seqOf[i]
+		if !ok {
+			continue
+		}
+		e := m.Events[i]
+		switch e.Kind {
+		case trace.EventVFS:
+			stream.Row(n, step, "VFS", nil, nil, e.VFS.Method, e.VFS.File, e.VFS.String())
+		case trace.EventSyscall:
+			s := e.Syscall.Canonical()
+			var to any
+			if v, ok := charged[i]; ok {
+				to = seqOf[v]
+			}
+			stream.Row(n, step, "SYS", e.Enclosed >= 0, to, s.Name, s.Path, s.String())
+		case trace.EventOutput:
+			if label, ok := strings.CutPrefix(e.Output, "STEP "); ok {
+				fmt.Sscanf(label, "%d", &step)
+			}
+			stream.Row(n, step, "OUT", nil, nil, nil, nil, e.Output)
+		}
+	}
+
+	problems := set.Table("problems", "rule", "detail")
+	calls := map[string]int{}
 	writesOK, readsOK := 0, 0
-	var writeProblems, readProblems, syncProblems []string
 	var dirSyncs []string
 	syncCalls := 0
 	var walOpenedWithCreate, shmOpenedInMap, walUnlinkedInDelete, shmUnlinkedInUnmap bool
 	syncsPerFile := map[string]int{}
+	writeProblems, readProblems, syncProblems := 0, 0, 0
 	for i, e := range m.Events {
 		if e.Kind != trace.EventVFS {
 			continue
 		}
 		c := e.VFS
-		calls := within(i)
-		if c.Method == "xOpen" {
-			calls = before(i)
-		}
-		st := stats[c.Method]
-		if st == nil {
-			st = &methodStats{syscalls: map[string]int{}}
-			stats[c.Method] = st
-		}
-		st.calls++
-		for _, s := range calls {
-			st.syscalls[s.Name]++
-		}
+		seen := syscallsOf(i)
+		calls[c.Method]++
 		switch c.Method {
 		case "xWrite":
-			if len(calls) == 1 && calls[0].Name == "pwrite64" && calls[0].Path == c.File && calls[0].Offset == c.Offset && calls[0].Length == c.Amount && calls[0].Result == c.Amount {
+			if len(seen) == 1 && seen[0].Name == "pwrite64" && seen[0].Path == c.File && seen[0].Offset == c.Offset && seen[0].Length == c.Amount && seen[0].Result == c.Amount {
 				writesOK++
 			} else {
-				writeProblems = append(writeProblems, fmt.Sprintf("%s encloses %v", c.String(), calls))
+				writeProblems++
+				problems.Row("xWrite", fmt.Sprintf("%s encloses %v", c.String(), seen))
 			}
 		case "xRead":
-			if len(calls) == 1 && calls[0].Name == "pread64" && calls[0].Path == c.File && calls[0].Offset == c.Offset && calls[0].Length == c.Amount {
+			if len(seen) == 1 && seen[0].Name == "pread64" && seen[0].Path == c.File && seen[0].Offset == c.Offset && seen[0].Length == c.Amount {
 				readsOK++
 			} else {
-				readProblems = append(readProblems, fmt.Sprintf("%s encloses %v", c.String(), calls))
+				readProblems++
+				problems.Row("xRead", fmt.Sprintf("%s encloses %v", c.String(), seen))
 			}
 		case "xSync":
 			syncCalls++
 			own := 0
-			for _, s := range calls {
+			for _, s := range seen {
 				if s.Name != "sync" {
 					continue
 				}
@@ -331,30 +319,31 @@ func analyze(m *trace.Merged, dir string) {
 				}
 			}
 			if own != 1 {
-				syncProblems = append(syncProblems, fmt.Sprintf("%s encloses %d syncs of its own file", c.String(), own))
+				syncProblems++
+				problems.Row("xSync", fmt.Sprintf("%s encloses %d syncs of its own file", c.String(), own))
 			}
 		case "xOpen":
 			if c.File == dbName+"-wal" {
-				for _, s := range calls {
+				for _, s := range seen {
 					if s.Name == "open" && s.Path == dbName+"-wal" && strings.Contains(s.Flags, "O_CREAT") {
 						walOpenedWithCreate = true
 					}
 				}
 			}
 		case "xShmMap":
-			for _, s := range calls {
+			for _, s := range seen {
 				if s.Name == "open" && s.Path == dbName+"-shm" && strings.Contains(s.Flags, "O_CREAT") {
 					shmOpenedInMap = true
 				}
 			}
 		case "xDelete":
-			for _, s := range calls {
+			for _, s := range seen {
 				if s.Name == "unlink" && s.Path == dbName+"-wal" {
 					walUnlinkedInDelete = true
 				}
 			}
 		case "xShmUnmap":
-			for _, s := range calls {
+			for _, s := range seen {
 				if s.Name == "unlink" && s.Path == dbName+"-shm" {
 					shmUnlinkedInUnmap = true
 				}
@@ -362,7 +351,7 @@ func analyze(m *trace.Merged, dir string) {
 		}
 	}
 
-	var outsideIO []string
+	outsideIO := 0
 	for _, i := range kept {
 		e := m.Events[i]
 		if e.Kind != trace.EventSyscall {
@@ -373,87 +362,48 @@ func analyze(m *trace.Merged, dir string) {
 			continue
 		}
 		if e.Enclosed < 0 {
-			outsideIO = append(outsideIO, syscallLine(*e.Syscall)+" (outside any VFS call)")
+			outsideIO++
+			problems.Row("outside", syscallLine(*e.Syscall)+" (outside any VFS call)")
 			continue
 		}
 		method := m.Events[e.Enclosed].VFS.Method
 		if method != "xRead" && method != "xWrite" && method != "xShmMap" {
-			outsideIO = append(outsideIO, syscallLine(*e.Syscall)+" inside "+method)
+			outsideIO++
+			problems.Row("outside", syscallLine(*e.Syscall)+" inside "+method)
 		}
 	}
 
-	fmt.Println()
-	fmt.Println("== each VFS method, the os_unix.c function behind it, and the syscalls seen while it ran ==")
-	fmt.Println("(xOpen: syscalls just before its line, because vfstrace prints xOpen after the real open returns)")
-	methods := make([]string, 0, len(stats))
-	for method := range stats {
-		methods = append(methods, method)
+	methods := set.Table("vfs_methods", "method", "unix_function", "calls")
+	names := make([]string, 0, len(calls))
+	for method := range calls {
+		names = append(names, method)
 	}
-	sort.Strings(methods)
-	for _, method := range methods {
-		st := stats[method]
-		names := make([]string, 0, len(st.syscalls))
-		for name := range st.syscalls {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		parts := make([]string, len(names))
-		for i, name := range names {
-			parts[i] = fmt.Sprintf("%s x%d", name, st.syscalls[name])
-		}
-		seen := strings.Join(parts, ", ")
-		if seen == "" {
-			seen = "no file syscall"
-		}
-		fmt.Printf("  %-24s %3d call(s)  %-26s -> %s\n", method, st.calls, unixFunction[method], seen)
+	sort.Strings(names)
+	for _, method := range names {
+		methods.Row(method, unixFunction[method], calls[method])
 	}
 
-	fmt.Println()
-	fmt.Println("== syncs ==")
-	files := make([]string, 0, len(syncsPerFile))
-	for f := range syncsPerFile {
-		files = append(files, f)
-	}
-	sort.Strings(files)
-	for _, f := range files {
-		fmt.Printf("  %s: %d sync(s), each inside one xSync of that file\n", f, syncsPerFile[f])
-	}
-	fmt.Printf("  directory (.): %d sync(s), no VFS call names the directory:\n", len(dirSyncs))
-	for _, d := range dirSyncs {
-		fmt.Printf("    %s\n", d)
-	}
-
-	fmt.Println()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		fatal("read dir", err)
 	}
+	filesLeft := set.Table("files_left", "name")
 	var left []string
 	for _, e := range entries {
+		if e.Name() == results.DirName {
+			continue
+		}
 		left = append(left, e.Name())
+		filesLeft.Row(e.Name())
 	}
-	fmt.Printf("files left in the directory after the CLI exits: %s\n", strings.Join(left, " "))
-	fmt.Println()
 
-	check(stats["xWrite"] != nil && len(writeProblems) == 0, fmt.Sprintf("each of the %d xWrite calls made exactly one pwrite64 to the same file, offset and length", writesOK))
-	for _, p := range writeProblems {
-		fmt.Printf("  %s\n", p)
-	}
-	check(stats["xRead"] != nil && len(readProblems) == 0, fmt.Sprintf("each of the %d xRead calls made exactly one pread64 of the same file, offset and length", readsOK))
-	for _, p := range readProblems {
-		fmt.Printf("  %s\n", p)
-	}
-	check(len(outsideIO) == 0, "every pread64/pwrite64/read/write/writev on the database, journal, WAL and shm files happened inside xRead, xWrite or xShmMap")
-	for _, p := range outsideIO {
-		fmt.Printf("  %s\n", p)
-	}
-	check(syncCalls > 0 && len(syncProblems) == 0, fmt.Sprintf("each of the %d xSync calls made exactly one fsync/fdatasync of its own file", syncCalls))
-	for _, p := range syncProblems {
-		fmt.Printf("  %s\n", p)
-	}
-	check(len(dirSyncs) == 2 && strings.Contains(dirSyncs[0], "-journal) number 1") && strings.Contains(dirSyncs[1], "-wal) number 1"), "the directory is synced twice, inside the first xSync of the new journal and of the new WAL (unixSync's one-time directory sync)")
-	check(walOpenedWithCreate, "the -wal file is created (O_CREAT) at its first use, by xOpen")
-	check(shmOpenedInMap, "the -shm file is created inside the first xShmMap")
-	check(walUnlinkedInDelete && shmUnlinkedInUnmap, "at the last close xDelete unlinks the -wal and xShmUnmap unlinks the -shm")
-	check(slices.Equal(left, []string{dbName}), "only the database file is left after the CLI exits")
+	set.Check("B", calls["xWrite"] > 0 && writeProblems == 0, fmt.Sprintf("each of the %d xWrite calls made exactly one pwrite64 to the same file, offset and length", writesOK))
+	set.Check("B", calls["xRead"] > 0 && readProblems == 0, fmt.Sprintf("each of the %d xRead calls made exactly one pread64 of the same file, offset and length", readsOK))
+	set.Check("B", outsideIO == 0, "every pread64/pwrite64/read/write/writev on the database, journal, WAL and shm files happened inside xRead, xWrite or xShmMap")
+	set.Check("C", syncCalls > 0 && syncProblems == 0, fmt.Sprintf("each of the %d xSync calls made exactly one fsync/fdatasync of its own file", syncCalls))
+	set.Check("C", len(dirSyncs) == 2 && strings.Contains(dirSyncs[0], "-journal) number 1") && strings.Contains(dirSyncs[1], "-wal) number 1"), "the directory is synced twice, inside the first xSync of the new journal and of the new WAL (unixSync's one-time directory sync)")
+	set.Check("D", walOpenedWithCreate, "the -wal file is created (O_CREAT) at its first use, by xOpen")
+	set.Check("D", shmOpenedInMap, "the -shm file is created inside the first xShmMap")
+	set.Check("D", walUnlinkedInDelete && shmUnlinkedInUnmap, "at the last close xDelete unlinks the -wal and xShmUnmap unlinks the -shm")
+	set.Check("D", slices.Equal(left, []string{dbName}), "only the database file is left after the CLI exits")
 }

@@ -1,0 +1,4 @@
+seq,model,role,depth,seed,interleavings,distinct_states,violating,walks,walk_steps,walk_violating,violation
+1,correct,under test,16,1,9595507962,44134,0,2000,120000,0,
+2,store-accepts-every-put,self-test,16,1,3536900716,38,451413240,0,0,0,the accepted object of epoch 1 at position 1 was overwritten
+3,resume-from-global-end,self-test,16,1,11458358774,360,170698606,0,0,0,epoch 1 was accepted at positions 3-3 after epoch 2 had been accepted

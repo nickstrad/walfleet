@@ -1,0 +1,3 @@
+seq,part,subject,step,exact
+2,A,captured database file alone,0,true
+6,A,our replay,8,false

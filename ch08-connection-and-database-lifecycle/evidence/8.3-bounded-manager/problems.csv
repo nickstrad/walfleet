@@ -1,0 +1,9 @@
+seq,observation,problem,why
+1,1,-wal holds 90672 bytes,the database file alone may lack committed transactions
+2,1,-shm exists (32768 bytes),a connection is open or did not close cleanly
+3,4,1 connection(s) still open in this process,"a statement, transaction or *sql.Conn was not closed, so database/sql closes the connection only when it is returned"
+4,7,-wal holds 90672 bytes,the database file alone may lack committed transactions
+5,7,-shm exists (32768 bytes),a connection is open or did not close cleanly
+6,11,-wal holds 90672 bytes,the database file alone may lack committed transactions
+7,11,-shm exists (32768 bytes),a connection is open or did not close cleanly
+8,13,database file missing,

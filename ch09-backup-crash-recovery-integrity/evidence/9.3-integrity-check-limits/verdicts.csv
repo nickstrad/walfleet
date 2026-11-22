@@ -1,0 +1,6 @@
+seq,file,site,caught_integrity,caught_quick,caught_e3,caught_manifest,expected_integrity,expected_quick,expected_e3,expected_manifest,e3_differences,differing_pages
+0,original.db,none (the undamaged file),false,false,false,false,false,false,false,false,0,
+1,site-1.db,b-tree page header (cell count),true,true,true,true,true,true,true,true,2,26
+2,site-2.db,unindexed column (events.note),false,false,true,true,false,false,true,true,1,27
+3,site-3.db,indexed column (events.account_id),true,false,true,true,true,false,true,true,2,27
+4,site-4.db,freelist leaf page,false,false,false,true,false,false,false,true,0,24

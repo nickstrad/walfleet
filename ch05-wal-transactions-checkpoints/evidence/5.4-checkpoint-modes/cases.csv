@@ -1,0 +1,13 @@
+seq,mode,reader,frames_before,reader_frame,busy,log_frames,checkpointed,wal_bytes,mx_frame,n_backfill,file_salt1,shm_salt1
+1,PASSIVE,no reader,38,,false,38,38,156592,38,38,same,same
+2,PASSIVE,reader behind,38,22,false,38,22,156592,38,22,same,same
+3,PASSIVE,reader current,38,,false,38,38,156592,38,38,same,same
+4,FULL,no reader,38,,false,38,38,156592,38,38,same,same
+5,FULL,reader behind,38,22,true,38,22,156592,38,22,same,same
+6,FULL,reader current,38,,false,38,38,156592,38,38,same,same
+7,RESTART,no reader,38,,false,38,38,156592,38,38,same,same
+8,RESTART,reader behind,38,22,true,38,22,156592,38,22,same,same
+9,RESTART,reader current,38,,true,38,38,156592,38,38,same,same
+10,TRUNCATE,no reader,38,,false,0,0,0,0,0,(no header),+1
+11,TRUNCATE,reader behind,38,22,true,38,22,156592,38,22,same,same
+12,TRUNCATE,reader current,38,,true,38,38,156592,38,38,same,same

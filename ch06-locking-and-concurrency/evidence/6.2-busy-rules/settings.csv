@@ -1,0 +1,6 @@
+part,journal_mode,busy_timeout_ms
+A,wal,0
+B,wal,0
+C,wal,120000
+D,delete,0
+E,wal,120000

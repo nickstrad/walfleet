@@ -1,0 +1,5 @@
+mode,run,path,pages,sha256
+wal,1,run-1/recipe.db,270,24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74
+wal,2,run-2/elsewhere/another-name.db,270,24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74
+delete,1,run-1/recipe-delete.db,270,0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57
+delete,2,run-2/recipe-delete.db,270,0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57

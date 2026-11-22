@@ -1,0 +1,33 @@
+seq,part,status,claim
+1,A,ok,"opening R0, reading the pragmas and closing left it byte-identical and at rest"
+2,A,ok,each of the 18 decoded header fields that has an oracle here (PRAGMA or .dbinfo) equals SQLite's own report of it; 1 field(s) have none (n/a)
+3,A,ok,bytes 96-99 read 3053004 (the library that last wrote the file)
+4,A,ok,bytes 18 and 19 are 2 and 2 in a WAL-mode file
+5,A,ok,"bytes 24-27 equal 92-95, so the in-header size at 28 is used"
+6,B,ok,after step 28 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
+7,B,ok,after step 29 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
+8,B,ok,after step 30 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
+9,B,ok,"rollback mode: bytes 24-27 and 92-95 each advance by exactly one per commit, on one connection"
+10,B,ok,closing the connection changed nothing in page 1
+11,C,ok,step 28: the current page 1 has 24-27 equal to 92-95 (30)
+12,C,ok,step 29: the current page 1 has 24-27 equal to 92-95 (30)
+13,C,ok,step 30: the current page 1 has 24-27 equal to 92-95 (30)
+14,C,ok,"WAL, one connection: every commit writes the same change counter 30 (base + 1), it does not advance per commit"
+15,C,ok,WAL: the database file's page 1 does not change at commit; the new page 1 is a frame in the -wal
+16,C,ok,the checkpoint at close copied the current page 1 into the file
+17,C,ok,WAL: each of the three UPDATEs changed one row and appended frames to the -wal
+18,C,ok,after the checkpoint at close the database file differs from the base
+19,C,ok,"WAL: commits that do not write page 1 leave every header byte unchanged, even the change counter, before and after the checkpoint"
+20,C,ok,"WAL: with another connection open, the file's page 1 still equals the base after three commits"
+21,C,ok,"WAL: each new connection reads page 1 afresh and writes counter + 1, so the counter advances once per connection that writes page 1"
+22,C,ok,closing the last connection checkpointed page 1 into the file and removed the -wal
+23,C,ok,"WAL, one connection, page 1 dropped from the cache before each commit: the counter advances once per commit (30, 31, 32), so C1's constant counter comes from page 1 staying cached, not from the connection"
+24,D,ok,PRAGMA journal_mode=WAL sets bytes 18 and 19 to 2
+25,D,ok,PRAGMA journal_mode=DELETE sets bytes 18 and 19 back to 1
+26,E,ok,agreeing counters: SQLite and our parser both trust the in-header size
+27,E,ok,disagreeing counters: both ignore bytes 28-31 and use the file size
+28,E,ok,an agreeing in-header size larger than the file is corruption to both
+29,E,ok,an in-header size of 0 is ignored by both
+30,F,ok,page size 512 is stored as 512 and decodes to the size asked for and to what SQLite reports
+31,F,ok,page size 4096 is stored as 4096 and decodes to the size asked for and to what SQLite reports
+32,F,ok,page size 65536 is stored as 1 and decodes to the size asked for and to what SQLite reports

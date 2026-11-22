@@ -1,0 +1,6 @@
+method,e1,e2,e3,e3_except_journal_mode,e1_after_vacuum_into
+closed-file copy,true,true,true,true,true
+backup API,false,true,true,true,false
+VACUUM INTO,false,false,false,true,true
+pages in a read transaction,true,true,true,true,true
+file + WAL under a held transaction,true,true,true,true,true

@@ -1,0 +1,102 @@
+mode,phase_no,seq,kind,nested,text
+delete,1,1,VFS,false,"xLock(t.db,SHARED) -> SQLITE_OK"
+delete,1,2,SYS,true,fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
+delete,1,3,SYS,true,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+delete,1,4,SYS,true,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
+delete,1,5,VFS,false,"xAccess(""t.db-journal"",0) -> SQLITE_OK, out=0"
+delete,1,6,VFS,false,"xRead(t.db,n=16,ofst=24) -> SQLITE_OK"
+delete,1,7,SYS,true,pread64 t.db off=24 len=16
+delete,1,8,VFS,false,"xAccess(""t.db-wal"",0) -> SQLITE_OK, out=0"
+delete,1,9,VFS,false,"xFileSize(t.db) -> SQLITE_OK, size=8192"
+delete,1,10,VFS,false,"xLock(t.db,RESERVED) -> SQLITE_OK"
+delete,1,11,SYS,true,fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
+delete,2,1,VFS,false,"xRead(t.db,n=4096,ofst=4096) -> SQLITE_OK"
+delete,2,2,SYS,true,pread64 t.db off=4096 len=4096
+delete,2,3,VFS,false,"xFileControl(t.db,HAS_MOVED) -> SQLITE_OK, 0"
+delete,2,4,SYS,false,open t.db-journal
+delete,2,5,VFS,false,"xOpen(t.db-journal,flags=0x806) -> SQLITE_OK"
+delete,2,6,VFS,false,xDeviceCharacteristics(t.db) -> 0x00009000
+delete,2,7,VFS,false,"xWrite(t.db-journal,n=512,ofst=0) -> SQLITE_OK"
+delete,2,8,SYS,true,pwrite64 t.db-journal off=0 len=512
+delete,2,9,VFS,false,"xWrite(t.db-journal,n=4,ofst=512) -> SQLITE_OK"
+delete,2,10,SYS,true,pwrite64 t.db-journal off=512 len=4
+delete,2,11,VFS,false,"xWrite(t.db-journal,n=4096,ofst=516) -> SQLITE_OK"
+delete,2,12,SYS,true,pwrite64 t.db-journal off=516 len=4096
+delete,2,13,VFS,false,"xWrite(t.db-journal,n=4,ofst=4612) -> SQLITE_OK"
+delete,2,14,SYS,true,pwrite64 t.db-journal off=4612 len=4
+delete,3,1,VFS,false,"xLock(t.db,EXCLUSIVE) -> SQLITE_OK"
+delete,3,2,SYS,true,fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
+delete,3,3,SYS,true,fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
+delete,3,4,VFS,false,"xWrite(t.db-journal,n=4,ofst=4616) -> SQLITE_OK"
+delete,3,5,SYS,true,pwrite64 t.db-journal off=4616 len=4
+delete,3,6,VFS,false,"xWrite(t.db-journal,n=4096,ofst=4620) -> SQLITE_OK"
+delete,3,7,SYS,true,pwrite64 t.db-journal off=4620 len=4096
+delete,3,8,VFS,false,"xWrite(t.db-journal,n=4,ofst=8716) -> SQLITE_OK"
+delete,3,9,SYS,true,pwrite64 t.db-journal off=8716 len=4
+delete,3,10,VFS,false,xDeviceCharacteristics(t.db) -> 0x00009000
+delete,3,11,VFS,false,"xRead(t.db-journal,n=8,ofst=9216) -> SQLITE_IOERR_SHORT_READ"
+delete,3,12,SYS,true,pread64 t.db-journal off=9216 len=8 = 0
+delete,3,13,VFS,false,"xSync(t.db-journal,FULL) -> 0"
+delete,3,14,SYS,true,sync t.db-journal
+delete,3,15,SYS,true,open .
+delete,3,16,SYS,true,sync .
+delete,3,17,SYS,true,close .
+delete,3,18,VFS,false,"xWrite(t.db-journal,n=12,ofst=0) -> SQLITE_OK"
+delete,3,19,SYS,true,pwrite64 t.db-journal off=0 len=12
+delete,3,20,VFS,false,"xSync(t.db-journal,FULL) -> 0"
+delete,3,21,SYS,true,sync t.db-journal
+delete,3,22,VFS,false,"xWrite(t.db,n=4096,ofst=0) -> SQLITE_OK"
+delete,3,23,SYS,true,pwrite64 t.db off=0 len=4096
+delete,3,24,VFS,false,"xWrite(t.db,n=4096,ofst=4096) -> SQLITE_OK"
+delete,3,25,SYS,true,pwrite64 t.db off=4096 len=4096
+delete,3,26,VFS,false,"xFileControl(t.db,SYNC) -> SQLITE_NOTFOUND"
+delete,3,27,VFS,false,"xSync(t.db,FULL) -> 0"
+delete,3,28,SYS,true,sync t.db
+delete,3,29,VFS,false,xClose(t.db-journal) -> SQLITE_OK
+delete,3,30,SYS,true,close t.db-journal
+delete,3,31,VFS,false,"xDelete(""t.db-journal"",0) -> SQLITE_OK"
+delete,3,32,SYS,true,unlink t.db-journal
+delete,3,33,VFS,false,"xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND"
+delete,3,34,VFS,false,"xUnlock(t.db,SHARED) -> SQLITE_OK"
+delete,3,35,SYS,true,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+delete,3,36,SYS,true,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
+delete,3,37,VFS,false,xDeviceCharacteristics(t.db) -> 0x00009000
+delete,3,38,VFS,false,"xUnlock(t.db,NONE) -> SQLITE_OK"
+delete,3,39,SYS,true,fcntl t.db F_SETLK F_UNLCK start=0 len=0
+wal,1,1,VFS,false,xShmBarrier(t.db)
+wal,1,2,VFS,false,"xShmLock(t.db,ofst=3(READ0),n=1,LOCK|SHARED) -> SQLITE_OK"
+wal,1,3,SYS,true,fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1
+wal,1,4,VFS,false,xShmBarrier(t.db)
+wal,1,5,VFS,false,"xFileSize(t.db) -> SQLITE_OK, size=8192"
+wal,1,6,VFS,false,"xShmLock(t.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK"
+wal,1,7,SYS,true,fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1
+wal,2,1,VFS,false,"xRead(t.db,n=4096,ofst=4096) -> SQLITE_OK"
+wal,2,2,SYS,true,pread64 t.db off=4096 len=4096
+wal,3,1,VFS,false,"xShmLock(t.db,ofst=3(READ0),n=1,UNLOCK|SHARED) -> SQLITE_OK"
+wal,3,2,SYS,true,fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1
+wal,3,3,VFS,false,"xShmLock(t.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK"
+wal,3,4,SYS,true,fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1
+wal,3,5,VFS,false,"xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK"
+wal,3,6,SYS,true,fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1
+wal,3,7,VFS,false,"xShmLock(t.db,ofst=4(READ1),n=1,LOCK|SHARED) -> SQLITE_OK"
+wal,3,8,SYS,true,fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1
+wal,3,9,VFS,false,xShmBarrier(t.db)
+wal,3,10,VFS,false,"xWrite(t.db-wal,n=32,ofst=0) -> SQLITE_OK"
+wal,3,11,SYS,true,pwrite64 t.db-wal off=0 len=32
+wal,3,12,VFS,false,"xSync(t.db-wal,FULL) -> 0"
+wal,3,13,SYS,true,sync t.db-wal
+wal,3,14,SYS,true,open .
+wal,3,15,SYS,true,sync .
+wal,3,16,SYS,true,close .
+wal,3,17,VFS,false,"xWrite(t.db-wal,n=24,ofst=32) -> SQLITE_OK"
+wal,3,18,SYS,true,pwrite64 t.db-wal off=32 len=24
+wal,3,19,VFS,false,"xWrite(t.db-wal,n=4096,ofst=56) -> SQLITE_OK"
+wal,3,20,SYS,true,pwrite64 t.db-wal off=56 len=4096
+wal,3,21,VFS,false,"xSync(t.db-wal,FULL) -> 0"
+wal,3,22,SYS,true,sync t.db-wal
+wal,3,23,VFS,false,xShmBarrier(t.db)
+wal,3,24,VFS,false,"xShmLock(t.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK"
+wal,3,25,SYS,true,fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1
+wal,3,26,VFS,false,"xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND"
+wal,3,27,VFS,false,"xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|SHARED) -> SQLITE_OK"
+wal,3,28,SYS,true,fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1

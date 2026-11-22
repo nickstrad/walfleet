@@ -1,0 +1,7 @@
+step,label,sql
+1,set WAL mode,PRAGMA journal_mode=WAL;
+2,set synchronous FULL,PRAGMA synchronous=FULL;
+3,create a table,"CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT NOT NULL);"
+4,commit one insert,"INSERT INTO t(id, v) VALUES(1, 'one');"
+5,checkpoint,PRAGMA wal_checkpoint(TRUNCATE);
+6,close,(end of input: the CLI closes the database)

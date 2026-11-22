@@ -1,0 +1,5 @@
+seq,name,value
+1,schema cookie of the backup,1
+2,schema cookie of the source,4
+3,journal_mode of the VACUUM INTO copy,rollback
+4,journal_mode of the source,wal

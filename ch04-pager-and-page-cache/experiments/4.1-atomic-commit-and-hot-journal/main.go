@@ -5,10 +5,9 @@
 // happens when a hot journal is lost, and locates the exact commit point in
 // DELETE, TRUNCATE, and PERSIST modes.
 //
-// Run from the repo root (Linux for strace parts; macOS runs parts A–C and an
-// in-process fallback, or use docker compose run --rm lab):
-//
-//	go run ./ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-journal
+// It prints only its verdict. The measurements go to CSV tables that
+// report.sql presents: go run ./cmd/course run 4.1 (the strace parts need
+// Linux; the lab container has it).
 package main
 
 import (
@@ -33,6 +32,7 @@ import (
 	"github.com/nickstrad/walfleet/internal/dbfile"
 	"github.com/nickstrad/walfleet/internal/journalfile"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 )
@@ -47,25 +47,56 @@ const (
 )
 
 var (
-	failures  []string
 	stepFlag  = flag.Int("step", 3, "recipe step whose commit is traced and killed (the pre-step state is the step before it)")
 	exactFlag = flag.Int("exact-step", 1, "second recipe step, killed at every point too, whose pre-step state has no freelist pages (0 skips it)")
 	workers   = flag.Int("workers", 4, "kill runs executed in parallel")
 )
 
+// Every measurement goes to a CSV table in <work dir>/results/. report.sql,
+// next to this file, presents the tables; "go run ./cmd/course run 4.1" runs both.
+var (
+	set    *results.Set
+	tables struct {
+		parts, headerModes, creations, creationCalls, steps, states, journals, journalRecords, liveRollback *results.Table
+		commits, commitCalls, twins, twinDiffs, kills, crashes, reopens, commitPoints, info, infoKills      *results.Table
+	}
+	creationSeq, journalSeq, commitSeq, crashSeq, reopenSeq, infoSeq int
+)
+
+var journalColumns = []string{"journal_bytes", "first_byte", "hot", "header", "record_count", "initial_pages", "sector_size", "page_size", "records", "record_pages", "checksum_failures", "trailing_bytes"}
+
+func openTables() {
+	tables.parts = set.Table("parts", "part", "what", "status")
+	tables.headerModes = set.Table("header_modes", "seq", "stage", "journal_mode", "byte_18", "byte_19")
+	tables.creations = set.Table("creations", "seq", "opener", "statement", "journal_calls", "wal_writes")
+	tables.creationCalls = set.Table("creation_calls", "creation_seq", "n", "call")
+	tables.steps = set.Table("steps", "step", "pre_step", "recipe", "schema", "inserts", "updates", "deletes", "indexes")
+	tables.states = set.Table("states", "step", "state", "recipe_step", "pages", "sha256_prefix", "freelist_leaves")
+	tables.journals = set.Table("journals", append([]string{"seq", "part", "label"}, journalColumns...)...)
+	tables.journalRecords = set.Table("journal_records", "seq", "file_offset", "page", "role", "checksum", "same_as_pre_step")
+	tables.liveRollback = set.Table("live_rollback", "file_after", "journal_left")
+	tables.commits = set.Table("commits", "seq", "part", "step", "journal_mode", "synchronous", "sequence", "journaled_pages", "record_writes", "db_page_writes", "syncs", "sync_targets")
+	tables.commitCalls = set.Table("commit_calls", "commit_seq", "n", "kind", "call")
+	tables.twins = set.Table("twins", "synchronous", "go_calls", "cli_calls", "identical", "cli_leaves_post_step")
+	tables.twinDiffs = set.Table("twin_diffs", "synchronous", "n", "go_call", "cli_call")
+	tables.kills = set.Table("kills", append(append([]string{"part", "step", "journal_mode", "synchronous", "kill_no", "syscall", "kind", "landed_ok", "landed", "db_file", "db_pages", "differ_pre", "differ_post"}, journalColumns...),
+		"playback", "playback_pages", "truncate_to", "outcome", "outcome_name", "outcome_pages", "recipe_match", "integrity", "journal_after", "covered")...)
+	tables.crashes = set.Table("crashes", "seq", "crash", "killed_on", "db_write_no", "db_writes", "db_file", "db_pages", "differ_pre", "differ_post")
+	tables.reopens = set.Table("reopens", "seq", "scenario", "open_error", "integrity", "user_version", "accounts", "documents", "events", "outcome_name", "outcome_pages")
+	tables.commitPoints = set.Table("commit_points", "seq", "journal_mode", "commit_point", "killed_on_entry", "next_kind", "killed_on_next")
+	tables.info = set.Table("info", "seq", "name", "value")
+	tables.infoKills = set.Table("info_kills", "part", "step", "journal_mode", "synchronous", "kill_no", "journal_nonce", "run_ms")
+}
+
+func info(name string, value any) {
+	infoSeq++
+	tables.info.Row(infoSeq, name, value)
+}
+
 // init pins the main goroutine to one OS thread so strace's per-thread syscall
 // counter observes the child writer's SQLite syscalls in a deterministic order.
 func init() {
 	runtime.LockOSThread()
-}
-
-func check(ok bool, claim string) {
-	status := "ok"
-	if !ok {
-		status = "FAILED"
-		failures = append(failures, claim)
-	}
-	fmt.Printf("check %s: %s\n", status, claim)
 }
 
 func fatal(what string, err error) {
@@ -199,14 +230,17 @@ func newStates(ctx context.Context, dir string, r recipe.Recipe, k int, hashes [
 	return s
 }
 
-func (s *states) classifyImage(image []byte) string {
+// imageColumns are the db_file, db_pages, differ_pre and differ_post columns
+// for a database file found on disk after a kill.
+func (s *states) imageColumns(image []byte) []any {
+	state := "torn"
 	switch {
 	case bytes.Equal(image, s.pre):
-		return "pre-step bytes"
+		state = "pre-step"
 	case bytes.Equal(image, s.post):
-		return "post-step bytes"
+		state = "post-step"
 	}
-	return fmt.Sprintf("torn: %d pages, %d differ from pre-step, %d differ from post-step", len(image)/pageSize, len(differingPages(image, s.pre)), len(differingPages(image, s.post)))
+	return []any{state, len(image) / pageSize, len(differingPages(image, s.pre)), len(differingPages(image, s.post))}
 }
 
 func (s *states) matchFile(path string) recipe.Match {
@@ -264,33 +298,50 @@ func (o outcome) before() bool {
 	return o.kind == outcomePre || o.kind == outcomePreFreelist
 }
 
-func (o outcome) letter() byte {
+func (o outcome) letter() string {
 	switch o.kind {
 	case outcomePre:
-		return 'B'
+		return "B"
 	case outcomePreFreelist:
-		return 'b'
+		return "b"
 	case outcomePost:
-		return 'A'
+		return "A"
 	}
-	return '?'
+	return "?"
 }
 
-func (o outcome) describe(s *states) string {
+func (o outcome) name() string {
 	switch o.kind {
 	case outcomePre:
-		return fmt.Sprintf("pre-step, exact bytes (recipe step %d)", s.preStep)
+		return "pre-step exact"
 	case outcomePreFreelist:
-		return fmt.Sprintf("pre-step except page(s) %s, which are freelist leaves in the pre-step file (unused bytes); VACUUM INTO output equals the pre-step's", pageList(o.pages))
+		return "pre-step except freelist leaves"
 	case outcomePost:
-		return fmt.Sprintf("post-step, exact bytes (recipe step %d)", s.step)
+		return "post-step exact"
 	case outcomeUnreadable:
 		return "unreadable"
 	}
-	if o.match.Found() {
-		return "a third state: recipe " + o.match.String()
+	return "third state"
+}
+
+// recipeMatch names the recipe state a third-state file equals, if any.
+func (o outcome) recipeMatch() any {
+	if o.kind != outcomeThird {
+		return nil
 	}
-	return fmt.Sprintf("a third state: differs from pre-step in page(s) %s, matches no recipe state", pageList(o.pages))
+	return o.match.String()
+}
+
+func (o outcome) shortName() string {
+	switch o.kind {
+	case outcomePre:
+		return "before (pre-step)"
+	case outcomePreFreelist:
+		return "before (pre-step, logical)"
+	case outcomePost:
+		return "after (post-step)"
+	}
+	return "neither"
 }
 
 func subset(pages, set []uint32) bool {
@@ -307,7 +358,7 @@ func pageList(pages []uint32) string {
 	for i, p := range pages {
 		parts[i] = strconv.Itoa(int(p))
 	}
-	return "[" + strings.Join(parts, " ") + "]"
+	return strings.Join(parts, " ")
 }
 
 func pageAt(image []byte, offset int) []byte {
@@ -597,73 +648,71 @@ func journalInfo(path string) (*journalfile.Journal, bool) {
 	return j, true
 }
 
-func journalSummary(j *journalfile.Journal, present bool) string {
+// journalRow returns the values of journalColumns for a -journal file, or
+// NULLs when there is none.
+func journalRow(j *journalfile.Journal, present bool) []any {
+	row := make([]any, len(journalColumns))
 	if !present {
-		return "no -journal"
+		return row
 	}
+	row[0] = j.Size
 	if j.Size == 0 {
-		return "-journal 0 bytes (not hot)"
+		row[2] = false
+		return row
 	}
-	var b strings.Builder
-	hot := "not hot"
-	if j.LooksHot() {
-		hot = "hot"
-	}
-	fmt.Fprintf(&b, "-journal %d bytes, first byte 0x%02x (%s)", j.Size, j.FirstByte, hot)
+	row[1] = j.FirstByte
+	row[2] = j.LooksHot()
 	if len(j.Segments) == 0 {
-		return b.String()
+		return row
 	}
 	h := j.Segments[0].Header
-	fmt.Fprintf(&b, ", header %s", h.State)
-	switch h.State {
-	case journalfile.HeaderSynced:
-		fmt.Fprintf(&b, " (record count %d)", h.RecordCount)
-	case journalfile.HeaderNoSync:
-		b.WriteString(" (record count 0xffffffff: read to end of file)")
-	case journalfile.HeaderNotYetSynced:
-		b.WriteString(" (magic and record count still zero)")
-	case journalfile.HeaderZeroed:
-		return b.String()
+	row[3] = h.State.String()
+	if h.State == journalfile.HeaderZeroed {
+		return row
 	}
+	row[4] = h.RecordCount
 	if h.State == journalfile.HeaderSynced || h.State == journalfile.HeaderNoSync || h.State == journalfile.HeaderNotYetSynced {
-		fmt.Fprintf(&b, ", initial size %d pages, sector %d, page %d", h.InitialPages, h.SectorSize, h.PageSize)
+		row[5], row[6], row[7] = h.InitialPages, h.SectorSize, h.PageSize
 	}
-	fmt.Fprintf(&b, ", %d complete record(s) %s, %d checksum failure(s)", j.RecordsPresent(), recordPages(j), j.ChecksumFailures())
-	if j.TrailingByte > 0 {
-		fmt.Fprintf(&b, ", %d byte(s) of an incomplete record", j.TrailingByte)
-	}
-	return b.String()
+	row[8], row[9], row[10], row[11] = j.RecordsPresent(), pageList(recordPages(j)), j.ChecksumFailures(), j.TrailingByte
+	return row
 }
 
-func recordPages(j *journalfile.Journal) string {
+func writeJournal(part, label string, j *journalfile.Journal, present bool) {
+	journalSeq++
+	tables.journals.Row(append([]any{journalSeq, part, label}, journalRow(j, present)...)...)
+}
+
+func recordPages(j *journalfile.Journal) []uint32 {
 	var pages []uint32
 	for _, s := range j.Segments {
 		for _, r := range s.Records {
 			pages = append(pages, r.Page)
 		}
 	}
-	return pageList(pages)
+	return pages
 }
 
-func playbackSummary(j *journalfile.Journal, present bool) string {
+// playbackRow returns the playback, playback_pages and truncate_to columns:
+// what SQLite does with the -journal when it reopens the database.
+func playbackRow(j *journalfile.Journal, present bool) []any {
 	if !present {
-		return "nothing to roll back"
+		return []any{"no journal", nil, nil}
 	}
 	p := j.Playback()
 	if !p.Hot {
-		return "ignores it (not hot)"
+		return []any{"ignored (not hot)", nil, nil}
 	}
 	if len(p.Pages) == 0 {
-		return fmt.Sprintf("hot, but restores no page (%s)", p.StopReason)
+		return []any{"hot, restores no page: " + p.StopReason, nil, nil}
 	}
-	return fmt.Sprintf("rolls back: writes pages %s from the journal, truncates to %d pages", pageList(p.Pages), p.TruncateTo)
+	return []any{"rolled back", pageList(p.Pages), p.TruncateTo}
 }
 
 type killResult struct {
 	target        op
 	landed        string
 	landedOK      bool
-	dbBefore      string
 	dbBeforeImage []byte
 	journal       *journalfile.Journal
 	journalThere  bool
@@ -704,7 +753,6 @@ func runKill(ctx context.Context, dir string, s *states, journalMode, synchronou
 		fatal("read killed db", err)
 	}
 	result.dbBeforeImage = image
-	result.dbBefore = s.classifyImage(image)
 	result.journal, result.journalThere = journalInfo(path + "-journal")
 	if result.journalThere && len(result.journal.Segments) > 0 {
 		result.nonce = result.journal.Segments[0].Header.Nonce
@@ -722,6 +770,26 @@ func runKill(ctx context.Context, dir string, s *states, journalMode, synchronou
 		result.journalAfter = fmt.Sprintf("cold -journal left (%d bytes, first byte 0x%02x)", after.Size, after.FirstByte)
 	}
 	return result
+}
+
+// writeKill writes one row of the kills table and its info_kills row.
+// covered is nil for kills after the commit point, where it is not checked.
+func writeKill(part string, s *states, journalMode, synchronous string, killNo int, r killResult, covered any) {
+	var landed any
+	if !r.landedOK {
+		landed = r.landed
+	}
+	row := []any{part, s.step, journalMode, synchronous, killNo, r.target.text, r.target.kind, r.landedOK, landed}
+	row = append(row, s.imageColumns(r.dbBeforeImage)...)
+	row = append(row, journalRow(r.journal, r.journalThere)...)
+	row = append(row, playbackRow(r.journal, r.journalThere)...)
+	row = append(row, r.after.letter(), r.after.name(), pageList(r.after.pages), r.after.recipeMatch(), r.integrity, r.journalAfter, covered)
+	tables.kills.Row(row...)
+	var nonce any
+	if r.journalThere && len(r.journal.Segments) > 0 {
+		nonce = r.nonce
+	}
+	tables.infoKills.Row(part, s.step, journalMode, synchronous, killNo, nonce, r.duration.Milliseconds())
 }
 
 func reopen(ctx context.Context, path string) (string, string) {
@@ -869,28 +937,23 @@ func twinCheck(ctx context.Context, cli sqlitex.CLI, dir string, s *states, sync
 	}
 	goOps, cliOps := writesAndSyncs(goWindow.ops), writesAndSyncs(cliWindow.ops)
 	same := slices.Equal(goOps, cliOps)
-	if !same {
-		for i := range max(len(goOps), len(cliOps)) {
-			var g, c string
-			if i < len(goOps) {
-				g = goOps[i]
-			}
-			if i < len(cliOps) {
-				c = cliOps[i]
-			}
-			if g != c {
-				fmt.Printf("  twin #%d Go: %-45s CLI: %s\n", i+1, g, c)
-			}
+	for i := range max(len(goOps), len(cliOps)) {
+		var g, c any
+		if i < len(goOps) {
+			g = goOps[i]
+		}
+		if i < len(cliOps) {
+			c = cliOps[i]
+		}
+		if g != c {
+			tables.twinDiffs.Row(synchronous, i+1, g, c)
 		}
 	}
-	verdict := "identical to the Go driver's"
-	if !same {
-		verdict = "DIFFERENT from the Go driver's"
-	}
-	fmt.Printf("twin check: the C CLI running the same step as literal SQL makes %d writes, syncs and unlinks, %s\n", len(cliOps), verdict)
-	fmt.Printf("INFO: CLI sync syscall: %s\n", syncSyscallNames(cliWindow.ops))
+	info(fmt.Sprintf("sync syscall, C CLI, step %d delete %s", s.step, synchronous), syncSyscallNames(cliWindow.ops))
 	match := s.matchFile(path)
-	check(same && match.Step == s.step && match.Exact, fmt.Sprintf("synchronous=%s: the C CLI makes the same writes, syncs and unlink in the same order and leaves the post-step bytes", synchronous))
+	postStep := match.Step == s.step && match.Exact
+	tables.twins.Row(synchronous, len(goOps), len(cliOps), same, postStep)
+	set.Check("D", same && postStep, fmt.Sprintf("synchronous=%s: the C CLI makes the same writes, syncs and unlink in the same order and leaves the post-step bytes", synchronous))
 }
 
 func writesAndSyncs(ops []op) []string {
@@ -916,51 +979,41 @@ func syncSyscallNames(ops []op) string {
 	return strings.Join(names, ",")
 }
 
-type levelResult struct {
-	level   string
-	results []killResult
-}
-
-func checkBaseline(w window, image []byte, s *states, journalMode, synchronous string) {
+// checkBaseline writes the traced commit to the commits and commit_calls
+// tables and checks its shape.
+func checkBaseline(part string, w window, image []byte, s *states, journalMode, synchronous string) {
 	sequence := collapse(w.ops)
 	records, dbPages := countKind(w.ops, "journal-record"), countKind(w.ops, "db-page")
 	syncs := syncTargets(w.ops)
-	fmt.Printf("sequence: %s\n", sequence)
-	fmt.Printf("journaled pages %d (%d record writes), database page writes %d, syncs %d %v\n", records/3, records, dbPages, len(syncs), syncs)
-	fmt.Printf("INFO: sync syscall used by the Go driver: %s\n", syncSyscallNames(w.ops))
+	commitSeq++
+	tables.commits.Row(commitSeq, part, s.step, journalMode, synchronous, sequence, records/3, records, dbPages, len(syncs), strings.Join(syncs, " "))
+	for i, o := range w.ops {
+		tables.commitCalls.Row(commitSeq, i+1, o.kind, o.text)
+	}
+	info(fmt.Sprintf("sync syscall, Go driver, step %d %s %s", s.step, journalMode, synchronous), syncSyscallNames(w.ops))
 	label := fmt.Sprintf("step %d, journal_mode=%s, synchronous=%s", s.step, journalMode, synchronous)
-	check(sequence == expectedSequence(journalMode, synchronous, records, dbPages), label+": order is "+expectedSequence(journalMode, synchronous, records, dbPages))
+	set.Check(part, sequence == expectedSequence(journalMode, synchronous, records, dbPages), label+": order is "+expectedSequence(journalMode, synchronous, records, dbPages))
 	if journalMode == sqlitex.JournalDelete {
 		wantSyncs := map[string]int{sqlitex.SyncFull: 4, sqlitex.SyncNormal: 3, sqlitex.SyncOff: 0}[synchronous]
-		check(len(syncs) == wantSyncs, fmt.Sprintf("%s: %d syncs per commit (journal, directory and database syncs counted)", label, wantSyncs))
+		set.Check(part, len(syncs) == wantSyncs, fmt.Sprintf("%s: %d syncs per commit (journal, directory and database syncs counted)", label, wantSyncs))
 	}
-	check(records > 0 && recordTriplesWellFormed(w.ops), label+": each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)")
-	check(bytes.Equal(image, s.post), label+": the traced commit leaves exactly the post-step bytes")
+	set.Check(part, records > 0 && recordTriplesWellFormed(w.ops), label+": each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)")
+	set.Check(part, bytes.Equal(image, s.post), label+": the traced commit leaves exactly the post-step bytes")
 }
 
-func runLevel(ctx context.Context, base string, s *states, synchronous string, cli sqlitex.CLI, haveCLI, verbose bool) levelResult {
+// runLevel traces one commit of s at one synchronous level, then kills it at
+// every write, sync and unlink. The twin check against the C CLI runs in part D.
+func runLevel(ctx context.Context, part, base string, s *states, synchronous string, cli sqlitex.CLI, haveCLI bool) []op {
 	levelDir := filepath.Join(base, strings.ToLower(synchronous))
-	if verbose {
-		fmt.Printf("\n== D. step %d, synchronous=%s: one commit traced, then killed at every write and sync ==\n", s.step, synchronous)
-	} else {
-		fmt.Printf("\n-- step %d, synchronous=%s --\n", s.step, synchronous)
-	}
 	w, image := baseline(ctx, filepath.Join(levelDir, "baseline"), s, sqlitex.JournalDelete, synchronous)
-	if verbose {
-		fmt.Printf("the commit's syscalls on the database directory (writer thread, between the step's start and its return):\n")
-		for i, o := range w.ops {
-			fmt.Printf("  %3d %-16s %s\n", i+1, o.kind, o.text)
-		}
-	}
-	checkBaseline(w, image, s, sqlitex.JournalDelete, synchronous)
-	if haveCLI && verbose {
+	checkBaseline(part, w, image, s, sqlitex.JournalDelete, synchronous)
+	if haveCLI && part == "D" {
 		twinCheck(ctx, cli, filepath.Join(levelDir, "twin"), s, synchronous, w)
 	}
 
-	fmt.Printf("kill points: %d (every pwrite64, sync and unlink of the commit, then the first syscall after the step returned)\n", len(w.targets))
 	started := time.Now()
 	results := runKills(ctx, levelDir, s, sqlitex.JournalDelete, synchronous, w.targets)
-	fmt.Printf("INFO: %d kill runs took %s with %d workers\n", len(results), time.Since(started).Round(time.Millisecond), max(1, *workers))
+	info(fmt.Sprintf("step %d %s: %d kill runs with %d workers, seconds", s.step, synchronous, len(results), max(1, *workers)), time.Since(started).Round(time.Millisecond).Seconds())
 	unlinkIndex := -1
 	for i, r := range results {
 		if r.target.kind == "journal-unlink" {
@@ -970,55 +1023,41 @@ func runLevel(ctx context.Context, base string, s *states, synchronous string, c
 	allLanded, neverThird, integrityOK, coveredOK := true, true, true, true
 	flipOK := unlinkIndex >= 0
 	exactOnly := true
-	beforeExact, beforeFreelist, after := 0, 0, 0
 	for i, r := range results {
-		if verbose {
-			fmt.Printf("kill %02d on entry to %-38s [%s]\n", i+1, r.target.text, r.target.kind)
-			fmt.Printf("    on disk:  database %s\n", r.dbBefore)
-			fmt.Printf("              %s\n", journalSummary(r.journal, r.journalThere))
-			fmt.Printf("              SQLite on reopen %s\n", playbackSummary(r.journal, r.journalThere))
-			fmt.Printf("    reopened: %s; integrity_check %s; %s\n", r.after.describe(s), r.integrity, r.journalAfter)
-		}
-		if r.journalThere && len(r.journal.Segments) > 0 {
-			fmt.Printf("INFO: step %d %s kill %02d journal nonce 0x%08x, run %s\n", s.step, synchronous, i+1, r.nonce, r.duration.Round(time.Millisecond))
-		}
 		if !r.landedOK {
 			allLanded = false
-			fmt.Printf("    kill %02d landed on %q, wanted %q\n", i+1, r.landed, r.target.text)
 		}
 		if r.integrity != "ok" {
 			integrityOK = false
 		}
 		switch r.after.kind {
-		case outcomePre:
-			beforeExact++
+		case outcomePre, outcomePost:
 		case outcomePreFreelist:
-			beforeFreelist++
 			exactOnly = false
-		case outcomePost:
-			after++
 		default:
 			neverThird, exactOnly = false, false
 		}
 		if (i <= unlinkIndex && !r.after.before()) || (i > unlinkIndex && r.after.kind != outcomePost) {
 			flipOK = false
 		}
-		if i <= unlinkIndex && !covered(r, s) {
-			coveredOK = false
-			fmt.Printf("    kill %02d: the journal does not cover every changed page of the database file\n", i+1)
+		var isCovered any
+		if i <= unlinkIndex {
+			ok := covered(r, s)
+			coveredOK = coveredOK && ok
+			isCovered = ok
 		}
+		writeKill(part, s, sqlitex.JournalDelete, synchronous, i+1, r, isCovered)
 	}
 	label := fmt.Sprintf("step %d, synchronous=%s", s.step, synchronous)
-	fmt.Printf("outcomes: %d pre-step exact, %d pre-step except reused freelist leaves, %d post-step exact, %d other\n", beforeExact, beforeFreelist, after, len(results)-beforeExact-beforeFreelist-after)
-	check(allLanded, label+": every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)")
-	check(neverThird, label+": every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)")
+	set.Check(part, allLanded, label+": every kill landed on the intended syscall (strace saw it unfinished and the child died of SIGKILL)")
+	set.Check(part, neverThird, label+": every reopened database is the pre-step or the post-step state, never a third (pre-step allows reused freelist-leaf pages, see above)")
 	if len(s.preFreeLeaves) == 0 {
-		check(exactOnly, label+": the pre-step file has no freelist, and every reopened database equals the pre-step or post-step bytes exactly")
+		set.Check(part, exactOnly, label+": the pre-step file has no freelist, and every reopened database equals the pre-step or post-step bytes exactly")
 	}
-	check(flipOK, label+": every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)")
-	check(integrityOK, label+": integrity_check is ok after every reopen")
-	check(coveredOK, label+": for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves")
-	return levelResult{level: synchronous, results: results}
+	set.Check(part, flipOK, label+": every kill up to and including the journal unlink gives pre-step; the kill after it gives post-step (the unlink is the commit point)")
+	set.Check(part, integrityOK, label+": integrity_check is ok after every reopen")
+	set.Check(part, coveredOK, label+": for every kill up to the commit point, whenever the database file differs from pre-step before reopen, the journal is hot and its records cover every changed page except pages appended past the original size (removed by truncation) and reused freelist leaves")
+	return w.targets
 }
 
 // covered verifies that whenever a pre-commit crash leaves modified bytes in
@@ -1050,18 +1089,6 @@ func covered(r killResult, s *states) bool {
 		}
 	}
 	return true
-}
-
-func printSummary(s *states, levels []levelResult) {
-	fmt.Printf("\n== summary for step %d: reopened state per kill point, in commit order ==\n", s.step)
-	for _, level := range levels {
-		var line strings.Builder
-		for _, r := range level.results {
-			line.WriteByte(r.after.letter())
-		}
-		fmt.Printf("synchronous=%-6s %s\n", level.level, line.String())
-	}
-	fmt.Printf("(B = pre-step exact bytes, b = pre-step except reused freelist leaves, A = post-step exact bytes, ? = anything else; the last B or b is the kill on entry to the journal unlink)\n")
 }
 
 func journalOpsIn(calls []trace.Syscall) []string {
@@ -1110,7 +1137,6 @@ func segmentsByMarkers(log *trace.StraceLog, dir, prefix string, count int) [][]
 // switching a new file to WAL—including inside sqlitex.Open—writes page 1
 // through a rollback -journal before WAL mode takes effect.
 func partA(ctx context.Context, base string) {
-	fmt.Printf("\n== A. where a WAL-default platform meets rollback mode ==\n")
 	dir := filepath.Join(base, "a")
 	mkdir(dir)
 	path := filepath.Join(dir, "plain.db")
@@ -1123,8 +1149,8 @@ func partA(ctx context.Context, base string) {
 	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil {
 		fatal("journal_mode", err)
 	}
-	fmt.Printf("a new file opened by the driver with no settings reports journal_mode=%s\n", mode)
-	check(mode == sqlitex.JournalDelete, "a new database starts in rollback-journal mode (journal_mode=delete) until something switches it")
+	tables.headerModes.Row(1, "new file, driver defaults, before any write", mode, nil, nil)
+	set.Check("A", mode == sqlitex.JournalDelete, "a new database starts in rollback-journal mode (journal_mode=delete) until something switches it")
 	if _, err := db.ExecContext(ctx, "CREATE TABLE t(x)"); err != nil {
 		fatal("create", err)
 	}
@@ -1132,8 +1158,8 @@ func partA(ctx context.Context, base string) {
 		fatal("close", err)
 	}
 	header := readHeaderBytes(path)
-	fmt.Printf("after its first CREATE TABLE: header bytes 18,19 = %d,%d (1 = rollback journal)\n", header[18], header[19])
-	check(header[18] == 1 && header[19] == 1, "the file records rollback mode in header bytes 18 and 19 (value 1)")
+	tables.headerModes.Row(2, "after its first CREATE TABLE", nil, header[18], header[19])
+	set.Check("A", header[18] == 1 && header[19] == 1, "the file records rollback mode in header bytes 18 and 19 (value 1)")
 	db, err = sql.Open("sqlite", path)
 	if err != nil {
 		fatal("reopen plain", err)
@@ -1157,8 +1183,8 @@ func partA(ctx context.Context, base string) {
 	if err := db.Close(); err != nil {
 		fatal("close", err)
 	}
-	fmt.Printf("after PRAGMA journal_mode=wal: header bytes 18,19 = %d,%d; a fresh connection reports journal_mode=%s\n", header[18], header[19], again)
-	check(header[18] == 2 && header[19] == 2 && again == sqlitex.JournalWAL, "switching to WAL rewrites bytes 18 and 19 to 2, and the mode persists in the file")
+	tables.headerModes.Row(3, "after PRAGMA journal_mode=wal, read by a fresh connection", again, header[18], header[19])
+	set.Check("A", header[18] == 2 && header[19] == 2 && again == sqlitex.JournalWAL, "switching to WAL rewrites bytes 18 and 19 to 2, and the mode persists in the file")
 
 	if !trace.Supported {
 		return
@@ -1200,7 +1226,11 @@ func partA(ctx context.Context, base string) {
 			wal := walWritesIn(segments[i])
 			journalBySegment[c.role] = append(journalBySegment[c.role], ops)
 			walBySegment[c.role] = append(walBySegment[c.role], wal)
-			fmt.Printf("%s: -journal %v; -wal writes %d\n", label, ops, wal)
+			creationSeq++
+			tables.creations.Row(creationSeq, c.role, label, len(ops), wal)
+			for n, o := range ops {
+				tables.creationCalls.Row(creationSeq, n+1, o)
+			}
 		}
 	}
 	usesJournal := func(ops []string) bool {
@@ -1209,10 +1239,10 @@ func partA(ctx context.Context, base string) {
 		}
 		return len(ops) >= 2 && strings.HasPrefix(ops[0], "open ") && strings.HasPrefix(ops[len(ops)-1], "unlink ") && hasPrefix("pwrite64 ") && hasPrefix("sync ")
 	}
-	check(usesJournal(journalBySegment["plain"][0]), "a file created with driver defaults commits its first transaction through a -journal (opened, written, synced, unlinked)")
-	check(usesJournal(journalBySegment["switch"][0]) && walBySegment["switch"][0] == 0, "the switch to WAL is itself a rollback-mode commit: it writes page 1 through a -journal")
-	check(len(journalBySegment["switch"][1]) == 0 && walBySegment["switch"][1] > 0, "after the switch, commits go to the -wal and no -journal is opened")
-	check(usesJournal(journalBySegment["platform"][0]) && len(journalBySegment["platform"][1]) == 0, "a WAL database created by the platform opener (sqlitex.Open) is also born through one -journal commit, then never uses one")
+	set.Check("A", usesJournal(journalBySegment["plain"][0]), "a file created with driver defaults commits its first transaction through a -journal (opened, written, synced, unlinked)")
+	set.Check("A", usesJournal(journalBySegment["switch"][0]) && walBySegment["switch"][0] == 0, "the switch to WAL is itself a rollback-mode commit: it writes page 1 through a -journal")
+	set.Check("A", len(journalBySegment["switch"][1]) == 0 && walBySegment["switch"][1] > 0, "after the switch, commits go to the -wal and no -journal is opened")
+	set.Check("A", usesJournal(journalBySegment["platform"][0]) && len(journalBySegment["platform"][1]) == 0, "a WAL database created by the platform opener (sqlitex.Open) is also born through one -journal commit, then never uses one")
 }
 
 func readHeaderBytes(path string) []byte {
@@ -1276,7 +1306,6 @@ func childCreate(role, path string) {
 // synchronous=FULL using internal/journalfile. Reading -journal while the
 // connection is open is safe because SQLite locks only the main database file.
 func partC(ctx context.Context, base string, s *states) {
-	fmt.Printf("\n== C. the journal of an open transaction, read before COMMIT ==\n")
 	dir := filepath.Join(base, "c")
 	prepareDir(dir, s.prePath)
 	db, err := sqlitex.Open(ctx, filepath.Join(dir, dbName), stepOptions(sqlitex.JournalDelete, sqlitex.SyncFull))
@@ -1294,8 +1323,9 @@ func partC(ctx context.Context, base string, s *states) {
 	if !present {
 		fatal("journal", errors.New("no -journal during the transaction"))
 	}
-	fmt.Printf("every statement of step %d executed, COMMIT not yet issued: %s\n", s.step, journalSummary(j, present))
+	writeJournal("C", fmt.Sprintf("step %d executed, COMMIT not yet issued", s.step), j, present)
 	allOriginal := j.RecordsPresent() > 0
+	seq := 0
 	for _, segment := range j.Segments {
 		for _, r := range segment.Records {
 			same := bytes.Equal(pageAt(s.pre, int(r.Page-1)*pageSize), r.Image)
@@ -1304,17 +1334,17 @@ func partC(ctx context.Context, base string, s *states) {
 			if r.Page == 1 {
 				role = "header and schema root"
 			}
-			image := "equals the pre-step page"
-			if !same {
-				image = "DIFFERS from the pre-step page"
+			checksum := "ok"
+			if !r.ChecksumOK() {
+				checksum = "BAD"
 			}
-			fmt.Printf("  record at offset %6d: page %3d (%s), checksum %s, image %s\n", r.Offset, r.Page, role, okWord(r.ChecksumOK()), image)
+			seq++
+			tables.journalRecords.Row(seq, r.Offset, r.Page, role, checksum, same)
 		}
 	}
-	check(allOriginal, "every journal record holds the page's original (pre-step) image with a valid checksum")
-	check(j.Segments[0].Header.State == journalfile.HeaderNotYetSynced && !j.LooksHot(), "before COMMIT (synchronous=FULL) the header's magic and record count are still zero, so the journal is not hot yet")
-	check(j.Segments[0].Header.InitialPages == uint32(s.prePages), fmt.Sprintf("the header records the database size before the transaction (%d pages)", s.prePages))
-	fmt.Printf("pre-step freelist leaf pages (never journaled when reused): %s\n", pageList(s.preFreeLeaves))
+	set.Check("C", allOriginal, "every journal record holds the page's original (pre-step) image with a valid checksum")
+	set.Check("C", j.Segments[0].Header.State == journalfile.HeaderNotYetSynced && !j.LooksHot(), "before COMMIT (synchronous=FULL) the header's magic and record count are still zero, so the journal is not hot yet")
+	set.Check("C", j.Segments[0].Header.InitialPages == uint32(s.prePages), fmt.Sprintf("the header records the database size before the transaction (%d pages)", s.prePages))
 	if err := tx.Rollback(); err != nil {
 		fatal("rollback", err)
 	}
@@ -1322,61 +1352,67 @@ func partC(ctx context.Context, base string, s *states) {
 		fatal("close", err)
 	}
 	match := s.matchFile(filepath.Join(dir, dbName))
-	fmt.Printf("after ROLLBACK and close: %s\n", map[bool]string{true: "pre-step exact bytes", false: "NOT the pre-step bytes"}[match.Step == s.preStep && match.Exact])
-	check(match.Step == s.preStep && match.Exact, "a ROLLBACK by the live connection restores the pre-step bytes exactly (the reused freelist pages were never written to the file)")
-	check(recipe.CheckAtRest(filepath.Join(dir, dbName)) == nil, "no -journal remains after ROLLBACK and close")
+	atRest := recipe.CheckAtRest(filepath.Join(dir, dbName)) == nil
+	tables.liveRollback.Row(map[bool]string{true: "pre-step exact bytes", false: "NOT the pre-step bytes"}[match.Step == s.preStep && match.Exact], !atRest)
+	set.Check("C", match.Step == s.preStep && match.Exact, "a ROLLBACK by the live connection restores the pre-step bytes exactly (the reused freelist pages were never written to the file)")
+	set.Check("C", atRest, "no -journal remains after ROLLBACK and close")
 }
 
-func okWord(ok bool) string {
-	if ok {
-		return "ok"
-	}
-	return "BAD"
-}
-
-func damageReport(ctx context.Context, path string, s *states) (string, outcome) {
+// reopenRow opens path, runs integrity_check and counts the rows, and writes
+// one row of the reopens table. It returns the row's report columns, so two
+// reopens can be compared, and the outcome.
+func reopenRow(ctx context.Context, scenario, path string, s *states, classify bool) (string, outcome) {
+	var report []any
+	var o outcome
 	db, err := sqlitex.Open(ctx, path, stepOptions(sqlitex.JournalDelete, sqlitex.SyncFull))
 	if err != nil {
-		return "open failed: " + strings.ReplaceAll(err.Error(), path, filepath.Base(path)), s.outcomeOf(path, "")
+		report = []any{"open failed: " + strings.ReplaceAll(err.Error(), path, filepath.Base(path)), nil, nil, nil, nil, nil}
+		if classify {
+			o = s.outcomeOf(path, "")
+		}
+	} else {
+		report = append([]any{nil, integrityCheck(ctx, db.DB)}, tableCounts(ctx, db.DB)...)
+		canon := ""
+		if classify {
+			if canon, err = canonicalHash(ctx, db.DB, path); err != nil {
+				canon = ""
+			}
+		}
+		if err := db.Close(); err != nil {
+			fatal("close", err)
+		}
+		if classify {
+			o = s.outcomeOf(path, canon)
+		}
 	}
-	integrity := integrityCheck(ctx, db.DB)
-	counts := tableCounts(ctx, db.DB)
-	canon, err := canonicalHash(ctx, db.DB, path)
-	if err != nil {
-		canon = ""
+	var name, pages any
+	if classify {
+		name, pages = o.name(), pageList(o.pages)
 	}
-	if err := db.Close(); err != nil {
-		fatal("close", err)
-	}
-	return fmt.Sprintf("integrity_check: %s; %s", integrity, counts), s.outcomeOf(path, canon)
+	reopenSeq++
+	tables.reopens.Row(append(append([]any{reopenSeq, scenario}, report...), name, pages)...)
+	return fmt.Sprint(report...), o
 }
 
-func tableCounts(ctx context.Context, db *sql.DB) string {
-	var parts []string
+// tableCounts returns user_version and the row counts of the recipe tables;
+// a value that cannot be read is replaced by its error.
+func tableCounts(ctx context.Context, db *sql.DB) []any {
+	var values []any
 	var userVersion int
 	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&userVersion); err != nil {
-		parts = append(parts, "user_version error: "+err.Error())
+		values = append(values, "error: "+err.Error())
 	} else {
-		parts = append(parts, fmt.Sprintf("user_version=%d", userVersion))
+		values = append(values, userVersion)
 	}
 	for _, table := range []string{"accounts", "documents", "events"} {
 		var n int
 		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&n); err != nil {
-			parts = append(parts, fmt.Sprintf("count(%s) error: %v", table, err))
+			values = append(values, "error: "+err.Error())
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s=%d", table, n))
+		values = append(values, n)
 	}
-	return strings.Join(parts, " ")
-}
-
-func countsOf(ctx context.Context, path string) string {
-	db, err := sqlitex.Open(ctx, path, stepOptions(sqlitex.JournalDelete, sqlitex.SyncFull))
-	if err != nil {
-		fatal("open", err)
-	}
-	defer db.Close()
-	return tableCounts(ctx, db.DB)
+	return values
 }
 
 func recreateKilled(ctx context.Context, dir string, s *states, target op) {
@@ -1384,6 +1420,15 @@ func recreateKilled(ctx context.Context, dir string, s *states, target op) {
 	if landed, ok := landedOn(run, dir, target); !ok {
 		fatal("kill", fmt.Errorf("child was not killed on %q (ordinal %d): killed=%q exit %d landed %q", target.text, target.ordinal, run.Killed, run.ExitCode, landed))
 	}
+}
+
+func writeCrash(crash string, target op, writeNo any, writes int, s *states, dir string) {
+	image, err := os.ReadFile(filepath.Join(dir, dbName))
+	if err != nil {
+		fatal("read", err)
+	}
+	crashSeq++
+	tables.crashes.Row(append([]any{crashSeq, crash, target.text, writeNo, writes}, s.imageColumns(image)...)...)
 }
 
 // landedOn confirms strace killed the child with SIGKILL on entry to the exact
@@ -1416,8 +1461,8 @@ func landedOn(run *trace.Result, dir string, target op) (string, bool) {
 // deleting it after all database writes completed (silently committing a
 // transaction whose COMMIT never returned).
 func partE(ctx context.Context, base string, s *states, fullTargets []op) {
-	fmt.Printf("\n== E. failure cases: losing the hot journal (step %d, synchronous=FULL) ==\n", s.step)
-	fmt.Printf("contents: pre-step %s; post-step %s\n", countsOf(ctx, s.prePath), countsOf(ctx, filepath.Join(filepath.Dir(s.prePath), "post.db")))
+	reopenRow(ctx, fmt.Sprintf("pre-step file (step %d)", s.preStep), s.prePath, s, false)
+	reopenRow(ctx, fmt.Sprintf("post-step file (step %d)", s.step), filepath.Join(filepath.Dir(s.prePath), "post.db"), s, false)
 	var dbWrites []op
 	var dbSync op
 	for _, t := range fullTargets {
@@ -1432,16 +1477,12 @@ func partE(ctx context.Context, base string, s *states, fullTargets []op) {
 		fatal("failure cases", errors.New("the synchronous=FULL commit has too few database writes"))
 	}
 	middle := dbWrites[len(dbWrites)/2]
-	fmt.Printf("crash state: killed on entry to %s (database write %d of %d)\n", middle.text, len(dbWrites)/2+1, len(dbWrites))
 
 	deleted := filepath.Join(base, "e-deleted")
 	recreateKilled(ctx, deleted, s, middle)
-	image, err := os.ReadFile(filepath.Join(deleted, dbName))
-	if err != nil {
-		fatal("read", err)
-	}
+	writeCrash("mid-write", middle, len(dbWrites)/2+1, len(dbWrites), s, deleted)
 	j, present := journalInfo(filepath.Join(deleted, dbName+"-journal"))
-	fmt.Printf("on disk: database %s\n         %s\n", s.classifyImage(image), journalSummary(j, present))
+	writeJournal("E", "mid-write crash", j, present)
 
 	copied := filepath.Join(base, "e-copied")
 	original := filepath.Join(base, "e-with-journal")
@@ -1454,30 +1495,22 @@ func partE(ctx context.Context, base string, s *states, fullTargets []op) {
 	if err := os.Remove(filepath.Join(deleted, dbName+"-journal")); err != nil {
 		fatal("delete journal", err)
 	}
-	report, deletedOutcome := damageReport(ctx, filepath.Join(deleted, dbName), s)
-	fmt.Printf("1. -journal deleted, then reopened: %s\n   state: %s\n", report, deletedOutcome.describe(s))
-	check(deletedOutcome.kind == outcomeUnreadable || deletedOutcome.kind == outcomeThird, "deleting the hot journal before reopening leaves a damaged database that is neither the pre-step nor the post-step state")
+	report, deletedOutcome := reopenRow(ctx, "1. -journal deleted", filepath.Join(deleted, dbName), s, true)
+	set.Check("E", deletedOutcome.kind == outcomeUnreadable || deletedOutcome.kind == outcomeThird, "deleting the hot journal before reopening leaves a damaged database that is neither the pre-step nor the post-step state")
 
-	copyReport, copyOutcome := damageReport(ctx, filepath.Join(copied, dbName), s)
-	fmt.Printf("2. the database file copied without its -journal, copy opened: %s\n   state: %s\n", copyReport, copyOutcome.describe(s))
-	check(copyOutcome.kind == deletedOutcome.kind && copyReport == report && !copyOutcome.before(), "a copy made without the -journal is the same damaged database")
-	originalReport, originalOutcome := damageReport(ctx, filepath.Join(original, dbName), s)
-	fmt.Printf("   the same crashed bytes copied together with their -journal, opened: %s\n   state: %s\n", originalReport, originalOutcome.describe(s))
-	check(originalOutcome.before(), "the same crashed file copied together with its -journal rolls back to pre-step")
+	copyReport, copyOutcome := reopenRow(ctx, "2. copied without -journal", filepath.Join(copied, dbName), s, true)
+	set.Check("E", copyOutcome.kind == deletedOutcome.kind && copyReport == report && !copyOutcome.before(), "a copy made without the -journal is the same damaged database")
+	_, originalOutcome := reopenRow(ctx, "2. copied with -journal", filepath.Join(original, dbName), s, true)
+	set.Check("E", originalOutcome.before(), "the same crashed file copied together with its -journal rolls back to pre-step")
 
 	late := filepath.Join(base, "e-late")
 	recreateKilled(ctx, late, s, dbSync)
-	image, err = os.ReadFile(filepath.Join(late, dbName))
-	if err != nil {
-		fatal("read", err)
-	}
-	fmt.Printf("3. killed on entry to %s (every database page written, journal still hot): database %s\n", dbSync.text, s.classifyImage(image))
+	writeCrash("before db sync", dbSync, nil, len(dbWrites), s, late)
 	if err := os.Remove(filepath.Join(late, dbName+"-journal")); err != nil {
 		fatal("delete journal", err)
 	}
-	lateReport, lateOutcome := damageReport(ctx, filepath.Join(late, dbName), s)
-	fmt.Printf("   -journal deleted, then reopened: %s\n   state: %s\n", lateReport, lateOutcome.describe(s))
-	check(lateOutcome.kind == outcomePost, "deleting the journal after the last database write turns a commit that never returned into a committed one (post-step)")
+	_, lateOutcome := reopenRow(ctx, "3. late crash, -journal deleted", filepath.Join(late, dbName), s, true)
+	set.Check("E", lateOutcome.kind == outcomePost, "deleting the journal after the last database write turns a commit that never returned into a committed one (post-step)")
 }
 
 // partF locates the exact commit-point syscall for DELETE (unlink), TRUNCATE
@@ -1485,52 +1518,35 @@ func partE(ctx context.Context, base string, s *states, fullTargets []op) {
 // to that syscall and on the syscall immediately after it
 // (pager_end_transaction, src/pager.c:2086-2122).
 func partF(ctx context.Context, base string, s *states) {
-	fmt.Printf("\n== F. the commit point in DELETE, TRUNCATE and PERSIST journal modes (step %d, synchronous=FULL) ==\n", s.step)
-	type row struct{ mode, point, at, after, left string }
-	var rows []row
-	for _, mode := range []string{sqlitex.JournalDelete, sqlitex.JournalTruncate, sqlitex.JournalPersist} {
+	for seq, mode := range []string{sqlitex.JournalDelete, sqlitex.JournalTruncate, sqlitex.JournalPersist} {
 		dir := filepath.Join(base, "f-"+mode)
-		fmt.Printf("-- journal_mode=%s --\n", mode)
 		w, image := baseline(ctx, filepath.Join(dir, "baseline"), s, mode, sqlitex.SyncFull)
-		checkBaseline(w, image, s, mode, sqlitex.SyncFull)
+		checkBaseline("F", w, image, s, mode, sqlitex.SyncFull)
 		left, there := journalInfo(filepath.Join(dir, "baseline", dbName+"-journal"))
-		leftText := journalSummary(left, there)
+		writeJournal("F", mode, left, there)
 		commitKind := map[string]string{sqlitex.JournalDelete: "journal-unlink", sqlitex.JournalTruncate: "journal-truncate", sqlitex.JournalPersist: "journal-zero-header"}[mode]
-		var commitPoint, next op
+		index := -1
 		for i, t := range w.targets {
 			if t.kind == commitKind && i+1 < len(w.targets) {
-				commitPoint, next = t, w.targets[i+1]
+				index = i
 				break
 			}
 		}
-		if commitPoint.kind == "" {
-			check(false, mode+": commit point found in the trace")
+		if index < 0 {
+			set.Check("F", false, mode+": commit point found in the trace")
 			continue
 		}
+		commitPoint, next := w.targets[index], w.targets[index+1]
 		at := runKill(ctx, filepath.Join(dir, "at"), s, mode, sqlitex.SyncFull, commitPoint)
 		after := runKill(ctx, filepath.Join(dir, "after"), s, mode, sqlitex.SyncFull, next)
-		rows = append(rows, row{mode, commitPoint.text, at.after.shortName(), after.after.shortName() + " (kill on " + next.kind + ")", leftText})
-		check(at.landedOK && after.landedOK && at.after.before() && after.after.kind == outcomePost, mode+": a kill on entry to the commit point gives pre-step, the next kill gives post-step")
+		writeKill("F", s, mode, sqlitex.SyncFull, index+1, at, nil)
+		writeKill("F", s, mode, sqlitex.SyncFull, index+2, after, nil)
+		tables.commitPoints.Row(seq+1, mode, commitPoint.text, at.after.shortName(), next.kind, after.after.shortName())
+		set.Check("F", at.landedOK && after.landedOK && at.after.before() && after.after.kind == outcomePost, mode+": a kill on entry to the commit point gives pre-step, the next kill gives post-step")
 		if mode != sqlitex.JournalDelete {
-			check(there && !left.LooksHot(), mode+": the journal file stays beside the database after a clean commit, and it is not hot")
+			set.Check("F", there && !left.LooksHot(), mode+": the journal file stays beside the database after a clean commit, and it is not hot")
 		}
 	}
-	fmt.Printf("%-9s %-34s %-26s %-44s %s\n", "mode", "commit point (syscall)", "killed on entry", "killed on the next syscall", "-journal after a clean commit")
-	for _, r := range rows {
-		fmt.Printf("%-9s %-34s %-26s %-44s %s\n", r.mode, r.point, r.at, r.after, r.left)
-	}
-}
-
-func (o outcome) shortName() string {
-	switch o.kind {
-	case outcomePre:
-		return "before (pre-step)"
-	case outcomePreFreelist:
-		return "before (pre-step, logical)"
-	case outcomePost:
-		return "after (post-step)"
-	}
-	return "neither"
 }
 
 func portableLevels(ctx context.Context, base string, s *states) {
@@ -1548,16 +1564,37 @@ func portableLevels(ctx context.Context, base string, s *states) {
 			fatal("close", err)
 		}
 		match := s.matchFile(filepath.Join(dir, dbName))
-		check(match.Step == s.step && match.Exact, fmt.Sprintf("step %d, synchronous=%s: the step committed in process leaves the post-step bytes", s.step, level))
+		set.Check("D", match.Step == s.step && match.Exact, fmt.Sprintf("step %d, synchronous=%s: the step committed in process leaves the post-step bytes", s.step, level))
 	}
 }
 
-func describeStates(s *states) {
-	fmt.Println(s.stepStatements.Summary())
-	fmt.Printf("pre-step state (after step %d): %d pages, sha256 %s, freelist leaves %s\n", s.preStep, s.prePages, s.hashes[s.preStep].Exact[:16], pageList(s.preFreeLeaves))
-	fmt.Printf("post-step state (after step %d): %d pages, sha256 %s\n", s.step, s.postPages, s.hashes[s.step].Exact[:16])
+func describeStates(part string, r recipe.Recipe, s *states) {
+	c := s.stepStatements.Counts()
+	tables.steps.Row(s.step, s.preStep, r.String(), c.Schema, c.Inserts, c.Updates, c.Deletes, c.Indexes)
+	tables.states.Row(s.step, "pre-step", s.preStep, s.prePages, s.hashes[s.preStep].Exact[:16], pageList(s.preFreeLeaves))
+	tables.states.Row(s.step, "post-step", s.step, s.postPages, s.hashes[s.step].Exact[:16], nil)
 	preMatch, postMatch := s.matchFile(s.prePath), s.matchFile(filepath.Join(filepath.Dir(s.prePath), "post.db"))
-	check(preMatch.Step == s.preStep && preMatch.Exact && postMatch.Step == s.step && postMatch.Exact, fmt.Sprintf("the pre-step and post-step files equal the recipe's hashes for steps %d and %d", s.preStep, s.step))
+	set.Check(part, preMatch.Step == s.preStep && preMatch.Exact && postMatch.Step == s.step && postMatch.Exact, fmt.Sprintf("the pre-step and post-step files equal the recipe's hashes for steps %d and %d", s.preStep, s.step))
+}
+
+func writeParts() {
+	status := "ran"
+	if !trace.Supported {
+		status = "skipped: needs strace (Linux)"
+	}
+	tables.parts.Row("A", "journal_mode and header bytes 18-19 of a new file", "ran")
+	tables.parts.Row("A", "syscalls of the first commits of a new file", status)
+	tables.parts.Row("B", "the recipe step: pre-step and post-step files", "ran")
+	tables.parts.Row("C", "the journal of an open transaction", "ran")
+	if !trace.Supported {
+		tables.parts.Row("D", "the step committed in process at each synchronous level", "ran")
+	}
+	tables.parts.Row("D", "the commit traced and killed at every write and sync", status)
+	if *exactFlag != 0 {
+		tables.parts.Row("D2", "the same for a step whose pre-step file has no freelist", status)
+	}
+	tables.parts.Row("E", "losing the hot journal", status)
+	tables.parts.Row("F", "the commit point in DELETE, TRUNCATE and PERSIST modes", status)
 }
 
 func main() {
@@ -1583,6 +1620,9 @@ func main() {
 		fatal("work dir", err)
 	}
 	fmt.Printf("INFO: work dir %s\n", displayPath(base))
+	set = results.MustOpen(base)
+	openTables()
+	writeParts()
 	var cli sqlitex.CLI
 	haveCLI := false
 	if trace.Supported {
@@ -1592,7 +1632,7 @@ func main() {
 			fmt.Println(cli.PinLine())
 		} else {
 			fmt.Printf("sqlite3 CLI: unavailable: %v\n", cliErr)
-			failures = append(failures, "the pinned sqlite3 CLI is available")
+			set.Check("D", false, "the pinned sqlite3 CLI is available")
 		}
 	}
 
@@ -1604,14 +1644,12 @@ func main() {
 			fatal("step", fmt.Errorf("steps must be 1..%d, got %d", r.Steps, k))
 		}
 	}
-	fmt.Printf("\n== B. the recipe step ==\n")
-	fmt.Printf("recipe: %s\n", r)
 	hashes, err := r.StepHashes(ctx)
 	if err != nil {
 		fatal("step hashes", err)
 	}
 	main := newStates(ctx, filepath.Join(base, fmt.Sprintf("step-%d", *stepFlag)), r, *stepFlag, hashes)
-	describeStates(main)
+	describeStates("B", r, main)
 
 	partC(ctx, base, main)
 
@@ -1623,28 +1661,20 @@ func main() {
 	}
 
 	levels := []string{sqlitex.SyncFull, sqlitex.SyncNormal, sqlitex.SyncOff}
-	var mainResults []levelResult
 	var fullTargets []op
 	for _, level := range levels {
-		result := runLevel(ctx, filepath.Join(base, fmt.Sprintf("step-%d", *stepFlag)), main, level, cli, haveCLI, true)
-		mainResults = append(mainResults, result)
+		targets := runLevel(ctx, "D", filepath.Join(base, fmt.Sprintf("step-%d", *stepFlag)), main, level, cli, haveCLI)
 		if level == sqlitex.SyncFull {
-			for _, kill := range result.results {
-				fullTargets = append(fullTargets, kill.target)
-			}
+			fullTargets = targets
 		}
 	}
-	printSummary(main, mainResults)
 
 	if *exactFlag != 0 {
-		fmt.Printf("\n== D2. a step whose pre-step file has no freelist: step %d, every kill point, all three levels ==\n", *exactFlag)
 		exact := newStates(ctx, filepath.Join(base, fmt.Sprintf("step-%d", *exactFlag)), r, *exactFlag, hashes)
-		describeStates(exact)
-		var exactResults []levelResult
+		describeStates("D2", r, exact)
 		for _, level := range levels {
-			exactResults = append(exactResults, runLevel(ctx, filepath.Join(base, fmt.Sprintf("step-%d", *exactFlag)), exact, level, cli, false, false))
+			runLevel(ctx, "D2", filepath.Join(base, fmt.Sprintf("step-%d", *exactFlag)), exact, level, cli, false)
 		}
-		printSummary(exact, exactResults)
 	}
 
 	partE(ctx, base, main, fullTargets)
@@ -1653,13 +1683,8 @@ func main() {
 }
 
 func finish(started time.Time) {
-	fmt.Printf("INFO: runtime %s\n", time.Since(started).Round(100*time.Millisecond))
-	fmt.Println()
-	if len(failures) > 0 {
-		fmt.Printf("ATOMIC COMMIT FAILED: %d claim(s) do not hold: %s\n", len(failures), strings.Join(failures, "; "))
-		os.Exit(1)
-	}
-	fmt.Println("ATOMIC COMMIT OK")
+	info("runtime, seconds", time.Since(started).Round(100*time.Millisecond).Seconds())
+	set.Finish("ATOMIC COMMIT")
 }
 
 func displayPath(path string) string {

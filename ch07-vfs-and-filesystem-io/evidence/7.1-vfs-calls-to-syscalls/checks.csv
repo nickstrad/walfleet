@@ -1,0 +1,10 @@
+seq,part,status,claim
+1,B,ok,"each of the 12 xWrite calls made exactly one pwrite64 to the same file, offset and length"
+2,B,ok,"each of the 7 xRead calls made exactly one pread64 of the same file, offset and length"
+3,B,ok,"every pread64/pwrite64/read/write/writev on the database, journal, WAL and shm files happened inside xRead, xWrite or xShmMap"
+4,C,ok,each of the 8 xSync calls made exactly one fsync/fdatasync of its own file
+5,C,ok,"the directory is synced twice, inside the first xSync of the new journal and of the new WAL (unixSync's one-time directory sync)"
+6,D,ok,"the -wal file is created (O_CREAT) at its first use, by xOpen"
+7,D,ok,the -shm file is created inside the first xShmMap
+8,D,ok,at the last close xDelete unlinks the -wal and xShmUnmap unlinks the -shm
+9,D,ok,only the database file is left after the CLI exits

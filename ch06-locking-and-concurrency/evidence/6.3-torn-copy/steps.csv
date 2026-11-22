@@ -1,0 +1,17 @@
+part,step,process,action,result,code,value
+A,1,writer,recipe-step 6,SQLITE_OK,0,
+A,2,writer,recipe-step 7,SQLITE_OK,0,
+A,3,writer,recipe-step 8,SQLITE_OK,0,
+A,4,writer,checkpoint PASSIVE,SQLITE_OK,0,busy=0 log=61 checkpointed=61
+A,5,writer,recipe-step 9,SQLITE_OK,0,
+A,6,writer,recipe-step 10,SQLITE_OK,0,
+A,7,copier,copy db main-only.db,SQLITE_OK,0,323584 bytes
+A,8,copier,copy -wal wal-at-copy,SQLITE_OK,0,251352 bytes
+A2,9,writer,"query SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size",SQLITE_OK,0,204800
+A2,10,copier,copy-range db torn.db 0 204800,SQLITE_OK,0,bytes 0-204800
+A2,11,writer,checkpoint PASSIVE,SQLITE_OK,0,busy=0 log=40 checkpointed=40
+A2,12,copier,copy-range db torn.db 204800 end,SQLITE_OK,0,bytes 204800-409600
+B,13,writer,"query SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size",SQLITE_OK,0,102400
+B,14,copier,copy-range db torn.db 0 102400,SQLITE_OK,0,bytes 0-102400
+B,15,writer,recipe-step 6,SQLITE_OK,0,
+B,16,copier,copy-range db torn.db 102400 end,SQLITE_OK,0,bytes 102400-245760

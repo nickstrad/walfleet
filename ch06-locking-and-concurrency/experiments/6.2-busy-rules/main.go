@@ -6,6 +6,9 @@
 // (517) on a deferred read-then-write upgrade (src/btree.c:3740-3741,
 // src/wal.c:3734-3737), rollback-mode COMMIT contention and retained PENDING
 // locks (Part D), and alternating multi-process recipe steps under contention (Part E).
+//
+// It prints only its verdict. The steps and outcomes go to CSV tables that
+// report.sql presents: go run ./cmd/course run 6.2
 package main
 
 import (
@@ -18,6 +21,7 @@ import (
 
 	"github.com/nickstrad/walfleet/internal/procs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -32,9 +36,93 @@ const (
 	insertPattern = "INSERT INTO lab(who) VALUES ('%s')"
 )
 
+// Every step and outcome goes to a CSV table in <work dir>/results/; part
+// labels the rows written while a part runs.
+var (
+	set     *results.Set
+	part    string
+	stepSeq int
+	tables  struct {
+		steps, settings, recipeResult *results.Table
+	}
+)
+
+func openTables() {
+	tables.steps = set.Table("steps", "seq", "part", "step", "process", "action", "waiting_at_250ms", "result", "code", "value")
+	tables.settings = set.Table("settings", "part", "journal_mode", "busy_timeout_ms")
+	tables.recipeResult = set.Table("recipe_result", "part", "user_version", "matched_step", "exact")
+}
+
+// recorder is a procs.Lab that writes each step and claim to the tables
+// instead of printing them.
+type recorder struct {
+	*procs.Lab
+	sent map[*procs.Call]*sentCall
+}
+
+// sentCall is a step sent with Begin: who runs it and, once StillWaiting has
+// looked, whether it was still unanswered.
+type sentCall struct {
+	child   *procs.Child
+	waiting any
+}
+
+func newRecorder() *recorder {
+	lab := procs.NewLab(os.Stdout)
+	lab.Script.Out = nil
+	return &recorder{Lab: lab, sent: map[*procs.Call]*sentCall{}}
+}
+
+func (l *recorder) Do(child *procs.Child, action string, args ...string) procs.Result {
+	return l.step(child, procs.ActionText(action, args), nil, l.Lab.Do(child, action, args...))
+}
+
+func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
+	return l.step(child, procs.ActionText(action, args), nil, l.Lab.Must(child, action, args...))
+}
+
+// Begin sends a step without waiting for its answer.
+func (l *recorder) Begin(child *procs.Child, action string, args ...string) *procs.Call {
+	call, err := l.Script.Begin(child, action, args...)
+	if err != nil {
+		l.Fatal(fmt.Sprintf("step %d", l.Script.Step()), err)
+	}
+	l.sent[call] = &sentCall{child: child}
+	return call
+}
+
+// StillWaiting reports whether call is still unanswered after procs.StillWaitingWindow.
+func (l *recorder) StillWaiting(call *procs.Call) bool {
+	answered, err := call.AnsweredWithin(procs.StillWaitingWindow)
+	if err != nil {
+		l.Fatal("poll", err)
+	}
+	l.sent[call].waiting = !answered
+	return !answered
+}
+
+func (l *recorder) Finish(call *procs.Call) procs.Result {
+	sent := l.sent[call]
+	delete(l.sent, call)
+	request := call.Request()
+	return l.step(sent.child, procs.ActionText(request.Action, request.Args), sent.waiting, l.Lab.Finish(call))
+}
+
+func (l *recorder) step(child *procs.Child, action string, waiting any, r procs.Result) procs.Result {
+	value := r.Value
+	if r.Code == procs.CodeNotSQLite {
+		value = r.Error
+	}
+	stepSeq++
+	tables.steps.Row(stepSeq, part, r.Step, child.Name, action, waiting, r.CodeName(), r.Code, value)
+	return r
+}
+
+func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
+
 func insert(who string) string { return fmt.Sprintf(insertPattern, who) }
 
-func database(ctx context.Context, lab *procs.Lab, dir, name, journal string) string {
+func database(ctx context.Context, lab *recorder, dir, name, journal string) string {
 	db := filepath.Join(dir, name, "lab.db")
 	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
 		lab.Fatal("mkdir", err)
@@ -45,18 +133,17 @@ func database(ctx context.Context, lab *procs.Lab, dir, name, journal string) st
 	return db
 }
 
-func pair(ctx context.Context, lab *procs.Lab, dir, part, journal string, timeout time.Duration, first, second string) (*procs.Child, *procs.Child) {
-	db := database(ctx, lab, dir, part, journal)
+func pair(ctx context.Context, lab *recorder, dir, name, journal string, timeout time.Duration, first, second string) (*procs.Child, *procs.Child) {
+	db := database(ctx, lab, dir, name, journal)
 	options := procs.SQLOptions{Path: db, JournalMode: journal, BusyTimeout: timeout}
-	fmt.Printf("journal_mode=%s, busy_timeout=%dms on both connections\n", journal, timeout.Milliseconds())
+	tables.settings.Row(part, journal, timeout.Milliseconds())
 	return lab.SpawnSQL(first, options), lab.SpawnSQL(second, options)
 }
 
 // readersAndWriter runs Part A: with busy_timeout=0 in WAL mode, readers and
 // writers never block each other, and BEGIN EXCLUSIVE behaves like BEGIN IMMEDIATE.
-func readersAndWriter(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Println("== A. WAL mode: a reader and a writer (busy_timeout 0, so any wait would show up as SQLITE_BUSY)")
+func readersAndWriter(ctx context.Context, lab *recorder, dir string) {
+	part = "A"
 	reader, writer := pair(ctx, lab, dir, "a-reader-writer", sqlitex.JournalWAL, 0, "reader", "writer")
 	lab.Must(reader, "begin", "deferred")
 	snapshot := lab.Must(reader, "query", countQuery)
@@ -85,9 +172,8 @@ func readersAndWriter(ctx context.Context, lab *procs.Lab, dir string) {
 // writersWithoutTimeout runs Part B: with busy_timeout=0, BEGIN DEFERRED defers
 // SQLITE_BUSY (5) until the first write statement, whereas BEGIN IMMEDIATE fails
 // at BEGIN itself (src/build.c:5245-5274).
-func writersWithoutTimeout(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Println("== B. WAL mode: two writers, busy_timeout 0")
+func writersWithoutTimeout(ctx context.Context, lab *recorder, dir string) {
+	part = "B"
 	first, second := pair(ctx, lab, dir, "b-writers-no-timeout", sqlitex.JournalWAL, 0, "writer-1", "writer-2")
 	lab.Must(first, "begin", "immediate")
 	lab.Must(first, "exec", insert("writer-1"))
@@ -108,12 +194,11 @@ func writersWithoutTimeout(ctx context.Context, lab *procs.Lab, dir string) {
 // on the busy handler (src/main.c:1730-1792), while a deferred transaction that
 // already read (C3) skips the busy handler (src/btree.c:3740-3741) and gets
 // SQLITE_BUSY (5) then SQLITE_BUSY_SNAPSHOT (517, src/wal.c:3734-3737) at once.
-func writersWithTimeout(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Printf("== C. WAL mode: two writers, busy_timeout %dms (each step must answer within %v, so a statement that waited out the timeout would fail the run)\n", longTimeout.Milliseconds(), stepDeadline)
+func writersWithTimeout(ctx context.Context, lab *recorder, dir string) {
+	part = "C"
 	first, second := pair(ctx, lab, dir, "c-writers-timeout", sqlitex.JournalWAL, longTimeout, "writer-1", "writer-2")
 
-	fmt.Println("-- C1. BEGIN IMMEDIATE waits for the lock")
+	part = "C1"
 	lab.Must(first, "begin", "immediate")
 	lab.Must(first, "exec", insert("writer-1"))
 	waiting := lab.Begin(second, "begin", "immediate")
@@ -124,7 +209,7 @@ func writersWithTimeout(ctx context.Context, lab *procs.Lab, dir string) {
 	lab.Must(second, "exec", insert("writer-2"))
 	lab.Must(second, "commit")
 
-	fmt.Println("-- C2. a deferred transaction with no read yet also waits at its first write")
+	part = "C2"
 	lab.Must(first, "begin", "immediate")
 	lab.Must(first, "exec", insert("writer-1"))
 	lab.Must(second, "begin", "deferred")
@@ -135,7 +220,7 @@ func writersWithTimeout(ctx context.Context, lab *procs.Lab, dir string) {
 	lab.Check(blocked && written.OK(), "the first statement of a deferred transaction waits like BEGIN IMMEDIATE and then succeeds")
 	lab.Must(second, "commit")
 
-	fmt.Println("-- C3. a deferred transaction that has already read cannot wait")
+	part = "C3"
 	lab.Must(second, "begin", "deferred")
 	lab.Must(second, "query", countQuery)
 	lab.Must(first, "begin", "immediate")
@@ -154,9 +239,8 @@ func writersWithTimeout(ctx context.Context, lab *procs.Lab, dir string) {
 // rollbackContrast runs Part D: in rollback mode a reader's SHARED lock blocks
 // the writer's COMMIT (EXCLUSIVE), and the failed COMMIT retains PENDING so new
 // readers are blocked until the writer retries (src/os_unix.c:1898-1905).
-func rollbackContrast(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Println("== D. rollback mode (journal_mode=delete) as the contrast: a reader and a writer, busy_timeout 0")
+func rollbackContrast(ctx context.Context, lab *recorder, dir string) {
+	part = "D"
 	reader, writer := pair(ctx, lab, dir, "d-rollback", sqlitex.JournalDelete, 0, "reader", "writer")
 	lab.Must(reader, "begin", "deferred")
 	lab.Must(reader, "query", countQuery)
@@ -177,9 +261,8 @@ func rollbackContrast(ctx context.Context, lab *procs.Lab, dir string) {
 // recipeUnderContention runs Part E: two processes alternate recipe steps 6-15
 // using BEGIN IMMEDIATE and a 120s busy_timeout; each waiter sends BEGIN IMMEDIATE
 // while the holder still owns WAL_WRITE_LOCK so contention is verified by StillWaiting.
-func recipeUnderContention(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Printf("== E. two writers apply recipe steps %d-%d alternately with BEGIN IMMEDIATE and busy_timeout %dms; each step starts while the other writer holds the lock\n", recipeBase+1, recipeBase+recipeWrites, longTimeout.Milliseconds())
+func recipeUnderContention(ctx context.Context, lab *recorder, dir string) {
+	part = "E"
 	r := recipe.Default()
 	db := filepath.Join(dir, "e-recipe", "r.db")
 	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
@@ -192,6 +275,7 @@ func recipeUnderContention(ctx context.Context, lab *procs.Lab, dir string) {
 		lab.Fatal("build", err)
 	}
 	options := procs.SQLOptions{Path: db, JournalMode: sqlitex.JournalWAL, BusyTimeout: longTimeout}
+	tables.settings.Row(part, options.JournalMode, longTimeout.Milliseconds())
 	writers := []*procs.Child{lab.SpawnSQL("writer-1", options), lab.SpawnSQL("writer-2", options)}
 	allWaited, allCommitted := true, true
 	for k := recipeBase + 1; k < recipeBase+recipeWrites; k += 2 {
@@ -213,7 +297,11 @@ func recipeUnderContention(ctx context.Context, lab *procs.Lab, dir string) {
 	if err != nil {
 		lab.Fatal("match", err)
 	}
-	fmt.Printf("user_version seen by the last writer: %s; the closed file equals recipe %s\n", last.Value, match)
+	var matched any
+	if match.Found() {
+		matched = match.Step
+	}
+	tables.recipeResult.Row(part, last.Value, matched, match.Exact)
 	lab.Check(last.Value == strconv.Itoa(recipeBase+recipeWrites) && match.Found() && match.Step == recipeBase+recipeWrites,
 		fmt.Sprintf("the final database equals the recipe's state after step %d", recipeBase+recipeWrites))
 }
@@ -235,12 +323,14 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("6.2")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	lab := procs.NewLab(os.Stdout)
+	set = results.MustOpen(dir)
+	openTables()
+	lab := newRecorder()
 	lab.Script.Timeout = stepDeadline
 	readersAndWriter(ctx, lab, dir)
 	writersWithoutTimeout(ctx, lab, dir)
 	writersWithTimeout(ctx, lab, dir)
 	rollbackContrast(ctx, lab, dir)
 	recipeUnderContention(ctx, lab, dir)
-	lab.Report("BUSY RULES")
+	set.Finish("BUSY RULES")
 }

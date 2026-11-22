@@ -1,0 +1,49 @@
+mode,seq,norm
+delete,1,fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1
+delete,2,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+delete,3,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1
+delete,4,pread64 t.db off=24 len=16
+delete,5,fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1
+delete,6,pread64 t.db off=4096 len=4096
+delete,7,open t.db-journal
+delete,8,pwrite64 t.db-journal off=0 len=512
+delete,9,pwrite64 t.db-journal off=512 len=4
+delete,10,pwrite64 t.db-journal off=516 len=4096
+delete,11,pwrite64 t.db-journal off=4612 len=4
+delete,12,fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1
+delete,13,fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510
+delete,14,pwrite64 t.db-journal off=4616 len=4
+delete,15,pwrite64 t.db-journal off=4620 len=4096
+delete,16,pwrite64 t.db-journal off=8716 len=4
+delete,17,pread64 t.db-journal off=9216 len=8 = 0
+delete,18,sync t.db-journal
+delete,19,open .
+delete,20,sync .
+delete,21,close .
+delete,22,pwrite64 t.db-journal off=0 len=12
+delete,23,sync t.db-journal
+delete,24,pwrite64 t.db off=0 len=4096
+delete,25,pwrite64 t.db off=4096 len=4096
+delete,26,sync t.db
+delete,27,close t.db-journal
+delete,28,unlink t.db-journal
+delete,29,fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510
+delete,30,fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2
+delete,31,fcntl t.db F_SETLK F_UNLCK start=0 len=0
+wal,1,fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1
+wal,2,fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1
+wal,3,pread64 t.db off=4096 len=4096
+wal,4,fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1
+wal,5,fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1
+wal,6,fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1
+wal,7,fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1
+wal,8,pwrite64 t.db-wal off=0 len=32
+wal,9,sync t.db-wal
+wal,10,open .
+wal,11,sync .
+wal,12,close .
+wal,13,pwrite64 t.db-wal off=32 len=24
+wal,14,pwrite64 t.db-wal off=56 len=4096
+wal,15,sync t.db-wal
+wal,16,fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1
+wal,17,fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1

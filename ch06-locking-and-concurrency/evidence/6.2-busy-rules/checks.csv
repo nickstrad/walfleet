@@ -1,0 +1,19 @@
+seq,part,status,claim
+1,A,ok,"with a read transaction open, the writer begins, writes and commits without waiting"
+2,A,ok,the reader still sees its snapshot (1 rows) after the commit
+3,A,ok,"with a write transaction open, a reader starts and reads the last committed state (2 rows) without waiting"
+4,A,ok,BEGIN EXCLUSIVE in WAL mode behaves like BEGIN IMMEDIATE: it starts beside an open reader and the reader keeps reading
+5,B,ok,BEGIN DEFERRED and a read succeed; the first write statement returns SQLITE_BUSY (5)
+6,B,ok,BEGIN IMMEDIATE returns SQLITE_BUSY (5) at the BEGIN itself
+7,C1,ok,"BEGIN IMMEDIATE did not return while the other writer held the lock, and returned SQLITE_OK after it committed"
+8,C2,ok,the first statement of a deferred transaction waits like BEGIN IMMEDIATE and then succeeds
+9,C3,ok,its first write returns SQLITE_BUSY (5) at once although the busy timeout is 120000ms
+10,C3,ok,"after the other writer committed, the same write returns SQLITE_BUSY_SNAPSHOT (517) at once: the snapshot it read is no longer the newest"
+11,C3,ok,the same write succeeds once the transaction is restarted
+12,D,ok,the writer takes RESERVED and writes beside the reader's SHARED lock
+13,D,ok,the writer's COMMIT returns SQLITE_BUSY (5): it needs EXCLUSIVE and the reader holds SHARED
+14,D,ok,a new read now returns SQLITE_BUSY (5): the writer kept PENDING after its failed COMMIT
+15,D,ok,the writer's second COMMIT succeeds once no reader is left
+16,D,ok,and the reader then reads the committed row
+17,E,ok,"every waiting BEGIN IMMEDIATE was still waiting while the other writer held the lock, and every transaction committed"
+18,E,ok,the final database equals the recipe's state after step 15

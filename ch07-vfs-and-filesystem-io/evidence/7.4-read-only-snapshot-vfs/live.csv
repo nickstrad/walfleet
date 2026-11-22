@@ -1,0 +1,2 @@
+built_to_step,committed_step,local_state,db_bytes,wal_bytes,wal_frames,wal_deleted_after_close
+29,30,user_version=30 events=1177,1060864,123632,30,true

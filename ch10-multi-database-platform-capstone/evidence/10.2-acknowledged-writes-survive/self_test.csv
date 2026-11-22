@@ -1,0 +1,2 @@
+reply,acknowledged
+"ok write db-0001 store-durable: acknowledged at epoch 1, user_version 1, stored through position 0",1

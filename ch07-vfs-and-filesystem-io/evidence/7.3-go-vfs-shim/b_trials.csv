@@ -1,0 +1,129 @@
+journal,method,n,fired,target,step_error,step_code,error_at,close_error,user_version,marker_row,integrity,file_state,held
+wal,none,0,false,,,,,,4,present,ok,step 4 (exact bytes),true
+wal,xWrite,1,true,xWrite t.db-wal n=32 ofst=0 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,2,true,xWrite t.db-wal n=24 ofst=32 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,3,true,xWrite t.db-wal n=4096 ofst=56 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,4,true,xWrite t.db-wal n=24 ofst=4152 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,5,true,xWrite t.db-wal n=4096 ofst=4176 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,6,true,xWrite t.db-wal n=24 ofst=8272 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,7,true,xWrite t.db-wal n=4096 ofst=8296 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,8,true,xWrite t.db-wal n=24 ofst=12392 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,9,true,xWrite t.db-wal n=4096 ofst=12416 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,10,true,xWrite t.db-wal n=24 ofst=16512 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,11,true,xWrite t.db-wal n=4096 ofst=16536 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,12,true,xWrite t.db-wal n=24 ofst=20632 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,13,true,xWrite t.db-wal n=4096 ofst=20656 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,14,true,xWrite t.db-wal n=24 ofst=24752 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,15,true,xWrite t.db-wal n=4096 ofst=24776 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,16,true,xWrite t.db-wal n=24 ofst=28872 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,17,true,xWrite t.db-wal n=4096 ofst=28896 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,18,true,xWrite t.db-wal n=24 ofst=32992 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,19,true,xWrite t.db-wal n=4096 ofst=33016 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,20,true,xWrite t.db-wal n=24 ofst=37112 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,21,true,xWrite t.db-wal n=4096 ofst=37136 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,22,true,xWrite t.db-wal n=24 ofst=41232 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,23,true,xWrite t.db-wal n=4096 ofst=41256 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,24,true,xWrite t.db-wal n=24 ofst=45352 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,25,true,xWrite t.db-wal n=4096 ofst=45376 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,26,true,xWrite t.db-wal n=24 ofst=49472 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,27,true,xWrite t.db-wal n=4096 ofst=49496 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,28,true,xWrite t.db-wal n=24 ofst=53592 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,29,true,xWrite t.db-wal n=4096 ofst=53616 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,30,true,xWrite t.db-wal n=24 ofst=57712 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,31,true,xWrite t.db-wal n=4096 ofst=57736 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,32,true,xWrite t.db-wal n=24 ofst=61832 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,33,true,xWrite t.db-wal n=4096 ofst=61856 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,34,true,xWrite t.db-wal n=24 ofst=65952 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,35,true,xWrite t.db-wal n=4096 ofst=65976 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,36,true,xWrite t.db-wal n=24 ofst=70072 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,37,true,xWrite t.db-wal n=4096 ofst=70096 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,38,true,xWrite t.db-wal n=24 ofst=74192 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,39,true,xWrite t.db-wal n=4096 ofst=74216 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,40,true,xWrite t.db-wal n=24 ofst=78312 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,41,true,xWrite t.db-wal n=4096 ofst=78336 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,42,true,xWrite t.db-wal n=24 ofst=82432 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,43,true,xWrite t.db-wal n=4096 ofst=82456 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,44,true,xWrite t.db-wal n=24 ofst=86552 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,45,true,xWrite t.db-wal n=4096 ofst=86576 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,46,true,xWrite t.db-wal n=24 ofst=90672 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,47,true,xWrite t.db-wal n=4096 ofst=90696 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,48,true,xWrite t.db-wal n=24 ofst=94792 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,49,true,xWrite t.db-wal n=4096 ofst=94816 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,50,true,xWrite t.db-wal n=24 ofst=98912 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,51,true,xWrite t.db-wal n=4096 ofst=98936 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xWrite,52,false,,,,,,4,present,ok,step 4 (exact bytes),true
+wal,xSync,1,true,xSync t.db-wal flags=NORMAL -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xSync,2,true,xSync t.db-wal flags=NORMAL -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+wal,xSync,3,false,,,,,,4,present,ok,step 4 (exact bytes),true
+delete,none,0,false,,,,,,4,present,ok,step 4 (exact bytes),true
+delete,xWrite,1,true,xWrite t.db-journal n=512 ofst=0 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 1/56 (INSERT INTO accounts),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,2,true,xWrite t.db-journal n=4 ofst=512 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 1/56 (INSERT INTO accounts),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,3,true,xWrite t.db-journal n=4096 ofst=516 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 1/56 (INSERT INTO accounts),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,4,true,xWrite t.db-journal n=4 ofst=4612 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 1/56 (INSERT INTO accounts),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,5,true,xWrite t.db-journal n=4 ofst=4616 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 5/56 (INSERT INTO documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,6,true,xWrite t.db-journal n=4096 ofst=4620 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 5/56 (INSERT INTO documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,7,true,xWrite t.db-journal n=4 ofst=8716 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 5/56 (INSERT INTO documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,8,true,xWrite t.db-journal n=4 ofst=8720 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 5/56 (INSERT INTO documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,9,true,xWrite t.db-journal n=4096 ofst=8724 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 5/56 (INSERT INTO documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,10,true,xWrite t.db-journal n=4 ofst=12820 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 5/56 (INSERT INTO documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,11,true,xWrite t.db-journal n=4 ofst=12824 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 9/56 (INSERT INTO events),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,12,true,xWrite t.db-journal n=4096 ofst=12828 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 9/56 (INSERT INTO events),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,13,true,xWrite t.db-journal n=4 ofst=16924 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 9/56 (INSERT INTO events),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,14,true,xWrite t.db-journal n=4 ofst=16928 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 54/56 (UPDATE documents SET),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,15,true,xWrite t.db-journal n=4096 ofst=16932 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 54/56 (UPDATE documents SET),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,16,true,xWrite t.db-journal n=4 ofst=21028 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 54/56 (UPDATE documents SET),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,17,true,xWrite t.db-journal n=4 ofst=21032 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 54/56 (UPDATE documents SET),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,18,true,xWrite t.db-journal n=4096 ofst=21036 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 54/56 (UPDATE documents SET),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,19,true,xWrite t.db-journal n=4 ofst=25132 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 54/56 (UPDATE documents SET),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,20,true,xWrite t.db-journal n=4 ofst=25136 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 54/56 (UPDATE documents SET),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,21,true,xWrite t.db-journal n=4096 ofst=25140 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 54/56 (UPDATE documents SET),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,22,true,xWrite t.db-journal n=4 ofst=29236 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 54/56 (UPDATE documents SET),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,23,true,xWrite t.db-journal n=4 ofst=29240 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 54/56 (UPDATE documents SET),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,24,true,xWrite t.db-journal n=4096 ofst=29244 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 54/56 (UPDATE documents SET),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,25,true,xWrite t.db-journal n=4 ofst=33340 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 54/56 (UPDATE documents SET),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,26,true,xWrite t.db-journal n=4 ofst=33344 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,27,true,xWrite t.db-journal n=4096 ofst=33348 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,28,true,xWrite t.db-journal n=4 ofst=37444 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,29,true,xWrite t.db-journal n=4 ofst=37448 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,30,true,xWrite t.db-journal n=4096 ofst=37452 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,31,true,xWrite t.db-journal n=4 ofst=41548 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,32,true,xWrite t.db-journal n=4 ofst=41552 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,33,true,xWrite t.db-journal n=4096 ofst=41556 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,34,true,xWrite t.db-journal n=4 ofst=45652 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,35,true,xWrite t.db-journal n=4 ofst=45656 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,36,true,xWrite t.db-journal n=4096 ofst=45660 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,37,true,xWrite t.db-journal n=4 ofst=49756 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,38,true,xWrite t.db-journal n=4 ofst=49760 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,39,true,xWrite t.db-journal n=4096 ofst=49764 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,40,true,xWrite t.db-journal n=4 ofst=53860 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,statement 55/56 (DELETE FROM documents),,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,41,true,xWrite t.db-journal n=12 ofst=0 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,42,true,xWrite t.db n=4096 ofst=0 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,43,true,xWrite t.db n=4096 ofst=4096 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,44,true,xWrite t.db n=4096 ofst=8192 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,45,true,xWrite t.db n=4096 ofst=73728 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,46,true,xWrite t.db n=4096 ofst=81920 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,47,true,xWrite t.db n=4096 ofst=94208 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,48,true,xWrite t.db n=4096 ofst=110592 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,49,true,xWrite t.db n=4096 ofst=114688 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,50,true,xWrite t.db n=4096 ofst=139264 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,51,true,xWrite t.db n=4096 ofst=143360 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,52,true,xWrite t.db n=4096 ofst=147456 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,53,true,xWrite t.db n=4096 ofst=151552 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,54,true,xWrite t.db n=4096 ofst=155648 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,55,true,xWrite t.db n=4096 ofst=159744 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,56,true,xWrite t.db n=4096 ofst=163840 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,57,true,xWrite t.db n=4096 ofst=167936 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,58,true,xWrite t.db n=4096 ofst=172032 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,59,true,xWrite t.db n=4096 ofst=176128 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,60,true,xWrite t.db n=4096 ofst=180224 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,61,true,xWrite t.db n=4096 ofst=184320 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,62,true,xWrite t.db n=4096 ofst=188416 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,63,true,xWrite t.db n=4096 ofst=192512 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,64,true,xWrite t.db n=4096 ofst=196608 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,65,true,xWrite t.db n=4096 ofst=200704 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,66,true,xWrite t.db n=4096 ofst=204800 -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xWrite,67,false,,,,,,4,present,ok,step 4 (exact bytes),true
+delete,xSync,1,true,xSync t.db-journal flags=NORMAL -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xSync,2,true,xSync t.db-journal flags=NORMAL -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xSync,3,true,xSync t.db flags=NORMAL -> 10 (injected),SQLite error code 10 (disk I/O error (10)),10,COMMIT,,3,absent,ok,step 3 (exact bytes),true
+delete,xSync,4,false,,,,,,4,present,ok,step 4 (exact bytes),true

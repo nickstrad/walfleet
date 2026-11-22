@@ -1,0 +1,5 @@
+seq,site,location,file_offset,xor_mask
+1,b-tree page header (cell count),"page 26 (events leaf), header byte 4",102404,1
+2,unindexed column (events.note),"page 27, row 76, letter 'q' -> 'Q'",110538,32
+3,indexed column (events.account_id),"page 27, row 76, account_id 8 -> 9",110527,1
+4,freelist leaf page,"page 24, byte 2048",96256,255

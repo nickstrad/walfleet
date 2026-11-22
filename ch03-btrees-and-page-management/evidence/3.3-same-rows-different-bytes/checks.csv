@@ -1,0 +1,28 @@
+seq,part,status,claim
+1,A,ok,"the backup copy differs from R0 in bytes (E2 pages: equal ignoring header bytes 24-27, 40-43, 92-99 (bytes differ only at [27 43 95])) but is equal at E2: only declared header bytes differ"
+2,A,ok,in WAL mode one transaction and one transaction per statement give byte-identical files: commit boundaries alone leave no trace when rows are only appended
+3,A,ok,insert order (shuffled) and history (R0's updates and deletes) each give a different file
+4,A,ok,every build has the same logical hash
+5,A,ok,"every build is equal to R0 at E3 (logical hash, integrity_check ok, foreign_key_check unchanged)"
+6,A,ok,"the ordered logical capture is itself identical for every build: it depends on content and the schema's creation order, not on insert order, batching or updates"
+7,A,ok,"after VACUUM INTO every build, the replayed copy included, has the same sha256 (E1 between canonical forms)"
+8,A,ok,"except the backup copy: the backup API sets the copy's schema cookie to (old destination cookie + 1) = 1 (backup.c:448), VACUUM INTO carries the cookie + 1, so its canonical form differs at byte 43 only"
+9,A,ok,dbhash from the pinned tree also calls every build equal: it agrees with our logical hash on equality
+10,A,ok,"VACUUM INTO keeps every row, the schema and user_version/application_id, but writes a rollback-mode file: its logical hash differs from the source only in journal_mode"
+11,A2,ok,"in rollback mode the batching shows, but only in the change counter (bytes 24-27 and 92-95 count commits): E2 equal"
+12,B,ok,"implicit rowids (1,2 vs 5,9): dbhash says equal"
+13,B,ok,"implicit rowids (1,2 vs 5,9): our logical hash tells the two apart"
+14,B,ok,sqlite_sequence (1 vs 2): dbhash says equal
+15,B,ok,sqlite_sequence (1 vs 2): our logical hash tells the two apart
+16,B,ok,user_version (1 vs 2): dbhash says equal
+17,B,ok,user_version (1 vs 2): our logical hash tells the two apart
+18,B,ok,integer 1 vs real 1.0: dbhash says differ
+19,B,ok,integer 1 vs real 1.0: our logical hash tells the two apart
+20,B,ok,"value boundary ('a3','b' vs 'a','3b'): dbhash says equal"
+21,B,ok,"value boundary ('a3','b' vs 'a','3b'): our logical hash tells the two apart"
+22,B,ok,row moved between tables: dbhash says equal
+23,B,ok,row moved between tables: our logical hash tells the two apart
+24,C,ok,"same content, tables created in another order: logically equal, but VACUUM INTO copies tables in sqlite_schema order, so the canonical files differ beyond the header"
+25,C,ok,"the capture writes CREATE TABLE in sqlite_schema order, so it records the creation order too: the replay of a source canonicalizes to the source's own canonical bytes"
+26,C,ok,"a schema change that left no trace in the content still raises the schema cookie, and VACUUM INTO carries the cookie (+1): the canonical files differ only at bytes 40-43"
+27,C,ok,an index built before or after the rows canonicalizes to the same bytes: VACUUM INTO rebuilds every index

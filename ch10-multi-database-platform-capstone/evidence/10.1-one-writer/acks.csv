@@ -1,0 +1,7 @@
+seq,database,mode,epoch,user_version,position,in_store
+1,db-0001,store-durable,1,1,2,true
+2,db-0001,local-durable,1,2,,false
+3,db-0001,store-durable,2,2,4,true
+4,db-0001,store-durable,2,3,5,true
+5,db-0002,store-durable,1,1,2,true
+6,db-0002,store-durable,2,2,4,true

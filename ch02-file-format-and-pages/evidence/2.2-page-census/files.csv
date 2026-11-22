@@ -1,0 +1,6 @@
+part,scenario,page_size,usable_size,page_count,page_count_source,pragma_page_count,freelist_count,pragma_freelist_count,btree_pages_compared,not_in_dbstat
+A,r0,4096,4096,270,in-header size,270,3,3,267,3
+B,limit,4096,4096,7,in-header size,7,0,0,7,0
+C,freelist,1024,1024,676,in-header size,676,674,674,2,674
+D,autovacuum,1024,1024,408,in-header size,408,0,0,406,2
+E,large,65536,65536,16386,in-header size,16386,16383,16383,,

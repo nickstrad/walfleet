@@ -1,0 +1,2 @@
+part,mode,kill_no,line
+C,store-durable,1,"db-0001 recovered step 0, acknowledged step 1"

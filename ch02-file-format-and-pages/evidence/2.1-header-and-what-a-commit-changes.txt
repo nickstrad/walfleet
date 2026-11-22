@@ -1,221 +1,340 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-sqlite3 CLI sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: CLI found via PATH
-INFO: work dir _work/2.1
 
-== A. decode the header of the R0 database and compare every field with SQLite
-R0: seed=1 steps=30 journal_mode=wal, built to step 30; sha256 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74
-the 100-byte header, decoded by internal/dbfile:
-    0 16  magic                            "SQLite format 3\x00"
-   16  2  page size                        4096
-   18  1  write version                    2
-   19  1  read version                     2
-   20  1  reserved bytes per page          0
-   21  1  max embedded payload fraction    64
-   22  1  min embedded payload fraction    32
-   23  1  leaf payload fraction            32
-   24  4  file change counter              32
-   28  4  database size in pages           270
-   32  4  first freelist trunk page        230
-   36  4  freelist page count              3
-   40  4  schema cookie                    4
-   44  4  schema format                    4
-   48  4  default cache size               0
-   52  4  largest root page (auto-vacuum)  0
-   56  4  text encoding                    1 (UTF-8)
-   60  4  user version                     30
-   64  4  incremental vacuum               0
-   68  4  application id                   1397836120
-   72 20  reserved for expansion           all zero
-   92  4  version-valid-for                32
-   96  4  SQLite version number            3053004 (3.53.4)
-page count 270, taken from the in-header size (in-header size valid: true)
-check ok: opening R0, reading the pragmas and closing left it byte-identical and at rest
-oracles: PRAGMA through the Go driver; pinned sqlite3 CLI .dbinfo
-  field                  ours         PRAGMA       .dbinfo      match
-  page size              4096         4096         4096         true
-  write version          2            -            2            true
-  read version           2            -            2            true
-  reserved bytes         0            -            0            true
-  file change counter    32           -            32           true
-  page count             270          270          270          true
-  freelist page count    3            3            3            true
-  schema cookie          4            4            4            true
-  schema format          4            -            4            true
-  default cache size     0            -            0            true
-  auto_vacuum            NONE         NONE         -            true
-  largest root page      0            -            0            true
-  incremental vacuum     0            -            0            true
-  text encoding          UTF-8        UTF-8        -            true
-  text encoding number   1            -            1            true
-  user version           30           30           30           true
-  application id         1397836120   1397836120   1397836120   true
-  version-valid-for      32           -            -            n/a
-  SQLite version number  3053004      -            3053004      true
-check ok: each of the 18 decoded header fields that has an oracle here (PRAGMA or .dbinfo) equals SQLite's own report of it; 1 field(s) have none (n/a)
-check ok: bytes 96-99 read 3053004 (the library that last wrote the file)
-check ok: bytes 18 and 19 are 2 and 2 in a WAL-mode file
-check ok: bytes 24-27 equal 92-95, so the in-header size at 28 is used
+════════════════════════════════════════════════════════════════════════
+  2.1  What is in the 100-byte header, and what does a commit change?
+════════════════════════════════════════════════════════════════════════
 
-== B. rollback mode: what one commit changes in page 1 (the header)
-base: rollback-mode recipe built to step 27, closed
-B1. steps 28, 29, 30 on ONE connection; page 1 read from the database file after each commit:
-check ok: after step 28 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
-  commit of step 28:
-    bytes 24-27 file change counter: 30 -> 31 (changed bytes 27)
-    bytes 28-31 database size in pages: 244 -> 251 (changed bytes 31)
-    bytes 32-35 first freelist trunk page: 82 -> 131 (changed bytes 35)
-    bytes 60-63 user version: 27 -> 28 (changed bytes 63)
-    bytes 92-95 version-valid-for: 30 -> 31 (changed bytes 95)
-check ok: after step 29 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
-  commit of step 29:
-    bytes 24-27 file change counter: 31 -> 32 (changed bytes 27)
-    bytes 28-31 database size in pages: 251 -> 259 (changed bytes 30,31)
-    bytes 32-35 first freelist trunk page: 131 -> 0 (changed bytes 35)
-    bytes 36-39 freelist page count: 1 -> 0 (changed bytes 39)
-    bytes 60-63 user version: 28 -> 29 (changed bytes 63)
-    bytes 92-95 version-valid-for: 31 -> 32 (changed bytes 95)
-check ok: after step 30 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
-  commit of step 30:
-    bytes 24-27 file change counter: 32 -> 33 (changed bytes 27)
-    bytes 28-31 database size in pages: 259 -> 270 (changed bytes 31)
-    bytes 32-35 first freelist trunk page: 0 -> 230 (changed bytes 35)
-    bytes 36-39 freelist page count: 0 -> 3 (changed bytes 39)
-    bytes 60-63 user version: 29 -> 30 (changed bytes 63)
-    bytes 92-95 version-valid-for: 32 -> 33 (changed bytes 95)
-check ok: rollback mode: bytes 24-27 and 92-95 each advance by exactly one per commit, on one connection
-check ok: closing the connection changed nothing in page 1
+The first 100 bytes of a database file are the header. The experiment
+decodes it field by field with internal/dbfile and compares every field
+with what SQLite itself reports. Then it reads page 1 after commits, in
+rollback mode and in WAL mode, to see which header bytes move and when.
+In WAL mode two copies of page 1 exist: "current" is the view of SQLite
+(sqlite_dbpage, WAL included) and "file" is the bytes in the database
+file, read by a child process.
 
-== C. WAL mode (the platform default): what changes in page 1, and when
-base: WAL-mode recipe built to step 27, closed; file change counter 29
-Two copies of page 1 are reported: 'current' = SQLite's view (sqlite_dbpage, WAL included); 'file' = the bytes in the database file (read by a child process).
-C1. steps 28, 29, 30 on ONE connection (each step writes page 1: user_version):
-  commit of step 28 (-wal 82432 bytes):
-    current vs previous commit: bytes 24-27 file change counter: 29 -> 30 (changed bytes 27)
-    current vs previous commit: bytes 28-31 database size in pages: 244 -> 251 (changed bytes 31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 82 -> 131 (changed bytes 35)
-    current vs previous commit: bytes 60-63 user version: 27 -> 28 (changed bytes 63)
-    current vs previous commit: bytes 92-95 version-valid-for: 29 -> 30 (changed bytes 95)
-    file vs base: no header byte changed
-check ok: step 28: the current page 1 has 24-27 equal to 92-95 (30)
-  commit of step 29 (-wal 156592 bytes):
-    current vs previous commit: bytes 28-31 database size in pages: 251 -> 259 (changed bytes 30,31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 131 -> 0 (changed bytes 35)
-    current vs previous commit: bytes 36-39 freelist page count: 1 -> 0 (changed bytes 39)
-    current vs previous commit: bytes 60-63 user version: 28 -> 29 (changed bytes 63)
-    file vs base: no header byte changed
-check ok: step 29: the current page 1 has 24-27 equal to 92-95 (30)
-  commit of step 30 (-wal 280192 bytes):
-    current vs previous commit: bytes 28-31 database size in pages: 259 -> 270 (changed bytes 31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 0 -> 230 (changed bytes 35)
-    current vs previous commit: bytes 36-39 freelist page count: 0 -> 3 (changed bytes 39)
-    current vs previous commit: bytes 60-63 user version: 29 -> 30 (changed bytes 63)
-    file vs base: no header byte changed
-check ok: step 30: the current page 1 has 24-27 equal to 92-95 (30)
-check ok: WAL, one connection: every commit writes the same change counter 30 (base + 1), it does not advance per commit
-check ok: WAL: the database file's page 1 does not change at commit; the new page 1 is a frame in the -wal
-  after the last connection closed (no -wal file):
-    file vs base: bytes 24-27 file change counter: 29 -> 30 (changed bytes 27)
-    file vs base: bytes 28-31 database size in pages: 244 -> 270 (changed bytes 30,31)
-    file vs base: bytes 32-35 first freelist trunk page: 82 -> 230 (changed bytes 35)
-    file vs base: bytes 36-39 freelist page count: 1 -> 3 (changed bytes 39)
-    file vs base: bytes 60-63 user version: 27 -> 30 (changed bytes 63)
-    file vs base: bytes 92-95 version-valid-for: 29 -> 30 (changed bytes 95)
-check ok: the checkpoint at close copied the current page 1 into the file
-C2. three commits on ONE connection that do not touch page 1 (UPDATE one account balance):
-  commit 1 (-wal 4152 bytes): current vs base: no header byte changed
-  commit 2 (-wal 8272 bytes): current vs base: no header byte changed
-  commit 3 (-wal 12392 bytes): current vs base: no header byte changed
-check ok: WAL: each of the three UPDATEs changed one row and appended frames to the -wal
-check ok: after the checkpoint at close the database file differs from the base
-check ok: WAL: commits that do not write page 1 leave every header byte unchanged, even the change counter, before and after the checkpoint
-C3. steps 28, 29, 30 each on a NEW connection while a second idle connection stays open (so closing a writer does not checkpoint):
-  step 28 on its own connection (-wal 82432 bytes):
-    current vs previous commit: bytes 24-27 file change counter: 29 -> 30 (changed bytes 27)
-    current vs previous commit: bytes 28-31 database size in pages: 244 -> 251 (changed bytes 31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 82 -> 131 (changed bytes 35)
-    current vs previous commit: bytes 60-63 user version: 27 -> 28 (changed bytes 63)
-    current vs previous commit: bytes 92-95 version-valid-for: 29 -> 30 (changed bytes 95)
-  step 29 on its own connection (-wal 156592 bytes):
-    current vs previous commit: bytes 24-27 file change counter: 30 -> 31 (changed bytes 27)
-    current vs previous commit: bytes 28-31 database size in pages: 251 -> 259 (changed bytes 30,31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 131 -> 0 (changed bytes 35)
-    current vs previous commit: bytes 36-39 freelist page count: 1 -> 0 (changed bytes 39)
-    current vs previous commit: bytes 60-63 user version: 28 -> 29 (changed bytes 63)
-    current vs previous commit: bytes 92-95 version-valid-for: 30 -> 31 (changed bytes 95)
-  step 30 on its own connection (-wal 280192 bytes):
-    current vs previous commit: bytes 24-27 file change counter: 31 -> 32 (changed bytes 27)
-    current vs previous commit: bytes 28-31 database size in pages: 259 -> 270 (changed bytes 31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 0 -> 230 (changed bytes 35)
-    current vs previous commit: bytes 36-39 freelist page count: 0 -> 3 (changed bytes 39)
-    current vs previous commit: bytes 60-63 user version: 29 -> 30 (changed bytes 63)
-    current vs previous commit: bytes 92-95 version-valid-for: 31 -> 32 (changed bytes 95)
-check ok: WAL: with another connection open, the file's page 1 still equals the base after three commits
-check ok: WAL: each new connection reads page 1 afresh and writes counter + 1, so the counter advances once per connection that writes page 1
-check ok: closing the last connection checkpointed page 1 into the file and removed the -wal
-C4. steps 28, 29, 30 on ONE connection, with PRAGMA shrink_memory before each step (it drops unused pages, page 1 included, from the connection's cache):
-  commit of step 28 (-wal 82432 bytes):
-    current vs previous commit: bytes 24-27 file change counter: 29 -> 30 (changed bytes 27)
-    current vs previous commit: bytes 28-31 database size in pages: 244 -> 251 (changed bytes 31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 82 -> 131 (changed bytes 35)
-    current vs previous commit: bytes 60-63 user version: 27 -> 28 (changed bytes 63)
-    current vs previous commit: bytes 92-95 version-valid-for: 29 -> 30 (changed bytes 95)
-  commit of step 29 (-wal 156592 bytes):
-    current vs previous commit: bytes 24-27 file change counter: 30 -> 31 (changed bytes 27)
-    current vs previous commit: bytes 28-31 database size in pages: 251 -> 259 (changed bytes 30,31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 131 -> 0 (changed bytes 35)
-    current vs previous commit: bytes 36-39 freelist page count: 1 -> 0 (changed bytes 39)
-    current vs previous commit: bytes 60-63 user version: 28 -> 29 (changed bytes 63)
-    current vs previous commit: bytes 92-95 version-valid-for: 30 -> 31 (changed bytes 95)
-  commit of step 30 (-wal 280192 bytes):
-    current vs previous commit: bytes 24-27 file change counter: 31 -> 32 (changed bytes 27)
-    current vs previous commit: bytes 28-31 database size in pages: 259 -> 270 (changed bytes 31)
-    current vs previous commit: bytes 32-35 first freelist trunk page: 0 -> 230 (changed bytes 35)
-    current vs previous commit: bytes 36-39 freelist page count: 0 -> 3 (changed bytes 39)
-    current vs previous commit: bytes 60-63 user version: 29 -> 30 (changed bytes 63)
-    current vs previous commit: bytes 92-95 version-valid-for: 31 -> 32 (changed bytes 95)
-check ok: WAL, one connection, page 1 dropped from the cache before each commit: the counter advances once per commit (30, 31, 32), so C1's constant counter comes from page 1 staying cached, not from the connection
+── A. Decode the header of the R0 database ─────────────────────────────
 
-== D. bytes 18-19: switching journal mode rewrites the header
-base: rollback-mode recipe built to step 3; bytes 18,19 = 1,1
-  PRAGMA journal_mode=WAL -> wal; connection closed (no -wal file)
-    file vs before: byte 18 write version: 1 -> 2 (changed bytes 18)
-    file vs before: byte 19 read version: 1 -> 2 (changed bytes 19)
-    file vs before: bytes 24-27 file change counter: 6 -> 7 (changed bytes 27)
-    file vs before: bytes 92-95 version-valid-for: 6 -> 7 (changed bytes 95)
-check ok: PRAGMA journal_mode=WAL sets bytes 18 and 19 to 2
-  PRAGMA journal_mode=DELETE -> delete; connection closed (no -wal file)
-    file vs WAL: byte 18 write version: 2 -> 1 (changed bytes 18)
-    file vs WAL: byte 19 read version: 2 -> 1 (changed bytes 19)
-    file vs WAL: bytes 24-27 file change counter: 7 -> 8 (changed bytes 27)
-    file vs WAL: bytes 92-95 version-valid-for: 7 -> 8 (changed bytes 95)
-check ok: PRAGMA journal_mode=DELETE sets bytes 18 and 19 back to 1
+A1. The R0 database: the recipe, the page count we derive and where it comes from.
+┌──────────────────────────────────┬──────────────────────────────────────────────────────────────────┐
+│              recipe              │                              sha256                              │
+├──────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ seed=1 steps=30 journal_mode=wal │ 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74 │
+└──────────────────────────────────┴──────────────────────────────────────────────────────────────────┘
+┌────────────┬───────────────────┬──────────────────────┐
+│ page_count │ page_count_source │ in_header_size_valid │
+├────────────┼───────────────────┼──────────────────────┤
+│ 270        │ in-header size    │ true                 │
+└────────────┴───────────────────┴──────────────────────┘
 
-== E. the in-header size (bytes 28-31) is used only when bytes 24-27 equal 92-95
-base: rollback-mode recipe built to step 3: 39 pages in the file, in-header size 39
-  E1 in-header size = file pages - 1, counters agree:
-    ours:   page count 38 (from in-header size)
-    SQLite: page_count 38
-check ok: agreeing counters: SQLite and our parser both trust the in-header size
-  E2 in-header size = file pages - 1, byte 95 changed so counters disagree:
-    ours:   page count 39 (from file size)
-    SQLite: page_count 39
-check ok: disagreeing counters: both ignore bytes 28-31 and use the file size
-  E3 in-header size = file pages + 5, counters agree:
-    ours:   page count error: in-header size larger than the file
-    SQLite: page_count error: database disk image is malformed (11)
-check ok: an agreeing in-header size larger than the file is corruption to both
-  E4 in-header size = 0, counters agree:
-    ours:   page count 39 (from file size)
-    SQLite: page_count 39
-check ok: an in-header size of 0 is ignored by both
+A2. The 100 bytes, decoded by internal/dbfile.
+┌─────────────┬──────┬─────────────────────────────────┬───────────────────────┐
+│ byte_offset │ size │              field              │         value         │
+├─────────────┼──────┼─────────────────────────────────┼───────────────────────┤
+│ 0           │ 16   │ magic                           │ "SQLite format 3\x00" │
+│ 16          │ 2    │ page size                       │ 4096                  │
+│ 18          │ 1    │ write version                   │ 2                     │
+│ 19          │ 1    │ read version                    │ 2                     │
+│ 20          │ 1    │ reserved bytes per page         │ 0                     │
+│ 21          │ 1    │ max embedded payload fraction   │ 64                    │
+│ 22          │ 1    │ min embedded payload fraction   │ 32                    │
+│ 23          │ 1    │ leaf payload fraction           │ 32                    │
+│ 24          │ 4    │ file change counter             │ 32                    │
+│ 28          │ 4    │ database size in pages          │ 270                   │
+│ 32          │ 4    │ first freelist trunk page       │ 230                   │
+│ 36          │ 4    │ freelist page count             │ 3                     │
+│ 40          │ 4    │ schema cookie                   │ 4                     │
+│ 44          │ 4    │ schema format                   │ 4                     │
+│ 48          │ 4    │ default cache size              │ 0                     │
+│ 52          │ 4    │ largest root page (auto-vacuum) │ 0                     │
+│ 56          │ 4    │ text encoding                   │ 1 (UTF-8)             │
+│ 60          │ 4    │ user version                    │ 30                    │
+│ 64          │ 4    │ incremental vacuum              │ 0                     │
+│ 68          │ 4    │ application id                  │ 1397836120            │
+│ 72          │ 20   │ reserved for expansion          │ all zero              │
+│ 92          │ 4    │ version-valid-for               │ 32                    │
+│ 96          │ 4    │ SQLite version number           │ 3053004 (3.53.4)      │
+└─────────────┴──────┴─────────────────────────────────┴───────────────────────┘
 
-== F. page size is stored in bytes 16-17; 65536 does not fit in two bytes and is stored as 1
-  PRAGMA page_size=512   bytes 16-17 = 02 00 (stored 512), decoded 512, SQLite reports 512
-check ok: page size 512 is stored as 512 and decodes to the size asked for and to what SQLite reports
-  PRAGMA page_size=4096  bytes 16-17 = 10 00 (stored 4096), decoded 4096, SQLite reports 4096
-check ok: page size 4096 is stored as 4096 and decodes to the size asked for and to what SQLite reports
-  PRAGMA page_size=65536 bytes 16-17 = 00 01 (stored 1), decoded 65536, SQLite reports 65536
-check ok: page size 65536 is stored as 1 and decodes to the size asked for and to what SQLite reports
+A3. Every decoded field against SQLite: PRAGMA through the Go driver and the
+.dbinfo of the pinned sqlite3 CLI. "-" means that oracle does not report the field.
+┌───────────────────────┬────────────┬────────────┬────────────┬───────┐
+│         field         │    ours    │   pragma   │   dbinfo   │ match │
+├───────────────────────┼────────────┼────────────┼────────────┼───────┤
+│ page size             │ 4096       │ 4096       │ 4096       │ true  │
+│ write version         │ 2          │ -          │ 2          │ true  │
+│ read version          │ 2          │ -          │ 2          │ true  │
+│ reserved bytes        │ 0          │ -          │ 0          │ true  │
+│ file change counter   │ 32         │ -          │ 32         │ true  │
+│ page count            │ 270        │ 270        │ 270        │ true  │
+│ freelist page count   │ 3          │ 3          │ 3          │ true  │
+│ schema cookie         │ 4          │ 4          │ 4          │ true  │
+│ schema format         │ 4          │ -          │ 4          │ true  │
+│ default cache size    │ 0          │ -          │ 0          │ true  │
+│ auto_vacuum           │ NONE       │ NONE       │ -          │ true  │
+│ largest root page     │ 0          │ -          │ 0          │ true  │
+│ incremental vacuum    │ 0          │ -          │ 0          │ true  │
+│ text encoding         │ UTF-8      │ UTF-8      │ -          │ true  │
+│ text encoding number  │ 1          │ -          │ 1          │ true  │
+│ user version          │ 30         │ 30         │ 30         │ true  │
+│ application id        │ 1397836120 │ 1397836120 │ 1397836120 │ true  │
+│ version-valid-for     │ 32         │ -          │ -          │ n/a   │
+│ SQLite version number │ 3053004    │ -          │ 3053004    │ true  │
+└───────────────────────┴────────────┴────────────┴────────────┴───────┘
 
-HEADER OK
+── B. Rollback mode: what one commit changes in page 1 ─────────────────
+
+B1. Steps 28, 29 and 30 on one connection; page 1 is read from the database
+file after each commit. Each commit advances the file change counter (24-27)
+and version-valid-for (92-95) by one, and moves the size, freelist and
+user-version fields.
+
+The base database, built to step 27 and closed:
+┌──────────────────┬──────────────┬───────────────┬────────┬────────┬────────────────┬────────────────┬────────────┐
+│       name       │ journal_mode │ built_to_step │ byte18 │ byte19 │ change_counter │ in_header_size │ file_pages │
+├──────────────────┼──────────────┼───────────────┼────────┼────────┼────────────────┼────────────────┼────────────┤
+│ rollback-base.db │ delete       │ 27            │ 1      │ 1      │ 30             │ 244            │ 244        │
+└──────────────────┴──────────────┴───────────────┴────────┴────────┴────────────────┴────────────────┴────────────┘
+
+The header fields that differ from the page 1 before the commit:
+┌───────────────────┬──────────────────┬───────┬───────────────────────────┬────────┬───────┬───────────────┐
+│       event       │       view       │ bytes │           field           │ before │ after │ changed_bytes │
+├───────────────────┼──────────────────┼───────┼───────────────────────────┼────────┼───────┼───────────────┤
+│ commit of step 28 │ file vs previous │ 24-27 │ file change counter       │ 30     │ 31    │ 27            │
+│ commit of step 28 │ file vs previous │ 28-31 │ database size in pages    │ 244    │ 251   │ 31            │
+│ commit of step 28 │ file vs previous │ 32-35 │ first freelist trunk page │ 82     │ 131   │ 35            │
+│ commit of step 28 │ file vs previous │ 60-63 │ user version              │ 27     │ 28    │ 63            │
+│ commit of step 28 │ file vs previous │ 92-95 │ version-valid-for         │ 30     │ 31    │ 95            │
+│ commit of step 29 │ file vs previous │ 24-27 │ file change counter       │ 31     │ 32    │ 27            │
+│ commit of step 29 │ file vs previous │ 28-31 │ database size in pages    │ 251    │ 259   │ 30 31         │
+│ commit of step 29 │ file vs previous │ 32-35 │ first freelist trunk page │ 131    │ 0     │ 35            │
+│ commit of step 29 │ file vs previous │ 36-39 │ freelist page count       │ 1      │ 0     │ 39            │
+│ commit of step 29 │ file vs previous │ 60-63 │ user version              │ 28     │ 29    │ 63            │
+│ commit of step 29 │ file vs previous │ 92-95 │ version-valid-for         │ 31     │ 32    │ 95            │
+│ commit of step 30 │ file vs previous │ 24-27 │ file change counter       │ 32     │ 33    │ 27            │
+│ commit of step 30 │ file vs previous │ 28-31 │ database size in pages    │ 259    │ 270   │ 31            │
+│ commit of step 30 │ file vs previous │ 32-35 │ first freelist trunk page │ 0      │ 230   │ 35            │
+│ commit of step 30 │ file vs previous │ 36-39 │ freelist page count       │ 0      │ 3     │ 39            │
+│ commit of step 30 │ file vs previous │ 60-63 │ user version              │ 29     │ 30    │ 63            │
+│ commit of step 30 │ file vs previous │ 92-95 │ version-valid-for         │ 32     │ 33    │ 95            │
+└───────────────────┴──────────────────┴───────┴───────────────────────────┴────────┴───────┴───────────────┘
+
+── C. WAL mode (the platform default): what changes in page 1, and when ──
+
+The base database, built to step 27 and closed:
+┌─────────────┬──────────────┬───────────────┬────────┬────────┬────────────────┬────────────────┬────────────┐
+│    name     │ journal_mode │ built_to_step │ byte18 │ byte19 │ change_counter │ in_header_size │ file_pages │
+├─────────────┼──────────────┼───────────────┼────────┼────────┼────────────────┼────────────────┼────────────┤
+│ wal-base.db │ wal          │ 27            │ 2      │ 2      │ 29             │ 244            │ 244        │
+└─────────────┴──────────────┴───────────────┴────────┴────────┴────────────────┴────────────────┴────────────┘
+
+C1. Steps 28, 29, 30 on one connection; each step writes page 1 (user_version).
+Look at the "current vs previous" rows: the change counter moves at step 28 and
+then stays put, although page 1 is rewritten each time. The "file vs base"
+rows show page 1 of the database file unchanged until the last connection
+closes and the checkpoint copies the current page 1 into it.
+
+The commits and the size of the -wal after each:
+┌──────────────────────┬───────────────────┐
+│        event         │     wal_state     │
+├──────────────────────┼───────────────────┤
+│ commit of step 28    │ -wal 82432 bytes  │
+│ commit of step 29    │ -wal 156592 bytes │
+│ commit of step 30    │ -wal 280192 bytes │
+│ after the last close │ no -wal file      │
+└──────────────────────┴───────────────────┘
+
+The header fields that differ, by view:
+┌──────────────────────┬─────────────────────┬───────┬───────────────────────────┬────────┬───────┬───────────────┐
+│        event         │        view         │ bytes │           field           │ before │ after │ changed_bytes │
+├──────────────────────┼─────────────────────┼───────┼───────────────────────────┼────────┼───────┼───────────────┤
+│ commit of step 28    │ current vs previous │ 24-27 │ file change counter       │ 29     │ 30    │ 27            │
+│ commit of step 28    │ current vs previous │ 28-31 │ database size in pages    │ 244    │ 251   │ 31            │
+│ commit of step 28    │ current vs previous │ 32-35 │ first freelist trunk page │ 82     │ 131   │ 35            │
+│ commit of step 28    │ current vs previous │ 60-63 │ user version              │ 27     │ 28    │ 63            │
+│ commit of step 28    │ current vs previous │ 92-95 │ version-valid-for         │ 29     │ 30    │ 95            │
+│ commit of step 28    │ file vs base        │       │ no header byte changed    │        │       │               │
+│ commit of step 29    │ current vs previous │ 28-31 │ database size in pages    │ 251    │ 259   │ 30 31         │
+│ commit of step 29    │ current vs previous │ 32-35 │ first freelist trunk page │ 131    │ 0     │ 35            │
+│ commit of step 29    │ current vs previous │ 36-39 │ freelist page count       │ 1      │ 0     │ 39            │
+│ commit of step 29    │ current vs previous │ 60-63 │ user version              │ 28     │ 29    │ 63            │
+│ commit of step 29    │ file vs base        │       │ no header byte changed    │        │       │               │
+│ commit of step 30    │ current vs previous │ 28-31 │ database size in pages    │ 259    │ 270   │ 31            │
+│ commit of step 30    │ current vs previous │ 32-35 │ first freelist trunk page │ 0      │ 230   │ 35            │
+│ commit of step 30    │ current vs previous │ 36-39 │ freelist page count       │ 0      │ 3     │ 39            │
+│ commit of step 30    │ current vs previous │ 60-63 │ user version              │ 29     │ 30    │ 63            │
+│ commit of step 30    │ file vs base        │       │ no header byte changed    │        │       │               │
+│ after the last close │ file vs base        │ 24-27 │ file change counter       │ 29     │ 30    │ 27            │
+│ after the last close │ file vs base        │ 28-31 │ database size in pages    │ 244    │ 270   │ 30 31         │
+│ after the last close │ file vs base        │ 32-35 │ first freelist trunk page │ 82     │ 230   │ 35            │
+│ after the last close │ file vs base        │ 36-39 │ freelist page count       │ 1      │ 3     │ 39            │
+│ after the last close │ file vs base        │ 60-63 │ user version              │ 27     │ 30    │ 63            │
+│ after the last close │ file vs base        │ 92-95 │ version-valid-for         │ 29     │ 30    │ 95            │
+└──────────────────────┴─────────────────────┴───────┴───────────────────────────┴────────┴───────┴───────────────┘
+
+C2. Three commits on one connection that do not touch page 1 (UPDATE one
+account balance). The -wal grows, the header does not change: not even the
+change counter, before or after the checkpoint at close.
+┌─────────────────┬──────────────────┬─────────────────┬────────────────────────┐
+│      event      │    wal_state     │      view       │         field          │
+├─────────────────┼──────────────────┼─────────────────┼────────────────────────┤
+│ UPDATE commit 1 │ -wal 4152 bytes  │ current vs base │ no header byte changed │
+│ UPDATE commit 2 │ -wal 8272 bytes  │ current vs base │ no header byte changed │
+│ UPDATE commit 3 │ -wal 12392 bytes │ current vs base │ no header byte changed │
+└─────────────────┴──────────────────┴─────────────────┴────────────────────────┘
+
+C3. Steps 28, 29, 30, each on a new connection, while a second idle connection
+stays open so that closing a writer does not checkpoint. Now the counter
+advances at every step: each new connection reads page 1 afresh and writes
+counter + 1.
+┌─────────────────────────┬───────────────────┬───────┬───────────────────────────┬────────┬───────┐
+│          event          │     wal_state     │ bytes │           field           │ before │ after │
+├─────────────────────────┼───────────────────┼───────┼───────────────────────────┼────────┼───────┤
+│ step 28, new connection │ -wal 82432 bytes  │ 24-27 │ file change counter       │ 29     │ 30    │
+│ step 28, new connection │ -wal 82432 bytes  │ 28-31 │ database size in pages    │ 244    │ 251   │
+│ step 28, new connection │ -wal 82432 bytes  │ 32-35 │ first freelist trunk page │ 82     │ 131   │
+│ step 28, new connection │ -wal 82432 bytes  │ 60-63 │ user version              │ 27     │ 28    │
+│ step 28, new connection │ -wal 82432 bytes  │ 92-95 │ version-valid-for         │ 29     │ 30    │
+│ step 29, new connection │ -wal 156592 bytes │ 24-27 │ file change counter       │ 30     │ 31    │
+│ step 29, new connection │ -wal 156592 bytes │ 28-31 │ database size in pages    │ 251    │ 259   │
+│ step 29, new connection │ -wal 156592 bytes │ 32-35 │ first freelist trunk page │ 131    │ 0     │
+│ step 29, new connection │ -wal 156592 bytes │ 36-39 │ freelist page count       │ 1      │ 0     │
+│ step 29, new connection │ -wal 156592 bytes │ 60-63 │ user version              │ 28     │ 29    │
+│ step 29, new connection │ -wal 156592 bytes │ 92-95 │ version-valid-for         │ 30     │ 31    │
+│ step 30, new connection │ -wal 280192 bytes │ 24-27 │ file change counter       │ 31     │ 32    │
+│ step 30, new connection │ -wal 280192 bytes │ 28-31 │ database size in pages    │ 259    │ 270   │
+│ step 30, new connection │ -wal 280192 bytes │ 32-35 │ first freelist trunk page │ 0      │ 230   │
+│ step 30, new connection │ -wal 280192 bytes │ 36-39 │ freelist page count       │ 0      │ 3     │
+│ step 30, new connection │ -wal 280192 bytes │ 60-63 │ user version              │ 29     │ 30    │
+│ step 30, new connection │ -wal 280192 bytes │ 92-95 │ version-valid-for         │ 31     │ 32    │
+└─────────────────────────┴───────────────────┴───────┴───────────────────────────┴────────┴───────┘
+
+C4. Steps 28, 29, 30 on one connection again, with PRAGMA shrink_memory before
+each step. It drops page 1 from the cache of the connection, and the counter
+advances once per commit: the constant counter of C1 comes from page 1 staying
+cached, not from the connection.
+┌───────────────────┬───────────────────┬───────┬───────────────────────────┬────────┬───────┐
+│       event       │     wal_state     │ bytes │           field           │ before │ after │
+├───────────────────┼───────────────────┼───────┼───────────────────────────┼────────┼───────┤
+│ commit of step 28 │ -wal 82432 bytes  │ 24-27 │ file change counter       │ 29     │ 30    │
+│ commit of step 28 │ -wal 82432 bytes  │ 28-31 │ database size in pages    │ 244    │ 251   │
+│ commit of step 28 │ -wal 82432 bytes  │ 32-35 │ first freelist trunk page │ 82     │ 131   │
+│ commit of step 28 │ -wal 82432 bytes  │ 60-63 │ user version              │ 27     │ 28    │
+│ commit of step 28 │ -wal 82432 bytes  │ 92-95 │ version-valid-for         │ 29     │ 30    │
+│ commit of step 29 │ -wal 156592 bytes │ 24-27 │ file change counter       │ 30     │ 31    │
+│ commit of step 29 │ -wal 156592 bytes │ 28-31 │ database size in pages    │ 251    │ 259   │
+│ commit of step 29 │ -wal 156592 bytes │ 32-35 │ first freelist trunk page │ 131    │ 0     │
+│ commit of step 29 │ -wal 156592 bytes │ 36-39 │ freelist page count       │ 1      │ 0     │
+│ commit of step 29 │ -wal 156592 bytes │ 60-63 │ user version              │ 28     │ 29    │
+│ commit of step 29 │ -wal 156592 bytes │ 92-95 │ version-valid-for         │ 30     │ 31    │
+│ commit of step 30 │ -wal 280192 bytes │ 24-27 │ file change counter       │ 31     │ 32    │
+│ commit of step 30 │ -wal 280192 bytes │ 28-31 │ database size in pages    │ 259    │ 270   │
+│ commit of step 30 │ -wal 280192 bytes │ 32-35 │ first freelist trunk page │ 0      │ 230   │
+│ commit of step 30 │ -wal 280192 bytes │ 36-39 │ freelist page count       │ 0      │ 3     │
+│ commit of step 30 │ -wal 280192 bytes │ 60-63 │ user version              │ 29     │ 30    │
+│ commit of step 30 │ -wal 280192 bytes │ 92-95 │ version-valid-for         │ 31     │ 32    │
+└───────────────────┴───────────────────┴───────┴───────────────────────────┴────────┴───────┘
+
+── D. Bytes 18-19: switching journal mode rewrites the header ──────────
+
+The base database is in rollback mode, built to step 3. Each statement runs
+on its own connection that is then closed, and no -wal file exists. The
+table shows what the file header differs by afterwards.
+┌───────────┬──────────────┬───────────────┬────────┬────────┬────────────────┬────────────────┬────────────┐
+│   name    │ journal_mode │ built_to_step │ byte18 │ byte19 │ change_counter │ in_header_size │ file_pages │
+├───────────┼──────────────┼───────────────┼────────┼────────┼────────────────┼────────────────┼────────────┤
+│ switch.db │ delete       │ 3             │ 1      │ 1      │ 6              │ 39             │ 39         │
+└───────────┴──────────────┴───────────────┴────────┴────────┴────────────────┴────────────────┴────────────┘
+┌────────────────────────────┬────────────────┬────────────────┬───────┬─────────────────────┬────────┬───────┐
+│           event            │     detail     │      view      │ bytes │        field        │ before │ after │
+├────────────────────────────┼────────────────┼────────────────┼───────┼─────────────────────┼────────┼───────┤
+│ PRAGMA journal_mode=WAL    │ returns wal    │ file vs before │ 18    │ write version       │ 1      │ 2     │
+│ PRAGMA journal_mode=WAL    │ returns wal    │ file vs before │ 19    │ read version        │ 1      │ 2     │
+│ PRAGMA journal_mode=WAL    │ returns wal    │ file vs before │ 24-27 │ file change counter │ 6      │ 7     │
+│ PRAGMA journal_mode=WAL    │ returns wal    │ file vs before │ 92-95 │ version-valid-for   │ 6      │ 7     │
+│ PRAGMA journal_mode=DELETE │ returns delete │ file vs WAL    │ 18    │ write version       │ 2      │ 1     │
+│ PRAGMA journal_mode=DELETE │ returns delete │ file vs WAL    │ 19    │ read version        │ 2      │ 1     │
+│ PRAGMA journal_mode=DELETE │ returns delete │ file vs WAL    │ 24-27 │ file change counter │ 7      │ 8     │
+│ PRAGMA journal_mode=DELETE │ returns delete │ file vs WAL    │ 92-95 │ version-valid-for   │ 7      │ 8     │
+└────────────────────────────┴────────────────┴────────────────┴───────┴─────────────────────┴────────┴───────┘
+
+── E. The in-header size (bytes 28-31) is used only when 24-27 equal 92-95 ──
+
+Four edited copies of a rollback-mode database, opened read-only. The page
+count of each according to our parser and to SQLite (PRAGMA page_count).
+
+The base database, built to step 3:
+┌──────────────┬──────────────┬───────────────┬────────────────┬────────────────┬────────────┐
+│     name     │ journal_mode │ built_to_step │ change_counter │ in_header_size │ file_pages │
+├──────────────┼──────────────┼───────────────┼────────────────┼────────────────┼────────────┤
+│ size-base.db │ delete       │ 3             │ 6              │ 39             │ 39         │
+└──────────────┴──────────────┴───────────────┴────────────────┴────────────────┴────────────┘
+┌─────────┬───────────────────────────────────────────────────────────────────────┬────────────────┐
+│ variant │                              description                              │ in_header_size │
+├─────────┼───────────────────────────────────────────────────────────────────────┼────────────────┤
+│ E1      │ in-header size = file pages - 1, counters agree                       │ 38             │
+│ E2      │ in-header size = file pages - 1, byte 95 changed so counters disagree │ 38             │
+│ E3      │ in-header size = file pages + 5, counters agree                       │ 44             │
+│ E4      │ in-header size = 0, counters agree                                    │ 0              │
+└─────────┴───────────────────────────────────────────────────────────────────────┴────────────────┘
+
+The page count each of them reports:
+┌─────────┬────────────────────────────────────────────┬──────────────────────────────────────────────┐
+│ variant │                 our parser                 │              SQLite page_count               │
+├─────────┼────────────────────────────────────────────┼──────────────────────────────────────────────┤
+│ E1      │ 38 (from in-header size)                   │ 38                                           │
+│ E2      │ 39 (from file size)                        │ 39                                           │
+│ E3      │ error: in-header size larger than the file │ error: database disk image is malformed (11) │
+│ E4      │ 39 (from file size)                        │ 39                                           │
+└─────────┴────────────────────────────────────────────┴──────────────────────────────────────────────┘
+
+── F. The page size lives in bytes 16-17; 65536 is stored as 1 ───────────
+
+65536 does not fit in two bytes. Each row is a new database created with
+PRAGMA page_size = requested; bytes 16 and 17 are shown in hex.
+┌───────────┬────────┬────────┬────────┬─────────┬────────────────┐
+│ requested │ byte16 │ byte17 │ stored │ decoded │ sqlite_reports │
+├───────────┼────────┼────────┼────────┼─────────┼────────────────┤
+│ 512       │ 02     │ 00     │ 512    │ 512     │ 512            │
+│ 4096      │ 10     │ 00     │ 4096   │ 4096    │ 4096           │
+│ 65536     │ 00     │ 01     │ 1      │ 65536   │ 65536          │
+└───────────┴────────┴────────┴────────┴─────────┴────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  opening R0, reading the pragmas and closing left it byte-identical and at rest
+A  ✓  each of the 18 decoded header fields that has an oracle here (PRAGMA or .dbinfo) equals SQLite's own report of it; 1 field(s) have none (n/a)
+A  ✓  bytes 96-99 read 3053004 (the library that last wrote the file)
+A  ✓  bytes 18 and 19 are 2 and 2 in a WAL-mode file
+A  ✓  bytes 24-27 equal 92-95, so the in-header size at 28 is used
+B  ✓  after step 28 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
+B  ✓  after step 29 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
+B  ✓  after step 30 the file's page 1 equals SQLite's current page 1 (no -wal in rollback mode)
+B  ✓  rollback mode: bytes 24-27 and 92-95 each advance by exactly one per commit, on one connection
+B  ✓  closing the connection changed nothing in page 1
+C  ✓  step 28: the current page 1 has 24-27 equal to 92-95 (30)
+C  ✓  step 29: the current page 1 has 24-27 equal to 92-95 (30)
+C  ✓  step 30: the current page 1 has 24-27 equal to 92-95 (30)
+C  ✓  WAL, one connection: every commit writes the same change counter 30 (base + 1), it does not advance per commit
+C  ✓  WAL: the database file's page 1 does not change at commit; the new page 1 is a frame in the -wal
+C  ✓  the checkpoint at close copied the current page 1 into the file
+C  ✓  WAL: each of the three UPDATEs changed one row and appended frames to the -wal
+C  ✓  after the checkpoint at close the database file differs from the base
+C  ✓  WAL: commits that do not write page 1 leave every header byte unchanged, even the change counter, before and after the checkpoint
+C  ✓  WAL: with another connection open, the file's page 1 still equals the base after three commits
+C  ✓  WAL: each new connection reads page 1 afresh and writes counter + 1, so the counter advances once per connection that writes page 1
+C  ✓  closing the last connection checkpointed page 1 into the file and removed the -wal
+C  ✓  WAL, one connection, page 1 dropped from the cache before each commit: the counter advances once per commit (30, 31, 32), so C1's constant counter comes from page 1 staying cached, not from the connection
+D  ✓  PRAGMA journal_mode=WAL sets bytes 18 and 19 to 2
+D  ✓  PRAGMA journal_mode=DELETE sets bytes 18 and 19 back to 1
+E  ✓  agreeing counters: SQLite and our parser both trust the in-header size
+E  ✓  disagreeing counters: both ignore bytes 28-31 and use the file size
+E  ✓  an agreeing in-header size larger than the file is corruption to both
+E  ✓  an in-header size of 0 is ignored by both
+F  ✓  page size 512 is stored as 512 and decodes to the size asked for and to what SQLite reports
+F  ✓  page size 4096 is stored as 4096 and decodes to the size asked for and to what SQLite reports
+F  ✓  page size 65536 is stored as 1 and decodes to the size asked for and to what SQLite reports
+
+32 of 32 claims hold
+
+Experiment verdict: HEADER OK

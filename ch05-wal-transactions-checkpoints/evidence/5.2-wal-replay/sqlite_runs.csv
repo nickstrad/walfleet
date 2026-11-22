@@ -1,0 +1,5 @@
+seq,part,run,shm,user_version,busy,log_frames,checkpointed
+4,A,"TRUNCATE checkpoint of the original, then close",,,false,0,0
+11,B,"opened a copy, then TRUNCATE checkpoint",none,10,false,0,0
+13,B,"opened a copy, then TRUNCATE checkpoint","stale, from part A",10,false,0,0
+18,C,"TRUNCATE checkpoint of the original, then close",,,false,0,0

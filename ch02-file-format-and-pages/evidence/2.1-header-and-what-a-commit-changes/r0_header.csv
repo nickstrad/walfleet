@@ -1,0 +1,24 @@
+byte_offset,size,field,value
+0,16,magic,"""SQLite format 3\x00"""
+16,2,page size,4096
+18,1,write version,2
+19,1,read version,2
+20,1,reserved bytes per page,0
+21,1,max embedded payload fraction,64
+22,1,min embedded payload fraction,32
+23,1,leaf payload fraction,32
+24,4,file change counter,32
+28,4,database size in pages,270
+32,4,first freelist trunk page,230
+36,4,freelist page count,3
+40,4,schema cookie,4
+44,4,schema format,4
+48,4,default cache size,0
+52,4,largest root page (auto-vacuum),0
+56,4,text encoding,1 (UTF-8)
+60,4,user version,30
+64,4,incremental vacuum,0
+68,4,application id,1397836120
+72,20,reserved for expansion,all zero
+92,4,version-valid-for,32
+96,4,SQLite version number,3053004 (3.53.4)

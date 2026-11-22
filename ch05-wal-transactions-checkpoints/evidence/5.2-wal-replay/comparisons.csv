@@ -1,0 +1,6 @@
+seq,part,against,level,equal,sha256,user_version,integrity_check,unchanged_by_open
+5,A,SQLite's own checkpoint of the original,E1 bytes,true,00eac4cab1747d717e2cebf666b7c63ed0504b8f83e8a2f15d02155130989af6,8,ok,true
+12,B,SQLite's recovery and checkpoint of the same captured files,E1 bytes,true,fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7,10,ok,true
+14,B,SQLite's checkpoint of the same files opened with a stale -shm,E1 bytes,true,fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7,10,ok,true
+19,C,SQLite's own checkpoint of the original after the rollback,E1 bytes,true,fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7,10,ok,true
+20,C,replay of the open-transaction capture vs replay of the after-rollback capture,E1 bytes,true,fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7,,,

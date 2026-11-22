@@ -1,0 +1,7 @@
+part,what,status
+A,"one connection, the same scan twice",ran
+B,"64 connections to 64 files, all kept open",ran
+C,"64 connections to one file, all kept open",ran
+D,64 files through a pool of at most 8 open connections,ran
+E,one connection without and one with mmap,ran
+E,split of the added RSS into file-backed and anonymous,ran

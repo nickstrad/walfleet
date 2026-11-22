@@ -3,6 +3,9 @@
 // drops uncheckpointed commits (Part A1), and copying .db across an active
 // checkpoint produces a torn, corrupt file (Part A2); in rollback mode, copying
 // .db across a live commit tears the copy the same way (Part B).
+//
+// It prints only its verdict. The steps and what each copy holds go to CSV
+// tables that report.sql presents: go run ./cmd/course run 6.3
 package main
 
 import (
@@ -14,6 +17,7 @@ import (
 
 	"github.com/nickstrad/walfleet/internal/procs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -29,6 +33,41 @@ var describeQueries = []string{
 	"SELECT (SELECT count(*) FROM accounts) || ' accounts, ' || (SELECT count(*) FROM events) || ' events, ' || (SELECT count(*) FROM documents) || ' documents'",
 }
 
+// Every step and every examined copy goes to a CSV table in <work dir>/results/;
+// part labels the rows written while a part runs.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		steps, copies, integrityProblems, infoRun *results.Table
+	}
+)
+
+func openTables() {
+	tables.steps = set.Table("steps", "part", "step", "process", "action", "result", "code", "value")
+	tables.copies = set.Table("copies", "part", "copy", "bytes", "pages", "open_error", "integrity", "user_version", "contents", "matched_step", "exact")
+	tables.integrityProblems = set.Table("integrity_problems", "part", "copy", "n", "problem")
+	tables.infoRun = set.Table("info_run", "work_dir", "db_bytes_at_copy")
+}
+
+// recorder is a procs.Lab that writes each step and claim to the tables
+// instead of printing them.
+type recorder struct{ *procs.Lab }
+
+func newRecorder() *recorder {
+	lab := procs.NewLab(os.Stdout)
+	lab.Script.Out = nil
+	return &recorder{lab}
+}
+
+func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
+	r := l.Lab.Must(child, action, args...)
+	tables.steps.Row(part, r.Step, child.Name, procs.ActionText(action, args), r.CodeName(), r.Code, r.Value)
+	return r
+}
+
+func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
+
 type copyReport struct {
 	name       string
 	bytes      int64
@@ -37,8 +76,8 @@ type copyReport struct {
 }
 
 // examine verifies that inspecting path does not modify it, matches path against
-// the recipe's known states, and prints its size, integrity_check summary, and counts.
-func examine(ctx context.Context, lab *procs.Lab, r recipe.Recipe, path, journal string) copyReport {
+// the recipe's known states, and records its size, integrity_check result, and counts.
+func examine(ctx context.Context, lab *recorder, r recipe.Recipe, path, journal string) copyReport {
 	info, err := os.Stat(path)
 	if err != nil {
 		lab.Fatal("stat", err)
@@ -63,30 +102,26 @@ func examine(ctx context.Context, lab *procs.Lab, r recipe.Recipe, path, journal
 		lab.Fatal("inspect", fmt.Errorf("opening %s changed it", filepath.Base(path)))
 	}
 	report := copyReport{name: filepath.Base(path), bytes: info.Size(), match: match, inspection: inspection}
-	fmt.Printf("copy %s: %d bytes (%d pages)\n", report.name, report.bytes, report.bytes/pageSize)
-	if inspection.OpenError != "" {
-		fmt.Printf("  open: %s\n", inspection.OpenError)
+	problems := procs.IntegrityProblems(inspection.Integrity)
+	integrity := inspection.Integrity
+	if len(problems) > 0 {
+		integrity = fmt.Sprintf("%d problem(s)", len(problems))
 	}
-	printIntegrity(inspection.Integrity)
-	fmt.Printf("  user_version: %s; %s\n", inspection.Values[0], inspection.Values[1])
-	fmt.Printf("  equals: %s\n", match)
+	var openError, matched any
+	if inspection.OpenError != "" {
+		openError = inspection.OpenError
+	}
+	if match.Found() {
+		matched = match.Step
+	}
+	tables.copies.Row(part, report.name, report.bytes, report.bytes/pageSize, openError, integrity, inspection.Values[0], inspection.Values[1], matched, match.Exact)
+	for i, problem := range problems {
+		tables.integrityProblems.Row(part, report.name, i+1, problem)
+	}
 	return report
 }
 
-func printIntegrity(text string) {
-	problems := procs.IntegrityProblems(text)
-	if len(problems) == 0 {
-		fmt.Printf("  integrity_check: %s\n", text)
-		return
-	}
-	shown := min(3, len(problems))
-	fmt.Printf("  integrity_check: %d problem(s), the first %d:\n", len(problems), shown)
-	for _, line := range problems[:shown] {
-		fmt.Printf("    %s\n", line)
-	}
-}
-
-func prepare(ctx context.Context, lab *procs.Lab, r recipe.Recipe, dir, name, journal string) (string, string) {
+func prepare(ctx context.Context, lab *recorder, r recipe.Recipe, dir, name, journal string) (string, string) {
 	root := filepath.Join(dir, name)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		lab.Fatal("mkdir", err)
@@ -101,9 +136,8 @@ func prepare(ctx context.Context, lab *procs.Lab, r recipe.Recipe, dir, name, jo
 // walMode runs Part A: commits steps 6-10 with a PASSIVE checkpoint after step 8,
 // inspects a main-file-only copy (A1: valid step 8, commits 9-10 silently lost),
 // and splits a copy across a second checkpoint (A2: torn and corrupt).
-func walMode(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Printf("== A. WAL mode: a writer commits recipe steps %d-%d and checkpoints after step %d (wal_autocheckpoint=0)\n", baseStep+1, lastCommitted, checkpointedAt)
+func walMode(ctx context.Context, lab *recorder, dir string) {
+	part = "A"
 	r := recipe.Default()
 	db, root := prepare(ctx, lab, r, dir, "wal", sqlitex.JournalWAL)
 	writer := lab.SpawnSQL("writer", procs.SQLOptions{Path: db, JournalMode: sqlitex.JournalWAL})
@@ -117,17 +151,15 @@ func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 	}
 	sizes := lab.Must(copier, "copy", "db", "main-only.db")
 	lab.Must(copier, "copy", "-wal", "wal-at-copy")
-	fmt.Println()
-	fmt.Println("-- A1. the database file alone, copied with plain reads between commits")
+	part = "A1"
 	mainOnly := examine(ctx, lab, r, filepath.Join(root, "main-only.db"), sqlitex.JournalWAL)
 	lab.Check(mainOnly.inspection.OpenError == "" && mainOnly.inspection.Integrity == "ok" && mainOnly.inspection.Values[0] == strconv.Itoa(checkpointedAt),
 		"the copy of the database file without its -wal opens cleanly and passes integrity_check")
 	lab.Check(mainOnly.match.Found() && mainOnly.match.Step == checkpointedAt,
 		fmt.Sprintf("but it equals recipe step %d, the last checkpoint, not step %d, the last commit: commits %d-%d are silently missing", checkpointedAt, lastCommitted, checkpointedAt+1, lastCommitted))
-	fmt.Printf("INFO: database file at copy time: %s\n", sizes.Value)
+	tables.infoRun.Row(sqlitex.DisplayPath(dir), sizes.Value)
 
-	fmt.Println()
-	fmt.Println("-- A2. the database file copied in two halves while a checkpoint writes into it between them")
+	part = "A2"
 	half := lab.Must(writer, "query", "SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size")
 	lab.Must(copier, "copy-range", "db", "torn.db", "0", half.Value)
 	result := lab.Must(writer, "checkpoint", sqlitex.CheckpointPassive)
@@ -140,9 +172,8 @@ func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 
 // rollbackMode runs Part B: copies the first half of a rollback-mode database,
 // commits recipe step 6, copies the second half, and verifies the torn copy fails.
-func rollbackMode(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Printf("== B. rollback mode (journal_mode=delete) as the contrast: the database file copied in two halves while a commit (step %d) writes into it between them\n", baseStep+1)
+func rollbackMode(ctx context.Context, lab *recorder, dir string) {
+	part = "B"
 	r := recipe.Default().WithJournalMode(sqlitex.JournalDelete)
 	db, root := prepare(ctx, lab, r, dir, "rollback", sqlitex.JournalDelete)
 	writer := lab.SpawnSQL("writer", procs.SQLOptions{Path: db, JournalMode: sqlitex.JournalDelete})
@@ -164,8 +195,10 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("6.3")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	lab := procs.NewLab(os.Stdout)
+	set = results.MustOpen(dir)
+	openTables()
+	lab := newRecorder()
 	walMode(ctx, lab, dir)
 	rollbackMode(ctx, lab, dir)
-	lab.Report("TORN COPY")
+	set.Finish("TORN COPY")
 }

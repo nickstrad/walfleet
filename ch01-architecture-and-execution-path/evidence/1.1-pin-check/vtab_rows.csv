@@ -1,0 +1,3 @@
+build,vtab,rows
+driver,sqlite_dbpage,2
+driver,dbstat,2

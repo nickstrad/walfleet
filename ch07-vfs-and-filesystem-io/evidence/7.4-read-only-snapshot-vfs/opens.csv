@@ -1,0 +1,8 @@
+part,attempt,file,params,result,error_code
+D,1,snapshot.db,(no parameters),SQLite error code 14: unable to open database file (14),14
+D,2,snapshot.db,mode=ro,SQLite error code 14: unable to open database file (14),14
+D,3,snapshot.db,immutable=1,user_version=30 events=1177,
+E,1,snapshot-rollback.db,(no parameters),user_version=30 events=1177,
+F,1,live.db,immutable=1,user_version=29 events=1130,
+F,2,live.db,(no parameters),SQLite error code 14: unable to open database file (14),14
+F,3,live.db,immutable=1,user_version=30 events=1177,

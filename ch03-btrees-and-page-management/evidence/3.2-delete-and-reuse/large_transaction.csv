@@ -1,0 +1,2 @@
+rows_inserted,deleted_rows,freelist_before,page_count_before,freelist_after,page_count_after
+32,8,2,12,0,18

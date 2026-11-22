@@ -1,0 +1,44 @@
+seq,part,status,claim
+1,A,ok,the holder's open write transaction is a write lock on the RESERVED byte and a read lock on the SHARED range of the database file
+2,A,ok,/proc/locks: the RESERVED byte is write-locked by the holder alone
+3,A,ok,"/proc/locks: the SHARED range is read-locked by the holder alone; the contender, with no transaction, holds nothing"
+4,A,ok,a second process is refused the write lock: BEGIN IMMEDIATE returns SQLITE_BUSY (5)
+5,A,ok,"after the holder opened and closed the database file with os.Open, none of its locks remain"
+6,A,ok,/proc/locks: neither process holds any lock on the database file
+7,A,ok,"the holder still sees its uncommitted row: as far as SQLite knows, its write transaction is intact"
+8,A,ok,the second process is now admitted: BEGIN IMMEDIATE returns SQLITE_OK while the holder's transaction is still open
+9,A,ok,the RESERVED byte is now write-locked by the second process
+10,A,ok,"/proc/locks: the SHARED range is read-locked by the second process only; the holder, mid-transaction, holds no lock at all"
+11,A,ok,the second process commits: its COMMIT returns SQLITE_OK
+12,A,ok,"the holder's COMMIT writes its pages, then fails to delete the rollback journal the other process already deleted: SQLITE_IOERR_DELETE_NOENT (5898)"
+13,A,ok,the file passes integrity_check but holds only the holder's row: the commit that returned SQLITE_OK is lost
+14,B,ok,"the holder's write transaction is a write lock on -shm byte 120 (WAL_WRITE_LOCK), next to its read lock on byte 123 (WAL_READ_LOCK(0))"
+15,B,ok,on the database file the SHARED range is read-locked and PENDING and RESERVED are free: WAL mode does not use RESERVED for writers
+16,B,ok,/proc/locks: -shm byte 120 is write-locked by the holder alone
+17,B,ok,/proc/locks: both processes read-lock the DMS byte 128 of -shm
+18,B,ok,/proc/locks: both processes read-lock the SHARED range of the database file
+19,B,ok,a second process is refused: BEGIN IMMEDIATE returns SQLITE_BUSY (5)
+20,B,ok,a stray close of the database file leaves the -shm write lock in place
+21,B,ok,/proc/locks: on the database file only the contender's SHARED read lock is left
+22,B,ok,/proc/locks: -shm byte 120 is still write-locked by the holder
+23,B,ok,so the second process is still refused
+24,B,ok,a stray close of the -shm file releases the holder's -shm locks
+25,B,ok,/proc/locks: the holder has no -shm lock left; only the contender's DMS read lock remains
+26,B,ok,/proc/locks: that DMS read lock is the only lock on -shm
+27,B,ok,the holder still sees its uncommitted row
+28,B,ok,the second process is now admitted while the holder's transaction is still open
+29,B,ok,the second process commits: its COMMIT returns SQLITE_OK
+30,B,ok,"the holder's COMMIT finds the wal-index header changed under its write lock, retries, and gives up with SQLITE_PROTOCOL (15)"
+31,B,ok,"the file passes integrity_check and holds only the second process's row: the holder's transaction is lost, and the holder was told"
+32,C,ok,"with frames in the WAL the holder reads through WAL_READ_LOCK(1), not WAL_READ_LOCK(0)"
+33,C,ok,a second process is refused: BEGIN IMMEDIATE returns SQLITE_BUSY (5)
+34,C,ok,the stray close of -shm releases the holder's write lock and read lock
+35,C,ok,"the second process is admitted, writes and commits: every statement returns SQLITE_OK"
+36,C,ok,"the holder's COMMIT also returns SQLITE_OK: it is not on WAL_READ_LOCK(0), so it never re-reads the wal-index header and writes its frames over the other commit's"
+37,C,ok,"the second process, still open, no longer sees the row it committed"
+38,C,ok,the file passes integrity_check and holds the seed and the holder's row: a commit that returned SQLITE_OK is lost and neither process was told
+39,D,ok,"the second process is admitted, writes and commits: every statement returns SQLITE_OK"
+40,D,ok,"seeing no other process's locks, the second process closed as the last connection and deleted -wal and -shm"
+41,D,ok,the holder's COMMIT returns SQLITE_OK
+42,D,ok,no -wal file exists under that name: the holder wrote its commit into the deleted file it still had open
+43,D,ok,the file passes integrity_check and holds only the holder's row: the second process's commit is lost and neither process was told

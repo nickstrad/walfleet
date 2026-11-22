@@ -1,0 +1,18 @@
+scenario,seq,observation,value
+D1,1,child exit status,3
+D1,2,side files after the child,"-wal 4152 bytes, -shm 32768 bytes"
+D1,3,capture,database is not at rest: r.db: -wal holds 4152 bytes of frames not yet checkpointed into the database file
+D1,4,database file alone: sha256 unchanged by the commit,true
+D1,5,database file alone: account 1 balance,43047
+D1,6,SQLite with the -wal: account 1 balance,44047
+D1,7,side files after the last close,no side files
+D1,8,capture after the checkpoint: pages,60
+D1,9,capture after the checkpoint: manifest sha256,2a17d23aa48e660bf7431827e6a0aa391794544f201166e0cd729508dc4431fc
+D2,1,child exit status,3
+D2,2,side files after the child,-journal 203312 bytes
+D2,3,capture,database is not at rest: r.db: hot -journal (203312 bytes with a live header): a transaction was interrupted and the next open will roll it back
+D2,4,database file alone: changed by the spill,true
+D2,5,database file alone: documents,"17 rows, 15 bodies all zero"
+D2,6,SQLite with the hot journal (rolls it back): documents,"17 rows, 0 bodies all zero"
+D2,7,side files after the last close,no side files
+D2,8,capture after the rollback: pages,60

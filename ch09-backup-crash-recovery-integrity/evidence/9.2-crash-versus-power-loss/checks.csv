@@ -1,0 +1,54 @@
+seq,part,status,claim
+1,B,ok,synchronous=OFF: a process crash keeps every acknowledged step (11)
+2,B,ok,synchronous=OFF: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+3,B,ok,only synchronous=OFF leaves database-file writes that were never synced
+4,B,ok,synchronous=NORMAL: a process crash keeps every acknowledged step (11)
+5,B,ok,synchronous=NORMAL: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+6,B,ok,"synchronous=NORMAL: the model recovers step 7, the last acknowledged step minus the 4 commit(s) written after the last sync"
+7,B,ok,"synchronous=NORMAL: the acknowledged commits after the checkpoint at step 7 are lost in the model, yet the database is consistent"
+8,B,ok,synchronous=FULL: a process crash keeps every acknowledged step (11)
+9,B,ok,synchronous=FULL: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+10,B,ok,"synchronous=FULL: the model recovers step 11, the last acknowledged step minus the 0 commit(s) written after the last sync"
+11,B,ok,FULL: no acknowledged commit is lost in the model
+12,B,ok,synchronous=NORMAL with a second connection holding a read transaction from step 5: the reader stopped the checkpoint short of the end and the WAL did not restart
+13,B,ok,synchronous=NORMAL with a second connection holding a read transaction from step 5: a process crash keeps every acknowledged step (11)
+14,B,ok,synchronous=NORMAL with a second connection holding a read transaction from step 5: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+15,B,ok,"synchronous=NORMAL with a second connection holding a read transaction from step 5: the model recovers step 7, the last acknowledged step minus the 4 commit(s) written after the last sync"
+16,B,ok,"synchronous=NORMAL with a second connection holding a read transaction from step 5: with or without the checkpoint's unsynced database writes the model recovers step 7, because the WAL frames they came from were synced before the checkpoint wrote them"
+17,B,ok,"synchronous=NORMAL with a second connection holding a read transaction from step 5: the acknowledged commits after the checkpoint at step 7 are lost in the model, yet the database is consistent"
+18,A,ok,"OFF kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed"
+19,A,ok,"OFF kill 2: integrity ok, recovered step 4 is the last acknowledged step or the one being committed"
+20,A,ok,"OFF kill 3: integrity ok, recovered step 6 is the last acknowledged step or the one being committed"
+21,A,ok,"OFF kill 4: integrity ok, recovered step 7 is the last acknowledged step or the one being committed"
+22,A,ok,"OFF kill 5: integrity ok, recovered step 8 is the last acknowledged step or the one being committed"
+23,A,ok,"OFF kill 6: integrity ok, recovered step 10 is the last acknowledged step or the one being committed"
+24,A,ok,"NORMAL kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed"
+25,A,ok,"NORMAL kill 2: integrity ok, recovered step 3 is the last acknowledged step or the one being committed"
+26,A,ok,"NORMAL kill 3: integrity ok, recovered step 7 is the last acknowledged step or the one being committed"
+27,A,ok,"NORMAL kill 4: integrity ok, recovered step 7 is the last acknowledged step or the one being committed"
+28,A,ok,"NORMAL kill 5: integrity ok, recovered step 7 is the last acknowledged step or the one being committed"
+29,A,ok,"NORMAL kill 6: integrity ok, recovered step 3 is the last acknowledged step or the one being committed"
+30,A,ok,"NORMAL kill 7: integrity ok, recovered step 4 is the last acknowledged step or the one being committed"
+31,A,ok,"NORMAL kill 8: integrity ok, recovered step 6 is the last acknowledged step or the one being committed"
+32,A,ok,"NORMAL kill 9: integrity ok, recovered step 7 is the last acknowledged step or the one being committed"
+33,A,ok,"NORMAL kill 10: integrity ok, recovered step 8 is the last acknowledged step or the one being committed"
+34,A,ok,"NORMAL kill 11: integrity ok, recovered step 10 is the last acknowledged step or the one being committed"
+35,A,ok,"FULL kill 1: integrity ok, recovered step 3 is the last acknowledged step or the one being committed"
+36,A,ok,"FULL kill 2: integrity ok, recovered step 3 is the last acknowledged step or the one being committed"
+37,A,ok,"FULL kill 3: integrity ok, recovered step 4 is the last acknowledged step or the one being committed"
+38,A,ok,"FULL kill 4: integrity ok, recovered step 5 is the last acknowledged step or the one being committed"
+39,A,ok,"FULL kill 5: integrity ok, recovered step 6 is the last acknowledged step or the one being committed"
+40,A,ok,"FULL kill 6: integrity ok, recovered step 7 is the last acknowledged step or the one being committed"
+41,A,ok,"FULL kill 7: integrity ok, recovered step 7 is the last acknowledged step or the one being committed"
+42,A,ok,"FULL kill 8: integrity ok, recovered step 7 is the last acknowledged step or the one being committed"
+43,A,ok,"FULL kill 9: integrity ok, recovered step 7 is the last acknowledged step or the one being committed"
+44,A,ok,"FULL kill 10: integrity ok, recovered step 8 is the last acknowledged step or the one being committed"
+45,A,ok,"FULL kill 11: integrity ok, recovered step 9 is the last acknowledged step or the one being committed"
+46,A,ok,"FULL kill 12: integrity ok, recovered step 10 is the last acknowledged step or the one being committed"
+47,A,ok,"FULL kill 13: integrity ok, recovered step 11 is the last acknowledged step or the one being committed"
+48,A,ok,"FULL kill 14: integrity ok, recovered step 3 is the last acknowledged step or the one being committed"
+49,A,ok,"FULL kill 15: integrity ok, recovered step 4 is the last acknowledged step or the one being committed"
+50,A,ok,"FULL kill 16: integrity ok, recovered step 6 is the last acknowledged step or the one being committed"
+51,A,ok,"FULL kill 17: integrity ok, recovered step 7 is the last acknowledged step or the one being committed"
+52,A,ok,"FULL kill 18: integrity ok, recovered step 8 is the last acknowledged step or the one being committed"
+53,A,ok,"FULL kill 19: integrity ok, recovered step 10 is the last acknowledged step or the one being committed"

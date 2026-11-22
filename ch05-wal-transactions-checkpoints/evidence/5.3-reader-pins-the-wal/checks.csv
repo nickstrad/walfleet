@@ -1,0 +1,12 @@
+seq,part,status,claim
+1,A,ok,"the reader's snapshot is a read mark equal to mxFrame when it began, and that WAL content was not yet checkpointed"
+2,A,ok,the reader's row count never changed while the writer committed
+3,A,ok,the WAL grew on every commit and never restarted while the reader stayed open
+4,A,ok,checkpoints ran (autocheckpoint) but nBackfill stopped at the reader's mark and stayed there
+5,A,ok,with the reader gone one checkpoint brings nBackfill to mxFrame; the WAL file keeps its size
+6,A,ok,"the next write restarted the WAL at frame 1 (salt-1 + 1, checkpoint sequence + 1); the file is reused, not shrunk"
+7,B,ok,"the WAL was fully checkpointed, so the reader took no read mark in 1..4 (it holds read lock 0 and ignores the WAL)"
+8,B,ok,a reader on read lock 0 does not stop the writer from restarting the WAL
+9,B,ok,the reader's row count never changed
+10,B,ok,but no checkpoint can copy a single frame while it is open: nBackfill stays 0 although autocheckpoint ran on every commit past the threshold
+11,B,ok,"once the reader ends, a checkpoint copies everything"

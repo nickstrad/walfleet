@@ -1,0 +1,5 @@
+seq,workload,table_name,row_bytes,leaves,min_rows_per_leaf,max_rows_per_leaf,final_depth
+1,"random keys, 1000-byte rows (4 per leaf)",random_large,1000,71,2,4,2
+2,"random keys, 40-byte rows (about 85 per leaf)",random_small,40,8,43,85,2
+3,"ascending keys, 5000-byte rows (each overflows)",overflow,5000,7,1,4,2
+4,"ascending keys, 400-byte rows, WITHOUT ROWID",without_rowid,400,4,4,9,2

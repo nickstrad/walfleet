@@ -1,336 +1,461 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/2.3
 
-== A. capture: every page of the closed R0 database, read by internal/dbfile, plus a manifest (page, role, sha256)
-run 1: run-1/r0.db built to step 30 -> run-1/capture: 270 pages, manifest sha256 8d9ad6e1251dfbbe513d57fa7dcd5e8159fa7c62d227d28008ebc1a9ed92f523
-run 2: run-2/r0.db built to step 30 -> run-2/capture: 270 pages, manifest sha256 8d9ad6e1251dfbbe513d57fa7dcd5e8159fa7c62d227d28008ebc1a9ed92f523
-roles in the manifest: table-interior=3 table-leaf=89 index-interior=1 index-leaf=4 overflow=170 freelist-trunk=1 freelist-leaf=2
-capture files: pages.bin (1105920 bytes = 270 pages x 4096) and manifest.txt
-manifest of run 1:
-  sqlite-internals page manifest v1
-  page-size 4096
-  pages 270
-  1 table-leaf 1b9902e64e6c0f5d1eb4e501973304e85e7aff7d6e44912a06fbcc00e07debe9
-  2 table-interior 46d56d23abed588975c19161aa6dc1f9cf7f9d31a72cfbd40b3441bf38d8cc1e
-  3 table-interior 860bd520e10f3ed30a0cf84ada13addbbf2fb19cc5584699ff702868986c24b0
-  4 table-interior 3c53ee0581571b0fd924cb47c637b6b1ebe6425f4a04320f26390083cfd37072
-  5 overflow 7aad2880eb458697ca2b782d104c7bc12ab581778d1617616113daf7fec3d4c8
-  6 overflow 7e7afe23ae214297b337e3c4675ffdd9ab84024fc3074c15e812494dd20e4983
-  7 overflow a534c6fdb6abf78b7a7b52b27b3051790c85036beb7218b4d0ff6e6decac0a0f
-  8 overflow fba5521b93297c4b8f3bef088245f945ccb51124446b306cd489d6f3e4217b15
-  9 overflow ca9a4af9e802b51d7f6b06fbd720c6514584a367091c9873a5f9aa21a71067f2
-  10 table-leaf 5bb69638130cf6381f376435e2423a5e0d06bdf068fcaf571022fc1e0ee59370
-  11 table-leaf 724eb0ed932ef10781b9172d5e32a48a1b8863c254a982c4f8ddc4d082338b96
-  12 overflow 7f5502748230a361201e00b9e58fbd6a0db0125c9ac0e24b6f138b301090d9ef
-  13 overflow 12a4b4e75b3e86d31bbd4c27ee214c6b806652f6ad9af57ee636219644b7c301
-  14 overflow 34962cb641e4debab98b6f3a2fecb54e612793071b88eb82c39836a7d4aa728a
-  15 table-leaf 4d3175e4b2c34d53defc5dbb504cb680b4e3296c0eb81083024329a3d622646e
-  16 overflow a0572382d487533308f59de5d509f29bafed75da79a73f9812acedc32e35f10a
-  17 overflow 15b724903840c0ad7abb639fa0700fedb4a1f58f43e3b0ff9005ca78bb3b5491
-  18 overflow 383820231ab24d46be1913e631aa92713455b9b6c6c9f1d021610207a9f7da14
-  19 table-leaf e3bb3b6b00cacac610514dcd58061d2a1ab831786006278c228b4785d3844497
-  20 overflow 3b65dbee9941c10a07b33942455612512b666d94d3609ff23becc45a79251df6
-  21 table-leaf deb86ca0005d14f7ab3b7da9c5ac31d4282c568de0b03e0cddc20973682cdb14
-  22 overflow e245c6247cbcc8c212299bb2f89b5327d72dfa799529b2dece4790eff92112ee
-  23 overflow 59134759e86d787f8fdebc82af48ad8bc9c55a135c7fc67af8b38cb6a56c7ffe
-  24 overflow 68c7d34bd3ef689df419818c41e6ddbbf30b4499c90acbd1ffd3d5bd06775cdb
-  25 table-leaf 732423d9158389d0e946170f10075404559e4d8112bb83ef80c72c7a4bf15fd7
-  26 table-leaf 8006a99485269b70b926860d50f87f4ca908a513a655597a9af43fcbfc4f038f
-  27 table-leaf d45416dbdf129e59d604e2fc3b7f9c802ffab7696837438dda8d2b60ed29e586
-  28 index-interior 51e6ac1f4e34240f1bbf86abf31c101ad643155a33da16f3a6ee4f089ce0fc71
-  29 overflow a4e416cafa8141e1ed4cc9150cf7bc91e6bd363b510d2daf4748d511c8d253f3
-  30 overflow 2d8423154a553dbcdb5b400d9e42cc68018148d63a4ea559731e2f0c2d25ff7c
-  31 table-leaf f3da9777ca90fcf540b92d3aef099433d7c73021688064744b62e39f16555a35
-  32 overflow ec7d9f3bb6c902490f0bd3cf49f07a0a3a50b8f4d00b1a32ffae31caa8e088f1
-  33 overflow 4552b82b526e55ab64d4b4c8f906cff8be626594f828c2aad32dec6beff99c94
-  34 overflow ce92b5493316efc5c6dcc493c40b2a39bcf69230138f41891dbe4ba1b33b86d0
-  35 overflow 7673f433fe64cf17405855c1361fbabf3a8fa0309a283068178d32ed3e478321
-  36 overflow 568c08e129d6dbf91a58337b21f0ec334d437816422939b5999310ac1653f069
-  37 overflow 02cf9a93058eb383f8c1e4bf6c2736e428a50bc009277feafaafc5072504d51c
-  38 table-leaf c2fae8bcd1c019e21ab735b11ffa65e2e88e94bdea3924ca82466fcfa92d16ea
-  39 table-leaf 568908de0766d844eaaa85f1870b7cf9d4fe78d3bf20cb38aa947bb1732b0ac8
-  40 overflow 91be9b798474f1b35c757fd09064e640b39ecb7476dcdb27cebf869725ba9559
-  41 overflow de1b5cde831492f35afa92c9be4e794c9249cfef58555b50010499a9e8aecef9
-  42 table-leaf 3a30707ad61b33660e0ded2a8d178499c314c5e6cf495359734dff401cb1957b
-  43 overflow b221d22756aae42e95f33c00b839cfa8a0b0548870cc0598e0b5fa490d923c29
-  44 overflow 887b2f0e56135974ac1471a3ce699b43fb4e1bbdb6581cc031f45e506e421965
-  45 overflow 5c63bd72305ee4300a2762a0e1028b8a01861e003e41936502ae435b9f0cd45d
-  46 table-leaf c8bee6ed976fd2a7ea7e61eeb0d594c73ee4a72a0159bd6132383fae8051fe94
-  47 overflow 06d3326df34a4041c367f5e94ed81bfe1e6f680a90da3a33f0a47c51a7f8b099
-  48 table-leaf d893cb79a18ea5fc17b23c8fcd7298af35196233d4058d7dfac10a994cafb39f
-  49 overflow 1981d7c68d1e32ba7361d5ae699892f30fece85ee6404cc689b261fa32ec58f3
-  50 table-leaf 73fd216d724396dae4897b0180cbad5be03987df5bcf36e490ccd81ff7c34442
-  51 overflow 0c62745060da6ad711e8b596d3c84e925ed8126ba38f8cf6c4d2f6b10fb36c99
-  52 overflow 9abb60aa174193ffeac20bd41da49d251318a3166fb4ab358360dc451188aa93
-  53 overflow 4dfa14a601f073d5a84d21e3948b69f47d04c2a4d29142f6f5bf307044c962b1
-  54 table-leaf 15130a78f58e4eaa8209aa8fdd5c81f3bd5f999fe9e342040358f1cbac317d5a
-  55 overflow c736558d3fbf4b32b223e2638859498c08c9cd71aafcebf88700ea3aa775722a
-  56 overflow c043a6192cc1dea5f3891ef71135adee8cd2bae5680e87cd686be55f655d45b7
-  57 overflow 36f9a238db5b34f0ad7f3a32863b747f923985c01c227589aba0a4c0ace2747a
-  58 table-leaf 862957a42085704cea1a2e36da9110425f16a0a454b77a8988c88cd6c0261646
-  59 table-leaf 6012e5651530caceb1c97f08704c30f56849f59fd78b490bcb93cb13386aa757
-  60 overflow 0ef5ec177aafb28e3f0e28f7b5fa5d2ffbe2cf38858d3a7ec4636ea1664b281e
-  61 overflow 0a5c815ffe5216011f595370a3bd50b8fb950ab6e2b2e01ed9f3f01019fa69cf
-  62 overflow 758650437fa2ea8bb875b8efd46eecf166acb1e4ae5b472d048513970a95fbed
-  63 overflow ccfb4d0853cb3cf0610c9c4c9275be042c5365fcd77bd500c04272f6954f9902
-  64 table-leaf 732fee5afc87573193067e4ae0da1f7f9b0f9932f7f069369340d90be01fd692
-  65 overflow 2cc0ddd717bafbcb1c57098c3271106c1677deeb35a97018958ae2659b28163d
-  66 table-leaf eb7d545f2ee9266beafe0d4d6d7cc58a8baab1bfe4710ea5eb536fc7e5b9a449
-  67 overflow 88fa136200d8b002867b73ebd94ae78e513d10d24f88ba8bfb302bf33ede5cc0
-  68 table-leaf b0ac4bd16e8ffa500762646b6dc7c6c7398fac999e487eed713851238fc86b9f
-  69 overflow 88bbbe03f7e1b3f93fedce3262856d0369829891a78b2d4cb7a3c5b499f62a03
-  70 table-leaf dcba5028b293ab80f2d09bf42e1555968ac75b7f69d696542a69345daee29d2a
-  71 overflow 9ad4b590ee93d7d431db66e5dcf4fccacd095d6ba3ae565c04f0627f0c170687
-  72 table-leaf 9fd9e4ebcc248c76a69dee2f7b87cb5e42af0fe6d3c947e5f71bea3719571d01
-  73 overflow ea4a139a0d21dc40233abe44fa65ed0438f486a962a527154f27bbaaefb09817
-  74 overflow 6c5289f3250687b7c3619713518d3dc6fbeac59eb981bd1e908ae5101180f5bb
-  75 overflow a740c5597fb7ef676b27728a9a0828a3285a9a1bab20a5d9d2c98c341b69cc40
-  76 table-leaf e368ff348ef725f9309256c3b8cdb7f25e5ab6436c47875c29cf3f77729e6de6
-  77 overflow 8f58298ac0df2a6e4e47585ab26e7291ffc65a851133da66fe0f9ccc5c5a59fe
-  78 table-leaf 0bbec48152ee56fd0cde848ee5b6c27955a27712457ad8b57422d6d26eb0080e
-  79 table-leaf a9ad5b3bbee64f2b82c38c2317eaa98f36c814c104bbb75cfbf5801054474e7e
-  80 table-leaf aa911e9e62211cdead52ffbc7cfeb4e3fa77a1644a998013b319806d672f6fc9
-  81 table-leaf 88b1c57ea604ea1108fda629f0ad7af846e0f6a5036bc77842e0bd88249af210
-  82 overflow c402483d0808de9a1a843fa2bf5a1dcc8dde050e6b0791e68b5052b01a4dc95a
-  83 table-leaf 79064bddf27aafb5e2050cf8af0c74ce0756589248e8a77489f13d96239c8572
-  84 overflow 72c3d06469fa69d849fe5ea16c284b489a5ed550f6c18153f3b0124242b1b4ef
-  85 overflow 808cf95246048d2300d190bd5bb9e7899137e1e02cc305c4b09bbb4b825e5985
-  86 table-leaf ec8b82a7792a9c53cb14f41f197e891bbddb5eee92987eea9bf8714ac9e87a74
-  87 table-leaf 727d286cec6c7242a80c5ffe1b7d531c5b0f687f8e66758d3f33cb3486e0f48e
-  88 index-leaf f348efbbf9aa30ea9af8f21a5ef9fc491856d71102c39d798836bb130680a1af
-  89 index-leaf 64e83d5312baf8a3c73f3efc2d7b2d05a46e3603223d638d908100729dd99df9
-  90 overflow 988c00b7986f0b06e4a047ddd647029196844bf91cfae3384884afd448d34420
-  91 overflow 03878852ef827430aa7b2447d43340d4a1dc07556969bb51d0eacc887c282ccc
-  92 overflow c18d4b56b6862c94633cdb486b9471676cb2fecad2faecad206d4b6eb86dcbd9
-  93 table-leaf 09dc4cbd982af09308de11c5d05ce4a2808f6f215005b8ee6a2708e8142a25f9
-  94 overflow 0273b357f14b648d9335d42d8c346624456b8981c57425a6854e8fe840bdd9fd
-  95 table-leaf 565bf12e4a91fdc96cf89a3b90c4961df44bcacc6804129ca842807df95b6e3d
-  96 overflow fca46a535e78cbed584dca90532a9d4ada1a4401cb29d3457cccd332fbd9c443
-  97 table-leaf ef08059b194ea9a5dbc287ac6bcd3c82cd2b3a76b9e2d0cec9477e5ad684ecc9
-  98 overflow 2885bb2d9da559ed257254d403c2b0c4137363c6df0b953e2fbc0cadd9303bf7
-  99 overflow ad43a659e2a57a51c86f87beb182b018bbd3424daaef771ea2c8326ea871f972
-  100 table-leaf 42abd0d5c512933133653865ad518c8e6d12112bff9c31c913c075beb9afee8d
-  101 overflow 55edb83f4053180be82e7661ccbe17d0b5bd9bc5022348ef2264a53c6b7d3d55
-  102 overflow df06845273d305ae660324a369356b54f727ecbe4fd9b94dc9bcda4b9b0c379d
-  103 overflow 1435a614c08d5479b7d1bfd8a16abf1f1c0a4c3e451aecbc7920c97444b3d8c9
-  104 overflow 813cf888feaae9b51ac066fb71929159288a23d9a11b7d307c8a35d84b4a0cc9
-  105 overflow 632b547d5af4e4847c92c640ce8d45c68dc0dca75505a5624887b0ec3e20f94e
-  106 table-leaf 848e089a6e152a2611c1e07ef3cb8b888de3c267f833e2e6f610d7a6eadffbc9
-  107 overflow 49cc6fe894ea6da5213523ec43a26facb16f7a3b040524ee5c13fe76f0c771cf
-  108 table-leaf 8abeb3283e0b47b7db4b4c194094a5526e090003c6e0e35cdd9675a75c1c5aaf
-  109 overflow 54f44a88e044984e44d373a03680dd3759789746fde5d08a4ffaac18a42e8d68
-  110 overflow e80b8c0b0947e336d3c819f690377af2f615b55fd9915f3a8ba7d22da59ab978
-  111 overflow d14e526d57b5bafa2a3e08fe01effedb64cf89e2dc10a5847f37bdfaca36437f
-  112 overflow 95e50efa0e78ff80b87ad799328c2823e6e352c3e5e3379d9a80742ace967a7a
-  113 overflow 97ea1d43a7c5e8fb0da485be88980a55490614f7f5b890aa2e2598c2167e33f8
-  114 table-leaf 5cdaa78217d2150a0bf2d3c80aa12024ea256da8cd33982a4bf059dacdb5b5f8
-  115 overflow 1d9cbda1a0e90bdc4c7c0a11c5e51090922b1ada96ac1936956bc37f176f939c
-  116 overflow 2b48e052073c6bfc240028e5a4ceb16ddb3f0e04d0f53170f9edaa186da0cfd4
-  117 overflow 04234553cddc6fcd4069febd77b87f4d64811dd63bfaec0bfba6efc0c93b1562
-  118 table-leaf cc77e8c53bc44d3f9ec2e862a5e3c62f1384166a376fbc591b06f04a66b9a7b6
-  119 overflow 130806d3885b0211707f546e7e6c894bb09b4a0e556bba8ad80de6d114b3a68f
-  120 overflow 4551c32df32ecf04c413ad17a59413b720421274c8314a6ad26f89fba4fc4def
-  121 overflow 8863d6b8d94deaebb95bdd1a02f8743503e473e482e9b4ee9b34e98090e83f56
-  122 table-leaf 73b66a24dc411f00dcdbcceffe5f21778e0b90b603f7853b884dc0d97fd536de
-  123 overflow 0794d43b88322f22e8250c0c79a9efcaaf459a54a8b07a071267dd33f16fae1e
-  124 table-leaf 1430942e4bbd8d54d254e2dc5dac3db31f52193a489b0973ff1037284f04d910
-  125 overflow d283ee9250e0ce6430d788da2431cf9e5605c0053165ce862232569caba9f788
-  126 table-leaf 1b782ab4ae9d83cd884e84e88c97db9bcf2ae98850a12be281e3b3330932401f
-  127 table-leaf b522ef1af3b0b8779c2ea43d3ff801a9d2f50d4830152b4c716df93d54a5c985
-  128 overflow 2ff02aeb9c1d60400994aa5d13455f7522be6b032eac801443989405352192c1
-  129 overflow ad5ebe9e004f84fa0135c9d3d1dccb41e23beee3df3c8fdfd5dac5358aa9fd56
-  130 overflow 2237eb84c5d68a348d8fa11409b505b67c8399eb94771a7da70f58f8c0037e1c
-  131 overflow 04b162883872aba167b6982659fe122eacf674e99f171d08418be41fcd53fd21
-  132 table-leaf f7c462f63279bf6acd4d3b2b609190281a0e796e5a74fdb7536273d2c5ec6c3f
-  133 overflow 3d1a288db1f0a6e69e64a1b5ce5b47f8d421da38b1eaa98f081c148de2583e30
-  134 table-leaf 39338cfa073abb3a5571e03b029f29139f8d10a58467c6f5c93de236ea3fe8b7
-  135 overflow b52bb1074cf3c25075249a0a9957dcc55a7a1ab67ea573e7d3e4f022dd7ac417
-  136 table-leaf 21322aaa8277e28109421c975ca1f1d6ceb296c687a0a53c1b1c2c49367b7cbe
-  137 overflow ba5c54d41839876a1a145420a7edf0ee9cf0eea1f24d57b4bc797d9125b8d0ef
-  138 overflow 4283a503f149a51b09e069a2b1bf7cf7dd0fd92783d71b1bee53914a7b838ed9
-  139 table-leaf b84214635122e91fb75100a6d935786fb002bedbc4535d7e2dfe9b7a507dc7d0
-  140 overflow 96e2cd05720136d0384e5ec79ec3a5157100e1d6e6980c4b189516fbd0f6a86c
-  141 overflow 787db4dc093cfc8ad6ded6b7e82482a21b84572f2da80c7e5b5c8cc971d65da8
-  142 overflow 875c8b067fac66afcf8c9a958d1ae4897535fb08cd74aa90e935a22a8c7802f0
-  143 overflow 2da5c6392c5500f4e0bcfb7f6f01fb91b160d6ead868ae2d830664e758b21fbb
-  144 table-leaf e173043bd290f8ded7aa15a968abac512a3fc0c5de3cf914475646d4f1bcd11e
-  145 overflow 645f01d7974adc719c5abcea988f44a96c91232d85f6af6f26bb7427cf147cd9
-  146 table-leaf 232999b442843f030ab01ee02a9c1b529de85183ed1a3a956654b5bf0fa69adf
-  147 overflow c6c2eaf7a8cf228898658b1095e5d8432e4bf1e6b97c207e3fb02a5364e03bd8
-  148 overflow 32d01b24c2c5d20dad20e84c5341a2c67389e85b2654f83adedc53dbabd72e35
-  149 table-leaf bfc28ec86893abb9bc5b44eda41bdba963744e659485d5a74e3bcde7a5f5158c
-  150 overflow 1cf7cb226955104cf78d7e92d646b414ca576b7156535f9961543ff96c125e40
-  151 overflow 7f9e9b145d1335574de859e7f21f6f430939b9286de85c93c64a1ef35012ee33
-  152 table-leaf ae3c2642dacd1fc71aadd09f5933318a89c7a09ee4217060836ee8f8386c880e
-  153 table-leaf d2e52f7dfaf1ee997c3966b0e8f94e357a8700f87923650c2c0250e735868b3f
-  154 overflow 6baed52dc619ec51af512f078dc3a94e6df5d722bf2ad4f405eb99e80d6f581e
-  155 overflow 6013788ab488ebedf636362170e6c90eca3fb7efed38c6e04f56e652ed2f9909
-  156 table-leaf eb71eba626a462ed55f68c03299f5e71201620fcbe3c4e98048f75708b93ffc7
-  157 table-leaf f1415e89843d7b50ec128f8be3965d85efa1a3e547c5a0dbe2c659e57274f152
-  158 overflow 939f128f7a957470606e7867f81d0bacbfc7cc8898778607fafdd1a3bec6a15c
-  159 overflow d5b9772cff3af4d364f3651f4502207e61763c26c585b9fa8f995deca0a77ec8
-  160 overflow 70305b14df663528b9592d561c85c976f74d65571bb3acceb3d95ddb8cad78df
-  161 overflow 8aed8e506b72467da1a95f823a863f2a7b9f3c92026ac0389044945606db8575
-  162 table-leaf b5c2bc6b4ca810c938c99c69af8e2e6697b4e080f313ae4d882c88ea99a6548d
-  163 table-leaf 81d2edf79ac8eefa90c0f5f7ad6d7e753b6b53f675abe0431c63038d24a53c45
-  164 overflow 3a01461230c9643760562274b8fad32005a2351faf173a4dc7d76660a675c309
-  165 overflow 20fd3f79abcdef139324d0a308b7174da51e2ee9508fec383a1655ba3dd792e7
-  166 table-leaf 3605a1f6ed1917f4ea9b388d621cc9be26011ea8336bd5e0ad69220d0cd7d8db
-  167 index-leaf ad8ae738c43075cb8c49c8b62ea69eb8fb6224d0deab4c53379c4f3ef0d7c803
-  168 table-leaf 900856304d8ad4d43446f715d96fc0be12b5fc344576ba4bc0980d1fb75971c9
-  169 overflow 3cd1484621a6930deda2fd63d2be32072c15bac0807933bf28f8f19162d457b8
-  170 overflow 7a2c6d554fbfc58aec2ceae45162d16225d83993e13aa57e1d3800af6ddc4d24
-  171 table-leaf 25bf59c0709b6edbf627c221ccc7338337a4a9abaf723f4de4752e4f28f09bf4
-  172 overflow c292b98a605b9531581d84d1412b1fedc4ba05cbfb5d7cf342864b4df789a0e1
-  173 overflow 81929ae1a5c151c988ddb036210aa3975d422058eb73872d780ea0814c9c2afa
-  174 overflow c2a669aed711efcecde3ba1faa7b7a3c912a6705a92c767dabf0d32381962412
-  175 table-leaf 9e6a00f61e695edf8ce07ce8c69603a755e814108b84779e3f21fc6614d2b6e5
-  176 overflow 70a3c713eeb87a3b873bf5d032b21d679f9adb8a8c527f0af600017c843813a7
-  177 overflow 812040bb47ff3134003e4e1da04f70eec0522ccacf08fde842cd722e4571ade5
-  178 overflow 41770f11407c484eb54ca98bd72cb7f0f1328c5de8c0fcdf32f3045b6daa3d71
-  179 overflow 4d6e7156e5210c3c810638264c46f8d0ed428cd3698b9be38641df055351a929
-  180 overflow 36774019b141812d8bb2f1401a52c33efb19e3a32df6f39537c768214773476b
-  181 overflow 3621cd7ebfbf961a3ae3bda905453238cd837d97f7f1dfabb8506f53fa2316e6
-  182 overflow b8edd5b7ed028935b68768b0accf7f5c6bface649d460ea7b3d79f2154c20803
-  183 table-leaf 5d01dd4623fd4a750ce3e5f87e0f440b80311491e94f6b8b6c9e572db5429957
-  184 table-leaf ea016b0904d23d14bb2fa62c036f7d8b2ab72727f2b60ba7b820d2b55d30b8ae
-  185 overflow 147612121f23e6007d1cf95d651f89ac9cbc2031f70e53cb3b2e8a860c8ad9d0
-  186 table-leaf 3743d3e1ce7de8542889854bd07635e0db484b63b8fc4ba62018577d0d57a260
-  187 overflow 5cd072ba58d0bef1f3f3487c3d651153cdecb877e4b435878ca5fa44bd563ad4
-  188 overflow ac3e560ca6e7a95deb6051928ce624c2c780a3bcb2b7c22634f3e4be24c33cf9
-  189 overflow 977213a029c072749990cd83d118d8eb01a1fd45fcecf7e0807c58698fb5337c
-  190 table-leaf 7c51f6f4da511db86b9b55b22893aff7e99dcd80cf7134ab9b92053303b88235
-  191 overflow 674df96ffea07223102545c9083939726e035966a8c29873da38c13379dac5a6
-  192 overflow a1dda57fb84ecd5b9bbeaa6fb5801ede1af7fb7b56fbc3772bc5936e43d0876b
-  193 overflow 0bb9d64731e39b27c628079e03c1439d9c6e3d6ef32c28cb6459f12cfc8129dc
-  194 overflow f2207c072673589a7c154fb192f515ea68a963a53d78cf49517b3b8539e0cadb
-  195 table-leaf c7208e06bd98746438e93f1ae7fb45155b5baab1c270ed342964ea1fa38e0592
-  196 overflow 201d8f2bc00f73b32d62b428d247b8a56fcac19b1de078e75906e0bd9fd1e79e
-  197 overflow 80dd673f81bdf47ebe2e8819123cfc693afc052fa64be1d494005e4aa57596c0
-  198 overflow 87d09f9c392d694fdda13788e46e84d6f03d733510d1537a1c8a7769d5fde29f
-  199 overflow 48a4c890d6966899da4b367e2a5ece906be9ad32dc9711c1035038e55560fdfa
-  200 table-leaf a9efcc50448876b41b2209921d713496d5ab111c48df306b000bc92b874ad353
-  201 overflow 9cf34393c30f1156740d2ed575c1abbf6841852cd281524a99923a1da88d67a6
-  202 overflow ede9cdcfc3289dfe634b55a17d6a868326d7c41929a5ccb5a5e3bf1036d65f3b
-  203 table-leaf 08d351b2c10fc9dab3e14ba46777aca4ce0fc934ac421f6215b9eb679ceb3a11
-  204 table-leaf fa1a04e7ddf7118f43624a24a749e60975842ac6337474c9061bfb0e9fa44a90
-  205 overflow 4ed0ea698b6d12687455d50e0b543c7516d81164ae67867f959bdd7e40547e38
-  206 table-leaf 5cf13eaedd56113712759a8b058b8b3e636c1196e4f3ea5ccf7c5526beca43bb
-  207 overflow e6b89650492f6d2f49b2ea0d73ae5b07713522937b244fdd30c374b37b3f78df
-  208 overflow d3f153dbc7e7ce01491bd4dabd842617719dd562d961eccb5f00c91cea5772d7
-  209 table-leaf 1cb112ddea905435efa8ea4ca7d2570c4bb5a6fb94d80e8d68fb2fdb5d79ce5a
-  210 table-leaf 897e54e68f312e2aa2edc958548d60456a558a5b0e456e52c5cacf4095d16580
-  211 overflow 3b3706aafeb0b2c1b995302e3001910c857f9d086c21045e8cd08767106ba1f5
-  212 overflow 6815b9e928bffcad27ff4a952ac5cdda584a0928c4341434fc7d92fe327c02be
-  213 table-leaf f8487727c0cd0a88e92bb202e6c92db12f71eeed692e2ce76529831af744962e
-  214 overflow 8dae397cea317c949b255ccd90f7ae29610ae219098fa5c429a1015a40dab220
-  215 overflow 24ebaa59a26af623e3767de407269b9aefa2577b72d98f503fac15d955917e19
-  216 overflow 44a8f5918fb867a2d919f3db0db8c443a754da0cda5efb998826024e3a36c05a
-  217 overflow 40a96f5f5ddfd323bef78fcdaddebc3a13e8d39e3a1841c10d8b359ee177c9b6
-  218 overflow c6f12c1ed6acdfa1d3374c21ee425c7134ecbc01868633408e36609228e7dc3e
-  219 table-leaf 97a711c0dc20de2e6a34ce51f61ebf0aedb29e3b1a268982526816115b85eedd
-  220 overflow cdd31ed7c770fc1608d4ac32d291f30f867a28639b34488ac32ace07a95cf5c6
-  221 overflow 00bea5b536dbdbd201729ed609ed925463cfb4b87588d5e5a0df8c43b7cf6d33
-  222 overflow b414b6e822682648c2e8e29f84456cb700ee3a512e512309a1ca942fe6d2efae
-  223 table-leaf 0a0961052a04adc43a4549f5538499dd109c982a7724f32cfb1b27e31b9e7b0e
-  224 overflow fa7fb2c4f7c22de155dad918fe70990861571ff387933cc7b3adcf00c90d079d
-  225 overflow 115afee8ef26a376070491221cd33f49840a49a67d480c54c3133653c7227629
-  226 overflow 9754ccc3bbb0a6ab9c7802b69d32a178faee6b9ed6b2d02003180b56dd08745d
-  227 overflow 6c29865d25e5796669f89d13e6478c2795f5d044eac2ee58f57d1fb1abdabe50
-  228 overflow 3bff5c2e1be3bc6b9ae72cf82c7570ef6075a68c7ce06e923e3f723b5b102404
-  229 table-leaf 8782ee7b6fce201a6c8b70a0b505889a6989265cee17eb319a86e670fd0998ce
-  230 freelist-trunk c87a78226061b340db326b28249cf4d70558f57ee712591a70210e847f8e3f7e
-  231 freelist-leaf ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7
-  232 freelist-leaf ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7
-  233 overflow bd0dba7fcb0d77b4ec4a17e044f099ab20b87d8d32a12b865785bbe5f8cfcf06
-  234 overflow 6cfbfc530bb4df138c6e21665fd52937a439052067246c57db1c8b558860c1c2
-  235 table-leaf a48fe108915400cc05afc9b34ca6feb46a9b040b49afd633f45cef2152c59216
-  236 overflow e568253890d7a9695f10ef88b5ffe111c5ffc441499e9245f15c8191a84b9de4
-  237 overflow 0ec08eae5b32429eac790f8246de897a4535b2d9f60a51ae533f596c50281f9f
-  238 table-leaf c24df11ef4497f2d0672276394c9d3f67eebe3b9d9584d27da51a6d7b9713fa1
-  239 overflow 80f767d0d279a9e7d99c8982e6f4dd09d972b430a80dada3f777025187fb977f
-  240 overflow aa93bed9b60983a91008131c9a10c81584ae4965359b434bfcf95ef460a22a70
-  241 overflow 9359ca48c0108d0e5c44e6ab26a928326f078a46d1efcf0f799fc01d9b0ec7fc
-  242 index-leaf a1477703add342d21b8c339556803b964e8d9e3e478c63b8bbbd5430120c282b
-  243 table-leaf c0f6b1c2094fb08df1735df4ae0aec63b28c579867f4c337420bb1fbb3fce722
-  244 overflow fb6a6b25d3fefc28db75adeffb88930587588f87221426e86e10867874da92bf
-  245 table-leaf 00bc00cd7e93f90137bff6e90a154914152dc9299b0821c99899ee7c00fa0aba
-  246 overflow 570986ec39ec913b852019c4a2695a6303f94dbf9d479eb0b23cfe9dc6e8afee
-  247 table-leaf 24293084e423ced4143675d4f2e02c18fe1d5c0f40acd80d672b219f66ffac8d
-  248 overflow 29b63daaa8287b7720f690ce5c4bda7efa76da8f40b58956034d9da23cc62056
-  249 table-leaf 0f413743b990730eacfb64df4386633394ebd9790075700338c583b2d10403b1
-  250 overflow 7184accfa8fe098c38a16bc9030f61dbbb74c852d0ee7087277a5736c27aed6d
-  251 overflow ceede5817f74dadd8a0691f264861423282366ae054c47dfa982cdbb14781d5d
-  252 overflow 1f2073e0d2e776181321daadb6669a0e197ef9ca6d103bcf94e84a758cc9beaa
-  253 overflow 427e0ce90b40a2bcfba0322802f4550898b3b8ed9d7076b3c7be944e87124f8b
-  254 table-leaf 1c9f1fcfef357551296e963e475d138653a8e0acb975f5c75cf953d87cd4cbd9
-  255 overflow 8acaa7d09e431d93d9a6154f7fd7d089885c2b259aa5958ede44f9070f1eaf29
-  256 overflow a77956d277cfc9febddb4904fa3c335d0599fc09ef1221bbdbcb312dcaee733d
-  257 overflow 3b9c2faae264b478d329daf0d3300571271de0c20043a2ae441d0b070eedfa0f
-  258 table-leaf 9bb2466c861ded02acd4106470c4bc8b1b465fa8b476033e3e2eb3465133ad00
-  259 table-leaf 1b13dc75619b6e2f5f0a9ee32a619f95e9030874fbf5376433c7b480de3e2f3b
-  260 table-leaf e778d1107f06dded66181037839c530ccde3b75a9e0d17c4339140f569dd241c
-  261 table-leaf 7323ace1550498a42c3320cdde9df3efdd1d0ec312a012e55f0ec7346adeb07d
-  262 overflow 487a9bc24226973a0283e4d3cbb91d73503681f3a983b2c24082cae7bae37f16
-  263 overflow a99d77b547c0e68761b258014ac7c528460b0411627d3ae501bcdd69496959af
-  264 table-leaf ca0bcc06007923846a5f28f669b60dc09681826ea74591f19bf6456d22310879
-  265 overflow 89ee12580173f6765466613a75b5318cec32f679c5e4b09e43f1f56f3d032003
-  266 overflow 0866cbbace434723e8da1512f24f6eb663235646c61412e2f88dea322743c892
-  267 overflow e6ae8ae984a89238c365a8138d93b3b3dd0b2919b12856794f35652852852350
-  268 overflow 07b5f98d5d313031a249f66f23e496a6bbec79da3013c3fb4bdfad5a7bc12ee0
-  269 table-leaf b1a76d96595574cbf5e5445e90da4b831ffbee44931da0ad942e0cd6cd825db1
-  270 overflow 991abeed9b2f89b4b29abcc92073e6dfb59497192f0b33ff7dcc4da79f80065d
-run 1 vs run 2: manifests identical
-check ok: two runs of the recipe give manifests identical line for line
+════════════════════════════════════════════════════════════════════════
+  2.3  Can the pages of a database be captured and rebuilt exactly?
+════════════════════════════════════════════════════════════════════════
 
-== B. rebuild from the capture alone and prove it equal (E1)
-rebuilt rebuilt/from-capture.db from run-1/capture: 270 pages written in order
-original vs rebuilt: E1 bytes: equal (sha256 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74)
-check ok: sha256 of the rebuild equals sha256 of the original
-recipe lookup of the rebuild: step 30 (exact bytes)
-check ok: the rebuild is the recipe's state after step 30, byte for byte
-integrity_check of the rebuild: ok
-check ok: SQLite opens the rebuild and integrity_check returns ok
-check ok: opening the rebuild with SQLite and closing it changed nothing and left no side files
-one more recipe state for comparison: the manifest of the database after step 29
-step 29 vs step 30: manifests differ: first differing page 1 (page image differs), 30 page(s) differ
-check ok: the manifest comparison names the first differing page (page 1: the header changes on every recipe step)
+Rebuild Ladder rung R1: internal/capture reads every page of the closed R0
+database into pages.bin and writes manifest.txt, one line per page with
+its role and the sha256 of its bytes. The experiment rebuilds a database
+from the capture alone and checks it is byte-identical, refuses five kinds
+of damaged captures, and refuses databases that are not at rest.
 
-== C. a damaged capture is refused, and the refusal names the page
-  C1 drop the manifest entry for page 100
-    -> manifest entry 100: page 100: missing (entry 100 lists page 101)
-check ok: C1: the rebuild is refused naming "page 100: missing", and no output file is written
-  C2 list page 50 twice (in place of page 51)
-    -> manifest entry 51: page 50: listed twice (entries 50 and 51)
-check ok: C2: the rebuild is refused naming "page 50: listed twice", and no output file is written
-  C3 swap the entries for pages 120 and 121
-    -> manifest entry 120: page 121: out of order (entry 120 should be page 120)
-check ok: C3: the rebuild is refused naming "page 121: out of order", and no output file is written
-  C4 flip one byte in the image of page 200
-    -> capture page 200: image sha256 does not match the manifest
-check ok: C4: the rebuild is refused naming "capture page 200:", and no output file is written
-  C5 swap the images of pages 7 and 8
-    -> capture page 7: image sha256 does not match the manifest
-check ok: C5: the rebuild is refused naming "capture page 7:", and no output file is written
+── A. Capture: every page of the closed R0 database ────────────────────
 
-== D. a database that is not at rest is refused, because its file alone is stale or torn
-D1. WAL mode: a child process commits one UPDATE and exits without closing its connection
-  child exit status 3; -wal 4152 bytes, -shm 32768 bytes
-  capture -> database is not at rest: r.db: -wal holds 4152 bytes of frames not yet checkpointed into the database file
-check ok: D1: the capture is refused: the -wal holds committed frames
-  the database file alone: sha256 unchanged by the commit: true; account 1 balance 43047
-  SQLite opening the database with its -wal: account 1 balance 44047; after the last close: no side files
-check ok: D1: a page capture taken from the file alone would have lost the committed UPDATE
-  capture after SQLite checkpointed and closed: 60 pages, manifest sha256 2a17d23aa48e660bf7431827e6a0aa391794544f201166e0cd729508dc4431fc
-check ok: D1: once at rest, the capture includes the UPDATE (the file changed at the checkpoint)
-D2. rollback mode: a child process with cache_size=10 updates every document body in one transaction, spills dirty pages to the file, and exits before COMMIT
-  child exit status 3; -journal 203312 bytes
-  capture -> database is not at rest: r.db: hot -journal (203312 bytes with a live header): a transaction was interrupted and the next open will roll it back
-check ok: D2: the capture is refused: a hot -journal exists
-  the database file alone: changed by the spill: true; documents: 17 rows, 15 bodies all zero
-  SQLite opening the database with its hot journal (rolls it back): documents: 17 rows, 0 bodies all zero; after the last close: no side files
-check ok: D2: the file alone holds part of an uncommitted transaction; a capture of it would be torn
-check ok: D2: after SQLite rolled the hot journal back, the file is byte-identical to its state before the transaction
-  capture after the rollback: 60 pages
+A1. The recipe is run twice and each result captured. pages.bin holds
+pages x page_size bytes; manifest.txt starts with the format line, the page
+size and the page count, then one line per page.
+┌─────┬─────────────┬───────────────┬───────┬───────┬───────────┬─────────────────┐
+│ run │  database   │  capture_dir  │ steps │ pages │ page_size │ pages_bin_bytes │
+├─────┼─────────────┼───────────────┼───────┼───────┼───────────┼─────────────────┤
+│ 1   │ run-1/r0.db │ run-1/capture │ 30    │ 270   │ 4096      │ 1105920         │
+│ 2   │ run-2/r0.db │ run-2/capture │ 30    │ 270   │ 4096      │ 1105920         │
+└─────┴─────────────┴───────────────┴───────┴───────┴───────────┴─────────────────┘
 
-MANIFEST OK
+A2. The manifest as a whole: its format line and the sha256 of its text.
+Both runs must give the same manifest.
+┌─────┬───────────────────────────────────┬──────────────────────────────────────────────────────────────────┐
+│ run │          manifest_format          │                         manifest_sha256                          │
+├─────┼───────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ 1   │ sqlite-internals page manifest v1 │ 8d9ad6e1251dfbbe513d57fa7dcd5e8159fa7c62d227d28008ebc1a9ed92f523 │
+│ 2   │ sqlite-internals page manifest v1 │ 8d9ad6e1251dfbbe513d57fa7dcd5e8159fa7c62d227d28008ebc1a9ed92f523 │
+└─────┴───────────────────────────────────┴──────────────────────────────────────────────────────────────────┘
+
+A3. Run 1 against run 2, as the library compares them, and from the rows:
+the number of pages whose role or sha256 differ between the runs.
+┌────────────────┬─────────────────────┬───────┬─────────────────┐
+│      name      │       result        │ equal │ differing_pages │
+├────────────────┼─────────────────────┼───────┼─────────────────┤
+│ run 1 vs run 2 │ manifests identical │ true  │ 0               │
+└────────────────┴─────────────────────┴───────┴─────────────────┘
+┌─────────────────┬────────────────┐
+│ differing_pages │ pages_compared │
+├─────────────────┼────────────────┤
+│ 0               │ 270            │
+└─────────────────┴────────────────┘
+
+A4. The roles in the manifest (run 1).
+┌────────────────┬───────┐
+│      role      │ pages │
+├────────────────┼───────┤
+│ overflow       │ 170   │
+│ table-leaf     │ 89    │
+│ index-leaf     │ 4     │
+│ table-interior │ 3     │
+│ freelist-leaf  │ 2     │
+│ freelist-trunk │ 1     │
+│ index-interior │ 1     │
+└────────────────┴───────┘
+
+A5. The manifest of run 1, one line per page.
+┌──────┬────────────────┬──────────────────────────────────────────────────────────────────┐
+│ page │      role      │                              sha256                              │
+├──────┼────────────────┼──────────────────────────────────────────────────────────────────┤
+│ 1    │ table-leaf     │ 1b9902e64e6c0f5d1eb4e501973304e85e7aff7d6e44912a06fbcc00e07debe9 │
+│ 2    │ table-interior │ 46d56d23abed588975c19161aa6dc1f9cf7f9d31a72cfbd40b3441bf38d8cc1e │
+│ 3    │ table-interior │ 860bd520e10f3ed30a0cf84ada13addbbf2fb19cc5584699ff702868986c24b0 │
+│ 4    │ table-interior │ 3c53ee0581571b0fd924cb47c637b6b1ebe6425f4a04320f26390083cfd37072 │
+│ 5    │ overflow       │ 7aad2880eb458697ca2b782d104c7bc12ab581778d1617616113daf7fec3d4c8 │
+│ 6    │ overflow       │ 7e7afe23ae214297b337e3c4675ffdd9ab84024fc3074c15e812494dd20e4983 │
+│ 7    │ overflow       │ a534c6fdb6abf78b7a7b52b27b3051790c85036beb7218b4d0ff6e6decac0a0f │
+│ 8    │ overflow       │ fba5521b93297c4b8f3bef088245f945ccb51124446b306cd489d6f3e4217b15 │
+│ 9    │ overflow       │ ca9a4af9e802b51d7f6b06fbd720c6514584a367091c9873a5f9aa21a71067f2 │
+│ 10   │ table-leaf     │ 5bb69638130cf6381f376435e2423a5e0d06bdf068fcaf571022fc1e0ee59370 │
+│ 11   │ table-leaf     │ 724eb0ed932ef10781b9172d5e32a48a1b8863c254a982c4f8ddc4d082338b96 │
+│ 12   │ overflow       │ 7f5502748230a361201e00b9e58fbd6a0db0125c9ac0e24b6f138b301090d9ef │
+│ 13   │ overflow       │ 12a4b4e75b3e86d31bbd4c27ee214c6b806652f6ad9af57ee636219644b7c301 │
+│ 14   │ overflow       │ 34962cb641e4debab98b6f3a2fecb54e612793071b88eb82c39836a7d4aa728a │
+│ 15   │ table-leaf     │ 4d3175e4b2c34d53defc5dbb504cb680b4e3296c0eb81083024329a3d622646e │
+│ 16   │ overflow       │ a0572382d487533308f59de5d509f29bafed75da79a73f9812acedc32e35f10a │
+│ 17   │ overflow       │ 15b724903840c0ad7abb639fa0700fedb4a1f58f43e3b0ff9005ca78bb3b5491 │
+│ 18   │ overflow       │ 383820231ab24d46be1913e631aa92713455b9b6c6c9f1d021610207a9f7da14 │
+│ 19   │ table-leaf     │ e3bb3b6b00cacac610514dcd58061d2a1ab831786006278c228b4785d3844497 │
+│ 20   │ overflow       │ 3b65dbee9941c10a07b33942455612512b666d94d3609ff23becc45a79251df6 │
+│ 21   │ table-leaf     │ deb86ca0005d14f7ab3b7da9c5ac31d4282c568de0b03e0cddc20973682cdb14 │
+│ 22   │ overflow       │ e245c6247cbcc8c212299bb2f89b5327d72dfa799529b2dece4790eff92112ee │
+│ 23   │ overflow       │ 59134759e86d787f8fdebc82af48ad8bc9c55a135c7fc67af8b38cb6a56c7ffe │
+│ 24   │ overflow       │ 68c7d34bd3ef689df419818c41e6ddbbf30b4499c90acbd1ffd3d5bd06775cdb │
+│ 25   │ table-leaf     │ 732423d9158389d0e946170f10075404559e4d8112bb83ef80c72c7a4bf15fd7 │
+│ 26   │ table-leaf     │ 8006a99485269b70b926860d50f87f4ca908a513a655597a9af43fcbfc4f038f │
+│ 27   │ table-leaf     │ d45416dbdf129e59d604e2fc3b7f9c802ffab7696837438dda8d2b60ed29e586 │
+│ 28   │ index-interior │ 51e6ac1f4e34240f1bbf86abf31c101ad643155a33da16f3a6ee4f089ce0fc71 │
+│ 29   │ overflow       │ a4e416cafa8141e1ed4cc9150cf7bc91e6bd363b510d2daf4748d511c8d253f3 │
+│ 30   │ overflow       │ 2d8423154a553dbcdb5b400d9e42cc68018148d63a4ea559731e2f0c2d25ff7c │
+│ 31   │ table-leaf     │ f3da9777ca90fcf540b92d3aef099433d7c73021688064744b62e39f16555a35 │
+│ 32   │ overflow       │ ec7d9f3bb6c902490f0bd3cf49f07a0a3a50b8f4d00b1a32ffae31caa8e088f1 │
+│ 33   │ overflow       │ 4552b82b526e55ab64d4b4c8f906cff8be626594f828c2aad32dec6beff99c94 │
+│ 34   │ overflow       │ ce92b5493316efc5c6dcc493c40b2a39bcf69230138f41891dbe4ba1b33b86d0 │
+│ 35   │ overflow       │ 7673f433fe64cf17405855c1361fbabf3a8fa0309a283068178d32ed3e478321 │
+│ 36   │ overflow       │ 568c08e129d6dbf91a58337b21f0ec334d437816422939b5999310ac1653f069 │
+│ 37   │ overflow       │ 02cf9a93058eb383f8c1e4bf6c2736e428a50bc009277feafaafc5072504d51c │
+│ 38   │ table-leaf     │ c2fae8bcd1c019e21ab735b11ffa65e2e88e94bdea3924ca82466fcfa92d16ea │
+│ 39   │ table-leaf     │ 568908de0766d844eaaa85f1870b7cf9d4fe78d3bf20cb38aa947bb1732b0ac8 │
+│ 40   │ overflow       │ 91be9b798474f1b35c757fd09064e640b39ecb7476dcdb27cebf869725ba9559 │
+│ 41   │ overflow       │ de1b5cde831492f35afa92c9be4e794c9249cfef58555b50010499a9e8aecef9 │
+│ 42   │ table-leaf     │ 3a30707ad61b33660e0ded2a8d178499c314c5e6cf495359734dff401cb1957b │
+│ 43   │ overflow       │ b221d22756aae42e95f33c00b839cfa8a0b0548870cc0598e0b5fa490d923c29 │
+│ 44   │ overflow       │ 887b2f0e56135974ac1471a3ce699b43fb4e1bbdb6581cc031f45e506e421965 │
+│ 45   │ overflow       │ 5c63bd72305ee4300a2762a0e1028b8a01861e003e41936502ae435b9f0cd45d │
+│ 46   │ table-leaf     │ c8bee6ed976fd2a7ea7e61eeb0d594c73ee4a72a0159bd6132383fae8051fe94 │
+│ 47   │ overflow       │ 06d3326df34a4041c367f5e94ed81bfe1e6f680a90da3a33f0a47c51a7f8b099 │
+│ 48   │ table-leaf     │ d893cb79a18ea5fc17b23c8fcd7298af35196233d4058d7dfac10a994cafb39f │
+│ 49   │ overflow       │ 1981d7c68d1e32ba7361d5ae699892f30fece85ee6404cc689b261fa32ec58f3 │
+│ 50   │ table-leaf     │ 73fd216d724396dae4897b0180cbad5be03987df5bcf36e490ccd81ff7c34442 │
+│ 51   │ overflow       │ 0c62745060da6ad711e8b596d3c84e925ed8126ba38f8cf6c4d2f6b10fb36c99 │
+│ 52   │ overflow       │ 9abb60aa174193ffeac20bd41da49d251318a3166fb4ab358360dc451188aa93 │
+│ 53   │ overflow       │ 4dfa14a601f073d5a84d21e3948b69f47d04c2a4d29142f6f5bf307044c962b1 │
+│ 54   │ table-leaf     │ 15130a78f58e4eaa8209aa8fdd5c81f3bd5f999fe9e342040358f1cbac317d5a │
+│ 55   │ overflow       │ c736558d3fbf4b32b223e2638859498c08c9cd71aafcebf88700ea3aa775722a │
+│ 56   │ overflow       │ c043a6192cc1dea5f3891ef71135adee8cd2bae5680e87cd686be55f655d45b7 │
+│ 57   │ overflow       │ 36f9a238db5b34f0ad7f3a32863b747f923985c01c227589aba0a4c0ace2747a │
+│ 58   │ table-leaf     │ 862957a42085704cea1a2e36da9110425f16a0a454b77a8988c88cd6c0261646 │
+│ 59   │ table-leaf     │ 6012e5651530caceb1c97f08704c30f56849f59fd78b490bcb93cb13386aa757 │
+│ 60   │ overflow       │ 0ef5ec177aafb28e3f0e28f7b5fa5d2ffbe2cf38858d3a7ec4636ea1664b281e │
+│ 61   │ overflow       │ 0a5c815ffe5216011f595370a3bd50b8fb950ab6e2b2e01ed9f3f01019fa69cf │
+│ 62   │ overflow       │ 758650437fa2ea8bb875b8efd46eecf166acb1e4ae5b472d048513970a95fbed │
+│ 63   │ overflow       │ ccfb4d0853cb3cf0610c9c4c9275be042c5365fcd77bd500c04272f6954f9902 │
+│ 64   │ table-leaf     │ 732fee5afc87573193067e4ae0da1f7f9b0f9932f7f069369340d90be01fd692 │
+│ 65   │ overflow       │ 2cc0ddd717bafbcb1c57098c3271106c1677deeb35a97018958ae2659b28163d │
+│ 66   │ table-leaf     │ eb7d545f2ee9266beafe0d4d6d7cc58a8baab1bfe4710ea5eb536fc7e5b9a449 │
+│ 67   │ overflow       │ 88fa136200d8b002867b73ebd94ae78e513d10d24f88ba8bfb302bf33ede5cc0 │
+│ 68   │ table-leaf     │ b0ac4bd16e8ffa500762646b6dc7c6c7398fac999e487eed713851238fc86b9f │
+│ 69   │ overflow       │ 88bbbe03f7e1b3f93fedce3262856d0369829891a78b2d4cb7a3c5b499f62a03 │
+│ 70   │ table-leaf     │ dcba5028b293ab80f2d09bf42e1555968ac75b7f69d696542a69345daee29d2a │
+│ 71   │ overflow       │ 9ad4b590ee93d7d431db66e5dcf4fccacd095d6ba3ae565c04f0627f0c170687 │
+│ 72   │ table-leaf     │ 9fd9e4ebcc248c76a69dee2f7b87cb5e42af0fe6d3c947e5f71bea3719571d01 │
+│ 73   │ overflow       │ ea4a139a0d21dc40233abe44fa65ed0438f486a962a527154f27bbaaefb09817 │
+│ 74   │ overflow       │ 6c5289f3250687b7c3619713518d3dc6fbeac59eb981bd1e908ae5101180f5bb │
+│ 75   │ overflow       │ a740c5597fb7ef676b27728a9a0828a3285a9a1bab20a5d9d2c98c341b69cc40 │
+│ 76   │ table-leaf     │ e368ff348ef725f9309256c3b8cdb7f25e5ab6436c47875c29cf3f77729e6de6 │
+│ 77   │ overflow       │ 8f58298ac0df2a6e4e47585ab26e7291ffc65a851133da66fe0f9ccc5c5a59fe │
+│ 78   │ table-leaf     │ 0bbec48152ee56fd0cde848ee5b6c27955a27712457ad8b57422d6d26eb0080e │
+│ 79   │ table-leaf     │ a9ad5b3bbee64f2b82c38c2317eaa98f36c814c104bbb75cfbf5801054474e7e │
+│ 80   │ table-leaf     │ aa911e9e62211cdead52ffbc7cfeb4e3fa77a1644a998013b319806d672f6fc9 │
+│ 81   │ table-leaf     │ 88b1c57ea604ea1108fda629f0ad7af846e0f6a5036bc77842e0bd88249af210 │
+│ 82   │ overflow       │ c402483d0808de9a1a843fa2bf5a1dcc8dde050e6b0791e68b5052b01a4dc95a │
+│ 83   │ table-leaf     │ 79064bddf27aafb5e2050cf8af0c74ce0756589248e8a77489f13d96239c8572 │
+│ 84   │ overflow       │ 72c3d06469fa69d849fe5ea16c284b489a5ed550f6c18153f3b0124242b1b4ef │
+│ 85   │ overflow       │ 808cf95246048d2300d190bd5bb9e7899137e1e02cc305c4b09bbb4b825e5985 │
+│ 86   │ table-leaf     │ ec8b82a7792a9c53cb14f41f197e891bbddb5eee92987eea9bf8714ac9e87a74 │
+│ 87   │ table-leaf     │ 727d286cec6c7242a80c5ffe1b7d531c5b0f687f8e66758d3f33cb3486e0f48e │
+│ 88   │ index-leaf     │ f348efbbf9aa30ea9af8f21a5ef9fc491856d71102c39d798836bb130680a1af │
+│ 89   │ index-leaf     │ 64e83d5312baf8a3c73f3efc2d7b2d05a46e3603223d638d908100729dd99df9 │
+│ 90   │ overflow       │ 988c00b7986f0b06e4a047ddd647029196844bf91cfae3384884afd448d34420 │
+│ 91   │ overflow       │ 03878852ef827430aa7b2447d43340d4a1dc07556969bb51d0eacc887c282ccc │
+│ 92   │ overflow       │ c18d4b56b6862c94633cdb486b9471676cb2fecad2faecad206d4b6eb86dcbd9 │
+│ 93   │ table-leaf     │ 09dc4cbd982af09308de11c5d05ce4a2808f6f215005b8ee6a2708e8142a25f9 │
+│ 94   │ overflow       │ 0273b357f14b648d9335d42d8c346624456b8981c57425a6854e8fe840bdd9fd │
+│ 95   │ table-leaf     │ 565bf12e4a91fdc96cf89a3b90c4961df44bcacc6804129ca842807df95b6e3d │
+│ 96   │ overflow       │ fca46a535e78cbed584dca90532a9d4ada1a4401cb29d3457cccd332fbd9c443 │
+│ 97   │ table-leaf     │ ef08059b194ea9a5dbc287ac6bcd3c82cd2b3a76b9e2d0cec9477e5ad684ecc9 │
+│ 98   │ overflow       │ 2885bb2d9da559ed257254d403c2b0c4137363c6df0b953e2fbc0cadd9303bf7 │
+│ 99   │ overflow       │ ad43a659e2a57a51c86f87beb182b018bbd3424daaef771ea2c8326ea871f972 │
+│ 100  │ table-leaf     │ 42abd0d5c512933133653865ad518c8e6d12112bff9c31c913c075beb9afee8d │
+│ 101  │ overflow       │ 55edb83f4053180be82e7661ccbe17d0b5bd9bc5022348ef2264a53c6b7d3d55 │
+│ 102  │ overflow       │ df06845273d305ae660324a369356b54f727ecbe4fd9b94dc9bcda4b9b0c379d │
+│ 103  │ overflow       │ 1435a614c08d5479b7d1bfd8a16abf1f1c0a4c3e451aecbc7920c97444b3d8c9 │
+│ 104  │ overflow       │ 813cf888feaae9b51ac066fb71929159288a23d9a11b7d307c8a35d84b4a0cc9 │
+│ 105  │ overflow       │ 632b547d5af4e4847c92c640ce8d45c68dc0dca75505a5624887b0ec3e20f94e │
+│ 106  │ table-leaf     │ 848e089a6e152a2611c1e07ef3cb8b888de3c267f833e2e6f610d7a6eadffbc9 │
+│ 107  │ overflow       │ 49cc6fe894ea6da5213523ec43a26facb16f7a3b040524ee5c13fe76f0c771cf │
+│ 108  │ table-leaf     │ 8abeb3283e0b47b7db4b4c194094a5526e090003c6e0e35cdd9675a75c1c5aaf │
+│ 109  │ overflow       │ 54f44a88e044984e44d373a03680dd3759789746fde5d08a4ffaac18a42e8d68 │
+│ 110  │ overflow       │ e80b8c0b0947e336d3c819f690377af2f615b55fd9915f3a8ba7d22da59ab978 │
+│ 111  │ overflow       │ d14e526d57b5bafa2a3e08fe01effedb64cf89e2dc10a5847f37bdfaca36437f │
+│ 112  │ overflow       │ 95e50efa0e78ff80b87ad799328c2823e6e352c3e5e3379d9a80742ace967a7a │
+│ 113  │ overflow       │ 97ea1d43a7c5e8fb0da485be88980a55490614f7f5b890aa2e2598c2167e33f8 │
+│ 114  │ table-leaf     │ 5cdaa78217d2150a0bf2d3c80aa12024ea256da8cd33982a4bf059dacdb5b5f8 │
+│ 115  │ overflow       │ 1d9cbda1a0e90bdc4c7c0a11c5e51090922b1ada96ac1936956bc37f176f939c │
+│ 116  │ overflow       │ 2b48e052073c6bfc240028e5a4ceb16ddb3f0e04d0f53170f9edaa186da0cfd4 │
+│ 117  │ overflow       │ 04234553cddc6fcd4069febd77b87f4d64811dd63bfaec0bfba6efc0c93b1562 │
+│ 118  │ table-leaf     │ cc77e8c53bc44d3f9ec2e862a5e3c62f1384166a376fbc591b06f04a66b9a7b6 │
+│ 119  │ overflow       │ 130806d3885b0211707f546e7e6c894bb09b4a0e556bba8ad80de6d114b3a68f │
+│ 120  │ overflow       │ 4551c32df32ecf04c413ad17a59413b720421274c8314a6ad26f89fba4fc4def │
+│ 121  │ overflow       │ 8863d6b8d94deaebb95bdd1a02f8743503e473e482e9b4ee9b34e98090e83f56 │
+│ 122  │ table-leaf     │ 73b66a24dc411f00dcdbcceffe5f21778e0b90b603f7853b884dc0d97fd536de │
+│ 123  │ overflow       │ 0794d43b88322f22e8250c0c79a9efcaaf459a54a8b07a071267dd33f16fae1e │
+│ 124  │ table-leaf     │ 1430942e4bbd8d54d254e2dc5dac3db31f52193a489b0973ff1037284f04d910 │
+│ 125  │ overflow       │ d283ee9250e0ce6430d788da2431cf9e5605c0053165ce862232569caba9f788 │
+│ 126  │ table-leaf     │ 1b782ab4ae9d83cd884e84e88c97db9bcf2ae98850a12be281e3b3330932401f │
+│ 127  │ table-leaf     │ b522ef1af3b0b8779c2ea43d3ff801a9d2f50d4830152b4c716df93d54a5c985 │
+│ 128  │ overflow       │ 2ff02aeb9c1d60400994aa5d13455f7522be6b032eac801443989405352192c1 │
+│ 129  │ overflow       │ ad5ebe9e004f84fa0135c9d3d1dccb41e23beee3df3c8fdfd5dac5358aa9fd56 │
+│ 130  │ overflow       │ 2237eb84c5d68a348d8fa11409b505b67c8399eb94771a7da70f58f8c0037e1c │
+│ 131  │ overflow       │ 04b162883872aba167b6982659fe122eacf674e99f171d08418be41fcd53fd21 │
+│ 132  │ table-leaf     │ f7c462f63279bf6acd4d3b2b609190281a0e796e5a74fdb7536273d2c5ec6c3f │
+│ 133  │ overflow       │ 3d1a288db1f0a6e69e64a1b5ce5b47f8d421da38b1eaa98f081c148de2583e30 │
+│ 134  │ table-leaf     │ 39338cfa073abb3a5571e03b029f29139f8d10a58467c6f5c93de236ea3fe8b7 │
+│ 135  │ overflow       │ b52bb1074cf3c25075249a0a9957dcc55a7a1ab67ea573e7d3e4f022dd7ac417 │
+│ 136  │ table-leaf     │ 21322aaa8277e28109421c975ca1f1d6ceb296c687a0a53c1b1c2c49367b7cbe │
+│ 137  │ overflow       │ ba5c54d41839876a1a145420a7edf0ee9cf0eea1f24d57b4bc797d9125b8d0ef │
+│ 138  │ overflow       │ 4283a503f149a51b09e069a2b1bf7cf7dd0fd92783d71b1bee53914a7b838ed9 │
+│ 139  │ table-leaf     │ b84214635122e91fb75100a6d935786fb002bedbc4535d7e2dfe9b7a507dc7d0 │
+│ 140  │ overflow       │ 96e2cd05720136d0384e5ec79ec3a5157100e1d6e6980c4b189516fbd0f6a86c │
+│ 141  │ overflow       │ 787db4dc093cfc8ad6ded6b7e82482a21b84572f2da80c7e5b5c8cc971d65da8 │
+│ 142  │ overflow       │ 875c8b067fac66afcf8c9a958d1ae4897535fb08cd74aa90e935a22a8c7802f0 │
+│ 143  │ overflow       │ 2da5c6392c5500f4e0bcfb7f6f01fb91b160d6ead868ae2d830664e758b21fbb │
+│ 144  │ table-leaf     │ e173043bd290f8ded7aa15a968abac512a3fc0c5de3cf914475646d4f1bcd11e │
+│ 145  │ overflow       │ 645f01d7974adc719c5abcea988f44a96c91232d85f6af6f26bb7427cf147cd9 │
+│ 146  │ table-leaf     │ 232999b442843f030ab01ee02a9c1b529de85183ed1a3a956654b5bf0fa69adf │
+│ 147  │ overflow       │ c6c2eaf7a8cf228898658b1095e5d8432e4bf1e6b97c207e3fb02a5364e03bd8 │
+│ 148  │ overflow       │ 32d01b24c2c5d20dad20e84c5341a2c67389e85b2654f83adedc53dbabd72e35 │
+│ 149  │ table-leaf     │ bfc28ec86893abb9bc5b44eda41bdba963744e659485d5a74e3bcde7a5f5158c │
+│ 150  │ overflow       │ 1cf7cb226955104cf78d7e92d646b414ca576b7156535f9961543ff96c125e40 │
+│ 151  │ overflow       │ 7f9e9b145d1335574de859e7f21f6f430939b9286de85c93c64a1ef35012ee33 │
+│ 152  │ table-leaf     │ ae3c2642dacd1fc71aadd09f5933318a89c7a09ee4217060836ee8f8386c880e │
+│ 153  │ table-leaf     │ d2e52f7dfaf1ee997c3966b0e8f94e357a8700f87923650c2c0250e735868b3f │
+│ 154  │ overflow       │ 6baed52dc619ec51af512f078dc3a94e6df5d722bf2ad4f405eb99e80d6f581e │
+│ 155  │ overflow       │ 6013788ab488ebedf636362170e6c90eca3fb7efed38c6e04f56e652ed2f9909 │
+│ 156  │ table-leaf     │ eb71eba626a462ed55f68c03299f5e71201620fcbe3c4e98048f75708b93ffc7 │
+│ 157  │ table-leaf     │ f1415e89843d7b50ec128f8be3965d85efa1a3e547c5a0dbe2c659e57274f152 │
+│ 158  │ overflow       │ 939f128f7a957470606e7867f81d0bacbfc7cc8898778607fafdd1a3bec6a15c │
+│ 159  │ overflow       │ d5b9772cff3af4d364f3651f4502207e61763c26c585b9fa8f995deca0a77ec8 │
+│ 160  │ overflow       │ 70305b14df663528b9592d561c85c976f74d65571bb3acceb3d95ddb8cad78df │
+│ 161  │ overflow       │ 8aed8e506b72467da1a95f823a863f2a7b9f3c92026ac0389044945606db8575 │
+│ 162  │ table-leaf     │ b5c2bc6b4ca810c938c99c69af8e2e6697b4e080f313ae4d882c88ea99a6548d │
+│ 163  │ table-leaf     │ 81d2edf79ac8eefa90c0f5f7ad6d7e753b6b53f675abe0431c63038d24a53c45 │
+│ 164  │ overflow       │ 3a01461230c9643760562274b8fad32005a2351faf173a4dc7d76660a675c309 │
+│ 165  │ overflow       │ 20fd3f79abcdef139324d0a308b7174da51e2ee9508fec383a1655ba3dd792e7 │
+│ 166  │ table-leaf     │ 3605a1f6ed1917f4ea9b388d621cc9be26011ea8336bd5e0ad69220d0cd7d8db │
+│ 167  │ index-leaf     │ ad8ae738c43075cb8c49c8b62ea69eb8fb6224d0deab4c53379c4f3ef0d7c803 │
+│ 168  │ table-leaf     │ 900856304d8ad4d43446f715d96fc0be12b5fc344576ba4bc0980d1fb75971c9 │
+│ 169  │ overflow       │ 3cd1484621a6930deda2fd63d2be32072c15bac0807933bf28f8f19162d457b8 │
+│ 170  │ overflow       │ 7a2c6d554fbfc58aec2ceae45162d16225d83993e13aa57e1d3800af6ddc4d24 │
+│ 171  │ table-leaf     │ 25bf59c0709b6edbf627c221ccc7338337a4a9abaf723f4de4752e4f28f09bf4 │
+│ 172  │ overflow       │ c292b98a605b9531581d84d1412b1fedc4ba05cbfb5d7cf342864b4df789a0e1 │
+│ 173  │ overflow       │ 81929ae1a5c151c988ddb036210aa3975d422058eb73872d780ea0814c9c2afa │
+│ 174  │ overflow       │ c2a669aed711efcecde3ba1faa7b7a3c912a6705a92c767dabf0d32381962412 │
+│ 175  │ table-leaf     │ 9e6a00f61e695edf8ce07ce8c69603a755e814108b84779e3f21fc6614d2b6e5 │
+│ 176  │ overflow       │ 70a3c713eeb87a3b873bf5d032b21d679f9adb8a8c527f0af600017c843813a7 │
+│ 177  │ overflow       │ 812040bb47ff3134003e4e1da04f70eec0522ccacf08fde842cd722e4571ade5 │
+│ 178  │ overflow       │ 41770f11407c484eb54ca98bd72cb7f0f1328c5de8c0fcdf32f3045b6daa3d71 │
+│ 179  │ overflow       │ 4d6e7156e5210c3c810638264c46f8d0ed428cd3698b9be38641df055351a929 │
+│ 180  │ overflow       │ 36774019b141812d8bb2f1401a52c33efb19e3a32df6f39537c768214773476b │
+│ 181  │ overflow       │ 3621cd7ebfbf961a3ae3bda905453238cd837d97f7f1dfabb8506f53fa2316e6 │
+│ 182  │ overflow       │ b8edd5b7ed028935b68768b0accf7f5c6bface649d460ea7b3d79f2154c20803 │
+│ 183  │ table-leaf     │ 5d01dd4623fd4a750ce3e5f87e0f440b80311491e94f6b8b6c9e572db5429957 │
+│ 184  │ table-leaf     │ ea016b0904d23d14bb2fa62c036f7d8b2ab72727f2b60ba7b820d2b55d30b8ae │
+│ 185  │ overflow       │ 147612121f23e6007d1cf95d651f89ac9cbc2031f70e53cb3b2e8a860c8ad9d0 │
+│ 186  │ table-leaf     │ 3743d3e1ce7de8542889854bd07635e0db484b63b8fc4ba62018577d0d57a260 │
+│ 187  │ overflow       │ 5cd072ba58d0bef1f3f3487c3d651153cdecb877e4b435878ca5fa44bd563ad4 │
+│ 188  │ overflow       │ ac3e560ca6e7a95deb6051928ce624c2c780a3bcb2b7c22634f3e4be24c33cf9 │
+│ 189  │ overflow       │ 977213a029c072749990cd83d118d8eb01a1fd45fcecf7e0807c58698fb5337c │
+│ 190  │ table-leaf     │ 7c51f6f4da511db86b9b55b22893aff7e99dcd80cf7134ab9b92053303b88235 │
+│ 191  │ overflow       │ 674df96ffea07223102545c9083939726e035966a8c29873da38c13379dac5a6 │
+│ 192  │ overflow       │ a1dda57fb84ecd5b9bbeaa6fb5801ede1af7fb7b56fbc3772bc5936e43d0876b │
+│ 193  │ overflow       │ 0bb9d64731e39b27c628079e03c1439d9c6e3d6ef32c28cb6459f12cfc8129dc │
+│ 194  │ overflow       │ f2207c072673589a7c154fb192f515ea68a963a53d78cf49517b3b8539e0cadb │
+│ 195  │ table-leaf     │ c7208e06bd98746438e93f1ae7fb45155b5baab1c270ed342964ea1fa38e0592 │
+│ 196  │ overflow       │ 201d8f2bc00f73b32d62b428d247b8a56fcac19b1de078e75906e0bd9fd1e79e │
+│ 197  │ overflow       │ 80dd673f81bdf47ebe2e8819123cfc693afc052fa64be1d494005e4aa57596c0 │
+│ 198  │ overflow       │ 87d09f9c392d694fdda13788e46e84d6f03d733510d1537a1c8a7769d5fde29f │
+│ 199  │ overflow       │ 48a4c890d6966899da4b367e2a5ece906be9ad32dc9711c1035038e55560fdfa │
+│ 200  │ table-leaf     │ a9efcc50448876b41b2209921d713496d5ab111c48df306b000bc92b874ad353 │
+│ 201  │ overflow       │ 9cf34393c30f1156740d2ed575c1abbf6841852cd281524a99923a1da88d67a6 │
+│ 202  │ overflow       │ ede9cdcfc3289dfe634b55a17d6a868326d7c41929a5ccb5a5e3bf1036d65f3b │
+│ 203  │ table-leaf     │ 08d351b2c10fc9dab3e14ba46777aca4ce0fc934ac421f6215b9eb679ceb3a11 │
+│ 204  │ table-leaf     │ fa1a04e7ddf7118f43624a24a749e60975842ac6337474c9061bfb0e9fa44a90 │
+│ 205  │ overflow       │ 4ed0ea698b6d12687455d50e0b543c7516d81164ae67867f959bdd7e40547e38 │
+│ 206  │ table-leaf     │ 5cf13eaedd56113712759a8b058b8b3e636c1196e4f3ea5ccf7c5526beca43bb │
+│ 207  │ overflow       │ e6b89650492f6d2f49b2ea0d73ae5b07713522937b244fdd30c374b37b3f78df │
+│ 208  │ overflow       │ d3f153dbc7e7ce01491bd4dabd842617719dd562d961eccb5f00c91cea5772d7 │
+│ 209  │ table-leaf     │ 1cb112ddea905435efa8ea4ca7d2570c4bb5a6fb94d80e8d68fb2fdb5d79ce5a │
+│ 210  │ table-leaf     │ 897e54e68f312e2aa2edc958548d60456a558a5b0e456e52c5cacf4095d16580 │
+│ 211  │ overflow       │ 3b3706aafeb0b2c1b995302e3001910c857f9d086c21045e8cd08767106ba1f5 │
+│ 212  │ overflow       │ 6815b9e928bffcad27ff4a952ac5cdda584a0928c4341434fc7d92fe327c02be │
+│ 213  │ table-leaf     │ f8487727c0cd0a88e92bb202e6c92db12f71eeed692e2ce76529831af744962e │
+│ 214  │ overflow       │ 8dae397cea317c949b255ccd90f7ae29610ae219098fa5c429a1015a40dab220 │
+│ 215  │ overflow       │ 24ebaa59a26af623e3767de407269b9aefa2577b72d98f503fac15d955917e19 │
+│ 216  │ overflow       │ 44a8f5918fb867a2d919f3db0db8c443a754da0cda5efb998826024e3a36c05a │
+│ 217  │ overflow       │ 40a96f5f5ddfd323bef78fcdaddebc3a13e8d39e3a1841c10d8b359ee177c9b6 │
+│ 218  │ overflow       │ c6f12c1ed6acdfa1d3374c21ee425c7134ecbc01868633408e36609228e7dc3e │
+│ 219  │ table-leaf     │ 97a711c0dc20de2e6a34ce51f61ebf0aedb29e3b1a268982526816115b85eedd │
+│ 220  │ overflow       │ cdd31ed7c770fc1608d4ac32d291f30f867a28639b34488ac32ace07a95cf5c6 │
+│ 221  │ overflow       │ 00bea5b536dbdbd201729ed609ed925463cfb4b87588d5e5a0df8c43b7cf6d33 │
+│ 222  │ overflow       │ b414b6e822682648c2e8e29f84456cb700ee3a512e512309a1ca942fe6d2efae │
+│ 223  │ table-leaf     │ 0a0961052a04adc43a4549f5538499dd109c982a7724f32cfb1b27e31b9e7b0e │
+│ 224  │ overflow       │ fa7fb2c4f7c22de155dad918fe70990861571ff387933cc7b3adcf00c90d079d │
+│ 225  │ overflow       │ 115afee8ef26a376070491221cd33f49840a49a67d480c54c3133653c7227629 │
+│ 226  │ overflow       │ 9754ccc3bbb0a6ab9c7802b69d32a178faee6b9ed6b2d02003180b56dd08745d │
+│ 227  │ overflow       │ 6c29865d25e5796669f89d13e6478c2795f5d044eac2ee58f57d1fb1abdabe50 │
+│ 228  │ overflow       │ 3bff5c2e1be3bc6b9ae72cf82c7570ef6075a68c7ce06e923e3f723b5b102404 │
+│ 229  │ table-leaf     │ 8782ee7b6fce201a6c8b70a0b505889a6989265cee17eb319a86e670fd0998ce │
+│ 230  │ freelist-trunk │ c87a78226061b340db326b28249cf4d70558f57ee712591a70210e847f8e3f7e │
+│ 231  │ freelist-leaf  │ ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7 │
+│ 232  │ freelist-leaf  │ ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7 │
+│ 233  │ overflow       │ bd0dba7fcb0d77b4ec4a17e044f099ab20b87d8d32a12b865785bbe5f8cfcf06 │
+│ 234  │ overflow       │ 6cfbfc530bb4df138c6e21665fd52937a439052067246c57db1c8b558860c1c2 │
+│ 235  │ table-leaf     │ a48fe108915400cc05afc9b34ca6feb46a9b040b49afd633f45cef2152c59216 │
+│ 236  │ overflow       │ e568253890d7a9695f10ef88b5ffe111c5ffc441499e9245f15c8191a84b9de4 │
+│ 237  │ overflow       │ 0ec08eae5b32429eac790f8246de897a4535b2d9f60a51ae533f596c50281f9f │
+│ 238  │ table-leaf     │ c24df11ef4497f2d0672276394c9d3f67eebe3b9d9584d27da51a6d7b9713fa1 │
+│ 239  │ overflow       │ 80f767d0d279a9e7d99c8982e6f4dd09d972b430a80dada3f777025187fb977f │
+│ 240  │ overflow       │ aa93bed9b60983a91008131c9a10c81584ae4965359b434bfcf95ef460a22a70 │
+│ 241  │ overflow       │ 9359ca48c0108d0e5c44e6ab26a928326f078a46d1efcf0f799fc01d9b0ec7fc │
+│ 242  │ index-leaf     │ a1477703add342d21b8c339556803b964e8d9e3e478c63b8bbbd5430120c282b │
+│ 243  │ table-leaf     │ c0f6b1c2094fb08df1735df4ae0aec63b28c579867f4c337420bb1fbb3fce722 │
+│ 244  │ overflow       │ fb6a6b25d3fefc28db75adeffb88930587588f87221426e86e10867874da92bf │
+│ 245  │ table-leaf     │ 00bc00cd7e93f90137bff6e90a154914152dc9299b0821c99899ee7c00fa0aba │
+│ 246  │ overflow       │ 570986ec39ec913b852019c4a2695a6303f94dbf9d479eb0b23cfe9dc6e8afee │
+│ 247  │ table-leaf     │ 24293084e423ced4143675d4f2e02c18fe1d5c0f40acd80d672b219f66ffac8d │
+│ 248  │ overflow       │ 29b63daaa8287b7720f690ce5c4bda7efa76da8f40b58956034d9da23cc62056 │
+│ 249  │ table-leaf     │ 0f413743b990730eacfb64df4386633394ebd9790075700338c583b2d10403b1 │
+│ 250  │ overflow       │ 7184accfa8fe098c38a16bc9030f61dbbb74c852d0ee7087277a5736c27aed6d │
+│ 251  │ overflow       │ ceede5817f74dadd8a0691f264861423282366ae054c47dfa982cdbb14781d5d │
+│ 252  │ overflow       │ 1f2073e0d2e776181321daadb6669a0e197ef9ca6d103bcf94e84a758cc9beaa │
+│ 253  │ overflow       │ 427e0ce90b40a2bcfba0322802f4550898b3b8ed9d7076b3c7be944e87124f8b │
+│ 254  │ table-leaf     │ 1c9f1fcfef357551296e963e475d138653a8e0acb975f5c75cf953d87cd4cbd9 │
+│ 255  │ overflow       │ 8acaa7d09e431d93d9a6154f7fd7d089885c2b259aa5958ede44f9070f1eaf29 │
+│ 256  │ overflow       │ a77956d277cfc9febddb4904fa3c335d0599fc09ef1221bbdbcb312dcaee733d │
+│ 257  │ overflow       │ 3b9c2faae264b478d329daf0d3300571271de0c20043a2ae441d0b070eedfa0f │
+│ 258  │ table-leaf     │ 9bb2466c861ded02acd4106470c4bc8b1b465fa8b476033e3e2eb3465133ad00 │
+│ 259  │ table-leaf     │ 1b13dc75619b6e2f5f0a9ee32a619f95e9030874fbf5376433c7b480de3e2f3b │
+│ 260  │ table-leaf     │ e778d1107f06dded66181037839c530ccde3b75a9e0d17c4339140f569dd241c │
+│ 261  │ table-leaf     │ 7323ace1550498a42c3320cdde9df3efdd1d0ec312a012e55f0ec7346adeb07d │
+│ 262  │ overflow       │ 487a9bc24226973a0283e4d3cbb91d73503681f3a983b2c24082cae7bae37f16 │
+│ 263  │ overflow       │ a99d77b547c0e68761b258014ac7c528460b0411627d3ae501bcdd69496959af │
+│ 264  │ table-leaf     │ ca0bcc06007923846a5f28f669b60dc09681826ea74591f19bf6456d22310879 │
+│ 265  │ overflow       │ 89ee12580173f6765466613a75b5318cec32f679c5e4b09e43f1f56f3d032003 │
+│ 266  │ overflow       │ 0866cbbace434723e8da1512f24f6eb663235646c61412e2f88dea322743c892 │
+│ 267  │ overflow       │ e6ae8ae984a89238c365a8138d93b3b3dd0b2919b12856794f35652852852350 │
+│ 268  │ overflow       │ 07b5f98d5d313031a249f66f23e496a6bbec79da3013c3fb4bdfad5a7bc12ee0 │
+│ 269  │ table-leaf     │ b1a76d96595574cbf5e5445e90da4b831ffbee44931da0ad942e0cd6cd825db1 │
+│ 270  │ overflow       │ 991abeed9b2f89b4b29abcc92073e6dfb59497192f0b33ff7dcc4da79f80065d │
+└──────┴────────────────┴──────────────────────────────────────────────────────────────────┘
+
+── B. Rebuild from the capture alone and prove it equal (E1) ───────────
+
+B1. The rebuild: pages written in order, its sha256, what the recipe lookup
+says it is, and the integrity_check of SQLite.
+┌─────────────────────────┬───────────────┬───────────────┬───────────────────────┬─────────────────┐
+│         rebuilt         │ from_capture  │ pages_written │     recipe_lookup     │ integrity_check │
+├─────────────────────────┼───────────────┼───────────────┼───────────────────────┼─────────────────┤
+│ rebuilt/from-capture.db │ run-1/capture │ 270           │ step 30 (exact bytes) │ ok              │
+└─────────────────────────┴───────────────┴───────────────┴───────────────────────┴─────────────────┘
+
+B2. The rebuild against the original, and the manifest after step 29
+against the manifest after step 30. They differ first at page 1: the header
+changes on every recipe step.
+┌─────────────────────┬───────┬──────────────────────┬─────────────────┐
+│        name         │ equal │ first_differing_page │ differing_pages │
+├─────────────────────┼───────┼──────────────────────┼─────────────────┤
+│ original vs rebuilt │ true  │                      │ 0               │
+│ step 29 vs step 30  │ false │ 1                    │ 30              │
+└─────────────────────┴───────┴──────────────────────┴─────────────────┘
+
+The words of the library for each comparison:
+┌───────────────────────────────────────────────────────────────────────────────────────────┐
+│                                          result                                           │
+├───────────────────────────────────────────────────────────────────────────────────────────┤
+│ E1 bytes: equal (sha256 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74) │
+│ manifests differ: first differing page 1 (page image differs), 30 page(s) differ          │
+└───────────────────────────────────────────────────────────────────────────────────────────┘
+
+The sha256 of the rebuild, which is also the sha256 of the original:
+┌──────────────────────────────────────────────────────────────────┐
+│                              sha256                              │
+├──────────────────────────────────────────────────────────────────┤
+│ 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74 │
+└──────────────────────────────────────────────────────────────────┘
+
+── C. A damaged capture is refused, and the refusal names the page ─────
+
+Each row is a copy of the capture with one thing changed. The rebuild must
+refuse it with a message that contains the text in wanted, and must not write
+an output file.
+┌─────────┬──────────────────────────────────────────┬────────────────────────┬────────────────┐
+│ case_no │                  damage                  │         wanted         │ output_written │
+├─────────┼──────────────────────────────────────────┼────────────────────────┼────────────────┤
+│ C1      │ drop the manifest entry for page 100     │ page 100: missing      │ false          │
+│ C2      │ list page 50 twice (in place of page 51) │ page 50: listed twice  │ false          │
+│ C3      │ swap the entries for pages 120 and 121   │ page 121: out of order │ false          │
+│ C4      │ flip one byte in the image of page 200   │ capture page 200:      │ false          │
+│ C5      │ swap the images of pages 7 and 8         │ capture page 7:        │ false          │
+└─────────┴──────────────────────────────────────────┴────────────────────────┴────────────────┘
+
+The refusals:
+┌─────────┬───────────────────────────────────────────────────────────────────────────┐
+│ case_no │                                  refusal                                  │
+├─────────┼───────────────────────────────────────────────────────────────────────────┤
+│ C1      │ manifest entry 100: page 100: missing (entry 100 lists page 101)          │
+│ C2      │ manifest entry 51: page 50: listed twice (entries 50 and 51)              │
+│ C3      │ manifest entry 120: page 121: out of order (entry 120 should be page 120) │
+│ C4      │ capture page 200: image sha256 does not match the manifest                │
+│ C5      │ capture page 7: image sha256 does not match the manifest                  │
+└─────────┴───────────────────────────────────────────────────────────────────────────┘
+
+── D. A database that is not at rest is refused ────────────────────────
+
+Its file alone is stale or torn. Each scenario starts a child process that
+leaves the database not at rest and exits with status 3 without closing
+its connection.
+
+D1. WAL mode: the child commits one UPDATE (account 1 gains 1000). The
+commit lives in the -wal, so the database file alone is stale.
+┌─────┬─────────────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────┐
+│ seq │                     observation                     │                                 value                                  │
+├─────┼─────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+│ 1   │ child exit status                                   │ 3                                                                      │
+│ 2   │ side files after the child                          │ -wal 4152 bytes, -shm 32768 bytes                                      │
+│ 3   │ capture                                             │ database is not at rest: r.db: -wal holds 4152 bytes of frames not yet │
+│     │                                                     │  checkpointed into the database file                                   │
+│ 4   │ database file alone: sha256 unchanged by the commit │ true                                                                   │
+│ 5   │ database file alone: account 1 balance              │ 43047                                                                  │
+│ 6   │ SQLite with the -wal: account 1 balance             │ 44047                                                                  │
+│ 7   │ side files after the last close                     │ no side files                                                          │
+│ 8   │ capture after the checkpoint: pages                 │ 60                                                                     │
+│ 9   │ capture after the checkpoint: manifest sha256       │ 2a17d23aa48e660bf7431827e6a0aa391794544f201166e0cd729508dc4431fc       │
+└─────┴─────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────┘
+
+D2. Rollback mode: the child sets cache_size=10, updates every document body
+in one transaction, which spills dirty pages to the file, and exits before
+COMMIT. The file alone holds part of an uncommitted transaction.
+┌─────┬────────────────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────┐
+│ seq │                      observation                       │                                 value                                  │
+├─────┼────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+│ 1   │ child exit status                                      │ 3                                                                      │
+│ 2   │ side files after the child                             │ -journal 203312 bytes                                                  │
+│ 3   │ capture                                                │ database is not at rest: r.db: hot -journal (203312 bytes with a live  │
+│     │                                                        │ header): a transaction was interrupted and the next open will roll it  │
+│     │                                                        │ back                                                                   │
+│ 4   │ database file alone: changed by the spill              │ true                                                                   │
+│ 5   │ database file alone: documents                         │ 17 rows, 15 bodies all zero                                            │
+│ 6   │ SQLite with the hot journal (rolls it back): documents │ 17 rows, 0 bodies all zero                                             │
+│ 7   │ side files after the last close                        │ no side files                                                          │
+│ 8   │ capture after the rollback: pages                      │ 60                                                                     │
+└─────┴────────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  two runs of the recipe give manifests identical line for line
+B  ✓  sha256 of the rebuild equals sha256 of the original
+B  ✓  the rebuild is the recipe's state after step 30, byte for byte
+B  ✓  SQLite opens the rebuild and integrity_check returns ok
+B  ✓  opening the rebuild with SQLite and closing it changed nothing and left no side files
+B  ✓  the manifest comparison names the first differing page (page 1: the header changes on every recipe step)
+C  ✓  C1: the rebuild is refused naming "page 100: missing", and no output file is written
+C  ✓  C2: the rebuild is refused naming "page 50: listed twice", and no output file is written
+C  ✓  C3: the rebuild is refused naming "page 121: out of order", and no output file is written
+C  ✓  C4: the rebuild is refused naming "capture page 200:", and no output file is written
+C  ✓  C5: the rebuild is refused naming "capture page 7:", and no output file is written
+D  ✓  D1: the capture is refused: the -wal holds committed frames
+D  ✓  D1: a page capture taken from the file alone would have lost the committed UPDATE
+D  ✓  D1: once at rest, the capture includes the UPDATE (the file changed at the checkpoint)
+D  ✓  D2: the capture is refused: a hot -journal exists
+D  ✓  D2: the file alone holds part of an uncommitted transaction; a capture of it would be torn
+D  ✓  D2: after SQLite rolled the hot journal back, the file is byte-identical to its state before the transaction
+
+17 of 17 claims hold
+
+Experiment verdict: MANIFEST OK

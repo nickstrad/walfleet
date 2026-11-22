@@ -1,0 +1,4 @@
+seq,part,moment,wal_bytes,frames,valid_frames,last_commit_frame,mx_frame
+7,B,after the commits,168952,41,41,41,41
+9,B,captured while the transaction is open,247232,60,60,41,
+15,C,after ROLLBACK,247232,60,60,41,41

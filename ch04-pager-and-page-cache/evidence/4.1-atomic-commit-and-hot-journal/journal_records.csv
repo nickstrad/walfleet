@@ -1,0 +1,8 @@
+seq,file_offset,page,role,checksum,same_as_pre_step
+1,512,2,b-tree or overflow page,ok,true
+2,4616,1,header and schema root,ok,true
+3,8720,20,b-tree or overflow page,ok,true
+4,12824,3,b-tree or overflow page,ok,true
+5,16928,27,b-tree or overflow page,ok,true
+6,21032,4,b-tree or overflow page,ok,true
+7,25136,26,b-tree or overflow page,ok,true

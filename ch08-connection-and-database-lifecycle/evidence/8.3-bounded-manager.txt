@@ -1,81 +1,219 @@
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
 
-== A. 1000 databases, a seeded stream of 4000 operations, LRU manager with K = 64 ==
-INFO: descriptor limit: soft 1048576, hard 1048576; the unbounded run needs about 3 x 1000
-every database: a copy of recipe step 0 (sha256 7470585af706eb3de499f126d74bdc98396e1e9853ee11643e2e85f61ef0cdb9); a write applies the database's next recipe step (up to 4); a read runs: SELECT count(*), coalesce(sum(balance), 0), (SELECT user_version FROM pragma_user_version) FROM accounts
-stream: seed 1, 50% of operations to the hot 50 databases, 20% writes; connections: recipe settings with cache_size=-256
-each run happens in its own child process, on its own copies of the files, so descriptor and memory baselines are clean
+════════════════════════════════════════════════════════════════════════
+  8.3  Can a bounded connection manager serve many databases at rest?
+════════════════════════════════════════════════════════════════════════
 
-bounded run: capacity 64
-  operations: 4000 (3415 reads, 585 writes); distinct databases touched: 866
-  manager: hits 1198, misses (opens) 2802, evictions 2802 (at rest 2802, not at rest 0), reopens verified against the recorded sha256 1936, refused 0, first opens 866, peak open 64
-  descriptors: 401 samples, peak 192 above the baseline; samples where descriptors != 3 x open connections: 0; after Close: 0
-  reads whose user_version disagreed with the model: 0
-  final files vs the recipe state the model expects: 970 exact bytes, 30 equal except the change counter, 0 wrong
-INFO: bounded peak process-memory growth 22.7 MiB; budget 64 x (2 x 256 KiB cache + 256 KiB) + 32.0 MiB = 80.0 MiB
-INFO: bounded mean read latency: warm (connection already open) 112µs over 1077, cold (open + verify + read) 3.565ms over 2338; stream took 17.251s
-INFO: RESULT bounded peak-fds=192 peak-rss=23764992 budget=83886080 warm-ns=111987 cold-ns=3564824
-check ok: bounded: at every sample the process held exactly 3 descriptors per open connection, at most 192; none after Close
-check ok: bounded: never more than 64 connections open
-check ok: bounded: every eviction left the file at rest, and every reopen matched the sha256 recorded at its eviction
-check ok: bounded: every read saw the model's step, and every final file equals the recipe state for its step
-check ok: bounded: peak process-memory growth stayed within K x (2 x cache budget + 256 KiB) + 32 MiB
+Part A serves a seeded stream of reads and writes over many WAL
+databases twice: through an LRU manager that keeps at most K connections
+open, and through one that never evicts. Each run happens in its own
+child process, on its own copies of the files, so descriptor and memory
+baselines are clean. Part B shows six cases where a closed WAL database
+is not one file at rest, or changes while closed. The settings:
+┌────────────────────────┬──────────────────────────────────────────────────────────────────┐
+│          name          │                              value                               │
+├────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ databases              │ 1000                                                             │
+│ K (bounded capacity)   │ 64                                                               │
+│ operations             │ 4000                                                             │
+│ seed                   │ 1                                                                │
+│ hot databases          │ 50                                                               │
+│ % of operations to hot │ 50                                                               │
+│ % writes               │ 20                                                               │
+│ every database         │ a copy of recipe step 0                                          │
+│ step 0 sha256          │ 7470585af706eb3de499f126d74bdc98396e1e9853ee11643e2e85f61ef0cdb9 │
+│ a write applies        │ the next recipe step of that database, up to step 4              │
+│ connections            │ recipe settings with cache_size=-256                             │
+│ descriptor sample      │ every 10 operations                                              │
+│ memory sample          │ every 100 operations                                             │
+└────────────────────────┴──────────────────────────────────────────────────────────────────┘
+A read runs: SELECT count(*), coalesce(sum(balance), 0), (SELECT user_version FROM pragma_user_version) FROM accounts
 
-unbounded run: capacity 1000
-  operations: 4000 (3415 reads, 585 writes); distinct databases touched: 866
-  manager: hits 3134, misses (opens) 866, evictions 866 (at rest 866, not at rest 0), reopens verified against the recorded sha256 0, refused 0, first opens 866, peak open 866
-  descriptors: 401 samples, peak 2598 above the baseline; samples where descriptors != 3 x open connections: 0; after Close: 0
-  reads whose user_version disagreed with the model: 0
-  final files vs the recipe state the model expects: 880 exact bytes, 120 equal except the change counter, 0 wrong
-INFO: unbounded peak process-memory growth 211.4 MiB; budget 1000 x (2 x 256 KiB cache + 256 KiB) + 32.0 MiB = 782.0 MiB
-INFO: unbounded mean read latency: warm (connection already open) 144µs over 2725, cold (open + verify + read) 1.757ms over 690; stream took 13.082s
-INFO: RESULT unbounded peak-fds=2598 peak-rss=221691904 budget=819986432 warm-ns=143988 cold-ns=1757320
-check ok: unbounded: at every sample the process held exactly 3 descriptors per open connection, at most 2598; none after Close
-check ok: unbounded: never more than 1000 connections open
-check ok: unbounded: every eviction left the file at rest, and every reopen matched the sha256 recorded at its eviction
-check ok: unbounded: every read saw the model's step, and every final file equals the recipe state for its step
+── A. A bounded manager against an unbounded one ───────────────────────
 
-contrast:
-check ok: the unbounded run's peak descriptors exceed the bounded run's limit 3 x K = 192
-check ok: the unbounded run's peak process-memory growth exceeds the bounded run's (SHAPE)
-INFO: peak memory growth bounded 22.7 MiB vs unbounded 211.4 MiB; cold read 3.564824ms vs warm 111.987µs (bounded run)
+A1. The same stream in both runs. The bounded manager opens a database
+    again each time it misses; the unbounded one opens each database once.
+┌───────────┬──────────┬────────────┬───────┬────────┬──────────────┬──────┬────────┬───────────┐
+│   mode    │ capacity │ operations │ reads │ writes │ distinct_dbs │ hits │ misses │ peak_open │
+├───────────┼──────────┼────────────┼───────┼────────┼──────────────┼──────┼────────┼───────────┤
+│ bounded   │ 64       │ 4000       │ 3415  │ 585    │ 866          │ 1198 │ 2802   │ 64        │
+│ unbounded │ 1000     │ 4000       │ 3415  │ 585    │ 866          │ 3134 │ 866    │ 866       │
+└───────────┴──────────┴────────────┴───────┴────────┴──────────────┴──────┴────────┴───────────┘
 
-== B. when a closed WAL database is NOT a single file at rest ==
-B1. another process still has the database open when the manager closes its connection
-    eviction of db-0000: not at rest: -wal holds 90672 bytes: the database file alone may lack committed transactions; -shm exists (32768 bytes): a connection is open or did not close cleanly
-check ok: B1: the manager's close could not checkpoint or delete the WAL (another connection holds a lock), so the file is reported not at rest
-    after the other process closed: at rest, 90112 bytes, sha256 6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924
-    db-0000.db: step 1 (exact bytes)
-check ok: B1: the last connection to close (the other process) checkpointed and deleted the WAL: at rest, holding step 1
-B2. a statement left open (rows not closed) when the handle is released
-    eviction of db-0001: not at rest: 1 connection(s) still open in this process: a statement, transaction or *sql.Conn was not closed, so database/sql closes the connection only when it is returned
-check ok: B2: database/sql cannot close a connection that a statement still uses, so DB.Close returned and the file is not at rest
-    after rows.Close: at rest, 90112 bytes, sha256 6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924
-    db-0001.db: step 1 (exact bytes)
-check ok: B2: closing the rows let the connection close: at rest, holding step 1
-B3. the process that wrote is killed before it closes
-    after the kill: not at rest: -wal holds 90672 bytes: the database file alone may lack committed transactions; -shm exists (32768 bytes): a connection is open or did not close cleanly
-check ok: B3: a killed writer leaves a -wal with its committed frames and a -shm
-    naive-copy.db: step 0 (exact bytes)
-check ok: B3: a copy of the database file alone is a valid database WITHOUT the committed step 1 (it is still in the -wal)
-    after one clean open and close: at rest, 90112 bytes, sha256 6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924
-    db-0002.db: step 1 (exact bytes)
-check ok: B3: one clean open and close recovers the WAL, checkpoints it and deletes it: at rest, holding step 1
-B4. SQLITE_FCNTL_PERSIST_WAL is set on the connection
-    eviction of db-0003: not at rest: -wal holds 90672 bytes: the database file alone may lack committed transactions; -shm exists (32768 bytes): a connection is open or did not close cleanly
-check ok: B4: with PERSIST_WAL the close checkpoints but keeps the -wal (with its bytes) and the -shm, so the manager refuses to call it at rest
-    persist-wal-copy.db: step 1 (exact bytes)
-check ok: B4: the refusal is conservative here: the close did checkpoint, so the database file alone already holds step 1; a rule based on which files exist cannot see that
-B5. the file is renamed while its connection is open
-    eviction of db-0004: not at rest: database file missing
-    left at the old name: -wal 90672 bytes
-check ok: B5: the manager reports the database file missing at its path
-check ok: B5: a -wal with content stays behind at the old name
-    moved.db: step 0 (exact bytes)
-check ok: B5: the moved file looks at rest but holds step 0: close saw the file had moved, skipped the checkpoint, and step 1 stayed in the -wal under the old name
-B6. the file changes while it is closed
-    eviction of db-0005: at rest, 90112 bytes, sha256 6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924
-    reopen: connmgr: db-0005 changed while closed: recorded sha256 6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924, file now has sha256 69490a2dc9c1980f70afed4f5830799677937b011bde64c3110f823273389a06
-check ok: B6: a write made outside the manager while the file was closed changes its sha256, and the manager refuses to reopen it
+A2. Every eviction closed the connection and found the file at rest; the
+    manager recorded its sha256 and checked it at the next open. Every
+    open is either a first open or a verified reopen, and none was refused.
+    (unclean_evictions lists any eviction that was not at rest.)
+┌───────────┬───────────┬─────────┬─────────────┬───────┬─────────────┬──────────┬─────────┬──────────────┐
+│   mode    │ evictions │ at_rest │ not_at_rest │ opens │ first_opens │ verified │ refused │ opens_add_up │
+├───────────┼───────────┼─────────┼─────────────┼───────┼─────────────┼──────────┼─────────┼──────────────┤
+│ bounded   │ 2802      │ 2802    │ 0           │ 2802  │ 866         │ 1936     │ 0       │ true         │
+│ unbounded │ 866       │ 866     │ 0           │ 866   │ 866         │ 0        │ 0       │ true         │
+└───────────┴───────────┴─────────┴─────────────┴───────┴─────────────┴──────────┴─────────┴──────────────┘
 
-all checks passed
+A3. Descriptors, sampled between operations: always exactly 3 per open
+    connection (.db, -wal, -shm), so the peak is 3 x peak_open, and 0
+    after Close. The bounded run never holds more than 3 x K.
+┌───────────┬────────────┬──────────┬───────────────────┬───────────────┬─────────────────┐
+│   mode    │ fd_samples │ peak_fds │ three_x_peak_open │ fd_mismatches │ fds_after_close │
+├───────────┼────────────┼──────────┼───────────────────┼───────────────┼─────────────────┤
+│ bounded   │ 401        │ 192      │ 192               │ 0             │ 0               │
+│ unbounded │ 401        │ 2598     │ 2598              │ 0             │ 0               │
+└───────────┴────────────┴──────────┴───────────────────┴───────────────┴─────────────────┘
+
+A4. Correctness. Every read saw the step the model expects, and every
+    file, once closed, equals the recipe state of its step: exactly, or
+    except the change counter (several steps applied on one connection).
+┌───────────┬─────────────────┬─────────────┬──────────────────────┬─────────────┐
+│   mode    │ read_mismatches │ files_exact │ equal_except_counter │ files_wrong │
+├───────────┼─────────────────┼─────────────┼──────────────────────┼─────────────┤
+│ bounded   │ 0               │ 970         │ 30                   │ 0           │
+│ unbounded │ 0               │ 880         │ 120                  │ 0           │
+└───────────┴─────────────────┴─────────────┴──────────────────────┴─────────────┘
+
+A5. The cost the bound saves and the price it pays. Peak descriptors
+    against the bounded limit 3 x K; reads served by an open connection
+    (warm) or by an open, verify and read (cold). The memory budget is
+    capacity x (2 x cache budget + 256 KiB) + 32 MiB; the measured peak
+    memory and the read latencies vary between machines: see info.sql.
+┌───────────┬──────────┬───────────┬────────────┬────────────┬───────────────────┐
+│   mode    │ peak_fds │ three_x_k │ warm_reads │ cold_reads │ memory_budget_mib │
+├───────────┼──────────┼───────────┼────────────┼────────────┼───────────────────┤
+│ bounded   │ 192      │ 192       │ 1077       │ 2338       │ 80.0              │
+│ unbounded │ 2598     │ 192       │ 2725       │ 690        │ 782.0             │
+└───────────┴──────────┴───────────┴────────────┴────────────┴───────────────────┘
+
+── B. When a closed WAL database is NOT a single file at rest ───────────
+
+Six databases, each a copy of step 0, served by a manager with K = 4.
+Each case writes step 1 and then closes the connection in a way that
+goes wrong. A row is the at-rest check of a file at a moment, with the
+problems it found indented under it, or the recipe step the file holds.
+
+B1. Another process still has the database open when the manager closes
+    its connection. The close cannot take the lock it needs to checkpoint,
+    so -wal and -shm stay. The last connection to close (the other
+    process) checkpoints and deletes them.
+┌────────────────────────────────┬────────────┬──────────────────────────────────────────────┐
+│             moment             │    file    │                    result                    │
+├────────────────────────────────┼────────────┼──────────────────────────────────────────────┤
+│ eviction by the manager        │ db-0000.db │ not at rest:                                 │
+│                                │            │   -wal holds 90672 bytes                     │
+│                                │            │   -shm exists (32768 bytes)                  │
+│ after the other process closed │ db-0000.db │ at rest, 90112 bytes, sha256 6d8cfc77d5f5... │
+│ recipe step held by the file   │ db-0000.db │ step 1 (exact bytes)                         │
+└────────────────────────────────┴────────────┴──────────────────────────────────────────────┘
+
+B2. A statement is left open (rows not closed) when the handle is
+    released. database/sql cannot close a connection a statement still
+    uses, so DB.Close returns and the connection stays open until rows.Close.
+┌──────────────────────────────┬────────────┬──────────────────────────────────────────────┐
+│            moment            │    file    │                    result                    │
+├──────────────────────────────┼────────────┼──────────────────────────────────────────────┤
+│ eviction by the manager      │ db-0001.db │ not at rest:                                 │
+│                              │            │   1 connection(s) still open in this process │
+│ after rows.Close             │ db-0001.db │ at rest, 90112 bytes, sha256 6d8cfc77d5f5... │
+│ recipe step held by the file │ db-0001.db │ step 1 (exact bytes)                         │
+└──────────────────────────────┴────────────┴──────────────────────────────────────────────┘
+
+B3. The process that wrote is killed before it closes. Its committed
+    step 1 is only in the -wal: a copy of the database file alone is a
+    valid database that holds step 0. One clean open and close recovers
+    the WAL, checkpoints it and deletes it.
+┌────────────────────────────────┬───────────────┬──────────────────────────────────────────────┐
+│             moment             │     file      │                    result                    │
+├────────────────────────────────┼───────────────┼──────────────────────────────────────────────┤
+│ after the kill                 │ db-0002.db    │ not at rest:                                 │
+│                                │               │   -wal holds 90672 bytes                     │
+│                                │               │   -shm exists (32768 bytes)                  │
+│ recipe step held by the file   │ naive-copy.db │ step 0 (exact bytes)                         │
+│ after one clean open and close │ db-0002.db    │ at rest, 90112 bytes, sha256 6d8cfc77d5f5... │
+│ recipe step held by the file   │ db-0002.db    │ step 1 (exact bytes)                         │
+└────────────────────────────────┴───────────────┴──────────────────────────────────────────────┘
+
+B4. SQLITE_FCNTL_PERSIST_WAL is set on the connection. The close
+    checkpoints but keeps -wal (with its bytes) and -shm, so the manager
+    refuses to call the file at rest. The refusal is conservative here: a
+    copy of the database file alone already holds step 1, but a rule based
+    on which files exist cannot see that.
+┌──────────────────────────────┬─────────────────────┬─────────────────────────────┐
+│            moment            │        file         │           result            │
+├──────────────────────────────┼─────────────────────┼─────────────────────────────┤
+│ eviction by the manager      │ db-0003.db          │ not at rest:                │
+│                              │                     │   -wal holds 90672 bytes    │
+│                              │                     │   -shm exists (32768 bytes) │
+│ recipe step held by the file │ persist-wal-copy.db │ step 1 (exact bytes)        │
+└──────────────────────────────┴─────────────────────┴─────────────────────────────┘
+
+B5. The file is renamed while its connection is open. Close sees that
+    the file has moved and skips the checkpoint: step 1 stays in a -wal
+    under the old name, and moved.db looks at rest but holds step 0.
+┌──────────────────────────────┬────────────────┬─────────────────────────┐
+│            moment            │      file      │         result          │
+├──────────────────────────────┼────────────────┼─────────────────────────┤
+│ eviction by the manager      │ db-0004.db     │ not at rest:            │
+│                              │                │   database file missing │
+│ left at the old name         │ db-0004.db-wal │ 90672 bytes             │
+│ recipe step held by the file │ moved.db       │ step 0 (exact bytes)    │
+└──────────────────────────────┴────────────────┴─────────────────────────┘
+
+B6. The file changes while it is closed: another program applies the
+    next step. Its sha256 no longer matches the one recorded at eviction,
+    so the manager refuses to reopen it.
+┌──────────────────────────────────────┬────────────┬───────────────────────────────────────────────┐
+│                moment                │    file    │                    result                     │
+├──────────────────────────────────────┼────────────┼───────────────────────────────────────────────┤
+│ eviction by the manager              │ db-0005.db │ at rest, 90112 bytes, sha256 6d8cfc77d5f5...  │
+│ reopen refused: changed while closed │ db-0005.db │ at rest, 118784 bytes, sha256 69490a2dc9c1... │
+└──────────────────────────────────────┴────────────┴───────────────────────────────────────────────┘
+
+The error the reopen returned:
+  connmgr: db-0005 changed while closed: recorded sha256 6d8cfc77d5f5..., file now has sha256 69490a2dc9c1...
+
+B7. What each problem means:
+  -wal holds 90672 bytes: the database file alone may lack committed transactions
+  -shm exists (32768 bytes): a connection is open or did not close cleanly
+  1 connection(s) still open in this process: a statement, transaction or *sql.Conn was not closed, so database/sql closes the connection only when it is returned
+  database file missing
+
+B8. The sha256 values above, in full. Every file that holds step 1 at
+    rest has the same bytes; the second value is db-0005.db after the
+    write made outside the manager.
+┌──────────────────────────────────────────────────────────────────┬─────────────┬──────────────┐
+│                              sha256                              │    cases    │ observations │
+├──────────────────────────────────────────────────────────────────┼─────────────┼──────────────┤
+│ 6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924 │ B1 B2 B3 B6 │ 4            │
+│ 69490a2dc9c1980f70afed4f5830799677937b011bde64c3110f823273389a06 │ B6          │ 1            │
+└──────────────────────────────────────────────────────────────────┴─────────────┴──────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  bounded: at every sample the process held exactly 3 descriptors per open connection, at most 192; none after Close
+A  ✓  bounded: never more than 64 connections open
+A  ✓  bounded: every eviction left the file at rest, and every reopen matched the sha256 recorded at its eviction
+A  ✓  bounded: every read saw the model's step, and every final file equals the recipe state for its step
+A  ✓  bounded: peak process-memory growth stayed within K x (2 x cache budget + 256 KiB) + 32 MiB
+A  ✓  unbounded: at every sample the process held exactly 3 descriptors per open connection, at most 2598; none after Close
+A  ✓  unbounded: never more than 1000 connections open
+A  ✓  unbounded: every eviction left the file at rest, and every reopen matched the sha256 recorded at its eviction
+A  ✓  unbounded: every read saw the model's step, and every final file equals the recipe state for its step
+A  ✓  the unbounded run's peak descriptors exceed the bounded run's limit 3 x K = 192
+A  ✓  the unbounded run's peak process-memory growth exceeds the bounded run's (SHAPE)
+B  ✓  B1: the manager's close could not checkpoint or delete the WAL (another connection holds a lock), so the file is reported not at rest
+B  ✓  B1: the last connection to close (the other process) checkpointed and deleted the WAL: at rest, holding step 1
+B  ✓  B2: database/sql cannot close a connection that a statement still uses, so DB.Close returned and the file is not at rest
+B  ✓  B2: closing the rows let the connection close: at rest, holding step 1
+B  ✓  B3: a killed writer leaves a -wal with its committed frames and a -shm
+B  ✓  B3: a copy of the database file alone is a valid database WITHOUT the committed step 1 (it is still in the -wal)
+B  ✓  B3: one clean open and close recovers the WAL, checkpoints it and deletes it: at rest, holding step 1
+B  ✓  B4: with PERSIST_WAL the close checkpoints but keeps the -wal (with its bytes) and the -shm, so the manager refuses to call it at rest
+B  ✓  B4: the refusal is conservative here: the close did checkpoint, so the database file alone already holds step 1; a rule based on which files exist cannot see that
+B  ✓  B5: the manager reports the database file missing at its path
+B  ✓  B5: a -wal with content stays behind at the old name
+B  ✓  B5: the moved file looks at rest but holds step 0: close saw the file had moved, skipped the checkpoint, and step 1 stayed in the -wal under the old name
+B  ✓  B6: a write made outside the manager while the file was closed changes its sha256, and the manager refuses to reopen it
+
+24 of 24 claims hold
+
+Experiment verdict: BOUNDED MANAGER OK

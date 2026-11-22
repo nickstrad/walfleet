@@ -1,0 +1,11 @@
+id,page,bytes_differing,bytes_outside_unused,kind
+4b,24,357,0,"b-tree page, unallocated space and freeblocks"
+4b,28,1207,0,"b-tree page, unallocated space and freeblocks"
+4d,29,4079,0,freelist leaf page
+4d,36,4067,0,"freelist trunk page, bytes after the leaf list"
+4d,37,4078,0,freelist leaf page
+7a,1,2,2,"b-tree page, unallocated space and freeblocks"
+7a,29,4092,0,freelist leaf page
+7a,37,4093,0,freelist leaf page
+7b,29,4092,0,freelist leaf page
+7b,37,4093,0,freelist leaf page

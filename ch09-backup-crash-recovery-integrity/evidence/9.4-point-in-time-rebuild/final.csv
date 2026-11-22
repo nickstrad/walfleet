@@ -1,0 +1,3 @@
+file,position,integrity_check,recipe_step,exact_bytes
+restored.db,18,ok,20,true
+the live database after every process closed,,,20,true

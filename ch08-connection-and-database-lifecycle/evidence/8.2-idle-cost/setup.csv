@@ -1,0 +1,15 @@
+seq,name,value
+1,descriptors counted from,/proc/self/fd
+2,process memory from,/proc/self/status
+3,connections,200
+4,every file,a copy of recipe step 3
+5,file bytes,159744
+6,file pages,39
+7,sqlitex default synchronous,FULL
+8,sqlitex default foreign_keys,ON
+9,sqlitex default secure_delete,OFF
+10,sqlitex default cache_size,-2000
+11,sqlitex default wal_autocheckpoint,1000
+12,sqlitex default busy_timeout,5000ms
+13,read per connection,"SELECT count(*), sum(length(body)) FROM documents"
+14,prepared statement kept open,"SELECT name, balance FROM accounts WHERE id = ?"

@@ -1,0 +1,20 @@
+seq,field,ours,pragma,dbinfo
+1,page size,4096,4096,4096
+2,write version,2,,2
+3,read version,2,,2
+4,reserved bytes,0,,0
+5,file change counter,32,,32
+6,page count,270,270,270
+7,freelist page count,3,3,3
+8,schema cookie,4,4,4
+9,schema format,4,,4
+10,default cache size,0,,0
+11,auto_vacuum,NONE,NONE,
+12,largest root page,0,,0
+13,incremental vacuum,0,,0
+14,text encoding,UTF-8,UTF-8,
+15,text encoding number,1,,1
+16,user version,30,30,30
+17,application id,1397836120,1397836120,1397836120
+18,version-valid-for,32,,
+19,SQLite version number,3053004,,3053004

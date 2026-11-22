@@ -12,29 +12,22 @@
 
 > **How to run the experiments**
 >
-> - **Prerequisites:** Go 1.26 (`go.mod` specifies `go 1.26.0`).
-> - **Fetch the pinned SQLite source tree** into `_src/sqlite-3.53.4` (or point `SQLITE_SRC` at an existing checkout of tag `version-3.53.4`):
+> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to start the runner from the host. Build the `lab` image once, from the repository root:
 >   ```text
->   go run ./cmd/course fetch-source
+>   docker compose build lab
 >   ```
-> - **Build the pinned C tools** (optional for Chapter 6 — Experiments 6.1–6.4 use pure Go child processes; the pinned `sqlite3` CLI is needed only if you run the cross-build adversarial scripts under `agent_work/ch06/adversarial/`):
+>   The image already contains the pinned SQLite `3.53.4` source tree, the C tools (`sqlite3`, `showwal`, `dbhash`; Experiments 6.1–6.4 use pure Go child processes, and the `sqlite3` CLI is needed only by the cross-build adversarial scripts under `agent_work/ch06/adversarial/`), `strace`, and the DuckDB CLI that presents the results.
+> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment in it, and prints its walkthrough; add `-i` (`go run ./cmd/course run -i 6.1`) to stay in DuckDB afterwards with the tables loaded:
 >   ```text
->   go run ./cmd/course build-tools
+>   go run ./cmd/course run 6.1
+>   go run ./cmd/course run 6.2
+>   go run ./cmd/course run 6.3
+>   go run ./cmd/course run 6.4
 >   ```
-> - **Run an experiment** from the repository root:
->   ```text
->   go run ./ch06-locking-and-concurrency/experiments/6.1-locks-belong-to-the-process
->   go run ./ch06-locking-and-concurrency/experiments/6.2-busy-rules
->   go run ./ch06-locking-and-concurrency/experiments/6.3-torn-copy
->   go run ./ch06-locking-and-concurrency/experiments/6.4-live-snapshot
->   ```
->   Experiment 6.4 also accepts `-hold read` (the default, stored as evidence) or `-hold immediate`. Scratch databases are written under `_work/6.1/` through `_work/6.4/`, which are git-ignored and safe to delete.
-> - **Linux only (Experiment 6.1 `/proc/locks` view) and the macOS route:** Experiment 6.1's `/proc/locks` kernel lock listing (and its 11 `/proc/locks:` checks) is **Linux only**. On macOS, Experiment 6.1 prints a `LINUX-ONLY:` notice, skips `/proc/locks`, and still runs the portable `fcntl(F_GETLK)` probe and all 32 remaining checks. To run the full `/proc/locks` listing from macOS, use the Linux container:
->   ```text
->   docker compose run --rm lab go run ./ch06-locking-and-concurrency/experiments/6.1-locks-belong-to-the-process
->   ```
->   Experiments 6.2, 6.3, and 6.4 use nothing Linux-specific and run directly on macOS or inside `docker compose run --rm lab`.
-> - **Measurement environment:** All captured evidence in this chapter was measured on Linux (`linux/amd64`, Go 1.26.8, ext4) and verified identically (apart from `INFO:` PID lines) inside the Debian `lab` container. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only, not run.
+>   Experiment 6.4 also accepts `-hold read` (the default, stored as evidence) or `-hold immediate`. `course run` cannot pass experiment flags, so run the variant directly in the container: `docker compose run --rm lab go run ./ch06-locking-and-concurrency/experiments/6.4-live-snapshot -hold immediate`. In the container, scratch databases and tables are written under `/work/6.1/` through `/work/6.4/` (the `lab-work` volume); run directly, under `_work/6.1/` through `_work/6.4/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch06-locking-and-concurrency/experiments/6.2-busy-rules`). Run this way it prints only its verdict and leaves its tables under `_work/6.2/results/`.
+> - **Linux only (Experiment 6.1 `/proc/locks` view) and macOS:** Experiment 6.1's `/proc/locks` kernel lock listing (and its 11 `/proc/locks:` checks) is **Linux only**; `course run` runs it in full in the Linux `lab` container. Run directly on macOS, Experiment 6.1 prints a `LINUX-ONLY:` notice, skips `/proc/locks`, and still runs the portable `fcntl(F_GETLK)` probe and all 32 remaining checks. Experiments 6.2, 6.3, and 6.4 use nothing Linux-specific and also run directly on macOS.
+> - **Measurement environment:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). The checked values are identical to the earlier `linux/amd64` capture; process ids and the work directory differ between runs and are not part of the stored evidence.
 
 ---
 
@@ -205,14 +198,11 @@ Behavior differences across SQLite releases relevant to locking (sources: [`docs
 
 - **Claim:** SQLite's locks are POSIX byte-range locks owned by the process on a specific file inode — `.db` in rollback mode (`RESERVED` byte `1073741825`, `SHARED` bytes `1073741826-1073742335`) and `-shm` in WAL mode (`WAL_WRITE_LOCK` byte `120`, `WAL_READ_LOCK(i)` bytes `123-127`, `DMS` byte `128`). Closing any file descriptor to a file inside the holding process releases all of that process's locks on *that* file (so in WAL mode, a stray close of `.db` leaves writer exclusion intact, whereas a stray close of `-shm` breaks it). A second writer refused before the stray close is admitted after it while the first writer still believes its transaction is intact, and committing both loses a transaction: in rollback mode (Part A) the contender's `SQLITE_OK` commit is silently lost while the holder gets `SQLITE_IOERR_DELETE_NOENT` (`5898`) and persists; in WAL mode the outcome depends on state — `SQLITE_PROTOCOL` (`15`) after ~10 s on an empty WAL (Part B), or both commits returning `SQLITE_OK` with the contender's commit silently lost when uncheckpointed frames already exist in `-wal` (Part C) or when the contender closes and exits first (Part D).
 - **Why kept:** This is the hazard a Go platform is most likely to hit by accident (hashing, stat-by-open, or copying a file it also has open).
-- **Evidence form:** `EXACT` (all lines except `INFO:` lines).
-- **Linux only (partial):** The `/proc/locks` listing and its 11 `/proc/locks:` checks run on Linux only; the `fcntl(F_GETLK)` probe and all 32 behavioral checks run on both Linux and macOS. On macOS, run the full Linux version with:
+- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
+- **Linux only (partial):** The `/proc/locks` listing and its 11 `/proc/locks:` checks run on Linux only; the `fcntl(F_GETLK)` probe and all 32 behavioral checks run on both Linux and macOS. `course run` runs the full Linux version in the `lab` container.
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  docker compose run --rm lab go run ./ch06-locking-and-concurrency/experiments/6.1-locks-belong-to-the-process
-  ```
-- **Run command:**
-  ```text
-  go run ./ch06-locking-and-concurrency/experiments/6.1-locks-belong-to-the-process
+  go run ./cmd/course run 6.1
   ```
 
 <!-- include: experiments/6.1-locks-belong-to-the-process/main.go -->
@@ -228,9 +218,13 @@ Behavior differences across SQLite releases relevant to locking (sources: [`docs
 // outcomes after a stray close of -shm (SQLITE_PROTOCOL on an empty WAL,
 // silent overwrite on an active WAL, and silent loss when the contender exits
 // first and deletes -wal/-shm).
+//
+// It prints only its verdict. The steps, lock states and outcomes go to CSV
+// tables that report.sql presents: go run ./cmd/course run 6.1
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -239,8 +233,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strings"
 
 	"github.com/nickstrad/walfleet/internal/procs"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/trace"
 )
@@ -249,11 +246,132 @@ const packagePath = "ch06-locking-and-concurrency/experiments/6.1-locks-belong-t
 
 const rowsQuery = "SELECT count(*) || ' row(s): ' || coalesce(group_concat(who, ','), '') FROM (SELECT who FROM lab ORDER BY id)"
 
-func prepare(ctx context.Context, lab *procs.Lab, dir, journal string) (string, *procs.Child, *procs.Child) {
+// Every step, lock probe and outcome goes to a CSV table in <work dir>/results/;
+// part labels the rows written while a part runs.
+var (
+	set     *results.Set
+	part    string
+	viewSeq int
+	tables  struct {
+		steps, lockViews, lockProbes, procLocks, finalState, files, infoRun, infoProcesses *results.Table
+	}
+)
+
+func openTables() {
+	tables.steps = set.Table("steps", "part", "step", "process", "action", "result", "code", "value")
+	tables.lockViews = set.Table("lock_views", "seq", "part", "after_step", "file", "proc_locks_listed", "proc_locks")
+	tables.lockProbes = set.Table("lock_probes", "part", "after_step", "file", "lock", "first_byte", "last_byte", "state", "holder")
+	tables.procLocks = set.Table("proc_locks", "part", "after_step", "file", "process", "class", "type", "bytes", "lock")
+	tables.finalState = set.Table("final_state", "part", "integrity", "contents")
+	tables.files = set.Table("files", "seq", "part", "moment", "file", "state")
+	tables.infoRun = set.Table("info_run", "work_dir", "goos")
+	tables.infoProcesses = set.Table("info_processes", "part", "process", "pid")
+}
+
+// recorder is a procs.Lab that writes each step, lock view and claim to the
+// tables instead of printing them.
+type recorder struct{ *procs.Lab }
+
+func newRecorder() *recorder {
+	lab := procs.NewLab(os.Stdout)
+	lab.Script.Out = nil
+	return &recorder{lab}
+}
+
+func (l *recorder) Do(child *procs.Child, action string, args ...string) procs.Result {
+	return l.step(child, action, args, l.Lab.Do(child, action, args...))
+}
+
+func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
+	return l.step(child, action, args, l.Lab.Must(child, action, args...))
+}
+
+func (l *recorder) step(child *procs.Child, action string, args []string, r procs.Result) procs.Result {
+	value := r.Value
+	if r.Code == procs.CodeNotSQLite {
+		value = r.Error
+	}
+	tables.steps.Row(part, r.Step, child.Name, procs.ActionText(action, args), r.CodeName(), r.Code, value)
+	return r
+}
+
+func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
+
+// Locks probes ranges on path from the parent (fcntl F_GETLK) and, on Linux,
+// lists the children's /proc/locks entries for path.
+func (l *recorder) Locks(file, path string, ranges []procs.LockRange) procs.LockView {
+	states, err := procs.ProbeRanges(path, ranges)
+	if err != nil {
+		l.Fatal("probe locks", err)
+	}
+	step := l.Script.Step()
+	for _, s := range states {
+		// F_GETLK names one arbitrary holder of a shared read lock, so only a
+		// write lock has a holder worth naming.
+		var holder any
+		if s.Holder.Held && s.Holder.Write {
+			holder = l.PidName(s.Holder.Pid)
+		}
+		tables.lockProbes.Row(part, step, file, s.Range.Name, s.Range.Start, s.Range.Start+s.Range.Length-1, s.Holder.Kind(), holder)
+	}
+	view := procs.LockView{Ranges: states}
+	if procs.ProcLocksSupported {
+		view.Proc = l.procLocks(file, path, ranges, step)
+		view.ProcListed = true
+	}
+	viewSeq++
+	tables.lockViews.Row(viewSeq, part, step, file, view.ProcListed, len(view.Proc))
+	return view
+}
+
+func (l *recorder) procLocks(file, path string, ranges []procs.LockRange, step int) []procs.ProcLock {
+	inode, err := procs.FileInode(path)
+	if err != nil {
+		l.Fatal("inode", err)
+	}
+	all, err := procs.ReadProcLocks()
+	if err != nil {
+		l.Fatal(procs.ProcLocksPath, err)
+	}
+	names := map[int]string{}
+	pids := map[int]bool{}
+	for _, child := range l.Script.Children() {
+		names[child.Pid] = child.Name
+		pids[child.Pid] = true
+	}
+	mine := procs.FilterProcLocks(all, inode, pids)
+	sorted := slices.SortedFunc(slices.Values(mine), func(a, b procs.ProcLock) int {
+		return cmp.Or(cmp.Compare(names[a.Pid], names[b.Pid]), cmp.Compare(a.Type, b.Type), cmp.Compare(a.Start, b.Start))
+	})
+	for _, lock := range sorted {
+		tables.procLocks.Row(part, step, file, names[lock.Pid], lock.Class, lock.Type, lock.RangeText(), rangeLabel(lock, ranges))
+	}
+	return mine
+}
+
+// rangeLabel names the SQLite lock range a kernel lock covers exactly, or
+// "(A+B)" when the kernel merged adjacent ranges into one lock.
+func rangeLabel(lock procs.ProcLock, ranges []procs.LockRange) string {
+	var covered []string
+	for _, r := range ranges {
+		if lock.Start == r.Start && !lock.ToEOF && lock.Length() == r.Length {
+			return r.Name
+		}
+		if r.Start <= lock.End && lock.Start <= r.Start+r.Length-1 {
+			covered = append(covered, r.Name)
+		}
+	}
+	if len(covered) == 0 {
+		return "(no named range)"
+	}
+	return "(" + strings.Join(covered, "+") + ")"
+}
+
+func prepare(ctx context.Context, lab *recorder, dir, journal string) (string, *procs.Child, *procs.Child) {
 	return prepareIn(ctx, lab, filepath.Join(dir, journal), procs.SQLOptions{JournalMode: journal})
 }
 
-func prepareIn(ctx context.Context, lab *procs.Lab, partDir string, options procs.SQLOptions) (string, *procs.Child, *procs.Child) {
+func prepareIn(ctx context.Context, lab *recorder, partDir string, options procs.SQLOptions) (string, *procs.Child, *procs.Child) {
 	journal := options.JournalMode
 	db := filepath.Join(partDir, "lab.db")
 	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
@@ -265,31 +383,32 @@ func prepareIn(ctx context.Context, lab *procs.Lab, partDir string, options proc
 	options.Path = db
 	holder := lab.SpawnSQL("holder", options)
 	contender := lab.SpawnSQL("contender", options)
-	fmt.Printf("INFO: holder pid %d, contender pid %d\n", holder.Pid, contender.Pid)
+	tables.infoProcesses.Row(part, holder.Name, holder.Pid)
+	tables.infoProcesses.Row(part, contender.Name, contender.Pid)
 	return db, holder, contender
 }
 
-func kernelHolders(lab *procs.Lab, view procs.LockView, rangeName string, want map[int]string, claim string) {
+func kernelHolders(lab *recorder, view procs.LockView, rangeName string, want map[int]string, claim string) {
 	if !view.ProcListed {
 		return
 	}
 	lab.Check(maps.Equal(view.ProcHolders(rangeName), want), claim)
 }
 
-func kernelNone(lab *procs.Lab, view procs.LockView, claim string) {
+func kernelNone(lab *recorder, view procs.LockView, claim string) {
 	if !view.ProcListed {
 		return
 	}
 	lab.Check(len(view.Proc) == 0, claim)
 }
 
-func finalRows(ctx context.Context, lab *procs.Lab, db, journal string) procs.Inspection {
+func finalRows(ctx context.Context, lab *recorder, db, journal string) procs.Inspection {
 	lab.StopChildren()
 	inspection, err := procs.InspectDatabase(ctx, db, journal, rowsQuery)
 	if err != nil {
 		lab.Fatal("inspect", err)
 	}
-	fmt.Printf("after both processes closed: integrity_check %s; %s\n", inspection.Integrity, inspection.Values[0])
+	tables.finalState.Row(part, inspection.Integrity, inspection.Values[0])
 	return inspection
 }
 
@@ -297,9 +416,8 @@ func finalRows(ctx context.Context, lab *procs.Lab, db, journal string) procs.In
 // the database file drops RESERVED and SHARED, admits a second writer whose
 // COMMIT returns SQLITE_OK, and causes the holder's later COMMIT to overwrite
 // the page and fail with SQLITE_IOERR_DELETE_NOENT (5898, src/os_unix.c:6842-6847).
-func rollbackMode(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Println("== A. rollback mode (journal_mode=delete): the write lock is a byte-range lock on the database file")
+func rollbackMode(ctx context.Context, lab *recorder, dir string) {
+	part = "A"
 	db, holder, contender := prepare(ctx, lab, dir, sqlitex.JournalDelete)
 	ranges := procs.DatabaseLockRanges()
 	lab.Must(holder, "begin", "immediate")
@@ -339,9 +457,8 @@ func rollbackMode(ctx context.Context, lab *procs.Lab, dir string) {
 // -shm drops all -shm locks, admits the contender, and sends the holder's
 // COMMIT (on WAL_READ_LOCK(0)) into walRestartLog -> walTryBeginRead retries
 // until SQLITE_PROTOCOL (15, src/wal.c:2963, 3053-3056, 3261-3265, 3875-3915).
-func walMode(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Println("== B. WAL mode: the write lock is a byte-range lock on the -shm file")
+func walMode(ctx context.Context, lab *recorder, dir string) {
+	part = "B"
 	db, holder, contender := prepare(ctx, lab, dir, sqlitex.JournalWAL)
 	shm := db + "-shm"
 	shmRanges, dbRanges := procs.ShmLockRanges(), procs.DatabaseLockRanges()
@@ -393,9 +510,8 @@ func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 // runs when pWal->readLock == 0 (src/wal.c:3879), the holder skips the header
 // check after the stray close of -shm, writes its frames over the contender's,
 // and both COMMITs return SQLITE_OK while the contender's row silently vanishes.
-func walWithFrames(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Println("== C. WAL mode, the WAL already holding a commit no checkpoint has copied (wal_autocheckpoint=0): a stray close of -shm only")
+func walWithFrames(ctx context.Context, lab *recorder, dir string) {
+	part = "C"
 	db, holder, contender := prepareIn(ctx, lab, filepath.Join(dir, "wal-with-frames"), procs.SQLOptions{JournalMode: sqlitex.JournalWAL})
 	shm := db + "-shm"
 	shmRanges := procs.ShmLockRanges()
@@ -428,9 +544,8 @@ func walWithFrames(ctx context.Context, lab *procs.Lab, dir string) {
 // sqlite3WalClose (src/wal.c:2507-2571) closes as the last connection and unlinks
 // -wal and -shm; the holder then commits SQLITE_OK into its unlinked -wal fd and
 // only the holder's row survives.
-func walContenderExits(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Println("== D. WAL mode as in B, but the second process closes its connection and exits before the holder commits")
+func walContenderExits(ctx context.Context, lab *recorder, dir string) {
+	part = "D"
 	db, holder, contender := prepareIn(ctx, lab, filepath.Join(dir, "wal-contender-exits"), procs.SQLOptions{JournalMode: sqlitex.JournalWAL})
 	lab.Must(holder, "begin", "immediate")
 	lab.Must(holder, "exec", "INSERT INTO lab VALUES (1, 'holder')")
@@ -441,13 +556,13 @@ func walContenderExits(ctx context.Context, lab *procs.Lab, dir string) {
 	if err := contender.Stop(); err != nil {
 		lab.Fatal("stop contender", err)
 	}
-	fmt.Printf("contender closed its connection and exited cleanly; then %s is %s and %s is %s\n",
-		filepath.Base(db)+"-wal", presence(db+"-wal"), filepath.Base(db)+"-shm", presence(db+"-shm"))
+	tables.files.Row(1, part, "after the contender exited", filepath.Base(db)+"-wal", presence(db+"-wal"))
+	tables.files.Row(2, part, "after the contender exited", filepath.Base(db)+"-shm", presence(db+"-shm"))
 	lab.Check(presence(db+"-wal") == "gone" && presence(db+"-shm") == "gone",
 		"seeing no other process's locks, the second process closed as the last connection and deleted -wal and -shm")
 	holderCommit := lab.Do(holder, "commit")
 	lab.Check(holderCommit.OK(), "the holder's COMMIT returns SQLITE_OK")
-	fmt.Printf("after the holder's commit: %s is %s\n", filepath.Base(db)+"-wal", presence(db+"-wal"))
+	tables.files.Row(3, part, "after the holder's commit", filepath.Base(db)+"-wal", presence(db+"-wal"))
 	lab.Check(presence(db+"-wal") == "gone", "no -wal file exists under that name: the holder wrote its commit into the deleted file it still had open")
 	inspection := finalRows(ctx, lab, db, sqlitex.JournalWAL)
 	lab.Check(inspection.Integrity == "ok" && inspection.Values[0] == "1 row(s): holder",
@@ -486,223 +601,509 @@ func main() {
 	if !procs.ProcLocksSupported {
 		trace.PrintLinuxOnly("the /proc/locks listing (the fcntl F_GETLK probe and every behavioural check still run)", packagePath)
 	}
-	lab := procs.NewLab(os.Stdout)
+	set = results.MustOpen(dir)
+	openTables()
+	tables.infoRun.Row(sqlitex.DisplayPath(dir), runtime.GOOS)
+	lab := newRecorder()
 	rollbackMode(ctx, lab, dir)
 	walMode(ctx, lab, dir)
 	walWithFrames(ctx, lab, dir)
 	walContenderExits(ctx, lab, dir)
-	lab.Report("LOCKS BELONG TO THE PROCESS")
+	set.Finish("LOCKS BELONG TO THE PROCESS")
 }
 ```
 
-Captured output (`evidence/6.1-locks-belong-to-the-process.txt`, measured on Linux):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/6.1-locks-belong-to-the-process/report.sql -->
+```sql
+-- Walkthrough of experiment 6.1. Run it with:
+--   go run ./cmd/course run 6.1        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   steps          one statement or action one child process ran, numbered across all parts
+--   lock_views     one look at the locks on one file, taken after a step
+--   lock_probes    one named lock range in one look, probed by the parent with fcntl F_GETLK
+--   proc_locks     one /proc/locks entry of a child for that file in one look (Linux only)
+--   final_state    one part: the file after both processes closed
+--   files          part D: whether -wal and -shm exist at a moment
+--   checks         every claim the experiment asserted (the runner lists it last)
+-- info_run and info_processes (work dir, GOOS, pids) are shown by info.sql.
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  6.1  Locks belong to the process'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'Two child processes, holder and contender, open the same database. The'
+.print 'holder starts a write transaction, then opens and closes the database file'
+.print 'or -shm with a plain os.Open + Close (a "stray close"). POSIX locks belong'
+.print 'to the process and the inode, so that close drops every lock the holder'
+.print 'has on that file, while SQLite still believes it holds them.'
+.print
+.print 'The parent holds no connection. It probes each lock range with fcntl F_GETLK'
+.print 'and, on Linux, reads /proc/locks. F_GETLK names a single holder only for a'
+.print 'write lock; /proc/locks lists every holder. Where /proc/locks does not'
+.print 'exist (not Linux), the experiment prints LINUX-ONLY, skips that listing and'
+.print 'its claims, and with_proc_locks below is 0.'
+
+SELECT count(*) AS looks, count(*) FILTER (proc_locks_listed) AS with_proc_locks FROM lock_views ORDER BY looks;
+
+.print
+.print 'How each part ended: what COMMIT told each process, and what the file holds.'
+
+SELECT f.part,
+       x.scenario,
+       (SELECT result FROM steps s WHERE s.part = f.part AND process = 'holder' AND action = 'commit')    AS holder_commit,
+       (SELECT result FROM steps s WHERE s.part = f.part AND process = 'contender' AND action = 'commit') AS contender_commit,
+       f.integrity,
+       f.contents
+FROM final_state f
+JOIN (VALUES ('A', 'rollback mode'),
+             ('B', 'WAL, empty WAL'),
+             ('C', 'WAL holding a commit'),
+             ('D', 'WAL, contender exits first')) x(part, scenario) USING (part)
+ORDER BY f.part;
+
+.print
+.print 'In the transcripts below, ROWS_QUERY stands for'
+.print "  SELECT count(*) || ' row(s): ' || coalesce(group_concat(who, ','), '')"
+.print '  FROM (SELECT who FROM lab ORDER BY id)'
+
+.print
+.print '── A. Rollback mode (journal_mode=delete) ──────────────────────────────'
+.print
+.print 'The write lock is a byte-range lock on the database file.'
+.print
+.print 'A1. The transcript. Step 4 is the stray close; after it the contender is'
+.print "    admitted (step 6) and commits (step 8), and the holder's COMMIT fails."
+
+SELECT step, process, action,
+       result || CASE WHEN code <> 0 THEN ' (' || code || ')' ELSE '' END AS result,
+       value
+FROM steps WHERE part = 'A' ORDER BY step;
+
+.print
+.print 'A2. The database-file locks seen by F_GETLK after steps 2, 4 and 7. After'
+.print "    the stray close (step 4) nothing is locked; then RESERVED is the contender's."
+
+SELECT * EXCLUDE (first_byte) FROM (
+  PIVOT (SELECT lock,
+                CASE WHEN first_byte = last_byte THEN 'byte ' || first_byte
+                     ELSE 'bytes ' || first_byte || '-' || last_byte END AS bytes,
+                first_byte,
+                'after step ' || after_step AS look,
+                CASE state WHEN 'write' THEN 'write: ' || holder WHEN 'read' THEN 'read' ELSE '-' END AS state
+         FROM lock_probes WHERE part = 'A' AND file = 'database file')
+  ON look USING first(state) GROUP BY lock, bytes, first_byte)
+ORDER BY first_byte;
+
+.print
+.print 'A3. The same looks in /proc/locks, which names every holder. After step 4'
+.print '    neither process holds a lock; after step 7 only the contender does.'
+
+SELECT v.after_step, coalesce(p.process, '(none)') AS process, p.type, p.bytes, p.lock
+FROM lock_views v LEFT JOIN proc_locks p USING (part, after_step, file)
+WHERE v.part = 'A' AND v.proc_locks_listed
+ORDER BY v.seq, p.process, p.type;
+
+.print
+.print '── B. WAL mode, empty WAL ──────────────────────────────────────────────'
+.print
+.print 'The write lock is byte 120 of -shm (WAL_WRITE_LOCK). A stray close of the'
+.print 'database file (step 13) leaves it in place; a stray close of -shm (step 15)'
+.print "drops it. The holder's COMMIT then sees the wal-index header changed and"
+.print 'gives up with SQLITE_PROTOCOL: here the holder is told.'
+.print
+.print 'B1. The transcript.'
+
+SELECT step, process, action,
+       result || CASE WHEN code <> 0 THEN ' (' || code || ')' ELSE '' END AS result,
+       value
+FROM steps WHERE part = 'B' ORDER BY step;
+
+.print
+.print "B2. -shm locks seen by F_GETLK. Byte 120 is the holder's write lock until"
+.print '    the stray close of -shm; byte 128 (DMS) stays read-locked by the contender.'
+
+SELECT * EXCLUDE (first_byte) FROM (
+  PIVOT (SELECT lock,
+                CASE WHEN first_byte = last_byte THEN 'byte ' || first_byte
+                     ELSE 'bytes ' || first_byte || '-' || last_byte END AS bytes,
+                first_byte,
+                'after step ' || after_step AS look,
+                CASE state WHEN 'write' THEN 'write: ' || holder WHEN 'read' THEN 'read' ELSE '-' END AS state
+         FROM lock_probes WHERE part = 'B' AND file = '-shm')
+  ON look USING first(state) GROUP BY lock, bytes, first_byte)
+ORDER BY first_byte;
+
+.print
+.print 'B3. Database-file locks seen by F_GETLK. RESERVED stays free: WAL mode does'
+.print '    not use it for writers.'
+
+SELECT * EXCLUDE (first_byte) FROM (
+  PIVOT (SELECT lock,
+                CASE WHEN first_byte = last_byte THEN 'byte ' || first_byte
+                     ELSE 'bytes ' || first_byte || '-' || last_byte END AS bytes,
+                first_byte,
+                'after step ' || after_step AS look,
+                CASE state WHEN 'write' THEN 'write: ' || holder WHEN 'read' THEN 'read' ELSE '-' END AS state
+         FROM lock_probes WHERE part = 'B' AND file = 'database file')
+  ON look USING first(state) GROUP BY lock, bytes, first_byte)
+ORDER BY first_byte;
+
+.print
+.print 'B4. /proc/locks for both files. After the stray close of the database file'
+.print "    (step 13) the holder's SHARED lock is gone; after the stray close of -shm"
+.print "    (step 15) only the contender's DMS read lock is left on -shm."
+
+SELECT v.after_step, v.file, coalesce(p.process, '(none)') AS process, p.type, p.bytes, p.lock
+FROM lock_views v LEFT JOIN proc_locks p USING (part, after_step, file)
+WHERE v.part = 'B' AND v.proc_locks_listed
+ORDER BY v.seq, p.process, p.type, p.bytes;
+
+.print
+.print '── C. WAL mode, the WAL already holding a commit ───────────────────────'
+.print
+.print 'A seed row is committed first and no checkpoint copies it (wal_autocheckpoint=0),'
+.print 'so the holder reads through WAL_READ_LOCK(1), byte 124. Only -shm is closed.'
+.print "Both COMMITs return SQLITE_OK, and the contender's row is gone (step 30)."
+.print
+.print 'C1. The transcript.'
+
+SELECT step, process,
+       CASE WHEN action LIKE 'query SELECT count(*) || %' THEN 'query ROWS_QUERY' ELSE action END AS action,
+       result || CASE WHEN code <> 0 THEN ' (' || code || ')' ELSE '' END AS result,
+       value
+FROM steps WHERE part = 'C' ORDER BY step;
+
+.print
+.print 'C2. -shm locks seen by F_GETLK, before and after the stray close of -shm.'
+
+SELECT * EXCLUDE (first_byte) FROM (
+  PIVOT (SELECT lock,
+                CASE WHEN first_byte = last_byte THEN 'byte ' || first_byte
+                     ELSE 'bytes ' || first_byte || '-' || last_byte END AS bytes,
+                first_byte,
+                'after step ' || after_step AS look,
+                CASE state WHEN 'write' THEN 'write: ' || holder WHEN 'read' THEN 'read' ELSE '-' END AS state
+         FROM lock_probes WHERE part = 'C' AND file = '-shm')
+  ON look USING first(state) GROUP BY lock, bytes, first_byte)
+ORDER BY first_byte;
+
+.print
+.print 'C3. The same looks in /proc/locks.'
+
+SELECT v.after_step, coalesce(p.process, '(none)') AS process, p.type, p.bytes, p.lock
+FROM lock_views v LEFT JOIN proc_locks p USING (part, after_step, file)
+WHERE v.part = 'C' AND v.proc_locks_listed
+ORDER BY v.seq, p.process, p.type, p.bytes;
+
+.print
+.print '── D. WAL mode, the contender exits before the holder commits ──────────'
+.print
+.print 'As in B, the holder closes the database file and -shm. The contender commits,'
+.print 'closes its connection and exits. Seeing no other locks, it closes as the last'
+.print 'connection and deletes -wal and -shm. The holder then commits into the -wal'
+.print 'it still has open, a file that no longer has a name.'
+.print
+.print 'D1. The transcript.'
+
+SELECT step, process, action,
+       result || CASE WHEN code <> 0 THEN ' (' || code || ')' ELSE '' END AS result,
+       value
+FROM steps WHERE part = 'D' ORDER BY step;
+
+.print
+.print 'D2. Whether -wal and -shm exist, after the contender exited and after the'
+.print "    holder's commit."
+
+SELECT moment, file, state FROM files WHERE part = 'D' ORDER BY seq;
+```
+
+`course run` also prints the run-dependent values, which are not part of the stored evidence: the work directory, `GOOS`, and the process ids of the two children in each part.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/6.1-locks-belong-to-the-process/`](evidence/6.1-locks-belong-to-the-process/), and `go run ./cmd/course check evidence ch06` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/6.1-locks-belong-to-the-process.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/6.1, GOOS linux
 
-== A. rollback mode (journal_mode=delete): the write lock is a byte-range lock on the database file
-INFO: holder pid 2185655, contender pid 2185662
-step  1  holder     begin immediate                      -> SQLITE_OK
-step  2  holder     exec INSERT INTO lab VALUES (1, 'holder') -> SQLITE_OK
-  database file locks (fcntl F_GETLK from the parent):
-    PENDING            byte 1073741824  unlocked
-    RESERVED           byte 1073741825  write-locked by holder
-    SHARED             bytes 1073741826-1073742335 read-locked
-  database file locks in /proc/locks:
-    holder     POSIX READ  1073741826-1073742335 SHARED
-    holder     POSIX WRITE 1073741825            RESERVED
-check ok: the holder's open write transaction is a write lock on the RESERVED byte and a read lock on the SHARED range of the database file
-check ok: /proc/locks: the RESERVED byte is write-locked by the holder alone
-check ok: /proc/locks: the SHARED range is read-locked by the holder alone; the contender, with no transaction, holds nothing
-step  3  contender  begin immediate                      -> SQLITE_BUSY (5)
-check ok: a second process is refused the write lock: BEGIN IMMEDIATE returns SQLITE_BUSY (5)
-step  4  holder     stray-close db                       -> SQLITE_OK
-  database file locks (fcntl F_GETLK from the parent):
-    PENDING            byte 1073741824  unlocked
-    RESERVED           byte 1073741825  unlocked
-    SHARED             bytes 1073741826-1073742335 unlocked
-  database file locks in /proc/locks: none
-check ok: after the holder opened and closed the database file with os.Open, none of its locks remain
-check ok: /proc/locks: neither process holds any lock on the database file
-step  5  holder     query SELECT count(*) FROM lab       -> SQLITE_OK 1
-check ok: the holder still sees its uncommitted row: as far as SQLite knows, its write transaction is intact
-step  6  contender  begin immediate                      -> SQLITE_OK
-check ok: the second process is now admitted: BEGIN IMMEDIATE returns SQLITE_OK while the holder's transaction is still open
-step  7  contender  exec INSERT INTO lab VALUES (2, 'contender') -> SQLITE_OK
-  database file locks (fcntl F_GETLK from the parent):
-    PENDING            byte 1073741824  unlocked
-    RESERVED           byte 1073741825  write-locked by contender
-    SHARED             bytes 1073741826-1073742335 read-locked
-  database file locks in /proc/locks:
-    contender  POSIX READ  1073741826-1073742335 SHARED
-    contender  POSIX WRITE 1073741825            RESERVED
-check ok: the RESERVED byte is now write-locked by the second process
-check ok: /proc/locks: the SHARED range is read-locked by the second process only; the holder, mid-transaction, holds no lock at all
-step  8  contender  commit                               -> SQLITE_OK
-check ok: the second process commits: its COMMIT returns SQLITE_OK
-step  9  holder     commit                               -> SQLITE_IOERR_DELETE_NOENT (5898)
-check ok: the holder's COMMIT writes its pages, then fails to delete the rollback journal the other process already deleted: SQLITE_IOERR_DELETE_NOENT (5898)
-after both processes closed: integrity_check ok; 1 row(s): holder
-check ok: the file passes integrity_check but holds only the holder's row: the commit that returned SQLITE_OK is lost
+════════════════════════════════════════════════════════════════════════
+  6.1  Locks belong to the process
+════════════════════════════════════════════════════════════════════════
 
-== B. WAL mode: the write lock is a byte-range lock on the -shm file
-INFO: holder pid 2185684, contender pid 2185691
-step 10  holder     begin immediate                      -> SQLITE_OK
-step 11  holder     exec INSERT INTO lab VALUES (1, 'holder') -> SQLITE_OK
-  -shm locks (fcntl F_GETLK from the parent):
-    WAL_WRITE_LOCK     byte 120         write-locked by holder
-    WAL_CKPT_LOCK      byte 121         unlocked
-    WAL_RECOVER_LOCK   byte 122         unlocked
-    WAL_READ_LOCK(0)   byte 123         read-locked
-    WAL_READ_LOCK(1)   byte 124         unlocked
-    WAL_READ_LOCK(2)   byte 125         unlocked
-    WAL_READ_LOCK(3)   byte 126         unlocked
-    WAL_READ_LOCK(4)   byte 127         unlocked
-    DMS                byte 128         read-locked
-  -shm locks in /proc/locks:
-    contender  POSIX READ  128                   DMS
-    holder     POSIX READ  123                   WAL_READ_LOCK(0)
-    holder     POSIX READ  128                   DMS
-    holder     POSIX WRITE 120                   WAL_WRITE_LOCK
-  database file locks (fcntl F_GETLK from the parent):
-    PENDING            byte 1073741824  unlocked
-    RESERVED           byte 1073741825  unlocked
-    SHARED             bytes 1073741826-1073742335 read-locked
-  database file locks in /proc/locks:
-    contender  POSIX READ  1073741826-1073742335 SHARED
-    holder     POSIX READ  1073741826-1073742335 SHARED
-check ok: the holder's write transaction is a write lock on -shm byte 120 (WAL_WRITE_LOCK), next to its read lock on byte 123 (WAL_READ_LOCK(0))
-check ok: on the database file the SHARED range is read-locked and PENDING and RESERVED are free: WAL mode does not use RESERVED for writers
-check ok: /proc/locks: -shm byte 120 is write-locked by the holder alone
-check ok: /proc/locks: both processes read-lock the DMS byte 128 of -shm
-check ok: /proc/locks: both processes read-lock the SHARED range of the database file
-step 12  contender  begin immediate                      -> SQLITE_BUSY (5)
-check ok: a second process is refused: BEGIN IMMEDIATE returns SQLITE_BUSY (5)
-step 13  holder     stray-close db                       -> SQLITE_OK
-  -shm locks (fcntl F_GETLK from the parent):
-    WAL_WRITE_LOCK     byte 120         write-locked by holder
-    WAL_CKPT_LOCK      byte 121         unlocked
-    WAL_RECOVER_LOCK   byte 122         unlocked
-    WAL_READ_LOCK(0)   byte 123         read-locked
-    WAL_READ_LOCK(1)   byte 124         unlocked
-    WAL_READ_LOCK(2)   byte 125         unlocked
-    WAL_READ_LOCK(3)   byte 126         unlocked
-    WAL_READ_LOCK(4)   byte 127         unlocked
-    DMS                byte 128         read-locked
-  -shm locks in /proc/locks:
-    contender  POSIX READ  128                   DMS
-    holder     POSIX READ  123                   WAL_READ_LOCK(0)
-    holder     POSIX READ  128                   DMS
-    holder     POSIX WRITE 120                   WAL_WRITE_LOCK
-  database file locks (fcntl F_GETLK from the parent):
-    PENDING            byte 1073741824  unlocked
-    RESERVED           byte 1073741825  unlocked
-    SHARED             bytes 1073741826-1073742335 read-locked
-  database file locks in /proc/locks:
-    contender  POSIX READ  1073741826-1073742335 SHARED
-check ok: a stray close of the database file leaves the -shm write lock in place
-check ok: /proc/locks: on the database file only the contender's SHARED read lock is left
-check ok: /proc/locks: -shm byte 120 is still write-locked by the holder
-step 14  contender  begin immediate                      -> SQLITE_BUSY (5)
-check ok: so the second process is still refused
-step 15  holder     stray-close -shm                     -> SQLITE_OK
-  -shm locks (fcntl F_GETLK from the parent):
-    WAL_WRITE_LOCK     byte 120         unlocked
-    WAL_CKPT_LOCK      byte 121         unlocked
-    WAL_RECOVER_LOCK   byte 122         unlocked
-    WAL_READ_LOCK(0)   byte 123         unlocked
-    WAL_READ_LOCK(1)   byte 124         unlocked
-    WAL_READ_LOCK(2)   byte 125         unlocked
-    WAL_READ_LOCK(3)   byte 126         unlocked
-    WAL_READ_LOCK(4)   byte 127         unlocked
-    DMS                byte 128         read-locked
-  -shm locks in /proc/locks:
-    contender  POSIX READ  128                   DMS
-check ok: a stray close of the -shm file releases the holder's -shm locks
-check ok: /proc/locks: the holder has no -shm lock left; only the contender's DMS read lock remains
-check ok: /proc/locks: that DMS read lock is the only lock on -shm
-step 16  holder     query SELECT count(*) FROM lab       -> SQLITE_OK 1
-check ok: the holder still sees its uncommitted row
-step 17  contender  begin immediate                      -> SQLITE_OK
-check ok: the second process is now admitted while the holder's transaction is still open
-step 18  contender  exec INSERT INTO lab VALUES (2, 'contender') -> SQLITE_OK
-step 19  contender  commit                               -> SQLITE_OK
-check ok: the second process commits: its COMMIT returns SQLITE_OK
-step 20  holder     commit                               -> SQLITE_PROTOCOL (15)
-check ok: the holder's COMMIT finds the wal-index header changed under its write lock, retries, and gives up with SQLITE_PROTOCOL (15)
-after both processes closed: integrity_check ok; 1 row(s): contender
-check ok: the file passes integrity_check and holds only the second process's row: the holder's transaction is lost, and the holder was told
+Two child processes, holder and contender, open the same database. The
+holder starts a write transaction, then opens and closes the database file
+or -shm with a plain os.Open + Close (a "stray close"). POSIX locks belong
+to the process and the inode, so that close drops every lock the holder
+has on that file, while SQLite still believes it holds them.
 
-== C. WAL mode, the WAL already holding a commit no checkpoint has copied (wal_autocheckpoint=0): a stray close of -shm only
-INFO: holder pid 2186142, contender pid 2186147
-step 21  holder     exec INSERT INTO lab VALUES (1, 'seed') -> SQLITE_OK
-step 22  holder     begin immediate                      -> SQLITE_OK
-step 23  holder     exec INSERT INTO lab VALUES (2, 'holder') -> SQLITE_OK
-  -shm locks (fcntl F_GETLK from the parent):
-    WAL_WRITE_LOCK     byte 120         write-locked by holder
-    WAL_CKPT_LOCK      byte 121         unlocked
-    WAL_RECOVER_LOCK   byte 122         unlocked
-    WAL_READ_LOCK(0)   byte 123         unlocked
-    WAL_READ_LOCK(1)   byte 124         read-locked
-    WAL_READ_LOCK(2)   byte 125         unlocked
-    WAL_READ_LOCK(3)   byte 126         unlocked
-    WAL_READ_LOCK(4)   byte 127         unlocked
-    DMS                byte 128         read-locked
-  -shm locks in /proc/locks:
-    contender  POSIX READ  128                   DMS
-    holder     POSIX READ  124                   WAL_READ_LOCK(1)
-    holder     POSIX READ  128                   DMS
-    holder     POSIX WRITE 120                   WAL_WRITE_LOCK
-check ok: with frames in the WAL the holder reads through WAL_READ_LOCK(1), not WAL_READ_LOCK(0)
-step 24  contender  begin immediate                      -> SQLITE_BUSY (5)
-check ok: a second process is refused: BEGIN IMMEDIATE returns SQLITE_BUSY (5)
-step 25  holder     stray-close -shm                     -> SQLITE_OK
-  -shm locks (fcntl F_GETLK from the parent):
-    WAL_WRITE_LOCK     byte 120         unlocked
-    WAL_CKPT_LOCK      byte 121         unlocked
-    WAL_RECOVER_LOCK   byte 122         unlocked
-    WAL_READ_LOCK(0)   byte 123         unlocked
-    WAL_READ_LOCK(1)   byte 124         unlocked
-    WAL_READ_LOCK(2)   byte 125         unlocked
-    WAL_READ_LOCK(3)   byte 126         unlocked
-    WAL_READ_LOCK(4)   byte 127         unlocked
-    DMS                byte 128         read-locked
-  -shm locks in /proc/locks:
-    contender  POSIX READ  128                   DMS
-check ok: the stray close of -shm releases the holder's write lock and read lock
-step 26  contender  begin immediate                      -> SQLITE_OK
-step 27  contender  exec INSERT INTO lab VALUES (3, 'contender') -> SQLITE_OK
-step 28  contender  commit                               -> SQLITE_OK
-check ok: the second process is admitted, writes and commits: every statement returns SQLITE_OK
-step 29  holder     commit                               -> SQLITE_OK
-check ok: the holder's COMMIT also returns SQLITE_OK: it is not on WAL_READ_LOCK(0), so it never re-reads the wal-index header and writes its frames over the other commit's
-step 30  contender  query SELECT count(*) || ' row(s): ' || coalesce(group_concat(who, ','), '') FROM (SELECT who FROM lab ORDER BY id) -> SQLITE_OK 2 row(s): seed,holder
-check ok: the second process, still open, no longer sees the row it committed
-after both processes closed: integrity_check ok; 2 row(s): seed,holder
-check ok: the file passes integrity_check and holds the seed and the holder's row: a commit that returned SQLITE_OK is lost and neither process was told
+The parent holds no connection. It probes each lock range with fcntl F_GETLK
+and, on Linux, reads /proc/locks. F_GETLK names a single holder only for a
+write lock; /proc/locks lists every holder. Where /proc/locks does not
+exist (not Linux), the experiment prints LINUX-ONLY, skips that listing and
+its claims, and with_proc_locks below is 0.
+┌───────┬─────────────────┐
+│ looks │ with_proc_locks │
+├───────┼─────────────────┤
+│ 10    │ 10              │
+└───────┴─────────────────┘
 
-== D. WAL mode as in B, but the second process closes its connection and exits before the holder commits
-INFO: holder pid 2186153, contender pid 2186160
-step 31  holder     begin immediate                      -> SQLITE_OK
-step 32  holder     exec INSERT INTO lab VALUES (1, 'holder') -> SQLITE_OK
-step 33  holder     stray-close db                       -> SQLITE_OK
-step 34  holder     stray-close -shm                     -> SQLITE_OK
-step 35  contender  begin immediate                      -> SQLITE_OK
-step 36  contender  exec INSERT INTO lab VALUES (2, 'contender') -> SQLITE_OK
-step 37  contender  commit                               -> SQLITE_OK
-check ok: the second process is admitted, writes and commits: every statement returns SQLITE_OK
-contender closed its connection and exited cleanly; then lab.db-wal is gone and lab.db-shm is gone
-check ok: seeing no other process's locks, the second process closed as the last connection and deleted -wal and -shm
-step 38  holder     commit                               -> SQLITE_OK
-check ok: the holder's COMMIT returns SQLITE_OK
-after the holder's commit: lab.db-wal is gone
-check ok: no -wal file exists under that name: the holder wrote its commit into the deleted file it still had open
-after both processes closed: integrity_check ok; 1 row(s): holder
-check ok: the file passes integrity_check and holds only the holder's row: the second process's commit is lost and neither process was told
+How each part ended: what COMMIT told each process, and what the file holds.
+┌──────┬────────────────────────────┬───────────────────────────┬──────────────────┬───────────┬───────────────────────┐
+│ part │          scenario          │       holder_commit       │ contender_commit │ integrity │       contents        │
+├──────┼────────────────────────────┼───────────────────────────┼──────────────────┼───────────┼───────────────────────┤
+│ A    │ rollback mode              │ SQLITE_IOERR_DELETE_NOENT │ SQLITE_OK        │ ok        │ 1 row(s): holder      │
+│ B    │ WAL, empty WAL             │ SQLITE_PROTOCOL           │ SQLITE_OK        │ ok        │ 1 row(s): contender   │
+│ C    │ WAL holding a commit       │ SQLITE_OK                 │ SQLITE_OK        │ ok        │ 2 row(s): seed,holder │
+│ D    │ WAL, contender exits first │ SQLITE_OK                 │ SQLITE_OK        │ ok        │ 1 row(s): holder      │
+└──────┴────────────────────────────┴───────────────────────────┴──────────────────┴───────────┴───────────────────────┘
 
-LOCKS BELONG TO THE PROCESS OK
+In the transcripts below, ROWS_QUERY stands for
+  SELECT count(*) || ' row(s): ' || coalesce(group_concat(who, ','), '')
+  FROM (SELECT who FROM lab ORDER BY id)
+
+── A. Rollback mode (journal_mode=delete) ──────────────────────────────
+
+The write lock is a byte-range lock on the database file.
+
+A1. The transcript. Step 4 is the stray close; after it the contender is
+    admitted (step 6) and commits (step 8), and the holder's COMMIT fails.
+┌──────┬───────────┬──────────────────────────────────────────────┬──────────────────────────────────┬───────┐
+│ step │  process  │                    action                    │              result              │ value │
+├──────┼───────────┼──────────────────────────────────────────────┼──────────────────────────────────┼───────┤
+│ 1    │ holder    │ begin immediate                              │ SQLITE_OK                        │       │
+│ 2    │ holder    │ exec INSERT INTO lab VALUES (1, 'holder')    │ SQLITE_OK                        │       │
+│ 3    │ contender │ begin immediate                              │ SQLITE_BUSY (5)                  │       │
+│ 4    │ holder    │ stray-close db                               │ SQLITE_OK                        │       │
+│ 5    │ holder    │ query SELECT count(*) FROM lab               │ SQLITE_OK                        │ 1     │
+│ 6    │ contender │ begin immediate                              │ SQLITE_OK                        │       │
+│ 7    │ contender │ exec INSERT INTO lab VALUES (2, 'contender') │ SQLITE_OK                        │       │
+│ 8    │ contender │ commit                                       │ SQLITE_OK                        │       │
+│ 9    │ holder    │ commit                                       │ SQLITE_IOERR_DELETE_NOENT (5898) │       │
+└──────┴───────────┴──────────────────────────────────────────────┴──────────────────────────────────┴───────┘
+
+A2. The database-file locks seen by F_GETLK after steps 2, 4 and 7. After
+    the stray close (step 4) nothing is locked; then RESERVED is the contender's.
+┌──────────┬─────────────────────────────┬───────────────┬──────────────┬──────────────────┐
+│   lock   │            bytes            │ after step 2  │ after step 4 │   after step 7   │
+├──────────┼─────────────────────────────┼───────────────┼──────────────┼──────────────────┤
+│ PENDING  │ byte 1073741824             │ -             │ -            │ -                │
+│ RESERVED │ byte 1073741825             │ write: holder │ -            │ write: contender │
+│ SHARED   │ bytes 1073741826-1073742335 │ read          │ -            │ read             │
+└──────────┴─────────────────────────────┴───────────────┴──────────────┴──────────────────┘
+
+A3. The same looks in /proc/locks, which names every holder. After step 4
+    neither process holds a lock; after step 7 only the contender does.
+┌────────────┬───────────┬───────┬───────────────────────┬──────────┐
+│ after_step │  process  │ type  │         bytes         │   lock   │
+├────────────┼───────────┼───────┼───────────────────────┼──────────┤
+│ 2          │ holder    │ READ  │ 1073741826-1073742335 │ SHARED   │
+│ 2          │ holder    │ WRITE │ 1073741825            │ RESERVED │
+│ 4          │ (none)    │       │                       │          │
+│ 7          │ contender │ READ  │ 1073741826-1073742335 │ SHARED   │
+│ 7          │ contender │ WRITE │ 1073741825            │ RESERVED │
+└────────────┴───────────┴───────┴───────────────────────┴──────────┘
+
+── B. WAL mode, empty WAL ──────────────────────────────────────────────
+
+The write lock is byte 120 of -shm (WAL_WRITE_LOCK). A stray close of the
+database file (step 13) leaves it in place; a stray close of -shm (step 15)
+drops it. The holder's COMMIT then sees the wal-index header changed and
+gives up with SQLITE_PROTOCOL: here the holder is told.
+
+B1. The transcript.
+┌──────┬───────────┬──────────────────────────────────────────────┬──────────────────────┬───────┐
+│ step │  process  │                    action                    │        result        │ value │
+├──────┼───────────┼──────────────────────────────────────────────┼──────────────────────┼───────┤
+│ 10   │ holder    │ begin immediate                              │ SQLITE_OK            │       │
+│ 11   │ holder    │ exec INSERT INTO lab VALUES (1, 'holder')    │ SQLITE_OK            │       │
+│ 12   │ contender │ begin immediate                              │ SQLITE_BUSY (5)      │       │
+│ 13   │ holder    │ stray-close db                               │ SQLITE_OK            │       │
+│ 14   │ contender │ begin immediate                              │ SQLITE_BUSY (5)      │       │
+│ 15   │ holder    │ stray-close -shm                             │ SQLITE_OK            │       │
+│ 16   │ holder    │ query SELECT count(*) FROM lab               │ SQLITE_OK            │ 1     │
+│ 17   │ contender │ begin immediate                              │ SQLITE_OK            │       │
+│ 18   │ contender │ exec INSERT INTO lab VALUES (2, 'contender') │ SQLITE_OK            │       │
+│ 19   │ contender │ commit                                       │ SQLITE_OK            │       │
+│ 20   │ holder    │ commit                                       │ SQLITE_PROTOCOL (15) │       │
+└──────┴───────────┴──────────────────────────────────────────────┴──────────────────────┴───────┘
+
+B2. -shm locks seen by F_GETLK. Byte 120 is the holder's write lock until
+    the stray close of -shm; byte 128 (DMS) stays read-locked by the contender.
+┌──────────────────┬──────────┬───────────────┬───────────────┬───────────────┐
+│       lock       │  bytes   │ after step 11 │ after step 13 │ after step 15 │
+├──────────────────┼──────────┼───────────────┼───────────────┼───────────────┤
+│ WAL_WRITE_LOCK   │ byte 120 │ write: holder │ write: holder │ -             │
+│ WAL_CKPT_LOCK    │ byte 121 │ -             │ -             │ -             │
+│ WAL_RECOVER_LOCK │ byte 122 │ -             │ -             │ -             │
+│ WAL_READ_LOCK(0) │ byte 123 │ read          │ read          │ -             │
+│ WAL_READ_LOCK(1) │ byte 124 │ -             │ -             │ -             │
+│ WAL_READ_LOCK(2) │ byte 125 │ -             │ -             │ -             │
+│ WAL_READ_LOCK(3) │ byte 126 │ -             │ -             │ -             │
+│ WAL_READ_LOCK(4) │ byte 127 │ -             │ -             │ -             │
+│ DMS              │ byte 128 │ read          │ read          │ read          │
+└──────────────────┴──────────┴───────────────┴───────────────┴───────────────┘
+
+B3. Database-file locks seen by F_GETLK. RESERVED stays free: WAL mode does
+    not use it for writers.
+┌──────────┬─────────────────────────────┬───────────────┬───────────────┐
+│   lock   │            bytes            │ after step 11 │ after step 13 │
+├──────────┼─────────────────────────────┼───────────────┼───────────────┤
+│ PENDING  │ byte 1073741824             │ -             │ -             │
+│ RESERVED │ byte 1073741825             │ -             │ -             │
+│ SHARED   │ bytes 1073741826-1073742335 │ read          │ read          │
+└──────────┴─────────────────────────────┴───────────────┴───────────────┘
+
+B4. /proc/locks for both files. After the stray close of the database file
+    (step 13) the holder's SHARED lock is gone; after the stray close of -shm
+    (step 15) only the contender's DMS read lock is left on -shm.
+┌────────────┬───────────────┬───────────┬───────┬───────────────────────┬──────────────────┐
+│ after_step │     file      │  process  │ type  │         bytes         │       lock       │
+├────────────┼───────────────┼───────────┼───────┼───────────────────────┼──────────────────┤
+│ 11         │ -shm          │ contender │ READ  │ 128                   │ DMS              │
+│ 11         │ -shm          │ holder    │ READ  │ 123                   │ WAL_READ_LOCK(0) │
+│ 11         │ -shm          │ holder    │ READ  │ 128                   │ DMS              │
+│ 11         │ -shm          │ holder    │ WRITE │ 120                   │ WAL_WRITE_LOCK   │
+│ 11         │ database file │ contender │ READ  │ 1073741826-1073742335 │ SHARED           │
+│ 11         │ database file │ holder    │ READ  │ 1073741826-1073742335 │ SHARED           │
+│ 13         │ -shm          │ contender │ READ  │ 128                   │ DMS              │
+│ 13         │ -shm          │ holder    │ READ  │ 123                   │ WAL_READ_LOCK(0) │
+│ 13         │ -shm          │ holder    │ READ  │ 128                   │ DMS              │
+│ 13         │ -shm          │ holder    │ WRITE │ 120                   │ WAL_WRITE_LOCK   │
+│ 13         │ database file │ contender │ READ  │ 1073741826-1073742335 │ SHARED           │
+│ 15         │ -shm          │ contender │ READ  │ 128                   │ DMS              │
+└────────────┴───────────────┴───────────┴───────┴───────────────────────┴──────────────────┘
+
+── C. WAL mode, the WAL already holding a commit ───────────────────────
+
+A seed row is committed first and no checkpoint copies it (wal_autocheckpoint=0),
+so the holder reads through WAL_READ_LOCK(1), byte 124. Only -shm is closed.
+Both COMMITs return SQLITE_OK, and the contender's row is gone (step 30).
+
+C1. The transcript.
+┌──────┬───────────┬──────────────────────────────────────────────┬─────────────────┬───────────────────────┐
+│ step │  process  │                    action                    │     result      │         value         │
+├──────┼───────────┼──────────────────────────────────────────────┼─────────────────┼───────────────────────┤
+│ 21   │ holder    │ exec INSERT INTO lab VALUES (1, 'seed')      │ SQLITE_OK       │                       │
+│ 22   │ holder    │ begin immediate                              │ SQLITE_OK       │                       │
+│ 23   │ holder    │ exec INSERT INTO lab VALUES (2, 'holder')    │ SQLITE_OK       │                       │
+│ 24   │ contender │ begin immediate                              │ SQLITE_BUSY (5) │                       │
+│ 25   │ holder    │ stray-close -shm                             │ SQLITE_OK       │                       │
+│ 26   │ contender │ begin immediate                              │ SQLITE_OK       │                       │
+│ 27   │ contender │ exec INSERT INTO lab VALUES (3, 'contender') │ SQLITE_OK       │                       │
+│ 28   │ contender │ commit                                       │ SQLITE_OK       │                       │
+│ 29   │ holder    │ commit                                       │ SQLITE_OK       │                       │
+│ 30   │ contender │ query ROWS_QUERY                             │ SQLITE_OK       │ 2 row(s): seed,holder │
+└──────┴───────────┴──────────────────────────────────────────────┴─────────────────┴───────────────────────┘
+
+C2. -shm locks seen by F_GETLK, before and after the stray close of -shm.
+┌──────────────────┬──────────┬───────────────┬───────────────┐
+│       lock       │  bytes   │ after step 23 │ after step 25 │
+├──────────────────┼──────────┼───────────────┼───────────────┤
+│ WAL_WRITE_LOCK   │ byte 120 │ write: holder │ -             │
+│ WAL_CKPT_LOCK    │ byte 121 │ -             │ -             │
+│ WAL_RECOVER_LOCK │ byte 122 │ -             │ -             │
+│ WAL_READ_LOCK(0) │ byte 123 │ -             │ -             │
+│ WAL_READ_LOCK(1) │ byte 124 │ read          │ -             │
+│ WAL_READ_LOCK(2) │ byte 125 │ -             │ -             │
+│ WAL_READ_LOCK(3) │ byte 126 │ -             │ -             │
+│ WAL_READ_LOCK(4) │ byte 127 │ -             │ -             │
+│ DMS              │ byte 128 │ read          │ read          │
+└──────────────────┴──────────┴───────────────┴───────────────┘
+
+C3. The same looks in /proc/locks.
+┌────────────┬───────────┬───────┬───────┬──────────────────┐
+│ after_step │  process  │ type  │ bytes │       lock       │
+├────────────┼───────────┼───────┼───────┼──────────────────┤
+│ 23         │ contender │ READ  │ 128   │ DMS              │
+│ 23         │ holder    │ READ  │ 124   │ WAL_READ_LOCK(1) │
+│ 23         │ holder    │ READ  │ 128   │ DMS              │
+│ 23         │ holder    │ WRITE │ 120   │ WAL_WRITE_LOCK   │
+│ 25         │ contender │ READ  │ 128   │ DMS              │
+└────────────┴───────────┴───────┴───────┴──────────────────┘
+
+── D. WAL mode, the contender exits before the holder commits ──────────
+
+As in B, the holder closes the database file and -shm. The contender commits,
+closes its connection and exits. Seeing no other locks, it closes as the last
+connection and deletes -wal and -shm. The holder then commits into the -wal
+it still has open, a file that no longer has a name.
+
+D1. The transcript.
+┌──────┬───────────┬──────────────────────────────────────────────┬───────────┬───────┐
+│ step │  process  │                    action                    │  result   │ value │
+├──────┼───────────┼──────────────────────────────────────────────┼───────────┼───────┤
+│ 31   │ holder    │ begin immediate                              │ SQLITE_OK │       │
+│ 32   │ holder    │ exec INSERT INTO lab VALUES (1, 'holder')    │ SQLITE_OK │       │
+│ 33   │ holder    │ stray-close db                               │ SQLITE_OK │       │
+│ 34   │ holder    │ stray-close -shm                             │ SQLITE_OK │       │
+│ 35   │ contender │ begin immediate                              │ SQLITE_OK │       │
+│ 36   │ contender │ exec INSERT INTO lab VALUES (2, 'contender') │ SQLITE_OK │       │
+│ 37   │ contender │ commit                                       │ SQLITE_OK │       │
+│ 38   │ holder    │ commit                                       │ SQLITE_OK │       │
+└──────┴───────────┴──────────────────────────────────────────────┴───────────┴───────┘
+
+D2. Whether -wal and -shm exist, after the contender exited and after the
+    holder's commit.
+┌────────────────────────────┬────────────┬───────┐
+│           moment           │    file    │ state │
+├────────────────────────────┼────────────┼───────┤
+│ after the contender exited │ lab.db-wal │ gone  │
+│ after the contender exited │ lab.db-shm │ gone  │
+│ after the holder's commit  │ lab.db-wal │ gone  │
+└────────────────────────────┴────────────┴───────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  the holder's open write transaction is a write lock on the RESERVED byte and a read lock on the SHARED range of the database file
+A  ✓  /proc/locks: the RESERVED byte is write-locked by the holder alone
+A  ✓  /proc/locks: the SHARED range is read-locked by the holder alone; the contender, with no transaction, holds nothing
+A  ✓  a second process is refused the write lock: BEGIN IMMEDIATE returns SQLITE_BUSY (5)
+A  ✓  after the holder opened and closed the database file with os.Open, none of its locks remain
+A  ✓  /proc/locks: neither process holds any lock on the database file
+A  ✓  the holder still sees its uncommitted row: as far as SQLite knows, its write transaction is intact
+A  ✓  the second process is now admitted: BEGIN IMMEDIATE returns SQLITE_OK while the holder's transaction is still open
+A  ✓  the RESERVED byte is now write-locked by the second process
+A  ✓  /proc/locks: the SHARED range is read-locked by the second process only; the holder, mid-transaction, holds no lock at all
+A  ✓  the second process commits: its COMMIT returns SQLITE_OK
+A  ✓  the holder's COMMIT writes its pages, then fails to delete the rollback journal the other process already deleted: SQLITE_IOERR_DELETE_NOENT (5898)
+A  ✓  the file passes integrity_check but holds only the holder's row: the commit that returned SQLITE_OK is lost
+B  ✓  the holder's write transaction is a write lock on -shm byte 120 (WAL_WRITE_LOCK), next to its read lock on byte 123 (WAL_READ_LOCK(0))
+B  ✓  on the database file the SHARED range is read-locked and PENDING and RESERVED are free: WAL mode does not use RESERVED for writers
+B  ✓  /proc/locks: -shm byte 120 is write-locked by the holder alone
+B  ✓  /proc/locks: both processes read-lock the DMS byte 128 of -shm
+B  ✓  /proc/locks: both processes read-lock the SHARED range of the database file
+B  ✓  a second process is refused: BEGIN IMMEDIATE returns SQLITE_BUSY (5)
+B  ✓  a stray close of the database file leaves the -shm write lock in place
+B  ✓  /proc/locks: on the database file only the contender's SHARED read lock is left
+B  ✓  /proc/locks: -shm byte 120 is still write-locked by the holder
+B  ✓  so the second process is still refused
+B  ✓  a stray close of the -shm file releases the holder's -shm locks
+B  ✓  /proc/locks: the holder has no -shm lock left; only the contender's DMS read lock remains
+B  ✓  /proc/locks: that DMS read lock is the only lock on -shm
+B  ✓  the holder still sees its uncommitted row
+B  ✓  the second process is now admitted while the holder's transaction is still open
+B  ✓  the second process commits: its COMMIT returns SQLITE_OK
+B  ✓  the holder's COMMIT finds the wal-index header changed under its write lock, retries, and gives up with SQLITE_PROTOCOL (15)
+B  ✓  the file passes integrity_check and holds only the second process's row: the holder's transaction is lost, and the holder was told
+C  ✓  with frames in the WAL the holder reads through WAL_READ_LOCK(1), not WAL_READ_LOCK(0)
+C  ✓  a second process is refused: BEGIN IMMEDIATE returns SQLITE_BUSY (5)
+C  ✓  the stray close of -shm releases the holder's write lock and read lock
+C  ✓  the second process is admitted, writes and commits: every statement returns SQLITE_OK
+C  ✓  the holder's COMMIT also returns SQLITE_OK: it is not on WAL_READ_LOCK(0), so it never re-reads the wal-index header and writes its frames over the other commit's
+C  ✓  the second process, still open, no longer sees the row it committed
+C  ✓  the file passes integrity_check and holds the seed and the holder's row: a commit that returned SQLITE_OK is lost and neither process was told
+D  ✓  the second process is admitted, writes and commits: every statement returns SQLITE_OK
+D  ✓  seeing no other process's locks, the second process closed as the last connection and deleted -wal and -shm
+D  ✓  the holder's COMMIT returns SQLITE_OK
+D  ✓  no -wal file exists under that name: the holder wrote its commit into the deleted file it still had open
+D  ✓  the file passes integrity_check and holds only the holder's row: the second process's commit is lost and neither process was told
+
+43 of 43 claims hold
+
+Experiment verdict: LOCKS BELONG TO THE PROCESS OK
 ```
 
 **Reading the evidence:**
@@ -724,7 +1125,7 @@ LOCKS BELONG TO THE PROCESS OK
   - At step 30, `contender` — still open — queries the table and sees `2 row(s): seed,holder`. Its own committed row is gone, `integrity_check` is `ok`, and neither process received an error.
 - **Part D — WAL mode when the second process exits first (steps 31–38):**
   - Even on an empty WAL (same setup as Part B), if `holder` drops both `db` and `-shm` locks (steps 33–34) and `contender` commits and closes before `holder` commits, `contender` sees no other locks on `.db` or `DMS` and closes as the last connection (`sqlite3WalClose`, `src/wal.c:2507-2571`), deleting `lab.db-wal` and `lab.db-shm`.
-  - Step 38's `holder` `COMMIT` returns `SQLITE_OK` while `lab.db-wal` remains `gone` on disk — `holder` wrote its commit into the unlinked `-wal` file descriptor it still held open, and its own close later checkpoints that deleted WAL into `lab.db`. Final state: `integrity_check ok; 1 row(s): holder`. Again, a `SQLITE_OK` commit is silently lost with zero errors reported.
+  - Step 38's `holder` `COMMIT` returns `SQLITE_OK` while `lab.db-wal` remains `gone` on disk — `holder` wrote its commit into the unlinked `-wal` file descriptor it still held open, and its own close later checkpoints that deleted WAL into `lab.db`. Final state: integrity `ok`, `1 row(s): holder`. Again, a `SQLITE_OK` commit is silently lost with zero errors reported.
 
 ---
 
@@ -758,10 +1159,10 @@ Lock bytes on `.db`: `1073741824` (`PENDING`), `1073741825` (`RESERVED`), `10737
 ### Experiment 6.2 — Busy rules (`6.2-busy-rules`)
 
 - **Claim:** In WAL mode under default `PRAGMA locking_mode=NORMAL`, readers never block the writer, the writer never blocks readers, and `BEGIN EXCLUSIVE` behaves like `BEGIN IMMEDIATE`. A second writer receives `SQLITE_BUSY (5)` at `BEGIN` under `BEGIN IMMEDIATE` and at its first write under `BEGIN DEFERRED`. A generous `busy_timeout` turns that failure into a wait **only** for transactions that have not read yet (`BEGIN IMMEDIATE`, or `BEGIN DEFERRED` whose first statement writes); a deferred transaction that has already read skips the busy handler (`src/btree.c:3740-3741`) and fails immediately with `SQLITE_BUSY (5)` while the other writer is open and `SQLITE_BUSY_SNAPSHOT (517)` once it commits, succeeding only after `ROLLBACK` and restart. In rollback mode, an open reader blocks the writer's `COMMIT` and the writer retains `PENDING` to block new readers. With `BEGIN IMMEDIATE` and a generous `busy_timeout`, alternating writers commit every transaction under contention and match the deterministic recipe state.
-- **Evidence form:** `EXACT` (all lines except `INFO:` lines).
-- **Run command:**
+- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./ch06-locking-and-concurrency/experiments/6.2-busy-rules
+  go run ./cmd/course run 6.2
   ```
 
 <!-- include: experiments/6.2-busy-rules/main.go -->
@@ -774,6 +1175,9 @@ Lock bytes on `.db`: `1073741824` (`PENDING`), `1073741825` (`RESERVED`), `10737
 // (517) on a deferred read-then-write upgrade (src/btree.c:3740-3741,
 // src/wal.c:3734-3737), rollback-mode COMMIT contention and retained PENDING
 // locks (Part D), and alternating multi-process recipe steps under contention (Part E).
+//
+// It prints only its verdict. The steps and outcomes go to CSV tables that
+// report.sql presents: go run ./cmd/course run 6.2
 package main
 
 import (
@@ -786,6 +1190,7 @@ import (
 
 	"github.com/nickstrad/walfleet/internal/procs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -800,9 +1205,93 @@ const (
 	insertPattern = "INSERT INTO lab(who) VALUES ('%s')"
 )
 
+// Every step and outcome goes to a CSV table in <work dir>/results/; part
+// labels the rows written while a part runs.
+var (
+	set     *results.Set
+	part    string
+	stepSeq int
+	tables  struct {
+		steps, settings, recipeResult *results.Table
+	}
+)
+
+func openTables() {
+	tables.steps = set.Table("steps", "seq", "part", "step", "process", "action", "waiting_at_250ms", "result", "code", "value")
+	tables.settings = set.Table("settings", "part", "journal_mode", "busy_timeout_ms")
+	tables.recipeResult = set.Table("recipe_result", "part", "user_version", "matched_step", "exact")
+}
+
+// recorder is a procs.Lab that writes each step and claim to the tables
+// instead of printing them.
+type recorder struct {
+	*procs.Lab
+	sent map[*procs.Call]*sentCall
+}
+
+// sentCall is a step sent with Begin: who runs it and, once StillWaiting has
+// looked, whether it was still unanswered.
+type sentCall struct {
+	child   *procs.Child
+	waiting any
+}
+
+func newRecorder() *recorder {
+	lab := procs.NewLab(os.Stdout)
+	lab.Script.Out = nil
+	return &recorder{Lab: lab, sent: map[*procs.Call]*sentCall{}}
+}
+
+func (l *recorder) Do(child *procs.Child, action string, args ...string) procs.Result {
+	return l.step(child, procs.ActionText(action, args), nil, l.Lab.Do(child, action, args...))
+}
+
+func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
+	return l.step(child, procs.ActionText(action, args), nil, l.Lab.Must(child, action, args...))
+}
+
+// Begin sends a step without waiting for its answer.
+func (l *recorder) Begin(child *procs.Child, action string, args ...string) *procs.Call {
+	call, err := l.Script.Begin(child, action, args...)
+	if err != nil {
+		l.Fatal(fmt.Sprintf("step %d", l.Script.Step()), err)
+	}
+	l.sent[call] = &sentCall{child: child}
+	return call
+}
+
+// StillWaiting reports whether call is still unanswered after procs.StillWaitingWindow.
+func (l *recorder) StillWaiting(call *procs.Call) bool {
+	answered, err := call.AnsweredWithin(procs.StillWaitingWindow)
+	if err != nil {
+		l.Fatal("poll", err)
+	}
+	l.sent[call].waiting = !answered
+	return !answered
+}
+
+func (l *recorder) Finish(call *procs.Call) procs.Result {
+	sent := l.sent[call]
+	delete(l.sent, call)
+	request := call.Request()
+	return l.step(sent.child, procs.ActionText(request.Action, request.Args), sent.waiting, l.Lab.Finish(call))
+}
+
+func (l *recorder) step(child *procs.Child, action string, waiting any, r procs.Result) procs.Result {
+	value := r.Value
+	if r.Code == procs.CodeNotSQLite {
+		value = r.Error
+	}
+	stepSeq++
+	tables.steps.Row(stepSeq, part, r.Step, child.Name, action, waiting, r.CodeName(), r.Code, value)
+	return r
+}
+
+func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
+
 func insert(who string) string { return fmt.Sprintf(insertPattern, who) }
 
-func database(ctx context.Context, lab *procs.Lab, dir, name, journal string) string {
+func database(ctx context.Context, lab *recorder, dir, name, journal string) string {
 	db := filepath.Join(dir, name, "lab.db")
 	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
 		lab.Fatal("mkdir", err)
@@ -813,18 +1302,17 @@ func database(ctx context.Context, lab *procs.Lab, dir, name, journal string) st
 	return db
 }
 
-func pair(ctx context.Context, lab *procs.Lab, dir, part, journal string, timeout time.Duration, first, second string) (*procs.Child, *procs.Child) {
-	db := database(ctx, lab, dir, part, journal)
+func pair(ctx context.Context, lab *recorder, dir, name, journal string, timeout time.Duration, first, second string) (*procs.Child, *procs.Child) {
+	db := database(ctx, lab, dir, name, journal)
 	options := procs.SQLOptions{Path: db, JournalMode: journal, BusyTimeout: timeout}
-	fmt.Printf("journal_mode=%s, busy_timeout=%dms on both connections\n", journal, timeout.Milliseconds())
+	tables.settings.Row(part, journal, timeout.Milliseconds())
 	return lab.SpawnSQL(first, options), lab.SpawnSQL(second, options)
 }
 
 // readersAndWriter runs Part A: with busy_timeout=0 in WAL mode, readers and
 // writers never block each other, and BEGIN EXCLUSIVE behaves like BEGIN IMMEDIATE.
-func readersAndWriter(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Println("== A. WAL mode: a reader and a writer (busy_timeout 0, so any wait would show up as SQLITE_BUSY)")
+func readersAndWriter(ctx context.Context, lab *recorder, dir string) {
+	part = "A"
 	reader, writer := pair(ctx, lab, dir, "a-reader-writer", sqlitex.JournalWAL, 0, "reader", "writer")
 	lab.Must(reader, "begin", "deferred")
 	snapshot := lab.Must(reader, "query", countQuery)
@@ -853,9 +1341,8 @@ func readersAndWriter(ctx context.Context, lab *procs.Lab, dir string) {
 // writersWithoutTimeout runs Part B: with busy_timeout=0, BEGIN DEFERRED defers
 // SQLITE_BUSY (5) until the first write statement, whereas BEGIN IMMEDIATE fails
 // at BEGIN itself (src/build.c:5245-5274).
-func writersWithoutTimeout(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Println("== B. WAL mode: two writers, busy_timeout 0")
+func writersWithoutTimeout(ctx context.Context, lab *recorder, dir string) {
+	part = "B"
 	first, second := pair(ctx, lab, dir, "b-writers-no-timeout", sqlitex.JournalWAL, 0, "writer-1", "writer-2")
 	lab.Must(first, "begin", "immediate")
 	lab.Must(first, "exec", insert("writer-1"))
@@ -876,12 +1363,11 @@ func writersWithoutTimeout(ctx context.Context, lab *procs.Lab, dir string) {
 // on the busy handler (src/main.c:1730-1792), while a deferred transaction that
 // already read (C3) skips the busy handler (src/btree.c:3740-3741) and gets
 // SQLITE_BUSY (5) then SQLITE_BUSY_SNAPSHOT (517, src/wal.c:3734-3737) at once.
-func writersWithTimeout(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Printf("== C. WAL mode: two writers, busy_timeout %dms (each step must answer within %v, so a statement that waited out the timeout would fail the run)\n", longTimeout.Milliseconds(), stepDeadline)
+func writersWithTimeout(ctx context.Context, lab *recorder, dir string) {
+	part = "C"
 	first, second := pair(ctx, lab, dir, "c-writers-timeout", sqlitex.JournalWAL, longTimeout, "writer-1", "writer-2")
 
-	fmt.Println("-- C1. BEGIN IMMEDIATE waits for the lock")
+	part = "C1"
 	lab.Must(first, "begin", "immediate")
 	lab.Must(first, "exec", insert("writer-1"))
 	waiting := lab.Begin(second, "begin", "immediate")
@@ -892,7 +1378,7 @@ func writersWithTimeout(ctx context.Context, lab *procs.Lab, dir string) {
 	lab.Must(second, "exec", insert("writer-2"))
 	lab.Must(second, "commit")
 
-	fmt.Println("-- C2. a deferred transaction with no read yet also waits at its first write")
+	part = "C2"
 	lab.Must(first, "begin", "immediate")
 	lab.Must(first, "exec", insert("writer-1"))
 	lab.Must(second, "begin", "deferred")
@@ -903,7 +1389,7 @@ func writersWithTimeout(ctx context.Context, lab *procs.Lab, dir string) {
 	lab.Check(blocked && written.OK(), "the first statement of a deferred transaction waits like BEGIN IMMEDIATE and then succeeds")
 	lab.Must(second, "commit")
 
-	fmt.Println("-- C3. a deferred transaction that has already read cannot wait")
+	part = "C3"
 	lab.Must(second, "begin", "deferred")
 	lab.Must(second, "query", countQuery)
 	lab.Must(first, "begin", "immediate")
@@ -922,9 +1408,8 @@ func writersWithTimeout(ctx context.Context, lab *procs.Lab, dir string) {
 // rollbackContrast runs Part D: in rollback mode a reader's SHARED lock blocks
 // the writer's COMMIT (EXCLUSIVE), and the failed COMMIT retains PENDING so new
 // readers are blocked until the writer retries (src/os_unix.c:1898-1905).
-func rollbackContrast(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Println("== D. rollback mode (journal_mode=delete) as the contrast: a reader and a writer, busy_timeout 0")
+func rollbackContrast(ctx context.Context, lab *recorder, dir string) {
+	part = "D"
 	reader, writer := pair(ctx, lab, dir, "d-rollback", sqlitex.JournalDelete, 0, "reader", "writer")
 	lab.Must(reader, "begin", "deferred")
 	lab.Must(reader, "query", countQuery)
@@ -945,9 +1430,8 @@ func rollbackContrast(ctx context.Context, lab *procs.Lab, dir string) {
 // recipeUnderContention runs Part E: two processes alternate recipe steps 6-15
 // using BEGIN IMMEDIATE and a 120s busy_timeout; each waiter sends BEGIN IMMEDIATE
 // while the holder still owns WAL_WRITE_LOCK so contention is verified by StillWaiting.
-func recipeUnderContention(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Printf("== E. two writers apply recipe steps %d-%d alternately with BEGIN IMMEDIATE and busy_timeout %dms; each step starts while the other writer holds the lock\n", recipeBase+1, recipeBase+recipeWrites, longTimeout.Milliseconds())
+func recipeUnderContention(ctx context.Context, lab *recorder, dir string) {
+	part = "E"
 	r := recipe.Default()
 	db := filepath.Join(dir, "e-recipe", "r.db")
 	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
@@ -960,6 +1444,7 @@ func recipeUnderContention(ctx context.Context, lab *procs.Lab, dir string) {
 		lab.Fatal("build", err)
 	}
 	options := procs.SQLOptions{Path: db, JournalMode: sqlitex.JournalWAL, BusyTimeout: longTimeout}
+	tables.settings.Row(part, options.JournalMode, longTimeout.Milliseconds())
 	writers := []*procs.Child{lab.SpawnSQL("writer-1", options), lab.SpawnSQL("writer-2", options)}
 	allWaited, allCommitted := true, true
 	for k := recipeBase + 1; k < recipeBase+recipeWrites; k += 2 {
@@ -981,7 +1466,11 @@ func recipeUnderContention(ctx context.Context, lab *procs.Lab, dir string) {
 	if err != nil {
 		lab.Fatal("match", err)
 	}
-	fmt.Printf("user_version seen by the last writer: %s; the closed file equals recipe %s\n", last.Value, match)
+	var matched any
+	if match.Found() {
+		matched = match.Step
+	}
+	tables.recipeResult.Row(part, last.Value, matched, match.Exact)
 	lab.Check(last.Value == strconv.Itoa(recipeBase+recipeWrites) && match.Found() && match.Step == recipeBase+recipeWrites,
 		fmt.Sprintf("the final database equals the recipe's state after step %d", recipeBase+recipeWrites))
 }
@@ -1003,166 +1492,409 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("6.2")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	lab := procs.NewLab(os.Stdout)
+	set = results.MustOpen(dir)
+	openTables()
+	lab := newRecorder()
 	lab.Script.Timeout = stepDeadline
 	readersAndWriter(ctx, lab, dir)
 	writersWithoutTimeout(ctx, lab, dir)
 	writersWithTimeout(ctx, lab, dir)
 	rollbackContrast(ctx, lab, dir)
 	recipeUnderContention(ctx, lab, dir)
-	lab.Report("BUSY RULES")
+	set.Finish("BUSY RULES")
 }
 ```
 
-Captured output (`evidence/6.2-busy-rules.txt`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/6.2-busy-rules/report.sql -->
+```sql
+-- Walkthrough of experiment 6.2. Run it with:
+--   go run ./cmd/course run 6.2        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   steps          one statement or action one child process ran, in the order the answers came back
+--   settings       one part: journal_mode and busy_timeout of both connections
+--   recipe_result  part E: the user_version the last writer saw and the recipe step the closed file equals
+--   checks         every claim the experiment asserted (the runner lists it last)
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  6.2  The busy rules'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'Two child processes, each with one connection to the same database, run'
+.print 'scripted steps in turn. Every step is numbered in the order it was sent.'
+.print 'A step can also be sent without waiting for its answer: the parent then'
+.print 'checks that no answer came within 250ms (at_250ms below), runs other steps,'
+.print 'and collects the answer later, so its row appears after theirs.'
+.print
+.print 'Every step must answer within 30s. A statement that waited out a busy'
+.print 'timeout of 120000ms would fail the run instead of returning late.'
+.print
+.print 'The settings of each part (the same on both connections):'
+
+SELECT part, journal_mode, busy_timeout_ms FROM settings ORDER BY part;
+
+.print
+.print '── A. WAL mode: a reader and a writer, busy_timeout 0 ─────────────────'
+.print
+.print 'With busy_timeout 0 any wait would show up as SQLITE_BUSY. None does: the'
+.print 'writer commits beside an open reader (steps 3-5), the reader keeps its'
+.print 'snapshot (step 6 still counts 1 row), a new reader reads the last committed'
+.print 'state while a write is open (step 11), and BEGIN EXCLUSIVE (step 16) starts'
+.print 'beside an open reader, exactly like BEGIN IMMEDIATE.'
+
+SELECT step, process, action,
+       result || CASE WHEN code <> 0 THEN ' (' || code || ')' ELSE '' END AS result,
+       value
+FROM steps WHERE part = 'A' ORDER BY seq;
+
+.print
+.print '── B. WAL mode: two writers, busy_timeout 0 ───────────────────────────'
+.print
+.print 'BEGIN DEFERRED and a read succeed; the first write returns SQLITE_BUSY'
+.print '(step 25). BEGIN IMMEDIATE returns SQLITE_BUSY at the BEGIN itself (step 27).'
+
+SELECT step, process, action,
+       result || CASE WHEN code <> 0 THEN ' (' || code || ')' ELSE '' END AS result,
+       value
+FROM steps WHERE part = 'B' ORDER BY seq;
+
+.print
+.print '── C. WAL mode: two writers, busy_timeout 120000ms ────────────────────'
+.print
+.print 'C1. BEGIN IMMEDIATE waits for the lock. Step 31 is sent while writer-1'
+.print '    holds the lock, has no answer after 250ms, and returns SQLITE_OK once'
+.print '    writer-1 commits (step 32).'
+
+SELECT step, process, action,
+       CASE waiting_at_250ms WHEN true THEN 'no answer' WHEN false THEN 'answered' END AS at_250ms,
+       result || CASE WHEN code <> 0 THEN ' (' || code || ')' ELSE '' END AS result,
+       value
+FROM steps WHERE part = 'C1' ORDER BY seq;
+
+.print
+.print 'C2. A deferred transaction that has not read yet also waits, at its first'
+.print '    write (step 38), and then succeeds.'
+
+SELECT step, process, action,
+       CASE waiting_at_250ms WHEN true THEN 'no answer' WHEN false THEN 'answered' END AS at_250ms,
+       result || CASE WHEN code <> 0 THEN ' (' || code || ')' ELSE '' END AS result,
+       value
+FROM steps WHERE part = 'C2' ORDER BY seq;
+
+.print
+.print 'C3. A deferred transaction that has already read (step 42) cannot wait: its'
+.print '    first write returns SQLITE_BUSY at once (step 45), despite the 120000ms'
+.print '    timeout. After the other writer commits, the same write returns'
+.print '    SQLITE_BUSY_SNAPSHOT (step 47): the snapshot it read is no longer the'
+.print '    newest. Only a restarted transaction succeeds (steps 49-51).'
+
+SELECT step, process, action,
+       result || CASE WHEN code <> 0 THEN ' (' || code || ')' ELSE '' END AS result,
+       value
+FROM steps WHERE part = 'C3' ORDER BY seq;
+
+.print
+.print '── D. Rollback mode (journal_mode=delete), busy_timeout 0 ─────────────'
+.print
+.print "The contrast. The writer takes RESERVED and writes beside the reader's SHARED"
+.print 'lock, but its COMMIT needs EXCLUSIVE and returns SQLITE_BUSY (step 56). The'
+.print 'failed COMMIT keeps PENDING, so a new read also returns SQLITE_BUSY (step 58)'
+.print "until the writer's second COMMIT succeeds (step 59)."
+
+SELECT step, process, action,
+       result || CASE WHEN code <> 0 THEN ' (' || code || ')' ELSE '' END AS result,
+       value
+FROM steps WHERE part = 'D' ORDER BY seq;
+
+.print
+.print '── E. Recipe steps 6-15 under contention ──────────────────────────────'
+.print
+.print 'The database is the recipe built to step 5. Two writers apply steps 6-15'
+.print 'in turn, each in its own BEGIN IMMEDIATE transaction, busy_timeout 120000ms.'
+.print 'Each BEGIN IMMEDIATE is sent while the other writer still holds the lock.'
+.print
+.print 'E1. One row per recipe step: who applied it, whether its BEGIN IMMEDIATE'
+.print '    was still waiting at 250ms (the first writer of a pair began alone),'
+.print '    and how its BEGIN and COMMIT ended.'
+
+WITH e AS (SELECT * FROM steps WHERE part = 'E'),
+     x AS (SELECT seq, process, CAST(split_part(action, ' ', 2) AS INTEGER) AS recipe_step
+           FROM e WHERE action LIKE 'recipe-exec %')
+SELECT x.recipe_step,
+       x.process,
+       (SELECT CASE waiting_at_250ms WHEN true THEN 'no answer' WHEN false THEN 'answered' END
+        FROM e WHERE e.process = x.process AND e.action = 'begin immediate' AND e.seq < x.seq
+        ORDER BY e.seq DESC LIMIT 1) AS begin_at_250ms,
+       (SELECT result FROM e WHERE e.process = x.process AND e.action = 'begin immediate' AND e.seq < x.seq
+        ORDER BY e.seq DESC LIMIT 1) AS begin_result,
+       (SELECT e.result FROM e WHERE e.seq = x.seq) AS exec_result,
+       (SELECT result FROM e WHERE e.process = x.process AND e.action = 'commit' AND e.seq > x.seq
+        ORDER BY e.seq LIMIT 1) AS commit_result
+FROM x ORDER BY x.recipe_step;
+
+.print
+.print 'E2. The full transcript.'
+
+SELECT step, process, action,
+       CASE waiting_at_250ms WHEN true THEN 'no answer' WHEN false THEN 'answered' END AS at_250ms,
+       result || CASE WHEN code <> 0 THEN ' (' || code || ')' ELSE '' END AS result,
+       value
+FROM steps WHERE part = 'E' ORDER BY seq;
+
+.print
+.print 'E3. The user_version the last writer saw, and the recipe step the closed'
+.print '    file equals (exact = false: equal except the change counter at bytes'
+.print '    24-27 and 92-95).'
+
+SELECT user_version, matched_step, exact FROM recipe_result ORDER BY part;
+```
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/6.2-busy-rules/`](evidence/6.2-busy-rules/), and `go run ./cmd/course check evidence ch06` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/6.2-busy-rules.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/6.2
 
-== A. WAL mode: a reader and a writer (busy_timeout 0, so any wait would show up as SQLITE_BUSY)
-journal_mode=wal, busy_timeout=0ms on both connections
-step  1  reader     begin deferred                       -> SQLITE_OK
-step  2  reader     query SELECT count(*) FROM lab       -> SQLITE_OK 1
-step  3  writer     begin immediate                      -> SQLITE_OK
-step  4  writer     exec INSERT INTO lab(who) VALUES ('writer') -> SQLITE_OK
-step  5  writer     commit                               -> SQLITE_OK
-check ok: with a read transaction open, the writer begins, writes and commits without waiting
-step  6  reader     query SELECT count(*) FROM lab       -> SQLITE_OK 1
-check ok: the reader still sees its snapshot (1 rows) after the commit
-step  7  reader     commit                               -> SQLITE_OK
-step  8  writer     begin immediate                      -> SQLITE_OK
-step  9  writer     exec INSERT INTO lab(who) VALUES ('uncommitted') -> SQLITE_OK
-step 10  reader     begin deferred                       -> SQLITE_OK
-step 11  reader     query SELECT count(*) FROM lab       -> SQLITE_OK 2
-check ok: with a write transaction open, a reader starts and reads the last committed state (2 rows) without waiting
-step 12  writer     commit                               -> SQLITE_OK
-step 13  reader     commit                               -> SQLITE_OK
-step 14  reader     begin deferred                       -> SQLITE_OK
-step 15  reader     query SELECT count(*) FROM lab       -> SQLITE_OK 3
-step 16  writer     begin exclusive                      -> SQLITE_OK
-step 17  writer     exec INSERT INTO lab(who) VALUES ('exclusive') -> SQLITE_OK
-step 18  reader     query SELECT count(*) FROM lab       -> SQLITE_OK 3
-step 19  writer     commit                               -> SQLITE_OK
-check ok: BEGIN EXCLUSIVE in WAL mode behaves like BEGIN IMMEDIATE: it starts beside an open reader and the reader keeps reading
-step 20  reader     commit                               -> SQLITE_OK
+════════════════════════════════════════════════════════════════════════
+  6.2  The busy rules
+════════════════════════════════════════════════════════════════════════
 
-== B. WAL mode: two writers, busy_timeout 0
-journal_mode=wal, busy_timeout=0ms on both connections
-step 21  writer-1   begin immediate                      -> SQLITE_OK
-step 22  writer-1   exec INSERT INTO lab(who) VALUES ('writer-1') -> SQLITE_OK
-step 23  writer-2   begin deferred                       -> SQLITE_OK
-step 24  writer-2   query SELECT count(*) FROM lab       -> SQLITE_OK 1
-step 25  writer-2   exec INSERT INTO lab(who) VALUES ('writer-2') -> SQLITE_BUSY (5)
-check ok: BEGIN DEFERRED and a read succeed; the first write statement returns SQLITE_BUSY (5)
-step 26  writer-2   rollback                             -> SQLITE_OK
-step 27  writer-2   begin immediate                      -> SQLITE_BUSY (5)
-check ok: BEGIN IMMEDIATE returns SQLITE_BUSY (5) at the BEGIN itself
-step 28  writer-1   commit                               -> SQLITE_OK
+Two child processes, each with one connection to the same database, run
+scripted steps in turn. Every step is numbered in the order it was sent.
+A step can also be sent without waiting for its answer: the parent then
+checks that no answer came within 250ms (at_250ms below), runs other steps,
+and collects the answer later, so its row appears after theirs.
 
-== C. WAL mode: two writers, busy_timeout 120000ms (each step must answer within 30s, so a statement that waited out the timeout would fail the run)
-journal_mode=wal, busy_timeout=120000ms on both connections
--- C1. BEGIN IMMEDIATE waits for the lock
-step 29  writer-1   begin immediate                      -> SQLITE_OK
-step 30  writer-1   exec INSERT INTO lab(who) VALUES ('writer-1') -> SQLITE_OK
-step 31  writer-2   begin immediate                      .. sent, not waiting for the answer
-step 31  writer-2   begin immediate                      .. no answer after 250ms
-step 32  writer-1   commit                               -> SQLITE_OK
-step 31  writer-2   begin immediate                      -> SQLITE_OK
-check ok: BEGIN IMMEDIATE did not return while the other writer held the lock, and returned SQLITE_OK after it committed
-step 33  writer-2   exec INSERT INTO lab(who) VALUES ('writer-2') -> SQLITE_OK
-step 34  writer-2   commit                               -> SQLITE_OK
--- C2. a deferred transaction with no read yet also waits at its first write
-step 35  writer-1   begin immediate                      -> SQLITE_OK
-step 36  writer-1   exec INSERT INTO lab(who) VALUES ('writer-1') -> SQLITE_OK
-step 37  writer-2   begin deferred                       -> SQLITE_OK
-step 38  writer-2   exec INSERT INTO lab(who) VALUES ('writer-2') .. sent, not waiting for the answer
-step 38  writer-2   exec INSERT INTO lab(who) VALUES ('writer-2') .. no answer after 250ms
-step 39  writer-1   commit                               -> SQLITE_OK
-step 38  writer-2   exec INSERT INTO lab(who) VALUES ('writer-2') -> SQLITE_OK
-check ok: the first statement of a deferred transaction waits like BEGIN IMMEDIATE and then succeeds
-step 40  writer-2   commit                               -> SQLITE_OK
--- C3. a deferred transaction that has already read cannot wait
-step 41  writer-2   begin deferred                       -> SQLITE_OK
-step 42  writer-2   query SELECT count(*) FROM lab       -> SQLITE_OK 5
-step 43  writer-1   begin immediate                      -> SQLITE_OK
-step 44  writer-1   exec INSERT INTO lab(who) VALUES ('writer-1') -> SQLITE_OK
-step 45  writer-2   exec INSERT INTO lab(who) VALUES ('writer-2') -> SQLITE_BUSY (5)
-check ok: its first write returns SQLITE_BUSY (5) at once although the busy timeout is 120000ms
-step 46  writer-1   commit                               -> SQLITE_OK
-step 47  writer-2   exec INSERT INTO lab(who) VALUES ('writer-2') -> SQLITE_BUSY_SNAPSHOT (517)
-check ok: after the other writer committed, the same write returns SQLITE_BUSY_SNAPSHOT (517) at once: the snapshot it read is no longer the newest
-step 48  writer-2   rollback                             -> SQLITE_OK
-step 49  writer-2   begin immediate                      -> SQLITE_OK
-step 50  writer-2   exec INSERT INTO lab(who) VALUES ('writer-2') -> SQLITE_OK
-step 51  writer-2   commit                               -> SQLITE_OK
-check ok: the same write succeeds once the transaction is restarted
+Every step must answer within 30s. A statement that waited out a busy
+timeout of 120000ms would fail the run instead of returning late.
 
-== D. rollback mode (journal_mode=delete) as the contrast: a reader and a writer, busy_timeout 0
-journal_mode=delete, busy_timeout=0ms on both connections
-step 52  reader     begin deferred                       -> SQLITE_OK
-step 53  reader     query SELECT count(*) FROM lab       -> SQLITE_OK 1
-step 54  writer     begin immediate                      -> SQLITE_OK
-step 55  writer     exec INSERT INTO lab(who) VALUES ('writer') -> SQLITE_OK
-check ok: the writer takes RESERVED and writes beside the reader's SHARED lock
-step 56  writer     commit                               -> SQLITE_BUSY (5)
-check ok: the writer's COMMIT returns SQLITE_BUSY (5): it needs EXCLUSIVE and the reader holds SHARED
-step 57  reader     commit                               -> SQLITE_OK
-step 58  reader     query SELECT count(*) FROM lab       -> SQLITE_BUSY (5)
-check ok: a new read now returns SQLITE_BUSY (5): the writer kept PENDING after its failed COMMIT
-step 59  writer     commit                               -> SQLITE_OK
-check ok: the writer's second COMMIT succeeds once no reader is left
-step 60  reader     query SELECT count(*) FROM lab       -> SQLITE_OK 2
-check ok: and the reader then reads the committed row
+The settings of each part (the same on both connections):
+┌──────┬──────────────┬─────────────────┐
+│ part │ journal_mode │ busy_timeout_ms │
+├──────┼──────────────┼─────────────────┤
+│ A    │ wal          │ 0               │
+│ B    │ wal          │ 0               │
+│ C    │ wal          │ 120000          │
+│ D    │ delete       │ 0               │
+│ E    │ wal          │ 120000          │
+└──────┴──────────────┴─────────────────┘
 
-== E. two writers apply recipe steps 6-15 alternately with BEGIN IMMEDIATE and busy_timeout 120000ms; each step starts while the other writer holds the lock
-step 61  writer-1   begin immediate                      -> SQLITE_OK
-step 62  writer-1   recipe-exec 6                        -> SQLITE_OK
-step 63  writer-2   begin immediate                      .. sent, not waiting for the answer
-step 63  writer-2   begin immediate                      .. no answer after 250ms
-step 64  writer-1   commit                               -> SQLITE_OK
-step 63  writer-2   begin immediate                      -> SQLITE_OK
-step 65  writer-2   recipe-exec 7                        -> SQLITE_OK
-step 66  writer-2   commit                               -> SQLITE_OK
-step 67  writer-2   begin immediate                      -> SQLITE_OK
-step 68  writer-2   recipe-exec 8                        -> SQLITE_OK
-step 69  writer-1   begin immediate                      .. sent, not waiting for the answer
-step 69  writer-1   begin immediate                      .. no answer after 250ms
-step 70  writer-2   commit                               -> SQLITE_OK
-step 69  writer-1   begin immediate                      -> SQLITE_OK
-step 71  writer-1   recipe-exec 9                        -> SQLITE_OK
-step 72  writer-1   commit                               -> SQLITE_OK
-step 73  writer-1   begin immediate                      -> SQLITE_OK
-step 74  writer-1   recipe-exec 10                       -> SQLITE_OK
-step 75  writer-2   begin immediate                      .. sent, not waiting for the answer
-step 75  writer-2   begin immediate                      .. no answer after 250ms
-step 76  writer-1   commit                               -> SQLITE_OK
-step 75  writer-2   begin immediate                      -> SQLITE_OK
-step 77  writer-2   recipe-exec 11                       -> SQLITE_OK
-step 78  writer-2   commit                               -> SQLITE_OK
-step 79  writer-2   begin immediate                      -> SQLITE_OK
-step 80  writer-2   recipe-exec 12                       -> SQLITE_OK
-step 81  writer-1   begin immediate                      .. sent, not waiting for the answer
-step 81  writer-1   begin immediate                      .. no answer after 250ms
-step 82  writer-2   commit                               -> SQLITE_OK
-step 81  writer-1   begin immediate                      -> SQLITE_OK
-step 83  writer-1   recipe-exec 13                       -> SQLITE_OK
-step 84  writer-1   commit                               -> SQLITE_OK
-step 85  writer-1   begin immediate                      -> SQLITE_OK
-step 86  writer-1   recipe-exec 14                       -> SQLITE_OK
-step 87  writer-2   begin immediate                      .. sent, not waiting for the answer
-step 87  writer-2   begin immediate                      .. no answer after 250ms
-step 88  writer-1   commit                               -> SQLITE_OK
-step 87  writer-2   begin immediate                      -> SQLITE_OK
-step 89  writer-2   recipe-exec 15                       -> SQLITE_OK
-step 90  writer-2   commit                               -> SQLITE_OK
-step 91  writer-2   user-version                         -> SQLITE_OK 15
-check ok: every waiting BEGIN IMMEDIATE was still waiting while the other writer held the lock, and every transaction committed
-user_version seen by the last writer: 15; the closed file equals recipe step 15 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: the final database equals the recipe's state after step 15
+── A. WAL mode: a reader and a writer, busy_timeout 0 ─────────────────
 
-BUSY RULES OK
+With busy_timeout 0 any wait would show up as SQLITE_BUSY. None does: the
+writer commits beside an open reader (steps 3-5), the reader keeps its
+snapshot (step 6 still counts 1 row), a new reader reads the last committed
+state while a write is open (step 11), and BEGIN EXCLUSIVE (step 16) starts
+beside an open reader, exactly like BEGIN IMMEDIATE.
+┌──────┬─────────┬──────────────────────────────────────────────────┬───────────┬───────┐
+│ step │ process │                      action                      │  result   │ value │
+├──────┼─────────┼──────────────────────────────────────────────────┼───────────┼───────┤
+│ 1    │ reader  │ begin deferred                                   │ SQLITE_OK │       │
+│ 2    │ reader  │ query SELECT count(*) FROM lab                   │ SQLITE_OK │ 1     │
+│ 3    │ writer  │ begin immediate                                  │ SQLITE_OK │       │
+│ 4    │ writer  │ exec INSERT INTO lab(who) VALUES ('writer')      │ SQLITE_OK │       │
+│ 5    │ writer  │ commit                                           │ SQLITE_OK │       │
+│ 6    │ reader  │ query SELECT count(*) FROM lab                   │ SQLITE_OK │ 1     │
+│ 7    │ reader  │ commit                                           │ SQLITE_OK │       │
+│ 8    │ writer  │ begin immediate                                  │ SQLITE_OK │       │
+│ 9    │ writer  │ exec INSERT INTO lab(who) VALUES ('uncommitted') │ SQLITE_OK │       │
+│ 10   │ reader  │ begin deferred                                   │ SQLITE_OK │       │
+│ 11   │ reader  │ query SELECT count(*) FROM lab                   │ SQLITE_OK │ 2     │
+│ 12   │ writer  │ commit                                           │ SQLITE_OK │       │
+│ 13   │ reader  │ commit                                           │ SQLITE_OK │       │
+│ 14   │ reader  │ begin deferred                                   │ SQLITE_OK │       │
+│ 15   │ reader  │ query SELECT count(*) FROM lab                   │ SQLITE_OK │ 3     │
+│ 16   │ writer  │ begin exclusive                                  │ SQLITE_OK │       │
+│ 17   │ writer  │ exec INSERT INTO lab(who) VALUES ('exclusive')   │ SQLITE_OK │       │
+│ 18   │ reader  │ query SELECT count(*) FROM lab                   │ SQLITE_OK │ 3     │
+│ 19   │ writer  │ commit                                           │ SQLITE_OK │       │
+│ 20   │ reader  │ commit                                           │ SQLITE_OK │       │
+└──────┴─────────┴──────────────────────────────────────────────────┴───────────┴───────┘
+
+── B. WAL mode: two writers, busy_timeout 0 ───────────────────────────
+
+BEGIN DEFERRED and a read succeed; the first write returns SQLITE_BUSY
+(step 25). BEGIN IMMEDIATE returns SQLITE_BUSY at the BEGIN itself (step 27).
+┌──────┬──────────┬───────────────────────────────────────────────┬─────────────────┬───────┐
+│ step │ process  │                    action                     │     result      │ value │
+├──────┼──────────┼───────────────────────────────────────────────┼─────────────────┼───────┤
+│ 21   │ writer-1 │ begin immediate                               │ SQLITE_OK       │       │
+│ 22   │ writer-1 │ exec INSERT INTO lab(who) VALUES ('writer-1') │ SQLITE_OK       │       │
+│ 23   │ writer-2 │ begin deferred                                │ SQLITE_OK       │       │
+│ 24   │ writer-2 │ query SELECT count(*) FROM lab                │ SQLITE_OK       │ 1     │
+│ 25   │ writer-2 │ exec INSERT INTO lab(who) VALUES ('writer-2') │ SQLITE_BUSY (5) │       │
+│ 26   │ writer-2 │ rollback                                      │ SQLITE_OK       │       │
+│ 27   │ writer-2 │ begin immediate                               │ SQLITE_BUSY (5) │       │
+│ 28   │ writer-1 │ commit                                        │ SQLITE_OK       │       │
+└──────┴──────────┴───────────────────────────────────────────────┴─────────────────┴───────┘
+
+── C. WAL mode: two writers, busy_timeout 120000ms ────────────────────
+
+C1. BEGIN IMMEDIATE waits for the lock. Step 31 is sent while writer-1
+    holds the lock, has no answer after 250ms, and returns SQLITE_OK once
+    writer-1 commits (step 32).
+┌──────┬──────────┬───────────────────────────────────────────────┬───────────┬───────────┬───────┐
+│ step │ process  │                    action                     │ at_250ms  │  result   │ value │
+├──────┼──────────┼───────────────────────────────────────────────┼───────────┼───────────┼───────┤
+│ 29   │ writer-1 │ begin immediate                               │           │ SQLITE_OK │       │
+│ 30   │ writer-1 │ exec INSERT INTO lab(who) VALUES ('writer-1') │           │ SQLITE_OK │       │
+│ 32   │ writer-1 │ commit                                        │           │ SQLITE_OK │       │
+│ 31   │ writer-2 │ begin immediate                               │ no answer │ SQLITE_OK │       │
+│ 33   │ writer-2 │ exec INSERT INTO lab(who) VALUES ('writer-2') │           │ SQLITE_OK │       │
+│ 34   │ writer-2 │ commit                                        │           │ SQLITE_OK │       │
+└──────┴──────────┴───────────────────────────────────────────────┴───────────┴───────────┴───────┘
+
+C2. A deferred transaction that has not read yet also waits, at its first
+    write (step 38), and then succeeds.
+┌──────┬──────────┬───────────────────────────────────────────────┬───────────┬───────────┬───────┐
+│ step │ process  │                    action                     │ at_250ms  │  result   │ value │
+├──────┼──────────┼───────────────────────────────────────────────┼───────────┼───────────┼───────┤
+│ 35   │ writer-1 │ begin immediate                               │           │ SQLITE_OK │       │
+│ 36   │ writer-1 │ exec INSERT INTO lab(who) VALUES ('writer-1') │           │ SQLITE_OK │       │
+│ 37   │ writer-2 │ begin deferred                                │           │ SQLITE_OK │       │
+│ 39   │ writer-1 │ commit                                        │           │ SQLITE_OK │       │
+│ 38   │ writer-2 │ exec INSERT INTO lab(who) VALUES ('writer-2') │ no answer │ SQLITE_OK │       │
+│ 40   │ writer-2 │ commit                                        │           │ SQLITE_OK │       │
+└──────┴──────────┴───────────────────────────────────────────────┴───────────┴───────────┴───────┘
+
+C3. A deferred transaction that has already read (step 42) cannot wait: its
+    first write returns SQLITE_BUSY at once (step 45), despite the 120000ms
+    timeout. After the other writer commits, the same write returns
+    SQLITE_BUSY_SNAPSHOT (step 47): the snapshot it read is no longer the
+    newest. Only a restarted transaction succeeds (steps 49-51).
+┌──────┬──────────┬───────────────────────────────────────────────┬────────────────────────────┬───────┐
+│ step │ process  │                    action                     │           result           │ value │
+├──────┼──────────┼───────────────────────────────────────────────┼────────────────────────────┼───────┤
+│ 41   │ writer-2 │ begin deferred                                │ SQLITE_OK                  │       │
+│ 42   │ writer-2 │ query SELECT count(*) FROM lab                │ SQLITE_OK                  │ 5     │
+│ 43   │ writer-1 │ begin immediate                               │ SQLITE_OK                  │       │
+│ 44   │ writer-1 │ exec INSERT INTO lab(who) VALUES ('writer-1') │ SQLITE_OK                  │       │
+│ 45   │ writer-2 │ exec INSERT INTO lab(who) VALUES ('writer-2') │ SQLITE_BUSY (5)            │       │
+│ 46   │ writer-1 │ commit                                        │ SQLITE_OK                  │       │
+│ 47   │ writer-2 │ exec INSERT INTO lab(who) VALUES ('writer-2') │ SQLITE_BUSY_SNAPSHOT (517) │       │
+│ 48   │ writer-2 │ rollback                                      │ SQLITE_OK                  │       │
+│ 49   │ writer-2 │ begin immediate                               │ SQLITE_OK                  │       │
+│ 50   │ writer-2 │ exec INSERT INTO lab(who) VALUES ('writer-2') │ SQLITE_OK                  │       │
+│ 51   │ writer-2 │ commit                                        │ SQLITE_OK                  │       │
+└──────┴──────────┴───────────────────────────────────────────────┴────────────────────────────┴───────┘
+
+── D. Rollback mode (journal_mode=delete), busy_timeout 0 ─────────────
+
+The contrast. The writer takes RESERVED and writes beside the reader's SHARED
+lock, but its COMMIT needs EXCLUSIVE and returns SQLITE_BUSY (step 56). The
+failed COMMIT keeps PENDING, so a new read also returns SQLITE_BUSY (step 58)
+until the writer's second COMMIT succeeds (step 59).
+┌──────┬─────────┬─────────────────────────────────────────────┬─────────────────┬───────┐
+│ step │ process │                   action                    │     result      │ value │
+├──────┼─────────┼─────────────────────────────────────────────┼─────────────────┼───────┤
+│ 52   │ reader  │ begin deferred                              │ SQLITE_OK       │       │
+│ 53   │ reader  │ query SELECT count(*) FROM lab              │ SQLITE_OK       │ 1     │
+│ 54   │ writer  │ begin immediate                             │ SQLITE_OK       │       │
+│ 55   │ writer  │ exec INSERT INTO lab(who) VALUES ('writer') │ SQLITE_OK       │       │
+│ 56   │ writer  │ commit                                      │ SQLITE_BUSY (5) │       │
+│ 57   │ reader  │ commit                                      │ SQLITE_OK       │       │
+│ 58   │ reader  │ query SELECT count(*) FROM lab              │ SQLITE_BUSY (5) │       │
+│ 59   │ writer  │ commit                                      │ SQLITE_OK       │       │
+│ 60   │ reader  │ query SELECT count(*) FROM lab              │ SQLITE_OK       │ 2     │
+└──────┴─────────┴─────────────────────────────────────────────┴─────────────────┴───────┘
+
+── E. Recipe steps 6-15 under contention ──────────────────────────────
+
+The database is the recipe built to step 5. Two writers apply steps 6-15
+in turn, each in its own BEGIN IMMEDIATE transaction, busy_timeout 120000ms.
+Each BEGIN IMMEDIATE is sent while the other writer still holds the lock.
+
+E1. One row per recipe step: who applied it, whether its BEGIN IMMEDIATE
+    was still waiting at 250ms (the first writer of a pair began alone),
+    and how its BEGIN and COMMIT ended.
+┌─────────────┬──────────┬────────────────┬──────────────┬─────────────┬───────────────┐
+│ recipe_step │ process  │ begin_at_250ms │ begin_result │ exec_result │ commit_result │
+├─────────────┼──────────┼────────────────┼──────────────┼─────────────┼───────────────┤
+│ 6           │ writer-1 │                │ SQLITE_OK    │ SQLITE_OK   │ SQLITE_OK     │
+│ 7           │ writer-2 │ no answer      │ SQLITE_OK    │ SQLITE_OK   │ SQLITE_OK     │
+│ 8           │ writer-2 │                │ SQLITE_OK    │ SQLITE_OK   │ SQLITE_OK     │
+│ 9           │ writer-1 │ no answer      │ SQLITE_OK    │ SQLITE_OK   │ SQLITE_OK     │
+│ 10          │ writer-1 │                │ SQLITE_OK    │ SQLITE_OK   │ SQLITE_OK     │
+│ 11          │ writer-2 │ no answer      │ SQLITE_OK    │ SQLITE_OK   │ SQLITE_OK     │
+│ 12          │ writer-2 │                │ SQLITE_OK    │ SQLITE_OK   │ SQLITE_OK     │
+│ 13          │ writer-1 │ no answer      │ SQLITE_OK    │ SQLITE_OK   │ SQLITE_OK     │
+│ 14          │ writer-1 │                │ SQLITE_OK    │ SQLITE_OK   │ SQLITE_OK     │
+│ 15          │ writer-2 │ no answer      │ SQLITE_OK    │ SQLITE_OK   │ SQLITE_OK     │
+└─────────────┴──────────┴────────────────┴──────────────┴─────────────┴───────────────┘
+
+E2. The full transcript.
+┌──────┬──────────┬─────────────────┬───────────┬───────────┬───────┐
+│ step │ process  │     action      │ at_250ms  │  result   │ value │
+├──────┼──────────┼─────────────────┼───────────┼───────────┼───────┤
+│ 61   │ writer-1 │ begin immediate │           │ SQLITE_OK │       │
+│ 62   │ writer-1 │ recipe-exec 6   │           │ SQLITE_OK │       │
+│ 64   │ writer-1 │ commit          │           │ SQLITE_OK │       │
+│ 63   │ writer-2 │ begin immediate │ no answer │ SQLITE_OK │       │
+│ 65   │ writer-2 │ recipe-exec 7   │           │ SQLITE_OK │       │
+│ 66   │ writer-2 │ commit          │           │ SQLITE_OK │       │
+│ 67   │ writer-2 │ begin immediate │           │ SQLITE_OK │       │
+│ 68   │ writer-2 │ recipe-exec 8   │           │ SQLITE_OK │       │
+│ 70   │ writer-2 │ commit          │           │ SQLITE_OK │       │
+│ 69   │ writer-1 │ begin immediate │ no answer │ SQLITE_OK │       │
+│ 71   │ writer-1 │ recipe-exec 9   │           │ SQLITE_OK │       │
+│ 72   │ writer-1 │ commit          │           │ SQLITE_OK │       │
+│ 73   │ writer-1 │ begin immediate │           │ SQLITE_OK │       │
+│ 74   │ writer-1 │ recipe-exec 10  │           │ SQLITE_OK │       │
+│ 76   │ writer-1 │ commit          │           │ SQLITE_OK │       │
+│ 75   │ writer-2 │ begin immediate │ no answer │ SQLITE_OK │       │
+│ 77   │ writer-2 │ recipe-exec 11  │           │ SQLITE_OK │       │
+│ 78   │ writer-2 │ commit          │           │ SQLITE_OK │       │
+│ 79   │ writer-2 │ begin immediate │           │ SQLITE_OK │       │
+│ 80   │ writer-2 │ recipe-exec 12  │           │ SQLITE_OK │       │
+│ 82   │ writer-2 │ commit          │           │ SQLITE_OK │       │
+│ 81   │ writer-1 │ begin immediate │ no answer │ SQLITE_OK │       │
+│ 83   │ writer-1 │ recipe-exec 13  │           │ SQLITE_OK │       │
+│ 84   │ writer-1 │ commit          │           │ SQLITE_OK │       │
+│ 85   │ writer-1 │ begin immediate │           │ SQLITE_OK │       │
+│ 86   │ writer-1 │ recipe-exec 14  │           │ SQLITE_OK │       │
+│ 88   │ writer-1 │ commit          │           │ SQLITE_OK │       │
+│ 87   │ writer-2 │ begin immediate │ no answer │ SQLITE_OK │       │
+│ 89   │ writer-2 │ recipe-exec 15  │           │ SQLITE_OK │       │
+│ 90   │ writer-2 │ commit          │           │ SQLITE_OK │       │
+│ 91   │ writer-2 │ user-version    │           │ SQLITE_OK │ 15    │
+└──────┴──────────┴─────────────────┴───────────┴───────────┴───────┘
+
+E3. The user_version the last writer saw, and the recipe step the closed
+    file equals (exact = false: equal except the change counter at bytes
+    24-27 and 92-95).
+┌──────────────┬──────────────┬───────┐
+│ user_version │ matched_step │ exact │
+├──────────────┼──────────────┼───────┤
+│ 15           │ 15           │ false │
+└──────────────┴──────────────┴───────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A  ✓  with a read transaction open, the writer begins, writes and commits without waiting
+A  ✓  the reader still sees its snapshot (1 rows) after the commit
+A  ✓  with a write transaction open, a reader starts and reads the last committed state (2 rows) without waiting
+A  ✓  BEGIN EXCLUSIVE in WAL mode behaves like BEGIN IMMEDIATE: it starts beside an open reader and the reader keeps reading
+B  ✓  BEGIN DEFERRED and a read succeed; the first write statement returns SQLITE_BUSY (5)
+B  ✓  BEGIN IMMEDIATE returns SQLITE_BUSY (5) at the BEGIN itself
+C1  ✓  BEGIN IMMEDIATE did not return while the other writer held the lock, and returned SQLITE_OK after it committed
+C2  ✓  the first statement of a deferred transaction waits like BEGIN IMMEDIATE and then succeeds
+C3  ✓  its first write returns SQLITE_BUSY (5) at once although the busy timeout is 120000ms
+C3  ✓  after the other writer committed, the same write returns SQLITE_BUSY_SNAPSHOT (517) at once: the snapshot it read is no longer the newest
+C3  ✓  the same write succeeds once the transaction is restarted
+D  ✓  the writer takes RESERVED and writes beside the reader's SHARED lock
+D  ✓  the writer's COMMIT returns SQLITE_BUSY (5): it needs EXCLUSIVE and the reader holds SHARED
+D  ✓  a new read now returns SQLITE_BUSY (5): the writer kept PENDING after its failed COMMIT
+D  ✓  the writer's second COMMIT succeeds once no reader is left
+D  ✓  and the reader then reads the committed row
+E  ✓  every waiting BEGIN IMMEDIATE was still waiting while the other writer held the lock, and every transaction committed
+E  ✓  the final database equals the recipe's state after step 15
+
+18 of 18 claims hold
+
+Experiment verdict: BUSY RULES OK
 ```
 
 **Reading the evidence:**
@@ -1176,18 +1908,18 @@ The script sets a `30s` per-step deadline (`stepDeadline`) against a `120,000ms`
 | A (WAL, `0ms`) | Reader open (`count=3`) | Writer `BEGIN EXCLUSIVE` / `INSERT` / `COMMIT`, reader queries during txn | All `SQLITE_OK` (`EXCLUSIVE` = `IMMEDIATE` in WAL) |
 | B (WAL, `0ms`) | `writer-1` holds write txn | `writer-2` `BEGIN DEFERRED` / `count` / `INSERT` | `OK` / `OK 1` / `SQLITE_BUSY (5)` at first write |
 | B (WAL, `0ms`) | `writer-1` holds write txn | `writer-2` `BEGIN IMMEDIATE` | `SQLITE_BUSY (5)` at `BEGIN` itself |
-| C1 (WAL, `120s`) | `writer-1` holds write txn | `writer-2` `BEGIN IMMEDIATE` | `no answer after 250ms`, then `SQLITE_OK` after `writer-1` commits |
-| C2 (WAL, `120s`) | `writer-1` holds write txn | `writer-2` `BEGIN DEFERRED`, then `INSERT` (no prior read) | `no answer after 250ms`, then `SQLITE_OK` after `writer-1` commits |
+| C1 (WAL, `120s`) | `writer-1` holds write txn | `writer-2` `BEGIN IMMEDIATE` | `no answer` at 250ms, then `SQLITE_OK` after `writer-1` commits |
+| C2 (WAL, `120s`) | `writer-1` holds write txn | `writer-2` `BEGIN DEFERRED`, then `INSERT` (no prior read) | `no answer` at 250ms, then `SQLITE_OK` after `writer-1` commits |
 | C3 (WAL, `120s`) | `writer-2` `BEGIN DEFERRED` + `count=5`; `writer-1` holds write txn | `writer-2` `INSERT` | `SQLITE_BUSY (5)` at once (skips `120s` timeout) |
 | C3 (WAL, `120s`) | `writer-1` commits | `writer-2` same `INSERT` | `SQLITE_BUSY_SNAPSHOT (517)` at once |
 | C3 (WAL, `120s`) | `writer-2` `ROLLBACK` | `BEGIN IMMEDIATE` / `INSERT` / `COMMIT` | All `SQLITE_OK` |
 | D (delete, `0ms`) | Reader open (`SHARED`) | Writer `BEGIN IMMEDIATE` / `INSERT` / `COMMIT` | `OK` / `OK` / `SQLITE_BUSY (5)` |
 | D (delete, `0ms`) | Reader ends, tries new `count` | Reader `count` (autocommit) | `SQLITE_BUSY (5)` (writer kept `PENDING`) |
 | D (delete, `0ms`) | — | Writer `COMMIT`, then reader `count` | `SQLITE_OK`, then `SQLITE_OK 2` |
-| E (WAL, `120s`) | Two writers alternating recipe steps 6–15 | Each waiter sends `BEGIN IMMEDIATE` while holder owns lock | All 5 waiting steps report `no answer after 250ms`, then `SQLITE_OK`; closed file equals recipe step `15` |
+| E (WAL, `120s`) | Two writers alternating recipe steps 6–15 | Each waiter sends `BEGIN IMMEDIATE` while holder owns lock | All 5 waiting steps report `no answer` at 250ms, then `SQLITE_OK`; closed file equals recipe step `15` |
 
-- **What `no answer after 250ms` proves (and its limit):** `modernc.org/sqlite` does not expose a Go callback for `sqlite3_busy_handler`, so the experiment cannot print an in-process busy-handler call count. Instead, `Lab.StillWaiting` waits `250ms` (`StillWaitingWindow`) via `Call.AnsweredWithin` without killing the child. A non-waiting failure (`busy_timeout=0`) answers over the local pipe in well under `250ms` and prints `.. already answered` (verified by `TestStillWaitingSeesImmediateBusy` and adversarial test `BUSY-09`, whose `strace` of Experiment 6.2 recorded `87` `EAGAIN` return values on `-shm` byte `120`).
-- **Part E match line (line 142):** `the closed file equals recipe step 15 (equal except the change counter at bytes 24-27 and 92-95)`. Because two long-lived connections applied steps 6–15 instead of opening a fresh connection per step, the file's change-counter bytes differ from the per-step reference build while every other byte of every page is identical (the Chapter 1 and Chapter 2 rule).
+- **What `no answer` at 250ms proves (and its limit):** `modernc.org/sqlite` does not expose a Go callback for `sqlite3_busy_handler`, so the experiment cannot print an in-process busy-handler call count. Instead, `Lab.StillWaiting` waits `250ms` (`StillWaitingWindow`) via `Call.AnsweredWithin` without killing the child. A non-waiting failure (`busy_timeout=0`) answers over the local pipe in well under `250ms` and is recorded as `answered` (`internal/procs` prints `.. already answered`) (verified by `TestStillWaitingSeesImmediateBusy` and adversarial test `BUSY-09`, whose `strace` of Experiment 6.2 recorded `87` `EAGAIN` return values on `-shm` byte `120`).
+- **Part E match (E3):** `user_version` `15`, matched step `15`, exact `false`: the closed file equals recipe step 15 except the change counter at bytes 24-27 and 92-95. Because two long-lived connections applied steps 6–15 instead of opening a fresh connection per step, the file's change-counter bytes differ from the per-step reference build while every other byte of every page is identical (the Chapter 1 and Chapter 2 rule).
 
 ---
 
@@ -3445,10 +4177,10 @@ func FileInode(path string) (uint64, error) { return 0, ErrNoProcLocks }
 ### 5.2 Experiment 6.3 — Torn copy (`6.3-torn-copy`)
 
 - **Claim:** Copying a database file with plain OS reads while SQLite writes to it is not safe: a copy straddling a WAL checkpoint or a rollback commit produces a torn file that fails `PRAGMA integrity_check` or matches no recipe state. In WAL mode, copying only the main `.db` file between commits opens cleanly and passes `integrity_check`, but silently loses every uncheckpointed commit.
-- **Evidence form:** `EXACT` (all lines except `INFO:` lines).
-- **Run command:**
+- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./ch06-locking-and-concurrency/experiments/6.3-torn-copy
+  go run ./cmd/course run 6.3
   ```
 
 <!-- include: experiments/6.3-torn-copy/main.go -->
@@ -3458,6 +4190,9 @@ func FileInode(path string) (uint64, error) { return 0, ErrNoProcLocks }
 // drops uncheckpointed commits (Part A1), and copying .db across an active
 // checkpoint produces a torn, corrupt file (Part A2); in rollback mode, copying
 // .db across a live commit tears the copy the same way (Part B).
+//
+// It prints only its verdict. The steps and what each copy holds go to CSV
+// tables that report.sql presents: go run ./cmd/course run 6.3
 package main
 
 import (
@@ -3469,6 +4204,7 @@ import (
 
 	"github.com/nickstrad/walfleet/internal/procs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
@@ -3484,6 +4220,41 @@ var describeQueries = []string{
 	"SELECT (SELECT count(*) FROM accounts) || ' accounts, ' || (SELECT count(*) FROM events) || ' events, ' || (SELECT count(*) FROM documents) || ' documents'",
 }
 
+// Every step and every examined copy goes to a CSV table in <work dir>/results/;
+// part labels the rows written while a part runs.
+var (
+	set    *results.Set
+	part   string
+	tables struct {
+		steps, copies, integrityProblems, infoRun *results.Table
+	}
+)
+
+func openTables() {
+	tables.steps = set.Table("steps", "part", "step", "process", "action", "result", "code", "value")
+	tables.copies = set.Table("copies", "part", "copy", "bytes", "pages", "open_error", "integrity", "user_version", "contents", "matched_step", "exact")
+	tables.integrityProblems = set.Table("integrity_problems", "part", "copy", "n", "problem")
+	tables.infoRun = set.Table("info_run", "work_dir", "db_bytes_at_copy")
+}
+
+// recorder is a procs.Lab that writes each step and claim to the tables
+// instead of printing them.
+type recorder struct{ *procs.Lab }
+
+func newRecorder() *recorder {
+	lab := procs.NewLab(os.Stdout)
+	lab.Script.Out = nil
+	return &recorder{lab}
+}
+
+func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
+	r := l.Lab.Must(child, action, args...)
+	tables.steps.Row(part, r.Step, child.Name, procs.ActionText(action, args), r.CodeName(), r.Code, r.Value)
+	return r
+}
+
+func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
+
 type copyReport struct {
 	name       string
 	bytes      int64
@@ -3492,8 +4263,8 @@ type copyReport struct {
 }
 
 // examine verifies that inspecting path does not modify it, matches path against
-// the recipe's known states, and prints its size, integrity_check summary, and counts.
-func examine(ctx context.Context, lab *procs.Lab, r recipe.Recipe, path, journal string) copyReport {
+// the recipe's known states, and records its size, integrity_check result, and counts.
+func examine(ctx context.Context, lab *recorder, r recipe.Recipe, path, journal string) copyReport {
 	info, err := os.Stat(path)
 	if err != nil {
 		lab.Fatal("stat", err)
@@ -3518,30 +4289,26 @@ func examine(ctx context.Context, lab *procs.Lab, r recipe.Recipe, path, journal
 		lab.Fatal("inspect", fmt.Errorf("opening %s changed it", filepath.Base(path)))
 	}
 	report := copyReport{name: filepath.Base(path), bytes: info.Size(), match: match, inspection: inspection}
-	fmt.Printf("copy %s: %d bytes (%d pages)\n", report.name, report.bytes, report.bytes/pageSize)
-	if inspection.OpenError != "" {
-		fmt.Printf("  open: %s\n", inspection.OpenError)
+	problems := procs.IntegrityProblems(inspection.Integrity)
+	integrity := inspection.Integrity
+	if len(problems) > 0 {
+		integrity = fmt.Sprintf("%d problem(s)", len(problems))
 	}
-	printIntegrity(inspection.Integrity)
-	fmt.Printf("  user_version: %s; %s\n", inspection.Values[0], inspection.Values[1])
-	fmt.Printf("  equals: %s\n", match)
+	var openError, matched any
+	if inspection.OpenError != "" {
+		openError = inspection.OpenError
+	}
+	if match.Found() {
+		matched = match.Step
+	}
+	tables.copies.Row(part, report.name, report.bytes, report.bytes/pageSize, openError, integrity, inspection.Values[0], inspection.Values[1], matched, match.Exact)
+	for i, problem := range problems {
+		tables.integrityProblems.Row(part, report.name, i+1, problem)
+	}
 	return report
 }
 
-func printIntegrity(text string) {
-	problems := procs.IntegrityProblems(text)
-	if len(problems) == 0 {
-		fmt.Printf("  integrity_check: %s\n", text)
-		return
-	}
-	shown := min(3, len(problems))
-	fmt.Printf("  integrity_check: %d problem(s), the first %d:\n", len(problems), shown)
-	for _, line := range problems[:shown] {
-		fmt.Printf("    %s\n", line)
-	}
-}
-
-func prepare(ctx context.Context, lab *procs.Lab, r recipe.Recipe, dir, name, journal string) (string, string) {
+func prepare(ctx context.Context, lab *recorder, r recipe.Recipe, dir, name, journal string) (string, string) {
 	root := filepath.Join(dir, name)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		lab.Fatal("mkdir", err)
@@ -3556,9 +4323,8 @@ func prepare(ctx context.Context, lab *procs.Lab, r recipe.Recipe, dir, name, jo
 // walMode runs Part A: commits steps 6-10 with a PASSIVE checkpoint after step 8,
 // inspects a main-file-only copy (A1: valid step 8, commits 9-10 silently lost),
 // and splits a copy across a second checkpoint (A2: torn and corrupt).
-func walMode(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Printf("== A. WAL mode: a writer commits recipe steps %d-%d and checkpoints after step %d (wal_autocheckpoint=0)\n", baseStep+1, lastCommitted, checkpointedAt)
+func walMode(ctx context.Context, lab *recorder, dir string) {
+	part = "A"
 	r := recipe.Default()
 	db, root := prepare(ctx, lab, r, dir, "wal", sqlitex.JournalWAL)
 	writer := lab.SpawnSQL("writer", procs.SQLOptions{Path: db, JournalMode: sqlitex.JournalWAL})
@@ -3572,17 +4338,15 @@ func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 	}
 	sizes := lab.Must(copier, "copy", "db", "main-only.db")
 	lab.Must(copier, "copy", "-wal", "wal-at-copy")
-	fmt.Println()
-	fmt.Println("-- A1. the database file alone, copied with plain reads between commits")
+	part = "A1"
 	mainOnly := examine(ctx, lab, r, filepath.Join(root, "main-only.db"), sqlitex.JournalWAL)
 	lab.Check(mainOnly.inspection.OpenError == "" && mainOnly.inspection.Integrity == "ok" && mainOnly.inspection.Values[0] == strconv.Itoa(checkpointedAt),
 		"the copy of the database file without its -wal opens cleanly and passes integrity_check")
 	lab.Check(mainOnly.match.Found() && mainOnly.match.Step == checkpointedAt,
 		fmt.Sprintf("but it equals recipe step %d, the last checkpoint, not step %d, the last commit: commits %d-%d are silently missing", checkpointedAt, lastCommitted, checkpointedAt+1, lastCommitted))
-	fmt.Printf("INFO: database file at copy time: %s\n", sizes.Value)
+	tables.infoRun.Row(sqlitex.DisplayPath(dir), sizes.Value)
 
-	fmt.Println()
-	fmt.Println("-- A2. the database file copied in two halves while a checkpoint writes into it between them")
+	part = "A2"
 	half := lab.Must(writer, "query", "SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size")
 	lab.Must(copier, "copy-range", "db", "torn.db", "0", half.Value)
 	result := lab.Must(writer, "checkpoint", sqlitex.CheckpointPassive)
@@ -3595,9 +4359,8 @@ func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 
 // rollbackMode runs Part B: copies the first half of a rollback-mode database,
 // commits recipe step 6, copies the second half, and verifies the torn copy fails.
-func rollbackMode(ctx context.Context, lab *procs.Lab, dir string) {
-	fmt.Println()
-	fmt.Printf("== B. rollback mode (journal_mode=delete) as the contrast: the database file copied in two halves while a commit (step %d) writes into it between them\n", baseStep+1)
+func rollbackMode(ctx context.Context, lab *recorder, dir string) {
+	part = "B"
 	r := recipe.Default().WithJournalMode(sqlitex.JournalDelete)
 	db, root := prepare(ctx, lab, r, dir, "rollback", sqlitex.JournalDelete)
 	writer := lab.SpawnSQL("writer", procs.SQLOptions{Path: db, JournalMode: sqlitex.JournalDelete})
@@ -3619,74 +4382,255 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("6.3")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	lab := procs.NewLab(os.Stdout)
+	set = results.MustOpen(dir)
+	openTables()
+	lab := newRecorder()
 	walMode(ctx, lab, dir)
 	rollbackMode(ctx, lab, dir)
-	lab.Report("TORN COPY")
+	set.Finish("TORN COPY")
 }
 ```
 
-Captured output (`evidence/6.3-torn-copy.txt`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/6.3-torn-copy/report.sql -->
+```sql
+-- Walkthrough of experiment 6.3. Run it with:
+--   go run ./cmd/course run 6.3        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   steps                one action of the writer or the copier child process
+--   copies               one copied database file, examined after the copy
+--   integrity_problems   one line of integrity_check output for a copy that fails it
+--   checks               every claim the experiment asserted (the runner lists it last)
+-- info_run (work dir, database file size at copy time) is shown by info.sql.
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  6.3  A plain copy of a live database'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'A writer process changes a database built from the recipe to step 5. A'
+.print 'copier process copies its files with plain reads, the way cp would, with'
+.print 'no SQLite lock. Each copy is then opened read-only, checked with'
+.print 'integrity_check, and compared with every known recipe state.'
+.print
+.print 'What each copy turned out to be:'
+
+SELECT part, copy, pages, coalesce(open_error, '') AS open_error, integrity, user_version,
+       coalesce('step ' || matched_step, 'no recipe step') AS equals
+FROM copies ORDER BY part;
+
+.print
+.print 'In the transcripts below, HALF_QUERY stands for'
+.print '  SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size'
+
+.print
+.print '── A. WAL mode (wal_autocheckpoint=0) ─────────────────────────────────'
+.print
+.print 'The writer commits recipe steps 6-8, runs a PASSIVE checkpoint, then commits'
+.print 'steps 9 and 10, which stay in -wal. The copier then copies the database'
+.print 'file and -wal.'
+
+SELECT step, process,
+       CASE WHEN action LIKE 'query SELECT (page_count / 2)%' THEN 'query HALF_QUERY' ELSE action END AS action,
+       result, value
+FROM steps WHERE part = 'A' ORDER BY step;
+
+.print
+.print 'A1. The database file alone (main-only.db), without its -wal. It opens'
+.print '    cleanly and passes integrity_check, but it is recipe step 8, the last'
+.print '    checkpoint, not step 10, the last commit: commits 9-10 are silently'
+.print '    missing. Equal except the change counter at bytes 24-27 and 92-95'
+.print '    (exact = false).'
+
+SELECT copy, bytes, integrity, user_version, contents, matched_step, exact
+FROM copies WHERE part = 'A1' ORDER BY copy;
+
+.print
+.print 'A2. The database file copied in two halves while a checkpoint writes into it'
+.print '    between them. The checkpoint (step 11) copies all 40 WAL frames of steps'
+.print '    9-10, so the second half comes from a newer database than the first.'
+
+SELECT step, process,
+       CASE WHEN action LIKE 'query SELECT (page_count / 2)%' THEN 'query HALF_QUERY' ELSE action END AS action,
+       result, value
+FROM steps WHERE part = 'A2' ORDER BY step;
+
+.print
+.print 'The torn copy fails integrity_check and equals no recipe state.'
+
+SELECT copy, bytes, pages, integrity, user_version, contents,
+       coalesce('step ' || matched_step, 'no recipe step') AS equals
+FROM copies WHERE part = 'A2' ORDER BY copy;
+
+.print
+.print 'Its integrity_check problems, the first 3 and the count:'
+
+SELECT n, problem FROM integrity_problems WHERE part = 'A2' AND n <= 3
+UNION ALL
+SELECT NULL, '... ' || count(*) || ' problem(s) in all' FROM integrity_problems WHERE part = 'A2'
+ORDER BY n NULLS LAST;
+
+.print
+.print '── B. Rollback mode (journal_mode=delete) ─────────────────────────────'
+.print
+.print 'The contrast: the database file copied in two halves while the commit of'
+.print 'recipe step 6 (transcript step 15) writes into it between them.'
+
+SELECT step, process,
+       CASE WHEN action LIKE 'query SELECT (page_count / 2)%' THEN 'query HALF_QUERY' ELSE action END AS action,
+       result, value
+FROM steps WHERE part = 'B' ORDER BY step;
+
+.print
+.print 'This torn copy also fails integrity_check and equals no recipe state.'
+
+SELECT copy, bytes, pages, integrity, user_version, contents,
+       coalesce('step ' || matched_step, 'no recipe step') AS equals
+FROM copies WHERE part = 'B' ORDER BY copy;
+
+.print
+.print 'Its integrity_check problems:'
+
+SELECT n, problem FROM integrity_problems WHERE part = 'B' ORDER BY n;
+```
+
+`course run` also prints the run-dependent values, which are not part of the stored evidence: the work directory, and the size of the database file when the copier copied it.
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/6.3-torn-copy/`](evidence/6.3-torn-copy/), and `go run ./cmd/course check evidence ch06` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/6.3-torn-copy.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/6.3
 
-== A. WAL mode: a writer commits recipe steps 6-10 and checkpoints after step 8 (wal_autocheckpoint=0)
-step  1  writer     recipe-step 6                        -> SQLITE_OK
-step  2  writer     recipe-step 7                        -> SQLITE_OK
-step  3  writer     recipe-step 8                        -> SQLITE_OK
-step  4  writer     checkpoint PASSIVE                   -> SQLITE_OK busy=0 log=61 checkpointed=61
-step  5  writer     recipe-step 9                        -> SQLITE_OK
-step  6  writer     recipe-step 10                       -> SQLITE_OK
-step  7  copier     copy db main-only.db                 -> SQLITE_OK 323584 bytes
-step  8  copier     copy -wal wal-at-copy                -> SQLITE_OK 251352 bytes
+════════════════════════════════════════════════════════════════════════
+  6.3  A plain copy of a live database
+════════════════════════════════════════════════════════════════════════
 
--- A1. the database file alone, copied with plain reads between commits
-copy main-only.db: 323584 bytes (79 pages)
-  integrity_check: ok
-  user_version: 8; 50 accounts, 336 events, 25 documents
-  equals: step 8 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: the copy of the database file without its -wal opens cleanly and passes integrity_check
-check ok: but it equals recipe step 8, the last checkpoint, not step 10, the last commit: commits 9-10 are silently missing
-INFO: database file at copy time: 323584 bytes
+A writer process changes a database built from the recipe to step 5. A
+copier process copies its files with plain reads, the way cp would, with
+no SQLite lock. Each copy is then opened read-only, checked with
+integrity_check, and compared with every known recipe state.
 
--- A2. the database file copied in two halves while a checkpoint writes into it between them
-step  9  writer     query SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size -> SQLITE_OK 204800
-step 10  copier     copy-range db torn.db 0 204800       -> SQLITE_OK bytes 0-204800
-step 11  writer     checkpoint PASSIVE                   -> SQLITE_OK busy=0 log=40 checkpointed=40
-check ok: the checkpoint copied every WAL frame (steps 9-10) into the database file
-step 12  copier     copy-range db torn.db 204800 end     -> SQLITE_OK bytes 204800-409600
-copy torn.db: 409600 bytes (100 pages)
-  integrity_check: 25 problem(s), the first 3:
-    wrong # of entries in index events_by_account
-    row 335 missing from index events_by_account
-    row 336 missing from index events_by_account
-  user_version: 8; 50 accounts, 336 events, 25 documents
-  equals: no recipe step
-check ok: the torn copy fails integrity_check or equals no recipe state
+What each copy turned out to be:
+┌──────┬──────────────┬───────┬────────────┬───────────────┬──────────────┬────────────────┐
+│ part │     copy     │ pages │ open_error │   integrity   │ user_version │     equals     │
+├──────┼──────────────┼───────┼────────────┼───────────────┼──────────────┼────────────────┤
+│ A1   │ main-only.db │ 79    │            │ ok            │ 8            │ step 8         │
+│ A2   │ torn.db      │ 100   │            │ 25 problem(s) │ 8            │ no recipe step │
+│ B    │ torn.db      │ 60    │            │ 6 problem(s)  │ 5            │ no recipe step │
+└──────┴──────────────┴───────┴────────────┴───────────────┴──────────────┴────────────────┘
 
-== B. rollback mode (journal_mode=delete) as the contrast: the database file copied in two halves while a commit (step 6) writes into it between them
-step 13  writer     query SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size -> SQLITE_OK 102400
-step 14  copier     copy-range db torn.db 0 102400       -> SQLITE_OK bytes 0-102400
-step 15  writer     recipe-step 6                        -> SQLITE_OK
-step 16  copier     copy-range db torn.db 102400 end     -> SQLITE_OK bytes 102400-245760
-copy torn.db: 245760 bytes (60 pages)
-  integrity_check: 6 problem(s), the first 3:
-    Freelist: freelist leaf count too big on page 35
-    Freelist: invalid page number 52
-    Tree 3 page 24 cell 0: overflow list length is 1 but should be 3
-  user_version: 5; 31 accounts, 251 events, 15 documents
-  equals: no recipe step
-check ok: the torn copy fails integrity_check or equals no recipe state
+In the transcripts below, HALF_QUERY stands for
+  SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size
 
-TORN COPY OK
+── A. WAL mode (wal_autocheckpoint=0) ─────────────────────────────────
+
+The writer commits recipe steps 6-8, runs a PASSIVE checkpoint, then commits
+steps 9 and 10, which stay in -wal. The copier then copies the database
+file and -wal.
+┌──────┬─────────┬───────────────────────┬───────────┬───────────────────────────────┐
+│ step │ process │        action         │  result   │             value             │
+├──────┼─────────┼───────────────────────┼───────────┼───────────────────────────────┤
+│ 1    │ writer  │ recipe-step 6         │ SQLITE_OK │                               │
+│ 2    │ writer  │ recipe-step 7         │ SQLITE_OK │                               │
+│ 3    │ writer  │ recipe-step 8         │ SQLITE_OK │                               │
+│ 4    │ writer  │ checkpoint PASSIVE    │ SQLITE_OK │ busy=0 log=61 checkpointed=61 │
+│ 5    │ writer  │ recipe-step 9         │ SQLITE_OK │                               │
+│ 6    │ writer  │ recipe-step 10        │ SQLITE_OK │                               │
+│ 7    │ copier  │ copy db main-only.db  │ SQLITE_OK │ 323584 bytes                  │
+│ 8    │ copier  │ copy -wal wal-at-copy │ SQLITE_OK │ 251352 bytes                  │
+└──────┴─────────┴───────────────────────┴───────────┴───────────────────────────────┘
+
+A1. The database file alone (main-only.db), without its -wal. It opens
+    cleanly and passes integrity_check, but it is recipe step 8, the last
+    checkpoint, not step 10, the last commit: commits 9-10 are silently
+    missing. Equal except the change counter at bytes 24-27 and 92-95
+    (exact = false).
+┌──────────────┬────────┬───────────┬──────────────┬───────────────────────────────────────┬──────────────┬───────┐
+│     copy     │ bytes  │ integrity │ user_version │               contents                │ matched_step │ exact │
+├──────────────┼────────┼───────────┼──────────────┼───────────────────────────────────────┼──────────────┼───────┤
+│ main-only.db │ 323584 │ ok        │ 8            │ 50 accounts, 336 events, 25 documents │ 8            │ false │
+└──────────────┴────────┴───────────┴──────────────┴───────────────────────────────────────┴──────────────┴───────┘
+
+A2. The database file copied in two halves while a checkpoint writes into it
+    between them. The checkpoint (step 11) copies all 40 WAL frames of steps
+    9-10, so the second half comes from a newer database than the first.
+┌──────┬─────────┬──────────────────────────────────┬───────────┬───────────────────────────────┐
+│ step │ process │              action              │  result   │             value             │
+├──────┼─────────┼──────────────────────────────────┼───────────┼───────────────────────────────┤
+│ 9    │ writer  │ query HALF_QUERY                 │ SQLITE_OK │ 204800                        │
+│ 10   │ copier  │ copy-range db torn.db 0 204800   │ SQLITE_OK │ bytes 0-204800                │
+│ 11   │ writer  │ checkpoint PASSIVE               │ SQLITE_OK │ busy=0 log=40 checkpointed=40 │
+│ 12   │ copier  │ copy-range db torn.db 204800 end │ SQLITE_OK │ bytes 204800-409600           │
+└──────┴─────────┴──────────────────────────────────┴───────────┴───────────────────────────────┘
+
+The torn copy fails integrity_check and equals no recipe state.
+┌─────────┬────────┬───────┬───────────────┬──────────────┬───────────────────────────────────────┬────────────────┐
+│  copy   │ bytes  │ pages │   integrity   │ user_version │               contents                │     equals     │
+├─────────┼────────┼───────┼───────────────┼──────────────┼───────────────────────────────────────┼────────────────┤
+│ torn.db │ 409600 │ 100   │ 25 problem(s) │ 8            │ 50 accounts, 336 events, 25 documents │ no recipe step │
+└─────────┴────────┴───────┴───────────────┴──────────────┴───────────────────────────────────────┴────────────────┘
+
+Its integrity_check problems, the first 3 and the count:
+┌───┬───────────────────────────────────────────────┐
+│ n │                    problem                    │
+├───┼───────────────────────────────────────────────┤
+│ 1 │ wrong # of entries in index events_by_account │
+│ 2 │ row 335 missing from index events_by_account  │
+│ 3 │ row 336 missing from index events_by_account  │
+│   │ ... 25 problem(s) in all                      │
+└───┴───────────────────────────────────────────────┘
+
+── B. Rollback mode (journal_mode=delete) ─────────────────────────────
+
+The contrast: the database file copied in two halves while the commit of
+recipe step 6 (transcript step 15) writes into it between them.
+┌──────┬─────────┬──────────────────────────────────┬───────────┬─────────────────────┐
+│ step │ process │              action              │  result   │        value        │
+├──────┼─────────┼──────────────────────────────────┼───────────┼─────────────────────┤
+│ 13   │ writer  │ query HALF_QUERY                 │ SQLITE_OK │ 102400              │
+│ 14   │ copier  │ copy-range db torn.db 0 102400   │ SQLITE_OK │ bytes 0-102400      │
+│ 15   │ writer  │ recipe-step 6                    │ SQLITE_OK │                     │
+│ 16   │ copier  │ copy-range db torn.db 102400 end │ SQLITE_OK │ bytes 102400-245760 │
+└──────┴─────────┴──────────────────────────────────┴───────────┴─────────────────────┘
+
+This torn copy also fails integrity_check and equals no recipe state.
+┌─────────┬────────┬───────┬──────────────┬──────────────┬───────────────────────────────────────┬────────────────┐
+│  copy   │ bytes  │ pages │  integrity   │ user_version │               contents                │     equals     │
+├─────────┼────────┼───────┼──────────────┼──────────────┼───────────────────────────────────────┼────────────────┤
+│ torn.db │ 245760 │ 60    │ 6 problem(s) │ 5            │ 31 accounts, 251 events, 15 documents │ no recipe step │
+└─────────┴────────┴───────┴──────────────┴──────────────┴───────────────────────────────────────┴────────────────┘
+
+Its integrity_check problems:
+┌───┬──────────────────────────────────────────────────────────────────┐
+│ n │                             problem                              │
+├───┼──────────────────────────────────────────────────────────────────┤
+│ 1 │ Freelist: freelist leaf count too big on page 35                 │
+│ 2 │ Freelist: invalid page number 52                                 │
+│ 3 │ Tree 3 page 24 cell 0: overflow list length is 1 but should be 3 │
+│ 4 │ Page 29: never used                                              │
+│ 5 │ Page 37: never used                                              │
+│ 6 │ wrong # of entries in index events_by_account                    │
+└───┴──────────────────────────────────────────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+A1  ✓  the copy of the database file without its -wal opens cleanly and passes integrity_check
+A1  ✓  but it equals recipe step 8, the last checkpoint, not step 10, the last commit: commits 9-10 are silently missing
+A2  ✓  the checkpoint copied every WAL frame (steps 9-10) into the database file
+A2  ✓  the torn copy fails integrity_check or equals no recipe state
+B  ✓  the torn copy fails integrity_check or equals no recipe state
+
+5 of 5 claims hold
+
+Experiment verdict: TORN COPY OK
 ```
 
 **Reading the evidence:**
 
-- **Part A1 — Main `.db` file copied alone in WAL mode (steps 1–8):** The writer builds from recipe step `5`, commits steps `6–8`, checkpoints all `61` frames (`busy=0 log=61 checkpointed=61`), and commits steps `9–10` (which sit in the `251,352`-byte `-wal`). The copier reads `r.db` (`323,584` bytes, `79` pages) into `main-only.db`. Opening `main-only.db` succeeds with `integrity_check: ok`, `user_version: 8`, `50 accounts, 336 events, 25 documents`, matching recipe step `8`. **Commits 9 and 10 vanished with no error and a passing `integrity_check`.**
+- **Part A1 — Main `.db` file copied alone in WAL mode (steps 1–8):** The writer builds from recipe step `5`, commits steps `6–8`, checkpoints all `61` frames (`busy=0 log=61 checkpointed=61`), and commits steps `9–10` (which sit in the `251,352`-byte `-wal`). The copier reads `r.db` (`323,584` bytes, `79` pages) into `main-only.db`. Opening `main-only.db` succeeds with integrity `ok`, `user_version` `8`, `50 accounts, 336 events, 25 documents`, matching recipe step `8`. **Commits 9 and 10 vanished with no error and a passing `integrity_check`.**
 - **Part A2 — WAL `.db` file copied across a checkpoint (steps 9–12):** The copier reads the first half (`bytes 0-204800`, 50 pages) of `r.db`. While it pauses, the writer checkpoints steps `9–10` (`busy=0 log=40 checkpointed=40`), growing `r.db` to `100` pages (`409,600` bytes). The copier reads `bytes 204800-409600`. The resulting `torn.db` mixes step-8 pages in its first half with step-10 pages in its second half: `integrity_check` reports `25 problem(s)` (index `events_by_account` missing rows 335, 336, …), `user_version` still reads `8`, and `r.MatchStep` reports `no recipe step`.
 - **Part B — Rollback contrast (steps 13–16):** On a step-5 `journal_mode=delete` database (`50` pages), the copier reads `bytes 0-102400` (`25` pages), the writer commits step `6` (growing the file to `60` pages, `245,760` bytes), and the copier reads `bytes 102400-245760`. `torn.db` fails `integrity_check` with `6 problem(s)` (corrupt freelist trunk on page 35, invalid page 52, truncated overflow chain on page 24) and matches `no recipe step`.
 - Note on inspection order and safety: in Part A the parent inspects the separate copy files `main-only.db` and `torn.db` while the writer and copier children are still running (then calls `StopChildren`), whereas in Part B it stops the children first. Because the copies are distinct files with distinct inodes, opening them touches no POSIX lock on `r.db`, and `examine` verifies each copy's SHA-256 is unchanged before and after inspection.
@@ -3701,12 +4645,12 @@ A live capture works only when it cooperates with SQLite's WAL snapshot mechanis
 ### 6.1 Experiment 6.4 — Live snapshot (`6.4-live-snapshot`, Rebuild Ladder rung R4)
 
 - **Claim:** Inside a single held read transaction in WAL mode (`BEGIN DEFERRED` followed by a read), reading every page through `sqlite_dbpage` produces a consistent database that passes `integrity_check` and matches (at equality level **E1 bytes**) the recipe run on one connection to that exact snapshot step and checkpointed — even while a writer commits new steps and runs `PASSIVE` checkpoints between chunks. Second, copying `.db` (even torn mid-copy by a checkpoint) and then copying `-wal` while holding a read transaction rebuilds via `internal/walfile` to a consistent recipe state at or after the snapshot (here, the last commit before `-wal` was copied).
-- **Evidence form:** `EXACT` (all lines except `INFO:` lines).
-- **Run command:**
+- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
+- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./ch06-locking-and-concurrency/experiments/6.4-live-snapshot
+  go run ./cmd/course run 6.4
   ```
-  (Pass `-hold immediate` to repeat the experiment holding `BEGIN IMMEDIATE` instead of a read transaction.)
+  (To repeat the experiment holding `BEGIN IMMEDIATE` instead of a read transaction, run it directly in the container with `-hold immediate`: `docker compose run --rm lab go run ./ch06-locking-and-concurrency/experiments/6.4-live-snapshot -hold immediate`.)
 
 <!-- include: experiments/6.4-live-snapshot/main.go -->
 ```go
@@ -3721,6 +4665,9 @@ A live capture works only when it cooperates with SQLite's WAL snapshot mechanis
 // replayer repairs the torn base to the last commit before the -wal copy.
 // The -hold flag selects read (default, BEGIN DEFERRED + read) or immediate
 // (BEGIN IMMEDIATE, blocking concurrent commits while checkpoints still run).
+//
+// It prints only its verdict. The steps and the checked files go to CSV
+// tables that report.sql presents: go run ./cmd/course run 6.4
 package main
 
 import (
@@ -3730,11 +4677,13 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/nickstrad/walfleet/internal/capture"
 	"github.com/nickstrad/walfleet/internal/equal"
 	"github.com/nickstrad/walfleet/internal/procs"
 	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/results"
 	"github.com/nickstrad/walfleet/internal/sqlitex"
 	"github.com/nickstrad/walfleet/internal/walfile"
 )
@@ -3747,9 +4696,48 @@ const (
 	holdImmediate = "immediate"
 )
 
+// Every step and every checked file goes to a CSV table in <work dir>/results/;
+// part labels the rows written while a part runs.
+var (
+	set         *results.Set
+	part        string
+	databaseSeq int
+	tables      struct {
+		settings, steps, pageCapture, databases, comparisons, replay *results.Table
+	}
+)
+
+func openTables() {
+	tables.settings = set.Table("settings", "hold", "base_step", "snapshot_step", "chunks")
+	tables.steps = set.Table("steps", "part", "step", "process", "action", "result", "code", "value")
+	tables.pageCapture = set.Table("page_capture", "pages", "manifest_sha256")
+	tables.databases = set.Table("databases", "seq", "name", "sha256", "integrity", "user_version", "matched_step", "exact")
+	tables.comparisons = set.Table("comparisons", "name", "level", "equal", "result")
+	tables.replay = set.Table("replay", "wal_ignored_reason", "frames_in_file", "valid_frames", "transactions", "last_commit_frame", "database_pages",
+		"applied_frames", "distinct_pages", "skipped_beyond_size", "base_bytes", "output_bytes", "ignored")
+}
+
+// recorder is a procs.Lab that writes each step and claim to the tables
+// instead of printing them.
+type recorder struct{ *procs.Lab }
+
+func newRecorder() *recorder {
+	lab := procs.NewLab(os.Stdout)
+	lab.Script.Out = nil
+	return &recorder{lab}
+}
+
+func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
+	r := l.Lab.Must(child, action, args...)
+	tables.steps.Row(part, r.Step, child.Name, procs.ActionText(action, args), r.CodeName(), r.Code, r.Value)
+	return r
+}
+
+func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
+
 type run struct {
 	ctx      context.Context
-	lab      *procs.Lab
+	lab      *recorder
 	r        recipe.Recipe
 	hold     string
 	dir      string
@@ -3771,13 +4759,6 @@ func (x *run) betweenReads() int {
 	before := x.backfill()
 	x.lab.Must(x.writer, "checkpoint", sqlitex.CheckpointPassive)
 	return x.backfill() - before
-}
-
-func (x *run) writerWork() string {
-	if x.hold == holdRead {
-		return "commits a recipe step and checkpoints"
-	}
-	return "checkpoints (it cannot commit while the capture holds BEGIN IMMEDIATE)"
 }
 
 func (x *run) backfill() int {
@@ -3892,7 +4873,12 @@ func (x *run) verify(label, path string) (recipe.Match, procs.Inspection) {
 	if err != nil || after != sum {
 		x.lab.Fatal("inspect", fmt.Errorf("opening %s changed it (%v)", label, err))
 	}
-	fmt.Printf("%s: sha256 %s, integrity_check %s, user_version %s, equals recipe %s\n", label, sum[:16], procs.IntegritySummary(inspection.Integrity), inspection.Values[0], match)
+	var matched any
+	if match.Found() {
+		matched = match.Step
+	}
+	databaseSeq++
+	tables.databases.Row(databaseSeq, label, sum, procs.IntegritySummary(inspection.Integrity), inspection.Values[0], matched, match.Exact)
 	return match, inspection
 }
 
@@ -3910,7 +4896,9 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("6.4")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	lab := procs.NewLab(os.Stdout)
+	set = results.MustOpen(dir)
+	openTables()
+	lab := newRecorder()
 	x := &run{ctx: ctx, lab: lab, r: recipe.Default(), hold: *hold, dir: dir}
 	live := filepath.Join(dir, "live")
 	if err := os.MkdirAll(live, 0o755); err != nil {
@@ -3921,7 +4909,8 @@ func main() {
 		lab.Fatal("build", err)
 	}
 	snapshotFile := filepath.Join(dir, "snapshot.db")
-	fmt.Printf("== live database: recipe built to step %d; the writer commits steps %d-%d (wal_autocheckpoint=0); every capture holds hold=%s\n", baseStep, baseStep+1, snapshotStep, x.hold)
+	tables.settings.Row(x.hold, baseStep, snapshotStep, chunks)
+	part = "A"
 	x.writer = lab.SpawnSQL("writer", procs.SQLOptions{Path: x.db, JournalMode: sqlitex.JournalWAL})
 	x.capturer = lab.SpawnSQL("capture", procs.SQLOptions{Path: x.db, JournalMode: sqlitex.JournalWAL, PagesOut: snapshotFile})
 	x.copier = lab.Spawn("copier", procs.RoleCopier, "-db", x.db, "-out", dir)
@@ -3930,8 +4919,7 @@ func main() {
 	}
 	x.next = snapshotStep + 1
 
-	fmt.Println()
-	fmt.Printf("-- method 1: every page through sqlite_dbpage inside one transaction, in %d chunks; between chunks the writer %s\n", chunks, x.writerWork())
+	part = "B"
 	seen := x.beginCapture()
 	lab.Check(seen == snapshotStep, fmt.Sprintf("the capture's transaction sees recipe step %d", snapshotStep))
 	pageCount := lab.Must(x.capturer, "query", "PRAGMA page_count")
@@ -3943,8 +4931,7 @@ func main() {
 	x.endCapture(seen)
 	lab.Check(firstBackfill > 0, "the first checkpoint during the page capture copied WAL frames into the database file under the open transaction")
 
-	fmt.Println()
-	fmt.Printf("-- method 2: in a new transaction, plain copies of the database file (in two halves) and then its -wal; between the halves the writer %s\n", x.writerWork())
+	part = "C"
 	secondSnapshot := x.beginCapture()
 	lab.Check(secondSnapshot == x.lastCommitted(), fmt.Sprintf("the second transaction sees step %d, the last commit", x.lastCommitted()))
 	baseTorn := x.fileAndWALCopy()
@@ -3961,8 +4948,7 @@ func main() {
 	}
 	lab.StopChildren()
 
-	fmt.Println()
-	fmt.Println("== checks after every process closed")
+	part = "D"
 	captureDir := filepath.Join(dir, "capture")
 	manifest, err := capture.Pages(snapshotFile, captureDir)
 	if err != nil {
@@ -3972,7 +4958,7 @@ func main() {
 	if _, err := capture.Rebuild(captureDir, rebuilt); err != nil {
 		lab.Fatal("rebuild", err)
 	}
-	fmt.Printf("page capture: %d pages, manifest sha256 %s\n", manifest.PageCount(), manifest.SHA256()[:16])
+	tables.pageCapture.Row(manifest.PageCount(), manifest.SHA256())
 	pageMatch, pageInspection := x.verify("rebuilt from the page capture", rebuilt)
 	reference := x.reference(snapshotStep)
 	x.verify(fmt.Sprintf("reference (recipe to step %d on one connection, then checkpoint)", snapshotStep), reference)
@@ -3980,7 +4966,7 @@ func main() {
 	if err != nil {
 		lab.Fatal("compare", err)
 	}
-	fmt.Printf("E1 rebuilt vs reference: %s\n", comparison)
+	tables.comparisons.Row("rebuilt vs reference", comparison.Level, comparison.Equal, comparison.String())
 	lab.Check(pageInspection.Integrity == "ok" && pageMatch.Found() && pageMatch.Step == snapshotStep && comparison.Equal,
 		fmt.Sprintf("the page capture passes integrity_check and its bytes equal the recipe run to exactly step %d and checkpointed (E1)", snapshotStep))
 
@@ -3989,9 +4975,14 @@ func main() {
 	if err != nil {
 		lab.Fatal("replay", err)
 	}
+	var ignored []string
 	for _, line := range report.Lines() {
-		fmt.Printf("replay: %s\n", line)
+		if strings.HasPrefix(line, "ignored") {
+			ignored = append(ignored, line)
+		}
 	}
+	tables.replay.Row(report.WALIgnoredReason, report.FramesInFile, report.ValidFrames, report.Transactions, report.LastCommitFrame, report.DatabasePages,
+		report.AppliedFrames, report.DistinctPages, report.SkippedBeyondSize, report.BaseBytes, report.OutputBytes, strings.Join(ignored, "; "))
 	copyMatch, copyInspection := x.verify("rebuilt from the file + -wal copy", replayed)
 	lab.Check(copyInspection.Integrity == "ok" && copyMatch.Found() && copyMatch.Step >= secondSnapshot && copyMatch.Step == x.lastCommitted(),
 		fmt.Sprintf("the file + -wal copy rebuilds to a recipe state at or after its transaction's snapshot (step %d): step %d, the last commit before the -wal was copied", secondSnapshot, x.lastCommitted()))
@@ -3999,82 +4990,276 @@ func main() {
 	if x.hold == holdRead {
 		lab.Check(baseInspection.Integrity != "ok" || !baseMatch.Found(), "on its own the database-file copy is torn (it fails integrity_check or equals no recipe state); the -wal frames repair it")
 	}
-	lab.Report("LIVE SNAPSHOT")
+	set.Finish("LIVE SNAPSHOT")
 }
 ```
 
-Captured output (`evidence/6.4-live-snapshot.txt`, default `-hold read`):
+The experiment prints only its verdict. It writes every measurement to CSV tables, and this DuckDB script presents them as a walkthrough:
+
+<!-- include: experiments/6.4-live-snapshot/report.sql -->
+```sql
+-- Walkthrough of experiment 6.4. Run it with:
+--   go run ./cmd/course run 6.4        (add -i to stay in DuckDB afterwards)
+-- The runner loads every CSV the experiment wrote as a table of the same name:
+--   settings       the run: the transaction the capture holds (-hold), recipe steps, chunks
+--   steps          one action of the writer, capture or copier child process
+--   page_capture   method 1: the captured pages and their manifest
+--   comparisons    method 1: the E1 byte comparison of the rebuilt file with the reference
+--   replay         method 2: the WAL replay of the copied -wal over the copied database file
+--   databases      one database file checked after every process closed
+--   checks         every claim the experiment asserted (the runner lists it last)
+
+.print
+.print '════════════════════════════════════════════════════════════════════════'
+.print '  6.4  A consistent snapshot of a live database (rung R4)'
+.print '════════════════════════════════════════════════════════════════════════'
+.print
+.print 'A writer process keeps committing recipe steps to a WAL database and'
+.print 'running PASSIVE checkpoints (wal_autocheckpoint=0) while a capture process'
+.print 'takes a snapshot without stopping it, in two ways. hold is the transaction'
+.print 'the capture holds: read (BEGIN, then a read) or immediate (BEGIN IMMEDIATE,'
+.print 'under which the writer cannot commit and only checkpoints).'
+
+SELECT hold, base_step, snapshot_step, chunks FROM settings ORDER BY hold;
+
+.print
+.print '── A. The live database ───────────────────────────────────────────────'
+.print
+.print 'The recipe is built to step 5; the writer commits steps 6-8.'
+
+SELECT step, process, action, result, value FROM steps WHERE part = 'A' ORDER BY step;
+
+.print
+.print '── B. Method 1: every page through sqlite_dbpage in one transaction ───'
+.print
+.print 'The capture begins a transaction, reads user_version (step 5: 8), and'
+.print 'writes the pages out in 4 chunks. Between chunks the writer commits the next'
+.print 'recipe step and runs a PASSIVE checkpoint, with a NOOP checkpoint before and'
+.print 'after to read how many frames are backfilled. The first PASSIVE checkpoint'
+.print 'copies frames into the database file under the open transaction (checkpointed'
+.print 'goes from 0 to 61, steps 9-11).'
+.print 'The capture still sees step 8 at the end (step 23).'
+
+SELECT step, process, action, result, value FROM steps WHERE part = 'B' ORDER BY step;
+
+.print
+.print '── C. Method 2: plain copies of the database file and its -wal ────────'
+.print
+.print 'In a new transaction (it sees step 11), the copier copies the database file'
+.print 'in two halves; between them the writer commits step 12 and a PASSIVE'
+.print 'checkpoint writes frames into the file (checkpointed 61 -> 116, step 31).'
+.print 'The writer commits step 13, then the copier copies -wal.'
+.print 'HALF_QUERY stands for'
+.print '  SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size'
+
+SELECT step, process,
+       CASE WHEN action LIKE 'query SELECT (page_count / 2)%' THEN 'query HALF_QUERY' ELSE action END AS action,
+       result, value
+FROM steps WHERE part = 'C' ORDER BY step;
+
+.print
+.print '── D. Checks after every process closed ───────────────────────────────'
+.print
+.print 'D1. Method 1. The captured pages are rebuilt into a database file and'
+.print '    compared byte for byte (E1) with a reference: the recipe run to step 8'
+.print '    on one connection, then checkpointed.'
+
+SELECT pages, manifest_sha256[:16] AS manifest_sha256 FROM page_capture ORDER BY pages;
+
+SELECT name, level, equal FROM comparisons ORDER BY name;
+
+.print
+.print 'D2. Method 2. The copied -wal is replayed over the copied database file'
+.print '    with the WAL replayer of Chapter 5.'
+
+SELECT * FROM (UNPIVOT (SELECT * REPLACE (coalesce(wal_ignored_reason, 'none') AS wal_ignored_reason)
+                        FROM replay)
+               ON COLUMNS(*)::VARCHAR INTO NAME field VALUE value)
+ORDER BY CASE field WHEN 'wal_ignored_reason' THEN 1 WHEN 'frames_in_file' THEN 2 WHEN 'valid_frames' THEN 3
+                    WHEN 'transactions' THEN 4 WHEN 'last_commit_frame' THEN 5 WHEN 'database_pages' THEN 6
+                    WHEN 'applied_frames' THEN 7 WHEN 'distinct_pages' THEN 8 WHEN 'skipped_beyond_size' THEN 9
+                    WHEN 'base_bytes' THEN 10 WHEN 'output_bytes' THEN 11 ELSE 12 END;
+
+.print
+.print 'D3. Every checked file. The page capture equals the reference byte for byte'
+.print '    (the same sha256) and is recipe step 8. The file + -wal copy is step 13,'
+.print '    the last commit before -wal was copied. The database-file copy alone is'
+.print '    torn: the -wal frames repair it. exact = false: equal to the recipe step'
+.print '    except the change counter at bytes 24-27 and 92-95.'
+
+SELECT split_part(name, ' (', 1) AS name, sha256[:16] AS sha256, user_version, matched_step, exact FROM databases ORDER BY seq;
+
+SELECT split_part(name, ' (', 1) AS name, integrity FROM databases ORDER BY seq;
+```
+
+Captured evidence: the walkthrough as the `lab` container rendered it. The walkthrough is of the default `-hold read`. The tables behind it are stored in [`evidence/6.4-live-snapshot/`](evidence/6.4-live-snapshot/), and `go run ./cmd/course check evidence ch06` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/6.4-live-snapshot.txt -->
 ```text
-sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir _work/6.4
-== live database: recipe built to step 5; the writer commits steps 6-8 (wal_autocheckpoint=0); every capture holds hold=read
-step  1  writer     recipe-step 6                        -> SQLITE_OK
-step  2  writer     recipe-step 7                        -> SQLITE_OK
-step  3  writer     recipe-step 8                        -> SQLITE_OK
 
--- method 1: every page through sqlite_dbpage inside one transaction, in 4 chunks; between chunks the writer commits a recipe step and checkpoints
-step  4  capture    begin deferred                       -> SQLITE_OK
-step  5  capture    user-version                         -> SQLITE_OK 8
-check ok: the capture's transaction sees recipe step 8
-step  6  capture    query PRAGMA page_count              -> SQLITE_OK 79
-step  7  capture    dbpage-write 1 20                    -> SQLITE_OK 20 pages
-step  8  writer     recipe-step 9                        -> SQLITE_OK
-step  9  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=84 checkpointed=0
-step 10  writer     checkpoint PASSIVE                   -> SQLITE_OK busy=0 log=84 checkpointed=61
-step 11  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=84 checkpointed=61
-step 12  capture    dbpage-write 21 40                   -> SQLITE_OK 20 pages
-step 13  writer     recipe-step 10                       -> SQLITE_OK
-step 14  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=101 checkpointed=61
-step 15  writer     checkpoint PASSIVE                   -> SQLITE_OK busy=0 log=101 checkpointed=61
-step 16  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=101 checkpointed=61
-step 17  capture    dbpage-write 41 60                   -> SQLITE_OK 20 pages
-step 18  writer     recipe-step 11                       -> SQLITE_OK
-step 19  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=116 checkpointed=61
-step 20  writer     checkpoint PASSIVE                   -> SQLITE_OK busy=0 log=116 checkpointed=61
-step 21  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=116 checkpointed=61
-step 22  capture    dbpage-write 61 79                   -> SQLITE_OK 19 pages
-step 23  capture    user-version                         -> SQLITE_OK 8
-step 24  capture    commit                               -> SQLITE_OK
-check ok: the capture's transaction saw step 8 from its first read to its last
-check ok: the first checkpoint during the page capture copied WAL frames into the database file under the open transaction
+════════════════════════════════════════════════════════════════════════
+  6.4  A consistent snapshot of a live database (rung R4)
+════════════════════════════════════════════════════════════════════════
 
--- method 2: in a new transaction, plain copies of the database file (in two halves) and then its -wal; between the halves the writer commits a recipe step and checkpoints
-step 25  capture    begin deferred                       -> SQLITE_OK
-step 26  capture    user-version                         -> SQLITE_OK 11
-check ok: the second transaction sees step 11, the last commit
-step 27  writer     query SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size -> SQLITE_OK 221184
-step 28  copier     copy-range db copy.db 0 221184       -> SQLITE_OK bytes 0-221184
-step 29  writer     recipe-step 12                       -> SQLITE_OK
-step 30  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=145 checkpointed=61
-step 31  writer     checkpoint PASSIVE                   -> SQLITE_OK busy=0 log=145 checkpointed=116
-step 32  writer     checkpoint NOOP                      -> SQLITE_OK busy=0 log=145 checkpointed=116
-step 33  copier     copy-range db copy.db 221184 end     -> SQLITE_OK bytes 221184-438272
-step 34  writer     recipe-step 13                       -> SQLITE_OK
-step 35  copier     copy -wal copy.wal                   -> SQLITE_OK 688072 bytes
-step 36  capture    user-version                         -> SQLITE_OK 11
-step 37  capture    commit                               -> SQLITE_OK
-check ok: the capture's transaction saw step 11 from its first read to its last
-check ok: the checkpoint between the two halves wrote WAL frames into the database file while it was being copied
-step 38  writer     user-version                         -> SQLITE_OK 13
-check ok: meanwhile the writer committed steps 9-13
+A writer process keeps committing recipe steps to a WAL database and
+running PASSIVE checkpoints (wal_autocheckpoint=0) while a capture process
+takes a snapshot without stopping it, in two ways. hold is the transaction
+the capture holds: read (BEGIN, then a read) or immediate (BEGIN IMMEDIATE,
+under which the writer cannot commit and only checkpoints).
+┌──────┬───────────┬───────────────┬────────┐
+│ hold │ base_step │ snapshot_step │ chunks │
+├──────┼───────────┼───────────────┼────────┤
+│ read │ 5         │ 8             │ 4      │
+└──────┴───────────┴───────────────┴────────┘
 
-== checks after every process closed
-page capture: 79 pages, manifest sha256 fdacd7ac2cf9defb
-rebuilt from the page capture: sha256 1558477d01bc85e9, integrity_check ok, user_version 8, equals recipe step 8 (equal except the change counter at bytes 24-27 and 92-95)
-reference (recipe to step 8 on one connection, then checkpoint): sha256 1558477d01bc85e9, integrity_check ok, user_version 8, equals recipe step 8 (equal except the change counter at bytes 24-27 and 92-95)
-E1 rebuilt vs reference: E1 bytes: equal (sha256 1558477d01bc85e9ec8dfa29e63f245bc427ee31a6da515ffc3f75a892579529)
-check ok: the page capture passes integrity_check and its bytes equal the recipe run to exactly step 8 and checkpointed (E1)
-replay: frames in file 167, valid 167, committed transactions 8, last commit frame 167 (database size 124 pages)
-replay: applied 167 frames (92 distinct pages, 0 skipped beyond the committed size); base 438272 bytes -> output 507904 bytes
-replay: ignored: none
-rebuilt from the file + -wal copy: sha256 fbe88f844fab4985, integrity_check ok, user_version 13, equals recipe step 13 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: the file + -wal copy rebuilds to a recipe state at or after its transaction's snapshot (step 11): step 13, the last commit before the -wal was copied
-the database-file copy on its own: sha256 04c300a81ff19200, integrity_check 10 problem(s), the first: Freelist: freelist leaf count too big on page 35, user_version 5, equals recipe no recipe step
-check ok: on its own the database-file copy is torn (it fails integrity_check or equals no recipe state); the -wal frames repair it
+── A. The live database ───────────────────────────────────────────────
 
-LIVE SNAPSHOT OK
+The recipe is built to step 5; the writer commits steps 6-8.
+┌──────┬─────────┬───────────────┬───────────┬───────┐
+│ step │ process │    action     │  result   │ value │
+├──────┼─────────┼───────────────┼───────────┼───────┤
+│ 1    │ writer  │ recipe-step 6 │ SQLITE_OK │       │
+│ 2    │ writer  │ recipe-step 7 │ SQLITE_OK │       │
+│ 3    │ writer  │ recipe-step 8 │ SQLITE_OK │       │
+└──────┴─────────┴───────────────┴───────────┴───────┘
+
+── B. Method 1: every page through sqlite_dbpage in one transaction ───
+
+The capture begins a transaction, reads user_version (step 5: 8), and
+writes the pages out in 4 chunks. Between chunks the writer commits the next
+recipe step and runs a PASSIVE checkpoint, with a NOOP checkpoint before and
+after to read how many frames are backfilled. The first PASSIVE checkpoint
+copies frames into the database file under the open transaction (checkpointed
+goes from 0 to 61, steps 9-11).
+The capture still sees step 8 at the end (step 23).
+┌──────┬─────────┬─────────────────────────┬───────────┬────────────────────────────────┐
+│ step │ process │         action          │  result   │             value              │
+├──────┼─────────┼─────────────────────────┼───────────┼────────────────────────────────┤
+│ 4    │ capture │ begin deferred          │ SQLITE_OK │                                │
+│ 5    │ capture │ user-version            │ SQLITE_OK │ 8                              │
+│ 6    │ capture │ query PRAGMA page_count │ SQLITE_OK │ 79                             │
+│ 7    │ capture │ dbpage-write 1 20       │ SQLITE_OK │ 20 pages                       │
+│ 8    │ writer  │ recipe-step 9           │ SQLITE_OK │                                │
+│ 9    │ writer  │ checkpoint NOOP         │ SQLITE_OK │ busy=0 log=84 checkpointed=0   │
+│ 10   │ writer  │ checkpoint PASSIVE      │ SQLITE_OK │ busy=0 log=84 checkpointed=61  │
+│ 11   │ writer  │ checkpoint NOOP         │ SQLITE_OK │ busy=0 log=84 checkpointed=61  │
+│ 12   │ capture │ dbpage-write 21 40      │ SQLITE_OK │ 20 pages                       │
+│ 13   │ writer  │ recipe-step 10          │ SQLITE_OK │                                │
+│ 14   │ writer  │ checkpoint NOOP         │ SQLITE_OK │ busy=0 log=101 checkpointed=61 │
+│ 15   │ writer  │ checkpoint PASSIVE      │ SQLITE_OK │ busy=0 log=101 checkpointed=61 │
+│ 16   │ writer  │ checkpoint NOOP         │ SQLITE_OK │ busy=0 log=101 checkpointed=61 │
+│ 17   │ capture │ dbpage-write 41 60      │ SQLITE_OK │ 20 pages                       │
+│ 18   │ writer  │ recipe-step 11          │ SQLITE_OK │                                │
+│ 19   │ writer  │ checkpoint NOOP         │ SQLITE_OK │ busy=0 log=116 checkpointed=61 │
+│ 20   │ writer  │ checkpoint PASSIVE      │ SQLITE_OK │ busy=0 log=116 checkpointed=61 │
+│ 21   │ writer  │ checkpoint NOOP         │ SQLITE_OK │ busy=0 log=116 checkpointed=61 │
+│ 22   │ capture │ dbpage-write 61 79      │ SQLITE_OK │ 19 pages                       │
+│ 23   │ capture │ user-version            │ SQLITE_OK │ 8                              │
+│ 24   │ capture │ commit                  │ SQLITE_OK │                                │
+└──────┴─────────┴─────────────────────────┴───────────┴────────────────────────────────┘
+
+── C. Method 2: plain copies of the database file and its -wal ────────
+
+In a new transaction (it sees step 11), the copier copies the database file
+in two halves; between them the writer commits step 12 and a PASSIVE
+checkpoint writes frames into the file (checkpointed 61 -> 116, step 31).
+The writer commits step 13, then the copier copies -wal.
+HALF_QUERY stands for
+  SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size
+┌──────┬─────────┬──────────────────────────────────┬───────────┬─────────────────────────────────┐
+│ step │ process │              action              │  result   │              value              │
+├──────┼─────────┼──────────────────────────────────┼───────────┼─────────────────────────────────┤
+│ 25   │ capture │ begin deferred                   │ SQLITE_OK │                                 │
+│ 26   │ capture │ user-version                     │ SQLITE_OK │ 11                              │
+│ 27   │ writer  │ query HALF_QUERY                 │ SQLITE_OK │ 221184                          │
+│ 28   │ copier  │ copy-range db copy.db 0 221184   │ SQLITE_OK │ bytes 0-221184                  │
+│ 29   │ writer  │ recipe-step 12                   │ SQLITE_OK │                                 │
+│ 30   │ writer  │ checkpoint NOOP                  │ SQLITE_OK │ busy=0 log=145 checkpointed=61  │
+│ 31   │ writer  │ checkpoint PASSIVE               │ SQLITE_OK │ busy=0 log=145 checkpointed=116 │
+│ 32   │ writer  │ checkpoint NOOP                  │ SQLITE_OK │ busy=0 log=145 checkpointed=116 │
+│ 33   │ copier  │ copy-range db copy.db 221184 end │ SQLITE_OK │ bytes 221184-438272             │
+│ 34   │ writer  │ recipe-step 13                   │ SQLITE_OK │                                 │
+│ 35   │ copier  │ copy -wal copy.wal               │ SQLITE_OK │ 688072 bytes                    │
+│ 36   │ capture │ user-version                     │ SQLITE_OK │ 11                              │
+│ 37   │ capture │ commit                           │ SQLITE_OK │                                 │
+│ 38   │ writer  │ user-version                     │ SQLITE_OK │ 13                              │
+└──────┴─────────┴──────────────────────────────────┴───────────┴─────────────────────────────────┘
+
+── D. Checks after every process closed ───────────────────────────────
+
+D1. Method 1. The captured pages are rebuilt into a database file and
+    compared byte for byte (E1) with a reference: the recipe run to step 8
+    on one connection, then checkpointed.
+┌───────┬──────────────────┐
+│ pages │ manifest_sha256  │
+├───────┼──────────────────┤
+│ 79    │ fdacd7ac2cf9defb │
+└───────┴──────────────────┘
+┌──────────────────────┬──────────┬───────┐
+│         name         │  level   │ equal │
+├──────────────────────┼──────────┼───────┤
+│ rebuilt vs reference │ E1 bytes │ true  │
+└──────────────────────┴──────────┴───────┘
+
+D2. Method 2. The copied -wal is replayed over the copied database file
+    with the WAL replayer of Chapter 5.
+┌─────────────────────┬───────────────┐
+│        field        │     value     │
+├─────────────────────┼───────────────┤
+│ wal_ignored_reason  │ none          │
+│ frames_in_file      │ 167           │
+│ valid_frames        │ 167           │
+│ transactions        │ 8             │
+│ last_commit_frame   │ 167           │
+│ database_pages      │ 124           │
+│ applied_frames      │ 167           │
+│ distinct_pages      │ 92            │
+│ skipped_beyond_size │ 0             │
+│ base_bytes          │ 438272        │
+│ output_bytes        │ 507904        │
+│ ignored             │ ignored: none │
+└─────────────────────┴───────────────┘
+
+D3. Every checked file. The page capture equals the reference byte for byte
+    (the same sha256) and is recipe step 8. The file + -wal copy is step 13,
+    the last commit before -wal was copied. The database-file copy alone is
+    torn: the -wal frames repair it. exact = false: equal to the recipe step
+    except the change counter at bytes 24-27 and 92-95.
+┌───────────────────────────────────┬──────────────────┬──────────────┬──────────────┬───────┐
+│               name                │      sha256      │ user_version │ matched_step │ exact │
+├───────────────────────────────────┼──────────────────┼──────────────┼──────────────┼───────┤
+│ rebuilt from the page capture     │ 1558477d01bc85e9 │ 8            │ 8            │ false │
+│ reference                         │ 1558477d01bc85e9 │ 8            │ 8            │ false │
+│ rebuilt from the file + -wal copy │ fbe88f844fab4985 │ 13           │ 13           │ false │
+│ the database-file copy on its own │ 04c300a81ff19200 │ 5            │              │ false │
+└───────────────────────────────────┴──────────────────┴──────────────┴──────────────┴───────┘
+┌───────────────────────────────────┬────────────────────────────────────────────────────────────────────────────┐
+│               name                │                                 integrity                                  │
+├───────────────────────────────────┼────────────────────────────────────────────────────────────────────────────┤
+│ rebuilt from the page capture     │ ok                                                                         │
+│ reference                         │ ok                                                                         │
+│ rebuilt from the file + -wal copy │ ok                                                                         │
+│ the database-file copy on its own │ 10 problem(s), the first: Freelist: freelist leaf count too big on page 35 │
+└───────────────────────────────────┴────────────────────────────────────────────────────────────────────────────┘
+
+── Checks ─────────────────────────────────────────────────────────────
+
+Every claim the experiment asserted while it ran:
+
+B  ✓  the capture's transaction sees recipe step 8
+B  ✓  the capture's transaction saw step 8 from its first read to its last
+B  ✓  the first checkpoint during the page capture copied WAL frames into the database file under the open transaction
+C  ✓  the second transaction sees step 11, the last commit
+C  ✓  the capture's transaction saw step 11 from its first read to its last
+C  ✓  the checkpoint between the two halves wrote WAL frames into the database file while it was being copied
+C  ✓  meanwhile the writer committed steps 9-13
+D  ✓  the page capture passes integrity_check and its bytes equal the recipe run to exactly step 8 and checkpointed (E1)
+D  ✓  the file + -wal copy rebuilds to a recipe state at or after its transaction's snapshot (step 11): step 13, the last commit before the -wal was copied
+D  ✓  on its own the database-file copy is torn (it fails integrity_check or equals no recipe state); the -wal frames repair it
+
+10 of 10 claims hold
+
+Experiment verdict: LIVE SNAPSHOT OK
 ```
 
 **Reading the evidence:**
@@ -4083,11 +5268,11 @@ LIVE SNAPSHOT OK
   - After the writer commits steps `6–8` (`wal_autocheckpoint=0`), `capture` runs `BEGIN DEFERRED` and `user-version` (`8`). That first read acquires `WAL_READ_LOCK(1)` and pins frame `61` (step 8's commit frame). `PRAGMA page_count` reports `79` pages.
   - `capture` reads pages in four chunks (`1..20`, `21..40`, `41..60`, `61..79`) via `SELECT data FROM sqlite_dbpage WHERE pgno = ?`. Between chunks, the writer commits steps `9`, `10`, and `11` (`log` grows `84` → `101` → `116`) and runs `PASSIVE` checkpoints.
   - Look closely at steps 9–21: the first `PASSIVE` checkpoint advances `checkpointed` from `0` to `61` **while the capture is between page 20 and page 21**, writing into `.db` underneath the open capture. The next two `PASSIVE` checkpoints stay pinned at `checkpointed=61` because `capture` holds its read mark at frame `61`. At step 23, `capture` still sees `user-version = 8`.
-  - After all processes close, the 79 captured pages (`manifest sha256 fdacd7ac2cf9defb`) are rebuilt through Chapter 2's `capture.Rebuild` into `rebuilt.db` (`sha256 1558477d01bc85e9…`, `integrity_check ok`, `user_version 8`). Comparing against the reference database built by applying steps `6–8` on one connection and running `wal_checkpoint(TRUNCATE)` yields **`E1 bytes: equal`** (`sha256 1558477d01bc85e9ec8dfa29e63f245bc427ee31a6da515ffc3f75a892579529`). (Using one connection for steps `6–8` matches the writer child's change-counter history so the proof holds at E1 bytes, not just the masked step match.)
-- **Method 2 — Plain `.db` + `-wal` copy under a held read transaction (steps 25–38 and lines 60–66):**
+  - After all processes close, the 79 captured pages (`manifest sha256 fdacd7ac2cf9defb`) are rebuilt through Chapter 2's `capture.Rebuild` into `rebuilt.db` (sha256 `1558477d01bc85e9…`, integrity `ok`, `user_version` `8`; D1 and D3). Comparing against the reference database built by applying steps `6–8` on one connection and running `wal_checkpoint(TRUNCATE)` yields **E1 bytes: equal** (`sha256 1558477d01bc85e9ec8dfa29e63f245bc427ee31a6da515ffc3f75a892579529`). (Using one connection for steps `6–8` matches the writer child's change-counter history so the proof holds at E1 bytes, not just the masked step match.)
+- **Method 2 — Plain `.db` + `-wal` copy under a held read transaction (steps 25–38 and D2–D3):**
   - `capture` opens a second read transaction (`user-version = 11`, pinning frame `116`). The copier copies the first half of `r.db` (`bytes 0-221184`). Between the two halves, the writer commits step `12` and runs a `PASSIVE` checkpoint that advances `checkpointed` from `61` to `116` — writing into `r.db` **while `copy.db` is half copied**. The copier copies the rest (`bytes 221184-438272`), the writer commits step `13`, and the copier copies the `-wal` (`688,072` bytes, `167` frames).
-  - Inspecting `copy.db` on its own (line 65) shows a severe surprise: **`integrity_check 10 problem(s)`**, **`user_version 5`**, **`equals recipe no recipe step`**. Why is `copy.db`'s page 1 still step `5` even though checkpoints reported `checkpointed=61` (step 8) and `checkpointed=116` (step 11)? Because `walIteratorNext` (`src/wal.c:1764-1792`) yields each page in `-wal` **once, at its newest frame**, and `walCheckpoint` (`src/wal.c:2312-2314`) skips any page whose newest frame exceeds `mxSafeFrame`. Page 1 was modified by step 9 (frame > 61) and step 12 (frame > 116), so neither checkpoint copied page 1 into `.db` while other pages *were* copied. **A checkpoint's `checkpointed` (`nBackfill`) count does not mean `.db` alone holds that state:** between complete checkpoints, `.db` is a mixture of states that only `-wal` makes whole.
-  - Because `capture` kept the WAL from restarting, all `167` frames (steps `6–13`, `92` distinct pages) remained in `copy.wal`. Replaying `copy.db` + `copy.wal` with `walfile.ReplayFiles` overwrites every torn page in `copy.db` and extends the file from `438,272` bytes to `507,904` bytes (`124` pages), matching **recipe step 13** (`integrity_check ok`, `user_version 13`, `sha256 fbe88f844fab4985`) — the last commit before `-wal` was copied.
+  - Inspecting `copy.db` on its own (the last row of the two D3 tables) shows a severe surprise: **integrity `10 problem(s)`**, **`user_version` `5`**, and **no recipe step**. Why is `copy.db`'s page 1 still step `5` even though checkpoints reported `checkpointed=61` (step 8) and `checkpointed=116` (step 11)? Because `walIteratorNext` (`src/wal.c:1764-1792`) yields each page in `-wal` **once, at its newest frame**, and `walCheckpoint` (`src/wal.c:2312-2314`) skips any page whose newest frame exceeds `mxSafeFrame`. Page 1 was modified by step 9 (frame > 61) and step 12 (frame > 116), so neither checkpoint copied page 1 into `.db` while other pages *were* copied. **A checkpoint's `checkpointed` (`nBackfill`) count does not mean `.db` alone holds that state:** between complete checkpoints, `.db` is a mixture of states that only `-wal` makes whole.
+  - Because `capture` kept the WAL from restarting, all `167` frames (steps `6–13`, `92` distinct pages) remained in `copy.wal`. Replaying `copy.db` + `copy.wal` with `walfile.ReplayFiles` overwrites every torn page in `copy.db` and extends the file from `438,272` bytes to `507,904` bytes (`124` pages), matching **recipe step 13** (integrity `ok`, `user_version` `13`, sha256 `fbe88f844fab4985`) — the last commit before `-wal` was copied.
 - **What `-hold immediate` shows:** Running `6.4-live-snapshot -hold immediate` holds `BEGIN IMMEDIATE` (`WAL_WRITE_LOCK`) during both captures. Writers cannot commit (`SQLITE_BUSY`), yet another connection's `PASSIVE` checkpoints **still run** (copying `61` frames into `.db` during Method 1, and tearing `.db` alone in adversarial test `SNAP-03b`). Holding `BEGIN IMMEDIATE` does not make a bare `.db` copy safe against concurrent checkpoints; a file + WAL copy stays valid only because `-wal` is copied after `.db` and replayed whole.
 - **A subtle boundary on `WAL_READ_LOCK(0)` (discovered by adversarial test `SNAP-04`):** A read transaction that starts on an already fully checkpointed WAL (`nBackfill == mxFrame`) takes `WAL_READ_LOCK(0)` (byte `123`) rather than a mark in `1..4`. When the next commit runs, `walRestartLog` (`src/wal.c:3885`) locks only `WAL_READ_LOCK(1..4)` and therefore **restarts the WAL under the open reader** (`salt-1 + 1`, `nBackfill = 0`). That is safe for the reader itself — it reads only `.db`, and `walCheckpoint` (`src/wal.c:2254-2260`) cannot backfill a single page while `WAL_READ_LOCK(0)` is held — so Method 1 still rebuilds E1-identically. However, any WAL-shipping design (Chapter 9, Rung R6) that relies on a held read mark to stop WAL restarts must acquire that read mark while uncheckpointed frames exist in `-wal`.
 
