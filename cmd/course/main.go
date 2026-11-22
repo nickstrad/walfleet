@@ -22,11 +22,14 @@ commands:
   fetch-source                         clone the pinned SQLite tree into _src/ and verify it
   build-tools [-reuse]                 build sqlite3, showwal, dbhash from a copy of the pinned tree into _tools/bin/
   inline [-check] <chapter.md>...      rewrite (or with -check, verify) code blocks under include markers
+  run [-i] [-update] <N.M>             run one experiment in the lab container and walk through its results
+                                       with DuckDB (report.sql); -i stays in the DuckDB shell afterwards;
+                                       -update stores the tables and the rendered report as its evidence
   check sources [chNN]                 verify SOURCES.sha256 against the pinned tree and the chapter copies
   check spans [chNN]                   verify SPANS.txt symbols start at the cited lines of the pinned tree
   check comments <old-rev> <new-rev>   verify Go code is unchanged apart from comments
   check prose <base>..<head>           verify every comment and chapter line was written by the prose author
-  check evidence [chNN] [-runs N]      run each experiment N times and compare with its evidence file
+  check evidence [chNN] [-runs N]      run each experiment N times and compare its tables and report with evidence/
   check gofmt                          verify tracked Go files are gofmt-formatted
   check paths                          verify no tracked file mentions a machine-local path or has an
                                        unresolved relative markdown link; list external links
@@ -61,6 +64,8 @@ func main() {
 		err = runBuildTools(ctx, root, args)
 	case "inline":
 		err = runInline(root, args)
+	case "run":
+		err = runRun(ctx, root, args)
 	case "check":
 		err = runCheck(ctx, root, args)
 	case "site":

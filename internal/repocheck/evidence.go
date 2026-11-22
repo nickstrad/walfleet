@@ -91,15 +91,19 @@ func (o EvidenceOutcome) Passed() bool {
 	return o.Status == "PASS" || o.Status == "LINUX-ONLY"
 }
 
-// CheckEvidence builds experiment once and runs it runs times from root,
-// comparing stdout (minus INFO: lines) against experiment.Evidence. It returns
-// status ERROR when runs < 1.
+// CheckEvidence builds experiment once and runs it runs times from root. For an
+// experiment with a report.sql it compares the CSV tables of every run with
+// the stored ones in EvidenceDir, then renders the report and compares it with
+// experiment.Evidence (skipped with a note when DuckDB at DuckDBVersion is not
+// installed). For any other experiment it compares stdout (minus INFO: lines)
+// against experiment.Evidence. It returns status ERROR when runs < 1.
 func CheckEvidence(ctx context.Context, root string, experiment Experiment, runs int) EvidenceOutcome {
 	outcome := EvidenceOutcome{Experiment: experiment}
 	if runs < 1 {
 		outcome.Status, outcome.Detail = "ERROR", fmt.Sprintf("runs must be at least 1, got %d", runs)
 		return outcome
 	}
+	tables := experiment.HasReport()
 	expected, err := os.ReadFile(experiment.Evidence)
 	if err != nil {
 		outcome.Status, outcome.Detail = "MISSING", "no evidence file "+relativeTo(root, experiment.Evidence)
@@ -120,6 +124,8 @@ func CheckEvidence(ctx context.Context, root string, experiment Experiment, runs
 		return outcome
 	}
 	want := StripInfo(string(expected))
+	results := experiment.ResultsDir(root)
+	verdict := ""
 	for run := 1; run <= runs; run++ {
 		cmd := exec.CommandContext(ctx, binary)
 		cmd.Dir = root
@@ -129,22 +135,50 @@ func CheckEvidence(ctx context.Context, root string, experiment Experiment, runs
 		err := cmd.Run()
 		if err != nil {
 			outcome.Status = "FAIL"
-			outcome.Detail = fmt.Sprintf("run %d: %v: %s", run, err, lastLines(stderr.String(), 5))
+			outcome.Detail = fmt.Sprintf("run %d: %v: %s", run, err, lastLines(stdout.String()+stderr.String(), 5))
 			return outcome
 		}
-		got := StripInfo(stdout.String())
-		if got != want {
+		difference := ""
+		if tables {
+			verdict = VerdictLine(stdout.String())
+			if difference, err = compareTables(results, experiment.EvidenceDir()); err != nil {
+				outcome.Status, outcome.Detail = "ERROR", err.Error()
+				return outcome
+			}
+		} else if got := StripInfo(stdout.String()); got != want {
+			difference = firstDifference(got, want)
+		}
+		if difference != "" {
 			if runtime.GOOS != "linux" && strings.Contains(stdout.String(), "LINUX-ONLY:") {
 				outcome.Status, outcome.Detail = "LINUX-ONLY", "output differs from the Linux evidence where Linux-only parts were skipped"
 				return outcome
 			}
 			outcome.Status = "DIFF"
-			outcome.Detail = fmt.Sprintf("run %d: %s", run, firstDifference(got, want))
+			outcome.Detail = fmt.Sprintf("run %d: %s", run, difference)
 			return outcome
 		}
 	}
 	outcome.Status = "PASS"
 	outcome.Detail = fmt.Sprintf("%d runs identical to the evidence", runs)
+	if !tables {
+		return outcome
+	}
+	outcome.Detail = fmt.Sprintf("%d runs wrote the evidence tables", runs)
+	duckdb, err := DuckDB(ctx)
+	if err != nil {
+		outcome.Detail += "; report not rendered (" + err.Error() + ")"
+		return outcome
+	}
+	rendered, err := RenderReport(ctx, duckdb, results, experiment.Report(), verdict)
+	if err != nil {
+		outcome.Status, outcome.Detail = "FAIL", err.Error()
+		return outcome
+	}
+	if rendered != string(expected) {
+		outcome.Status, outcome.Detail = "DIFF", "rendered report: "+firstDifference(rendered, string(expected))
+		return outcome
+	}
+	outcome.Detail += " and the report renders as stored"
 	return outcome
 }
 

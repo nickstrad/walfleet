@@ -144,7 +144,7 @@ func newLink(dest, label string) *ast.Link {
 	return link
 }
 
-// addExperimentLinks inserts a "Code · Evidence" paragraph directly after each
+// addExperimentLinks inserts a "Code · Report · Evidence" paragraph directly after each
 // experiment heading in a chapter using repo-relative paths that rewriteLinks
 // later turns into GitHub URLs.
 func (b *builder) addExperimentLinks(p *page) {
@@ -169,11 +169,15 @@ func (b *builder) addExperimentLinks(p *page) {
 		if b.files[p.chapter.dir+"/"+code] {
 			para.AppendChild(para, newLink(code, UILabels.Code))
 		}
-		if b.files[p.chapter.dir+"/"+evidence] {
+		report := e.dir + "/report.sql"
+		for _, link := range []struct{ file, label string }{{report, UILabels.Report}, {evidence, UILabels.Evidence}} {
+			if !b.files[p.chapter.dir+"/"+link.file] {
+				continue
+			}
 			if para.HasChildren() {
 				para.AppendChild(para, ast.NewString([]byte(" · ")))
 			}
-			para.AppendChild(para, newLink(evidence, UILabels.Evidence))
+			para.AppendChild(para, newLink(link.file, link.label))
 		}
 		if para.HasChildren() {
 			h.node.Parent().InsertAfter(h.node.Parent(), h.node, para)

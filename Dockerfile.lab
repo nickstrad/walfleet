@@ -5,6 +5,19 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && git config --system safe.directory '*'
 
+# DuckDB CLI, pinned by version and sha256: "course run" presents experiment results with it.
+ARG DUCKDB_VERSION=2.0.0
+RUN arch="$(dpkg --print-architecture)" \
+ && case "$arch" in \
+      amd64) sum=c6507206baf7793c6013dbd82368469a45f20dc0e17a6f92f204602f652ed2bc ;; \
+      arm64) sum=859e1875d2a9515fbb4bf8871061437a14af82320da68c753f094c4b776348fe ;; \
+      *) echo "no pinned DuckDB CLI for $arch" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL -o /tmp/duckdb.tar.gz "https://install.duckdb.org/v${DUCKDB_VERSION}/duckdb-cli-linux-${arch}.tar.gz" \
+ && echo "$sum  /tmp/duckdb.tar.gz" | sha256sum -c - \
+ && tar -C /usr/local/bin -xzf /tmp/duckdb.tar.gz duckdb \
+ && rm /tmp/duckdb.tar.gz
+
 ENV GOTOOLCHAIN=local \
     GOFLAGS=-buildvcs=false
 
@@ -22,7 +35,8 @@ RUN go run ./cmd/course fetch-source -dest /opt/sqlite-src \
 
 ENV SQLITE_SRC=/opt/sqlite-src \
     COURSE_TOOLS_DIR=/opt/course-tools \
-    COURSE_WORK_DIR=/work
+    COURSE_WORK_DIR=/work \
+    COURSE_LAB=1
 
 WORKDIR /src
 CMD ["bash"]

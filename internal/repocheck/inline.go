@@ -70,6 +70,9 @@ func languageFor(target string) string {
 	if strings.HasSuffix(target, ".go") {
 		return "go"
 	}
+	if strings.HasSuffix(target, ".sql") {
+		return "sql"
+	}
 	return "text"
 }
 

@@ -50,54 +50,52 @@ Every experiment prints `sqlite_source_id()` on its first line and exits non-zer
 
 Prerequisites:
 
-- **Go `1.26.0` or newer** ([go.mod](go.mod) declares `go 1.26.0`). No C compiler is needed for the Go driver (`modernc.org/sqlite` is pure Go).
-- **Docker with Docker Compose** ([compose.yaml](compose.yaml)) for the local S3-compatible store (`SeaweedFS 4.48`) used by Chapter 10 (and Experiment 7.4's optional `-s3` flag), and for running Linux-only experiments on macOS.
-- **`strace` and a C toolchain on Linux** if you run syscall-tracing experiments and build the pinned C companion tools (`sqlite3`, `showwal`, `dbhash`) directly on the host.
+- **Docker with Docker Compose** ([compose.yaml](compose.yaml)). Every experiment runs in the `lab` container ([Dockerfile.lab](Dockerfile.lab)): Linux, Go 1.26, `strace`, the pinned SQLite `3.53.4` source tree, the pre-built C tools (`sqlite3`, `showwal`, `dbhash`), and the DuckDB CLI `2.0.0` that presents the results. Chapter 10 (and Experiment 7.4's optional `-s3` flag) also uses the local S3-compatible store (`SeaweedFS 4.48`) from the same file.
+- **Go `1.26.0` or newer** ([go.mod](go.mod) declares `go 1.26.0`) to start the runner from the host. No C compiler is needed for the Go driver (`modernc.org/sqlite` is pure Go).
 
-Setup commands, run from the repository root:
-
-```text
-go run ./cmd/course fetch-source
-go run ./cmd/course build-tools
-```
-
-- `go run ./cmd/course fetch-source` clones SQLite `version-3.53.4` into `_src/sqlite-3.53.4` and verifies its commit and `manifest.uuid` (skipped if `SQLITE_SRC` already points to a matching checkout).
-- `go run ./cmd/course build-tools` compiles `sqlite3`, `showwal`, and `dbhash` from the pinned tree into `_tools/bin/` for experiments in Chapters 1, 2, 3, 4, 5, and 7 that cross-check the Go code against the C tools.
-
-Run any experiment from the repository root with `go run` and its package path, for example:
+Build the container image once, from the repository root:
 
 ```text
-go run ./ch01-architecture-and-execution-path/experiments/1.1-pin-check
+docker compose build lab
 ```
 
-Scratch databases are written under `_work/<experiment>/`, which is git-ignored and safe to delete.
+Run an experiment by its number:
 
-For Chapter 10 (and Experiment 7.4 with `-s3`), start the local SeaweedFS container from [compose.yaml](compose.yaml) first:
+```text
+go run ./cmd/course run 3.1
+```
+
+- The command starts a temporary `lab` container with this repository mounted at `/src`, runs the experiment there, and prints a walkthrough of its results: short explanations, each followed by a table.
+- An experiment writes its measurements as CSV tables and prints only a verdict line. The walkthrough is the DuckDB script `report.sql` next to the experiment's `main.go`.
+- Add `-i` (`go run ./cmd/course run -i 3.1`) to stay in the DuckDB shell afterwards, with every table loaded, and run your own queries.
+- Without Go on the host, run the same command in the container: `docker compose run --rm lab go run ./cmd/course run 3.1`.
+
+For Chapter 10 (and Experiment 7.4 with `-s3`), start the local SeaweedFS container first:
 
 ```text
 docker compose up -d seaweedfs
-go run ./ch10-multi-database-platform-capstone/experiments/10.1-one-writer
+go run ./cmd/course run 10.1
 ```
 
-- `docker compose up -d seaweedfs` starts SeaweedFS in the background and publishes its S3 API on host port `18333` (overridable with `COURSE_S3_HOST_PORT`).
+- `docker compose up -d seaweedfs` starts SeaweedFS in the background and publishes its S3 API on host port `18333` (overridable with `COURSE_S3_HOST_PORT`). Inside `lab`, `COURSE_S3_ENDPOINT` is preconfigured to reach it.
 
-### Linux-only parts and running on macOS
+### Running an experiment without the container
 
-Every package in this repository compiles and passes `go vet` on Linux and macOS, and Chapters 2, 3, and 5 have no Linux-only parts. Experiments that trace syscalls with `strace` (`1.2`, `4.1`, `7.1`, `7.2`, `8.1`, `9.2`, `10.2` Part A) or inspect `/proc` (`4.2` Part E, `6.1` `/proc/locks`, `8.2` descriptor target names) are build-tag gated: on macOS they print a `LINUX-ONLY:` notice, skip the Linux-specific section, and run their portable checks natively.
-
-To run any Linux-only experiment in full from macOS, use the `lab` service defined in [compose.yaml](compose.yaml) and [Dockerfile.lab](Dockerfile.lab). The image ships Go 1.26, `strace`, `SYS_PTRACE`, the pre-fetched SQLite `3.53.4` source tree, and pre-built C tools:
+Every package in this repository compiles and passes `go vet` on Linux and macOS, and an experiment is an ordinary Go program:
 
 ```text
-docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-journal
+go run ./ch03-btrees-and-page-management/experiments/3.1-pages-per-insert
 ```
 
-- `docker compose run --rm lab` starts a temporary Linux container with this repository mounted at `/src` and removes the container when the command finishes. Inside `lab`, `COURSE_S3_ENDPOINT` is preconfigured to reach the `seaweedfs` service for Chapter 10.
+- Run this way, the experiment prints its verdict and leaves its tables under `_work/<experiment>/results/` (git-ignored and safe to delete); nothing presents them.
+- Experiments that cross-check against the C tools need them on the host: `go run ./cmd/course fetch-source` clones SQLite `version-3.53.4` into `_src/sqlite-3.53.4` and verifies it, and `go run ./cmd/course build-tools` compiles `sqlite3`, `showwal`, and `dbhash` into `_tools/bin/`.
+- Experiments that trace syscalls with `strace` (`1.2`, `4.1`, `7.1`, `7.2`, `8.1`, `9.2`, `10.2` Part A) or inspect `/proc` (`4.2` Part E, `6.1` `/proc/locks`, `8.2` descriptor target names) are build-tag gated: on macOS they print a `LINUX-ONLY:` notice and skip the Linux-specific section. The container runs them in full.
 
 ## Repository layout
 
-- **Chapter evidence:** Each chapter directory stores the captured output of its experiments under `evidence/<experiment>.txt`, for example [ch01-architecture-and-execution-path/evidence/](ch01-architecture-and-execution-path/evidence/) through [ch10-multi-database-platform-capstone/evidence/](ch10-multi-database-platform-capstone/evidence/).
+- **Chapter evidence:** Each chapter directory stores, for each experiment, the result tables under `evidence/<experiment>/` (CSV) and the walkthrough as the `lab` container rendered it in `evidence/<experiment>.txt`, for example [ch01-architecture-and-execution-path/evidence/](ch01-architecture-and-execution-path/evidence/) through [ch10-multi-database-platform-capstone/evidence/](ch10-multi-database-platform-capstone/evidence/).
 - **Knowledge-check answers:** Each chapter ends with five review questions whose answers live in a separate `answers.md` file inside the chapter directory, for example [ch01-architecture-and-execution-path/answers.md](ch01-architecture-and-execution-path/answers.md) through [ch10-multi-database-platform-capstone/answers.md](ch10-multi-database-platform-capstone/answers.md) (rendered as their own pages on the site).
 - **Course outline and specification:** [OUTLINE.md](OUTLINE.md) records the chapter plan, technical decisions, and build rulings; [docs/course-source.md](docs/course-source.md) holds the original course specification.
 - **Research reports and chapter findings:** [docs/knowledge/](docs/knowledge/) holds the source inventories, feasibility probes, and per-chapter verified findings.
 - **Working and adversarial scripts:** [agent_work/INDEX.md](agent_work/INDEX.md) indexes every probe, build note, and adversarial falsification script under `agent_work/`.
-- **Course CLI and checks:** [cmd/course/](cmd/course/) builds the site (`go run ./cmd/course site -check -base /walfleet/`), synchronizes inlined code (`inline`), and checks copied sources, line spans, formatting, evidence, and paths (`check all`).
+- **Course CLI and checks:** [cmd/course/](cmd/course/) builds the site (`go run ./cmd/course site -check -base /walfleet/`), runs experiments (`run`), synchronizes inlined code (`inline`), and checks copied sources, line spans, formatting, evidence, and paths (`check all`).

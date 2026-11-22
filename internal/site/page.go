@@ -16,6 +16,7 @@ type Labels struct {
 	Reference   string
 	Answers     string
 	Code        string
+	Report      string
 	Evidence    string
 	Rung        string
 	Planned     string
@@ -30,6 +31,7 @@ var UILabels = Labels{
 	Reference:   "Reference",
 	Answers:     "Answers",
 	Code:        "Code",
+	Report:      "Report",
 	Evidence:    "Evidence",
 	Rung:        "Rung",
 	Planned:     "How this book was planned",

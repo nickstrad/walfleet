@@ -536,3 +536,114 @@ func TestParseBlamePorcelain(t *testing.T) {
 		t.Fatalf("line 3 %+v", lines[2])
 	}
 }
+
+// TestCheckEvidenceTables verifies an experiment with a report.sql is checked by its CSV tables, that "info" tables are ignored, and that a changed table is a DIFF.
+func TestCheckEvidenceTables(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not on PATH")
+	}
+	root := t.TempDir()
+	t.Setenv("COURSE_WORK_DIR", filepath.Join(root, "work"))
+	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/evidence\n\ngo 1.26\n")
+	chapter := Chapter{Number: "01", Dir: "ch01-x", Path: filepath.Join(root, "ch01-x")}
+	program := `package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+func main() {
+	dir := filepath.Join(os.Getenv("COURSE_WORK_DIR"), "1.5", "results")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "rows.csv"), []byte("n,name\n1,one\n2,two\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "info_run.csv"), []byte(fmt.Sprintf("pid\n%d\n", os.Getpid())), 0o644)
+	fmt.Println("TABLES OK")
+}
+`
+	writeFile(t, filepath.Join(chapter.Path, "experiments", "1.5-tables", "main.go"), program)
+	writeFile(t, filepath.Join(chapter.Path, "experiments", "1.5-tables", "report.sql"), ".print 'rows'\nSELECT * FROM rows ORDER BY n;\n")
+	experiments, err := Experiments(chapter)
+	if err != nil || len(experiments) != 1 {
+		t.Fatalf("experiments %v %v", experiments, err)
+	}
+	experiment := experiments[0]
+	if experiment.ID() != "1.5" || !experiment.HasReport() {
+		t.Fatalf("experiment %+v", experiment)
+	}
+	ctx := context.Background()
+	if outcome := CheckEvidence(ctx, root, experiment, 1); outcome.Status != "MISSING" {
+		t.Fatalf("no evidence: %+v", outcome)
+	}
+	writeFile(t, experiment.Evidence, "placeholder\n")
+	if outcome := CheckEvidence(ctx, root, experiment, 1); outcome.Status != "DIFF" {
+		t.Fatalf("no stored tables: %+v", outcome)
+	}
+	results := experiment.ResultsDir(root)
+	rendered := "not rendered\n"
+	if _, err := DuckDB(ctx); err == nil {
+		if err := UpdateEvidence(ctx, experiment, results, "TABLES OK"); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(experiment.Evidence)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rendered = string(data)
+		if !strings.Contains(rendered, "│ 2 │ two  │") || !strings.Contains(rendered, "Experiment verdict: TABLES OK") {
+			t.Fatalf("rendered report:\n%s", rendered)
+		}
+		if _, err := os.Stat(filepath.Join(experiment.EvidenceDir(), "info_run.csv")); err == nil {
+			t.Fatal("an info table was stored as evidence")
+		}
+	} else {
+		writeFile(t, experiment.Evidence, rendered)
+		writeFile(t, filepath.Join(experiment.EvidenceDir(), "rows.csv"), "n,name\n1,one\n2,two\n")
+	}
+	if outcome := CheckEvidence(ctx, root, experiment, 2); outcome.Status != "PASS" {
+		t.Fatalf("same tables: %+v", outcome)
+	}
+	writeFile(t, filepath.Join(experiment.EvidenceDir(), "rows.csv"), "n,name\n1,one\n2,TWO\n")
+	if outcome := CheckEvidence(ctx, root, experiment, 1); outcome.Status != "DIFF" || !strings.Contains(outcome.Detail, "rows.csv") {
+		t.Fatalf("changed table: %+v", outcome)
+	}
+	writeFile(t, filepath.Join(experiment.EvidenceDir(), "rows.csv"), "n,name\n1,one\n2,two\n")
+	writeFile(t, filepath.Join(experiment.EvidenceDir(), "extra.csv"), "a\n")
+	if outcome := CheckEvidence(ctx, root, experiment, 1); outcome.Status != "DIFF" || !strings.Contains(outcome.Detail, "extra") {
+		t.Fatalf("extra stored table: %+v", outcome)
+	}
+}
+
+// TestWalkthroughScript verifies the generated DuckDB script loads each CSV as a table, reads the report, lists the checks, and restores the shell defaults only when interactive.
+func TestWalkthroughScript(t *testing.T) {
+	results := filepath.Join(t.TempDir(), "results")
+	if err := os.MkdirAll(results, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WalkthroughScript(results, "/x/report.sql", "", "OK", false); err == nil {
+		t.Fatal("no error for a results directory without CSV tables")
+	}
+	writeFile(t, filepath.Join(results, "inserts.csv"), "a\n1\n")
+	script, err := WalkthroughScript(results, "/x/it's/report.sql", "", "X OK", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"CREATE TABLE inserts AS FROM read_csv('inserts.csv', sample_size=-1);\n",
+		".read '/x/it''s/report.sql'\n",
+		".print 'Experiment verdict: X OK'\n",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script lacks %q:\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, ".mode duckbox") || strings.Contains(script, "FROM checks") || strings.Contains(script, "info.sql") {
+		t.Errorf("unexpected interactive ending or checks section:\n%s", script)
+	}
+	writeFile(t, filepath.Join(results, "checks.csv"), "seq,part,status,claim\n1,A,ok,x\n")
+	interactive, _ := WalkthroughScript(results, "/x/report.sql", "/x/info.sql", "X OK", true)
+	if !strings.Contains(interactive, ".read '/x/report.sql'\n.read '/x/info.sql'\n") || !strings.Contains(interactive, "FROM checks ORDER BY seq") || !strings.HasSuffix(interactive, ".mode duckbox\n.nullvalue NULL\n") {
+		t.Errorf("interactive script:\n%s", interactive)
+	}
+}

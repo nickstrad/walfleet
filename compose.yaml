@@ -11,6 +11,7 @@ services:
     working_dir: /src
     environment:
       COURSE_WORK_DIR: /work
+      COURSE_LAB: "1"
       GOCACHE: /go/build-cache
       COURSE_S3_ENDPOINT: http://seaweedfs:8333
       COURSE_S3_REGION: us-east-1
