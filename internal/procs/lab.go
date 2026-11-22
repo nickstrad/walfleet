@@ -16,17 +16,55 @@ const StillWaitingWindow = 250 * time.Millisecond
 
 // Lab wraps Script with experiment ergonomics: fatal-on-infrastructure-error
 // helpers, claim assertions, lock inspection, and final pass/fail reporting.
+// The optional hooks hand each answered step, check and lock look to the
+// experiment, whether or not the lab also prints them.
 type Lab struct {
-	Out      io.Writer
-	Script   *Script
+	Out    io.Writer
+	Script *Script
+
+	// OnStep, if set, is called for every step answered through Do, Must or Finish.
+	OnStep func(StepEvent)
+	// OnCheck, if set, is called for every Check.
+	OnCheck func(ok bool, claim string)
+	// OnLocks, if set, is called for every Locks look.
+	OnLocks func(LocksEvent)
+
+	quiet    bool
+	polled   map[*Call]bool
 	failures []string
 	exit     func(int)
+}
+
+// StepEvent is one answered step as OnStep receives it.
+type StepEvent struct {
+	Child  *Child
+	Action string // ActionText of the action and its arguments
+	Result Result
+	// Polled is true when the step was sent with Begin and StillWaiting looked
+	// at it; Waiting then says whether it was still unanswered.
+	Polled  bool
+	Waiting bool
+}
+
+// LocksEvent is one Locks look as OnLocks receives it.
+type LocksEvent struct {
+	Step  int // Script.Step() when the locks were probed
+	Label string
+	View  LockView
+	Names map[int]string // child PID -> child name at the time of the look
 }
 
 // NewLab creates a Lab that writes transcripts and check results to out and
 // exits the process via os.Exit on Fatal or a failing Report.
 func NewLab(out io.Writer) *Lab {
 	return &Lab{Out: out, Script: NewScript(out), exit: os.Exit}
+}
+
+// NewQuietLab creates a Lab that prints no step transcript, check lines or
+// lock dumps; experiments receive them through the hooks instead. Fatal and
+// Report still print to out and exit via os.Exit as they do for NewLab.
+func NewQuietLab(out io.Writer) *Lab {
+	return &Lab{Out: out, Script: NewScript(nil), quiet: true, exit: os.Exit}
 }
 
 // Fatal kills all children, prints an error line, and exits with status 1.
@@ -36,15 +74,21 @@ func (l *Lab) Fatal(what string, err error) {
 	l.exit(1)
 }
 
-// Check prints one "check ok:" or "check FAILED:" line and records any failed
-// claim so Report exits non-zero at the end of the experiment.
+// Check prints one "check ok:" or "check FAILED:" line (unless quiet), calls
+// OnCheck, and records any failed claim so Report exits non-zero at the end of
+// the experiment.
 func (l *Lab) Check(ok bool, claim string) bool {
 	status := "ok"
 	if !ok {
 		status = "FAILED"
 		l.failures = append(l.failures, claim)
 	}
-	fmt.Fprintf(l.Out, "check %s: %s\n", status, claim)
+	if !l.quiet {
+		fmt.Fprintf(l.Out, "check %s: %s\n", status, claim)
+	}
+	if l.OnCheck != nil {
+		l.OnCheck(ok, claim)
+	}
 	return ok
 }
 
@@ -68,6 +112,22 @@ func (l *Lab) SpawnSQL(name string, options SQLOptions) *Child {
 // Do runs action on child and returns its Result (whether SQLITE_OK or an error
 // code); transport or child-death errors are fatal.
 func (l *Lab) Do(child *Child, action string, args ...string) Result {
+	result := l.do(child, action, args)
+	l.stepDone(StepEvent{Child: child, Action: ActionText(action, args), Result: result})
+	return result
+}
+
+// Must runs action on child and aborts via Fatal unless the result is SQLITE_OK.
+func (l *Lab) Must(child *Child, action string, args ...string) Result {
+	result := l.do(child, action, args)
+	if !result.OK() {
+		l.Fatal(fmt.Sprintf("step %d", l.Script.Step()), fmt.Errorf("%s %s: %s %s", child.Name, ActionText(action, args), result.Outcome(), result.Error))
+	}
+	l.stepDone(StepEvent{Child: child, Action: ActionText(action, args), Result: result})
+	return result
+}
+
+func (l *Lab) do(child *Child, action string, args []string) Result {
 	result, err := l.Script.Do(child, action, args...)
 	if err != nil {
 		l.Fatal(fmt.Sprintf("step %d", l.Script.Step()), err)
@@ -75,21 +135,21 @@ func (l *Lab) Do(child *Child, action string, args ...string) Result {
 	return result
 }
 
-// Must runs action on child and aborts via Fatal unless the result is SQLITE_OK.
-func (l *Lab) Must(child *Child, action string, args ...string) Result {
-	result := l.Do(child, action, args...)
-	if !result.OK() {
-		l.Fatal(fmt.Sprintf("step %d", l.Script.Step()), fmt.Errorf("%s %s: %s %s", child.Name, ActionText(action, args), result.Outcome(), result.Error))
+func (l *Lab) stepDone(event StepEvent) {
+	if l.OnStep != nil {
+		l.OnStep(event)
 	}
-	return result
 }
 
-// Begin sends action to child without waiting for the reply and logs that the
-// step is in flight.
+// Begin sends action to child without waiting for the reply and, unless quiet,
+// logs that the step is in flight.
 func (l *Lab) Begin(child *Child, action string, args ...string) *Call {
 	call, err := l.Script.Begin(child, action, args...)
 	if err != nil {
 		l.Fatal(fmt.Sprintf("step %d", l.Script.Step()), err)
+	}
+	if l.quiet {
+		return call
 	}
 	request := call.Request()
 	fmt.Fprintf(l.Out, "step %2d  %-10s %-36s .. sent, not waiting for the answer\n", request.Step, child.Name, ActionText(request.Action, request.Args))
@@ -97,11 +157,19 @@ func (l *Lab) Begin(child *Child, action string, args ...string) *Call {
 }
 
 // StillWaiting waits StillWaitingWindow for call to answer, logs whether it
-// stayed unanswered, and returns true if the child is still blocked.
+// stayed unanswered (unless quiet), remembers the answer for OnStep, and
+// returns true if the child is still blocked.
 func (l *Lab) StillWaiting(call *Call) bool {
 	answered, err := call.AnsweredWithin(StillWaitingWindow)
 	if err != nil {
 		l.Fatal("poll", err)
+	}
+	if l.polled == nil {
+		l.polled = map[*Call]bool{}
+	}
+	l.polled[call] = !answered
+	if l.quiet {
+		return !answered
 	}
 	request := call.Request()
 	state := fmt.Sprintf("no answer after %v", StillWaitingWindow)
@@ -112,12 +180,17 @@ func (l *Lab) StillWaiting(call *Call) bool {
 	return !answered
 }
 
-// Finish waits for an in-flight Call started with Begin and prints its outcome.
+// Finish waits for an in-flight Call started with Begin and prints its outcome
+// (unless quiet).
 func (l *Lab) Finish(call *Call) Result {
 	result, err := l.Script.Finish(call)
 	if err != nil {
 		l.Fatal(fmt.Sprintf("step %d", call.Request().Step), err)
 	}
+	waiting, polled := l.polled[call]
+	delete(l.polled, call)
+	request := call.Request()
+	l.stepDone(StepEvent{Child: call.child, Action: ActionText(request.Action, request.Args), Result: result, Polled: polled, Waiting: waiting})
 	return result
 }
 
@@ -166,24 +239,34 @@ func (v LockView) ProcHolders(name string) map[int]string {
 // Locks probes ranges on path from the parent process (which holds no SQLite
 // connection, so opening and closing path here drops no SQLite locks) and, on
 // Linux, also lists and returns the children's /proc/locks entries for path.
+// Unless quiet it prints both views; it then calls OnLocks.
 func (l *Lab) Locks(label, path string, ranges []LockRange) LockView {
 	states, err := ProbeRanges(path, ranges)
 	if err != nil {
 		l.Fatal("probe locks", err)
 	}
-	fmt.Fprintf(l.Out, "  %s locks (fcntl F_GETLK from the parent):\n", label)
-	for _, line := range FormatRangeStates(states, l.PidName) {
-		fmt.Fprintf(l.Out, "    %s\n", line)
+	if !l.quiet {
+		fmt.Fprintf(l.Out, "  %s locks (fcntl F_GETLK from the parent):\n", label)
+		for _, line := range FormatRangeStates(states, l.PidName) {
+			fmt.Fprintf(l.Out, "    %s\n", line)
+		}
+	}
+	names := map[int]string{}
+	for _, child := range l.Script.Children() {
+		names[child.Pid] = child.Name
 	}
 	view := LockView{Ranges: states}
 	if ProcLocksSupported {
-		view.Proc = l.procLocks(label, path, ranges)
+		view.Proc = l.procLocks(label, path, ranges, names)
 		view.ProcListed = true
+	}
+	if l.OnLocks != nil {
+		l.OnLocks(LocksEvent{Step: l.Script.Step(), Label: label, View: view, Names: names})
 	}
 	return view
 }
 
-func (l *Lab) procLocks(label, path string, ranges []LockRange) []ProcLock {
+func (l *Lab) procLocks(label, path string, ranges []LockRange, names map[int]string) []ProcLock {
 	inode, err := FileInode(path)
 	if err != nil {
 		l.Fatal("inode", err)
@@ -192,13 +275,14 @@ func (l *Lab) procLocks(label, path string, ranges []LockRange) []ProcLock {
 	if err != nil {
 		l.Fatal(ProcLocksPath, err)
 	}
-	names := map[int]string{}
 	pids := map[int]bool{}
-	for _, child := range l.Script.Children() {
-		names[child.Pid] = child.Name
-		pids[child.Pid] = true
+	for pid := range names {
+		pids[pid] = true
 	}
 	mine := FilterProcLocks(all, inode, pids)
+	if l.quiet {
+		return mine
+	}
 	lines := DescribeProcLocks(mine, names, ranges)
 	if len(lines) == 0 {
 		fmt.Fprintf(l.Out, "  %s locks in %s: none\n", label, ProcLocksPath)

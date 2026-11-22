@@ -59,85 +59,49 @@ func openTables() {
 	tables.infoProcesses = set.Table("info_processes", "part", "process", "pid")
 }
 
-// recorder is a procs.Lab that writes each step, lock view and claim to the
-// tables instead of printing them.
-type recorder struct{ *procs.Lab }
-
-func newRecorder() *recorder {
-	lab := procs.NewLab(os.Stdout)
-	lab.Script.Out = nil
-	return &recorder{lab}
-}
-
-func (l *recorder) Do(child *procs.Child, action string, args ...string) procs.Result {
-	return l.step(child, action, args, l.Lab.Do(child, action, args...))
-}
-
-func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
-	return l.step(child, action, args, l.Lab.Must(child, action, args...))
-}
-
-func (l *recorder) step(child *procs.Child, action string, args []string, r procs.Result) procs.Result {
-	value := r.Value
-	if r.Code == procs.CodeNotSQLite {
-		value = r.Error
-	}
-	tables.steps.Row(part, r.Step, child.Name, procs.ActionText(action, args), r.CodeName(), r.Code, value)
-	return r
-}
-
-func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
-
-// Locks probes ranges on path from the parent (fcntl F_GETLK) and, on Linux,
-// lists the children's /proc/locks entries for path.
-func (l *recorder) Locks(file, path string, ranges []procs.LockRange) procs.LockView {
-	states, err := procs.ProbeRanges(path, ranges)
-	if err != nil {
-		l.Fatal("probe locks", err)
-	}
-	step := l.Script.Step()
-	for _, s := range states {
-		// F_GETLK names one arbitrary holder of a shared read lock, so only a
-		// write lock has a holder worth naming.
-		var holder any
-		if s.Holder.Held && s.Holder.Write {
-			holder = l.PidName(s.Holder.Pid)
+// newLab returns a quiet procs.Lab whose hooks write each step, lock look and
+// claim to the tables.
+func newLab() *procs.Lab {
+	lab := procs.NewQuietLab(os.Stdout)
+	lab.OnStep = func(e procs.StepEvent) {
+		r := e.Result
+		value := r.Value
+		if r.Code == procs.CodeNotSQLite {
+			value = r.Error
 		}
-		tables.lockProbes.Row(part, step, file, s.Range.Name, s.Range.Start, s.Range.Start+s.Range.Length-1, s.Holder.Kind(), holder)
+		tables.steps.Row(part, r.Step, e.Child.Name, e.Action, r.CodeName(), r.Code, value)
 	}
-	view := procs.LockView{Ranges: states}
-	if procs.ProcLocksSupported {
-		view.Proc = l.procLocks(file, path, ranges, step)
-		view.ProcListed = true
+	lab.OnCheck = func(ok bool, claim string) { set.Check(part, ok, claim) }
+	lab.OnLocks = func(e procs.LocksEvent) {
+		for _, s := range e.View.Ranges {
+			// F_GETLK names one arbitrary holder of a shared read lock, so only a
+			// write lock has a holder worth naming.
+			var holder any
+			if s.Holder.Held && s.Holder.Write {
+				holder = lab.PidName(s.Holder.Pid)
+			}
+			tables.lockProbes.Row(part, e.Step, e.Label, s.Range.Name, s.Range.Start, s.Range.Start+s.Range.Length-1, s.Holder.Kind(), holder)
+		}
+		sorted := slices.SortedFunc(slices.Values(e.View.Proc), func(a, b procs.ProcLock) int {
+			return cmp.Or(cmp.Compare(e.Names[a.Pid], e.Names[b.Pid]), cmp.Compare(a.Type, b.Type), cmp.Compare(a.Start, b.Start))
+		})
+		ranges := lockRanges(e.View)
+		for _, lock := range sorted {
+			tables.procLocks.Row(part, e.Step, e.Label, e.Names[lock.Pid], lock.Class, lock.Type, lock.RangeText(), rangeLabel(lock, ranges))
+		}
+		viewSeq++
+		tables.lockViews.Row(viewSeq, part, e.Step, e.Label, e.View.ProcListed, len(e.View.Proc))
 	}
-	viewSeq++
-	tables.lockViews.Row(viewSeq, part, step, file, view.ProcListed, len(view.Proc))
-	return view
+	return lab
 }
 
-func (l *recorder) procLocks(file, path string, ranges []procs.LockRange, step int) []procs.ProcLock {
-	inode, err := procs.FileInode(path)
-	if err != nil {
-		l.Fatal("inode", err)
+// lockRanges returns the ranges that were probed for view.
+func lockRanges(view procs.LockView) []procs.LockRange {
+	ranges := make([]procs.LockRange, len(view.Ranges))
+	for i, s := range view.Ranges {
+		ranges[i] = s.Range
 	}
-	all, err := procs.ReadProcLocks()
-	if err != nil {
-		l.Fatal(procs.ProcLocksPath, err)
-	}
-	names := map[int]string{}
-	pids := map[int]bool{}
-	for _, child := range l.Script.Children() {
-		names[child.Pid] = child.Name
-		pids[child.Pid] = true
-	}
-	mine := procs.FilterProcLocks(all, inode, pids)
-	sorted := slices.SortedFunc(slices.Values(mine), func(a, b procs.ProcLock) int {
-		return cmp.Or(cmp.Compare(names[a.Pid], names[b.Pid]), cmp.Compare(a.Type, b.Type), cmp.Compare(a.Start, b.Start))
-	})
-	for _, lock := range sorted {
-		tables.procLocks.Row(part, step, file, names[lock.Pid], lock.Class, lock.Type, lock.RangeText(), rangeLabel(lock, ranges))
-	}
-	return mine
+	return ranges
 }
 
 // rangeLabel names the SQLite lock range a kernel lock covers exactly, or
@@ -158,11 +122,11 @@ func rangeLabel(lock procs.ProcLock, ranges []procs.LockRange) string {
 	return "(" + strings.Join(covered, "+") + ")"
 }
 
-func prepare(ctx context.Context, lab *recorder, dir, journal string) (string, *procs.Child, *procs.Child) {
+func prepare(ctx context.Context, lab *procs.Lab, dir, journal string) (string, *procs.Child, *procs.Child) {
 	return prepareIn(ctx, lab, filepath.Join(dir, journal), procs.SQLOptions{JournalMode: journal})
 }
 
-func prepareIn(ctx context.Context, lab *recorder, partDir string, options procs.SQLOptions) (string, *procs.Child, *procs.Child) {
+func prepareIn(ctx context.Context, lab *procs.Lab, partDir string, options procs.SQLOptions) (string, *procs.Child, *procs.Child) {
 	journal := options.JournalMode
 	db := filepath.Join(partDir, "lab.db")
 	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
@@ -179,21 +143,21 @@ func prepareIn(ctx context.Context, lab *recorder, partDir string, options procs
 	return db, holder, contender
 }
 
-func kernelHolders(lab *recorder, view procs.LockView, rangeName string, want map[int]string, claim string) {
+func kernelHolders(lab *procs.Lab, view procs.LockView, rangeName string, want map[int]string, claim string) {
 	if !view.ProcListed {
 		return
 	}
 	lab.Check(maps.Equal(view.ProcHolders(rangeName), want), claim)
 }
 
-func kernelNone(lab *recorder, view procs.LockView, claim string) {
+func kernelNone(lab *procs.Lab, view procs.LockView, claim string) {
 	if !view.ProcListed {
 		return
 	}
 	lab.Check(len(view.Proc) == 0, claim)
 }
 
-func finalRows(ctx context.Context, lab *recorder, db, journal string) procs.Inspection {
+func finalRows(ctx context.Context, lab *procs.Lab, db, journal string) procs.Inspection {
 	lab.StopChildren()
 	inspection, err := procs.InspectDatabase(ctx, db, journal, rowsQuery)
 	if err != nil {
@@ -207,7 +171,7 @@ func finalRows(ctx context.Context, lab *recorder, db, journal string) procs.Ins
 // the database file drops RESERVED and SHARED, admits a second writer whose
 // COMMIT returns SQLITE_OK, and causes the holder's later COMMIT to overwrite
 // the page and fail with SQLITE_IOERR_DELETE_NOENT (5898, src/os_unix.c:6842-6847).
-func rollbackMode(ctx context.Context, lab *recorder, dir string) {
+func rollbackMode(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "A"
 	db, holder, contender := prepare(ctx, lab, dir, sqlitex.JournalDelete)
 	ranges := procs.DatabaseLockRanges()
@@ -248,7 +212,7 @@ func rollbackMode(ctx context.Context, lab *recorder, dir string) {
 // -shm drops all -shm locks, admits the contender, and sends the holder's
 // COMMIT (on WAL_READ_LOCK(0)) into walRestartLog -> walTryBeginRead retries
 // until SQLITE_PROTOCOL (15, src/wal.c:2963, 3053-3056, 3261-3265, 3875-3915).
-func walMode(ctx context.Context, lab *recorder, dir string) {
+func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "B"
 	db, holder, contender := prepare(ctx, lab, dir, sqlitex.JournalWAL)
 	shm := db + "-shm"
@@ -301,7 +265,7 @@ func walMode(ctx context.Context, lab *recorder, dir string) {
 // runs when pWal->readLock == 0 (src/wal.c:3879), the holder skips the header
 // check after the stray close of -shm, writes its frames over the contender's,
 // and both COMMITs return SQLITE_OK while the contender's row silently vanishes.
-func walWithFrames(ctx context.Context, lab *recorder, dir string) {
+func walWithFrames(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "C"
 	db, holder, contender := prepareIn(ctx, lab, filepath.Join(dir, "wal-with-frames"), procs.SQLOptions{JournalMode: sqlitex.JournalWAL})
 	shm := db + "-shm"
@@ -335,7 +299,7 @@ func walWithFrames(ctx context.Context, lab *recorder, dir string) {
 // sqlite3WalClose (src/wal.c:2507-2571) closes as the last connection and unlinks
 // -wal and -shm; the holder then commits SQLITE_OK into its unlinked -wal fd and
 // only the holder's row survives.
-func walContenderExits(ctx context.Context, lab *recorder, dir string) {
+func walContenderExits(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "D"
 	db, holder, contender := prepareIn(ctx, lab, filepath.Join(dir, "wal-contender-exits"), procs.SQLOptions{JournalMode: sqlitex.JournalWAL})
 	lab.Must(holder, "begin", "immediate")
@@ -395,7 +359,7 @@ func main() {
 	set = results.MustOpen(dir)
 	openTables()
 	tables.infoRun.Row(sqlitex.DisplayPath(dir), runtime.GOOS)
-	lab := newRecorder()
+	lab := newLab()
 	rollbackMode(ctx, lab, dir)
 	walMode(ctx, lab, dir)
 	walWithFrames(ctx, lab, dir)

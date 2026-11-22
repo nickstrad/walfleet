@@ -88,15 +88,9 @@ func (x *run) openShipper() {
 	}
 }
 
-func (x *run) must(child *procs.Child, action string, args ...string) procs.Result {
-	result := x.lab.Must(child, action, args...)
-	x.tables.steps.Row(result.Step, x.part, x.cycles+1, child.Name, procs.ActionText(action, args), result.Outcome())
-	return result
-}
-
 func (x *run) commit(steps ...int) {
 	for _, k := range steps {
-		x.must(x.writer, "recipe-session", strconv.Itoa(k))
+		x.lab.Must(x.writer, "recipe-session", strconv.Itoa(k))
 	}
 }
 
@@ -255,9 +249,12 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("9.4")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	lab := procs.NewLab(os.Stdout)
-	lab.Script.Out = nil // the steps table records each child step
+	lab := procs.NewQuietLab(os.Stdout)
 	x := &run{ctx: ctx, lab: lab, r: recipe.Default(), dir: dir, db: filepath.Join(dir, "live", "r.db"), set: results.MustOpen(dir), part: "A"}
+	// The steps table records each child step.
+	lab.OnStep = func(e procs.StepEvent) {
+		x.tables.steps.Row(e.Result.Step, x.part, x.cycles+1, e.Child.Name, e.Action, e.Result.Outcome())
+	}
 	x.openTables()
 	if err := os.MkdirAll(filepath.Dir(x.db), 0o755); err != nil {
 		lab.Fatal("mkdir", err)
@@ -295,7 +292,7 @@ func main() {
 	x.part = "B"
 	x.closeShipper()
 	x.commit(15, 16)
-	truncate := x.must(x.outsider, "checkpoint", sqlitex.CheckpointTruncate)
+	truncate := x.lab.Must(x.outsider, "checkpoint", sqlitex.CheckpointTruncate)
 	x.set.Check("B", truncate.Value == "busy=0 log=0 checkpointed=0", "the outsider's TRUNCATE checkpoint copied steps 15-16 into the database file and emptied the WAL")
 	x.commit(17)
 	x.openShipper()

@@ -50,23 +50,17 @@ func openTables() {
 	tables.infoRun = set.Table("info_run", "work_dir", "db_bytes_at_copy")
 }
 
-// recorder is a procs.Lab that writes each step and claim to the tables
-// instead of printing them.
-type recorder struct{ *procs.Lab }
-
-func newRecorder() *recorder {
-	lab := procs.NewLab(os.Stdout)
-	lab.Script.Out = nil
-	return &recorder{lab}
+// newLab returns a quiet procs.Lab whose hooks write each step and claim to
+// the tables.
+func newLab() *procs.Lab {
+	lab := procs.NewQuietLab(os.Stdout)
+	lab.OnStep = func(e procs.StepEvent) {
+		r := e.Result
+		tables.steps.Row(part, r.Step, e.Child.Name, e.Action, r.CodeName(), r.Code, r.Value)
+	}
+	lab.OnCheck = func(ok bool, claim string) { set.Check(part, ok, claim) }
+	return lab
 }
-
-func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
-	r := l.Lab.Must(child, action, args...)
-	tables.steps.Row(part, r.Step, child.Name, procs.ActionText(action, args), r.CodeName(), r.Code, r.Value)
-	return r
-}
-
-func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
 
 type copyReport struct {
 	name       string
@@ -77,7 +71,7 @@ type copyReport struct {
 
 // examine verifies that inspecting path does not modify it, matches path against
 // the recipe's known states, and records its size, integrity_check result, and counts.
-func examine(ctx context.Context, lab *recorder, r recipe.Recipe, path, journal string) copyReport {
+func examine(ctx context.Context, lab *procs.Lab, r recipe.Recipe, path, journal string) copyReport {
 	info, err := os.Stat(path)
 	if err != nil {
 		lab.Fatal("stat", err)
@@ -121,7 +115,7 @@ func examine(ctx context.Context, lab *recorder, r recipe.Recipe, path, journal 
 	return report
 }
 
-func prepare(ctx context.Context, lab *recorder, r recipe.Recipe, dir, name, journal string) (string, string) {
+func prepare(ctx context.Context, lab *procs.Lab, r recipe.Recipe, dir, name, journal string) (string, string) {
 	root := filepath.Join(dir, name)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		lab.Fatal("mkdir", err)
@@ -136,7 +130,7 @@ func prepare(ctx context.Context, lab *recorder, r recipe.Recipe, dir, name, jou
 // walMode runs Part A: commits steps 6-10 with a PASSIVE checkpoint after step 8,
 // inspects a main-file-only copy (A1: valid step 8, commits 9-10 silently lost),
 // and splits a copy across a second checkpoint (A2: torn and corrupt).
-func walMode(ctx context.Context, lab *recorder, dir string) {
+func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "A"
 	r := recipe.Default()
 	db, root := prepare(ctx, lab, r, dir, "wal", sqlitex.JournalWAL)
@@ -172,7 +166,7 @@ func walMode(ctx context.Context, lab *recorder, dir string) {
 
 // rollbackMode runs Part B: copies the first half of a rollback-mode database,
 // commits recipe step 6, copies the second half, and verifies the torn copy fails.
-func rollbackMode(ctx context.Context, lab *recorder, dir string) {
+func rollbackMode(ctx context.Context, lab *procs.Lab, dir string) {
 	part = "B"
 	r := recipe.Default().WithJournalMode(sqlitex.JournalDelete)
 	db, root := prepare(ctx, lab, r, dir, "rollback", sqlitex.JournalDelete)
@@ -197,7 +191,7 @@ func main() {
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
 	set = results.MustOpen(dir)
 	openTables()
-	lab := newRecorder()
+	lab := newLab()
 	walMode(ctx, lab, dir)
 	rollbackMode(ctx, lab, dir)
 	set.Finish("TORN COPY")

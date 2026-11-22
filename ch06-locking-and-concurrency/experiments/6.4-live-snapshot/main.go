@@ -61,27 +61,21 @@ func openTables() {
 		"applied_frames", "distinct_pages", "skipped_beyond_size", "base_bytes", "output_bytes", "ignored")
 }
 
-// recorder is a procs.Lab that writes each step and claim to the tables
-// instead of printing them.
-type recorder struct{ *procs.Lab }
-
-func newRecorder() *recorder {
-	lab := procs.NewLab(os.Stdout)
-	lab.Script.Out = nil
-	return &recorder{lab}
+// newLab returns a quiet procs.Lab whose hooks write each step and claim to
+// the tables.
+func newLab() *procs.Lab {
+	lab := procs.NewQuietLab(os.Stdout)
+	lab.OnStep = func(e procs.StepEvent) {
+		r := e.Result
+		tables.steps.Row(part, r.Step, e.Child.Name, e.Action, r.CodeName(), r.Code, r.Value)
+	}
+	lab.OnCheck = func(ok bool, claim string) { set.Check(part, ok, claim) }
+	return lab
 }
-
-func (l *recorder) Must(child *procs.Child, action string, args ...string) procs.Result {
-	r := l.Lab.Must(child, action, args...)
-	tables.steps.Row(part, r.Step, child.Name, procs.ActionText(action, args), r.CodeName(), r.Code, r.Value)
-	return r
-}
-
-func (l *recorder) Check(ok bool, claim string) { set.Check(part, ok, claim) }
 
 type run struct {
 	ctx      context.Context
-	lab      *recorder
+	lab      *procs.Lab
 	r        recipe.Recipe
 	hold     string
 	dir      string
@@ -242,7 +236,7 @@ func main() {
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
 	set = results.MustOpen(dir)
 	openTables()
-	lab := newRecorder()
+	lab := newLab()
 	x := &run{ctx: ctx, lab: lab, r: recipe.Default(), hold: *hold, dir: dir}
 	live := filepath.Join(dir, "live")
 	if err := os.MkdirAll(live, 0o755); err != nil {

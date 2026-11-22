@@ -86,12 +86,6 @@ func (x *run) openTables() {
 	x.tables.summary = x.set.Table("summary", "seq", "method", "strongest_level", "safe_under_writer", "blocks_the_writer")
 }
 
-// must runs one action on the writer child and records it in the steps table.
-func (x *run) must(action string, args ...string) {
-	result := x.lab.Must(x.writer, action, args...)
-	x.tables.steps.Row(result.Step, x.during, x.writer.Name, procs.ActionText(action, args), result.Outcome())
-}
-
 func (x *run) ref(k int) string { return filepath.Join(x.dir, "ref", fmt.Sprintf("step-%02d.db", k)) }
 
 func (x *run) canonicalRef(k int) string {
@@ -209,7 +203,7 @@ func (x *run) stateOf(capture string, vacuumed bool) (int, levels) {
 }
 
 func (x *run) commit() int {
-	x.must("recipe-session", strconv.Itoa(x.next))
+	x.lab.Must(x.writer, "recipe-session", strconv.Itoa(x.next))
 	x.next++
 	return x.next - 1
 }
@@ -454,12 +448,12 @@ func (x *run) underWriter() map[string]bool {
 	// sees the uncommitted writes.
 	x.during = methodVacuum
 	before := x.next - 1
-	x.must("begin", "immediate")
-	x.must("recipe-exec", strconv.Itoa(x.next))
+	x.lab.Must(x.writer, "begin", "immediate")
+	x.lab.Must(x.writer, "recipe-exec", strconv.Itoa(x.next))
 	if _, err := x.conn.ExecContext(x.ctx, "VACUUM INTO ?", x.path("b-vacuum.db")); err != nil {
 		x.lab.Fatal("vacuum into", err)
 	}
-	x.must("commit")
+	x.lab.Must(x.writer, "commit")
 	x.next++
 	safe[methodVacuum] = x.report(methodVacuum, "b-vacuum.db", true, before, vacuumLevels)
 
@@ -551,9 +545,12 @@ func main() {
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("9.1")
 	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
-	lab := procs.NewLab(os.Stdout)
-	lab.Script.Out = nil // the steps table records each writer step
+	lab := procs.NewQuietLab(os.Stdout)
 	x := &run{ctx: ctx, lab: lab, r: recipe.Default(), dir: dir, live: filepath.Join(dir, "live.db"), set: results.MustOpen(dir)}
+	// The steps table records each writer step.
+	lab.OnStep = func(e procs.StepEvent) {
+		x.tables.steps.Row(e.Result.Step, x.during, e.Child.Name, e.Action, e.Result.Outcome())
+	}
 	x.openTables()
 	x.buildReferences()
 	x.quiet()

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -340,6 +341,111 @@ func TestLabCheckAndReport(t *testing.T) {
 	lab.Report("T")
 	if exitCode != 1 || !strings.Contains(out.String(), "T FAILED: 1 claim(s)") || len(lab.Failures()) != 1 {
 		t.Fatalf("failing report: %q exit %d", out.String(), exitCode)
+	}
+}
+
+// TestQuietLabHandsStepsAndChecksToHooks verifies a quiet Lab prints nothing
+// but FATAL, and that OnStep and OnCheck see every step, poll and claim.
+func TestQuietLabHandsStepsAndChecksToHooks(t *testing.T) {
+	var out bytes.Buffer
+	lab := NewQuietLab(&out)
+	exitCode := -1
+	lab.exit = func(code int) { exitCode = code }
+	var steps []string
+	lab.OnStep = func(e StepEvent) {
+		steps = append(steps, fmt.Sprintf("%d %s %s %s polled=%v waiting=%v", e.Result.Step, e.Child.Name, e.Action, e.Result.Outcome(), e.Polled, e.Waiting))
+	}
+	var checks []string
+	lab.OnCheck = func(ok bool, claim string) { checks = append(checks, fmt.Sprintf("%v %s", ok, claim)) }
+	child := lab.Spawn("q", "echo")
+	lab.Do(child, "fail")
+	lab.Must(child, "echo", "a", "b")
+	blocked := lab.Begin(child, "sleep", "1s")
+	if !lab.StillWaiting(blocked) {
+		t.Fatal("a blocked action was reported as answered")
+	}
+	lab.Finish(blocked)
+	unpolled := lab.Begin(child, "echo", "later")
+	lab.Finish(unpolled)
+	lab.Check(true, "yes")
+	lab.Check(false, "no")
+	lab.StopChildren()
+	if out.Len() != 0 {
+		t.Fatalf("quiet lab printed %q", out.String())
+	}
+	want := []string{
+		"1 q fail ERROR asked to fail polled=false waiting=false",
+		"2 q echo a b SQLITE_OK a|b polled=false waiting=false",
+		"3 q sleep 1s SQLITE_OK slept polled=true waiting=true",
+		"4 q echo later SQLITE_OK later polled=false waiting=false",
+	}
+	if strings.Join(steps, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("steps:\n%s\nwant\n%s", strings.Join(steps, "\n"), strings.Join(want, "\n"))
+	}
+	if strings.Join(checks, ",") != "true yes,false no" || len(lab.Failures()) != 1 {
+		t.Fatalf("checks %q failures %q", checks, lab.Failures())
+	}
+	lab.Fatal("boom", errors.New("broken"))
+	if exitCode != 1 || out.String() != "FATAL boom: broken\n" {
+		t.Fatalf("fatal: %q exit %d", out.String(), exitCode)
+	}
+}
+
+// TestLabHooksKeepTheTranscript verifies hooks on a printing Lab leave its
+// transcript and check lines as they were.
+func TestLabHooksKeepTheTranscript(t *testing.T) {
+	var out bytes.Buffer
+	lab := NewLab(&out)
+	var steps, checks int
+	lab.OnStep = func(StepEvent) { steps++ }
+	lab.OnCheck = func(bool, string) { checks++ }
+	child := lab.Spawn("p", "echo")
+	lab.Must(child, "echo", "1")
+	lab.Finish(lab.Begin(child, "echo", "2"))
+	lab.Check(true, "yes")
+	lab.StopChildren()
+	want := "step  1  p          echo 1                               -> SQLITE_OK 1\n" +
+		"step  2  p          echo 2                               .. sent, not waiting for the answer\n" +
+		"step  2  p          echo 2                               -> SQLITE_OK 2\n" +
+		"check ok: yes\n"
+	if out.String() != want || steps != 2 || checks != 1 {
+		t.Fatalf("transcript:\n%q\nwant\n%q\nsteps %d checks %d", out.String(), want, steps, checks)
+	}
+}
+
+// TestQuietLabHandsLocksToOnLocks verifies a quiet Lab prints no lock dump and
+// passes the probe, the /proc/locks entries and the child names to OnLocks.
+func TestQuietLabHandsLocksToOnLocks(t *testing.T) {
+	if !LockProbeSupported {
+		t.Skip("no fcntl probe on " + runtime.GOOS)
+	}
+	path := filepath.Join(t.TempDir(), "locked")
+	if err := os.WriteFile(path, make([]byte, 256), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	lab := NewQuietLab(&out)
+	var events []LocksEvent
+	lab.OnLocks = func(e LocksEvent) { events = append(events, e) }
+	child := lab.Spawn("locker", "echo")
+	lab.Must(child, "lock", path)
+	view := lab.Locks("-shm", path, ShmLockRanges())
+	lab.StopChildren()
+	if out.Len() != 0 {
+		t.Fatalf("quiet lab printed %q", out.String())
+	}
+	if len(events) != 1 {
+		t.Fatalf("%d OnLocks calls", len(events))
+	}
+	e := events[0]
+	if e.Step != 1 || e.Label != "-shm" || e.Names[child.Pid] != "locker" || !WriteLockedBy(e.View.Ranges, "WAL_WRITE_LOCK", child.Pid) {
+		t.Fatalf("event %+v", e)
+	}
+	if e.View.ProcListed != ProcLocksSupported || len(e.View.Proc) != len(view.Proc) {
+		t.Fatalf("event view %+v, returned view %+v", e.View, view)
+	}
+	if ProcLocksSupported && (len(e.View.Proc) != 1 || e.View.Proc[0].Pid != child.Pid || e.View.Proc[0].Type != "WRITE") {
+		t.Fatalf("/proc/locks entries %+v", e.View.Proc)
 	}
 }
 
