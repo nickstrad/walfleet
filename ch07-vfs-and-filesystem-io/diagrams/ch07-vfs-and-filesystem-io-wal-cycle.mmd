@@ -1,0 +1,7 @@
+%% draw-visual: -x 4 -y 1 -p 1
+graph TD
+  ORD[Ordinary commit: 0 syncs] -->|append| CHK{WAL >= 1000 frames?}
+  CHK -->|no| ORD
+  CHK -->|yes| CKPT[walCheckpoint: 2 syncs]
+  CKPT -->|next| RST[walRestartLog + syncHeader: 1 sync]
+  RST -->|reset| ORD

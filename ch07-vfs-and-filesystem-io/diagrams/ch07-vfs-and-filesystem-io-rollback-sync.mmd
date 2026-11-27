@@ -1,0 +1,25 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant P as pager.c
+  participant U as unix VFS (os_unix.c)
+  participant F as OS / files
+  P->>U: xOpen -journal
+  Note over U: CREATE: set UNIXFILE_DIRSYNC
+  U->>F: open O_CREAT
+  P->>U: xWrite -journal
+  U->>F: pwrite64 -journal
+  P->>U: xSync -jrnl [1]
+  U->>F: sync -journal (1)
+  U->>F: open+sync . (2)
+  Note over U: clear UNIXFILE_DIRSYNC
+  P->>U: xWrite 12B hdr
+  U->>F: pwrite64 -journal
+  P->>U: xSync -jrnl [2]
+  U->>F: sync -journal (3)
+  P->>U: xWrite t.db
+  U->>F: pwrite64 t.db
+  P->>U: xSync t.db [3]
+  U->>F: sync t.db (4)
+  P->>U: xDelete -journal
+  U->>F: unlink -journal

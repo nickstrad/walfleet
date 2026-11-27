@@ -1,0 +1,18 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant S as Shipper
+  participant WAL as -wal/.db
+  participant W as Writer
+  participant O as Outsider
+  alt Shipper alive (pin on slot 0)
+    S->>WAL: pin slot 0
+    O--xWAL: ckpt (slot 0 busy)
+    W->>WAL: restart WAL
+    Note over S,W: slots 1..4 free, old gen shipped
+  else Shipper stopped (no pin)
+    O->>WAL: TRUNCATE ckpt 15..16
+    W->>WAL: step 17
+    S->>WAL: resume, read
+    Note over S,WAL: WALDiscontinuity -> snapshot
+  end

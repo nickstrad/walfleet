@@ -1,0 +1,11 @@
+%% draw-visual: -x 3 -y 1 -p 0
+graph TD
+  Start[wal_checkpoint] -->|NOOP| Noop[Read mxFrame, nBackfill]
+  Start -->|PASSIVE+| Ckpt[Try WAL_CKPT_LOCK]
+  Ckpt -->|PASSIVE| Marks[Scan marks 1..4 -> mxSafe]
+  Ckpt -->|FULL+| Write[Wait WAL_WRITE_LOCK]
+  Write -->|ok or busy| Marks
+  Marks --> Read0[Excl WAL_READ_LOCK 0]
+  Read0 --> Copy[Sync -wal, backfill .db]
+  Copy -->|RESTART+| Read14[Wait WAL_READ_LOCK 1..4]
+  Read14 -->|TRUNCATE| Trunc[walRestartHdr, -wal = 0]

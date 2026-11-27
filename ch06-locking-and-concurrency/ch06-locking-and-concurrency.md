@@ -12,35 +12,35 @@
 
 > **How to run the experiments**
 >
-> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to start the runner from the host. Build the `lab` image once, from the repository root:
+> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to invoke this repository's experiment runner (`cmd/course`) from the host. Build the `lab` container image (`Dockerfile.lab`) once from the repository root:
 >   ```text
 >   docker compose build lab
 >   ```
->   The image already contains the pinned SQLite `3.53.4` source tree, the C tools (`sqlite3`, `showwal`, `dbhash`; Experiments 6.1–6.4 use pure Go child processes, and the `sqlite3` CLI is needed only by the cross-build adversarial scripts under `agent_work/ch06/adversarial/`), `strace`, and the DuckDB CLI that presents the results.
-> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment in it, and prints its walkthrough; add `-i` (`go run ./cmd/course run -i 6.1`) to stay in DuckDB afterwards with the tables loaded:
+>   The image bundles the pinned SQLite `3.53.4` source tree, the compiled SQLite C tools (`sqlite3`, `showwal`—SQLite's WAL dump utility—and `dbhash`; Experiments 6.1–6.4 use pure Go child processes, and the `sqlite3` CLI is needed only by the standalone cross-build stress-test scripts under `agent_work/ch06/adversarial/`), `strace`, and the DuckDB CLI that renders each experiment's CSV results as a walkthrough.
+> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`go run ./cmd/course run -i 6.1`) to stay in the DuckDB shell afterwards with all tables loaded:
 >   ```text
 >   go run ./cmd/course run 6.1
 >   go run ./cmd/course run 6.2
 >   go run ./cmd/course run 6.3
 >   go run ./cmd/course run 6.4
 >   ```
->   Experiment 6.4 also accepts `-hold read` (the default, stored as evidence) or `-hold immediate`. `course run` cannot pass experiment flags, so run the variant directly in the container: `docker compose run --rm lab go run ./ch06-locking-and-concurrency/experiments/6.4-live-snapshot -hold immediate`. In the container, scratch databases and tables are written under `/work/6.1/` through `/work/6.4/` (the `lab-work` volume); run directly, under `_work/6.1/` through `_work/6.4/`, which are git-ignored and safe to delete.
-> - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch06-locking-and-concurrency/experiments/6.2-busy-rules`). Run this way it prints only its verdict and leaves its tables under `_work/6.2/results/`.
-> - **Linux only (Experiment 6.1 `/proc/locks` view) and macOS:** Experiment 6.1's `/proc/locks` kernel lock listing (and its 11 `/proc/locks:` checks) is **Linux only**; `course run` runs it in full in the Linux `lab` container. Run directly on macOS, Experiment 6.1 prints a `LINUX-ONLY:` notice, skips `/proc/locks`, and still runs the portable `fcntl(F_GETLK)` probe and all 32 remaining checks. Experiments 6.2, 6.3, and 6.4 use nothing Linux-specific and also run directly on macOS.
-> - **Measurement environment:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). Process ids and the work directory differ between runs and are not part of the stored evidence.
+>   Experiment 6.4 also accepts `-hold read` (the default, stored as evidence) or `-hold immediate`. Because `course run` cannot pass experiment flags, run the variant directly in the container: `docker compose run --rm lab go run ./ch06-locking-and-concurrency/experiments/6.4-live-snapshot -hold immediate`. Inside the container, scratch databases and result tables are written under `/work/6.1/` through `/work/6.4/` (the Docker `lab-work` volume); when run directly on the host, they go under `_work/6.1/` through `_work/6.4/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** Each experiment is an ordinary Go program (`go run ./ch06-locking-and-concurrency/experiments/6.2-busy-rules`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/6.2/results/`.
+> - **Linux only (Experiment 6.1 `/proc/locks` view) and macOS:** Experiment 6.1's `/proc/locks` kernel lock listing (and its 11 `/proc/locks:` checks) is **Linux only**; `course run` runs it in full inside the Linux `lab` container. Run directly on macOS, Experiment 6.1 prints a `LINUX-ONLY:` notice, skips `/proc/locks`, and still runs the portable `fcntl(F_GETLK)` probe and all 32 remaining checks. Experiments 6.2, 6.3, and 6.4 use nothing Linux-specific and also run directly on macOS.
+> - **Measurement environment:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). Process ids and the work directory differ between runs and are excluded from the stored evidence.
 
 ---
 
 ## 1. Model
 
-On Unix systems, SQLite coordinates concurrent processes using **POSIX advisory locks** — byte-range locks placed on a file through the `fcntl(F_SETLK)` system call. "Advisory" means the kernel tracks lock conflicts only between processes that ask for locks; plain `read` and `write` calls ignore them completely.
+On Unix systems, SQLite coordinates concurrent processes with **POSIX advisory locks** — byte-range locks placed on a file through `fcntl(F_SETLK)`. "Advisory" means the kernel tracks conflicts only between processes that ask for locks; plain `read` and `write` calls ignore them.
 
 Two rules of POSIX advisory locking govern every result in this chapter:
 
-1. **Locks belong to the OS process and the inode, not to a connection or a file descriptor.** An **inode** is the filesystem's internal identity for a file; a **file descriptor** is one process's integer handle to an open file. If a process opens the same file twice, POSIX treats both descriptors as the same lock owner. Worse, closing *any* file descriptor to that inode immediately drops *every* POSIX lock the process holds on that file. SQLite works around this for its own connections by tracking locks per inode in memory (`unixInodeInfo`) and parking closed descriptors until all locks clear, but SQLite cannot intercept an `os.Open` and `Close` made by application code in the same process.
+1. **Locks belong to the OS process and the inode, not to a connection or file descriptor.** An **inode** is the filesystem's internal identity for a file; a **file descriptor** is one process's integer handle to an open file. When a process opens the same file twice, POSIX treats both descriptors as the same lock owner. Worse, closing *any* file descriptor to that inode immediately drops *every* POSIX lock the process holds on that file. SQLite works around this for its own connections by tracking locks per inode in memory (`unixInodeInfo`) and parking closed descriptors until all locks clear, but it cannot intercept an `os.Open` and `Close` called by application code in the same process.
 2. **Rollback mode and WAL mode lock different files.**
-   - In **rollback-journal mode** (`journal_mode=delete`), all locks live on the main database file (`.db`) at fixed offsets starting at the 1 GiB boundary (`0x40000000`, byte `1073741824`): a 1-byte `PENDING` byte (`1073741824`), a 1-byte `RESERVED` byte (`1073741825`), and a 510-byte `SHARED` range (`1073741826-1073742335`). A connection progresses through five lock states: `NO_LOCK` (0), `SHARED` (1, read lock on the 510-byte range), `RESERVED` (2, write lock on byte `1073741825` — one writer may buffer changes while existing readers keep reading), `PENDING` (3, write lock on byte `1073741824` — blocks new readers while waiting for existing readers to finish), and `EXCLUSIVE` (4, write lock on the 510-byte `SHARED` range — required to write modified pages into `.db`).
-   - In **write-ahead log (WAL) mode** (`journal_mode=wal`), every open connection holds a permanent `SHARED` read lock on `.db` (only upgraded to `EXCLUSIVE` when the last connection closes or leaves WAL mode) and a shared read lock on the **dead-man switch (`DMS`)** byte (`128`) of the sibling `-shm` shared-memory index file. All active transaction locks live on bytes `120–127` of `-shm`: byte `120` is `WAL_WRITE_LOCK` (one writer at a time), byte `121` is `WAL_CKPT_LOCK` (one checkpointer at a time), byte `122` is `WAL_RECOVER_LOCK`, and bytes `123–127` are five reader slots `WAL_READ_LOCK(0)` through `WAL_READ_LOCK(4)`.
+   - In **rollback-journal mode** (`journal_mode=delete`, Chapter 4), every lock lives on the main database file (`.db`) at fixed offsets starting at the 1 GiB boundary (`0x40000000`, byte `1073741824`): a 1-byte `PENDING` byte (`1073741824`), a 1-byte `RESERVED` byte (`1073741825`), and a 510-byte `SHARED` range (`1073741826-1073742335`). A connection moves through five lock states: `NO_LOCK` (0), `SHARED` (1, read lock on the 510-byte range), `RESERVED` (2, write lock on byte `1073741825` — one writer buffers changes while existing readers keep reading), `PENDING` (3, write lock on byte `1073741824` — blocks new readers while waiting for existing readers to finish), and `EXCLUSIVE` (4, write lock on the 510-byte `SHARED` range — required to write modified pages into `.db`).
+   - In **write-ahead log (WAL) mode** (`journal_mode=wal`, Chapter 5), every open connection holds a permanent `SHARED` read lock on `.db` (upgraded to `EXCLUSIVE` only when the last connection closes or leaves WAL mode) and a shared read lock on the **dead-man switch (`DMS`)** byte (`128`) of the sibling `-shm` shared-memory index file. All active transaction locks live on bytes `120–127` of `-shm`: byte `120` is `WAL_WRITE_LOCK` (one writer at a time), byte `121` is `WAL_CKPT_LOCK` (one checkpointer at a time), byte `122` is `WAL_RECOVER_LOCK`, and bytes `123–127` are the five reader slots `WAL_READ_LOCK(0)` through `WAL_READ_LOCK(4)`.
 
 ```text
   Rollback mode (journal_mode=delete)             WAL mode (journal_mode=wal, locking_mode=NORMAL)
@@ -77,13 +77,13 @@ Two rules of POSIX advisory locking govern every result in this chapter:
                                                     of -shm -> drops ALL holder -shm locks at once.
 ```
 
-Three further terms appear throughout the chapter:
+Three further terms recur throughout the chapter:
 
-- **Transaction start modes (`BEGIN DEFERRED`, `BEGIN IMMEDIATE`, `BEGIN EXCLUSIVE`).** `BEGIN DEFERRED` (plain `BEGIN`) acquires no lock until the first SQL statement runs; if that statement reads, it starts a read transaction, and only a later write statement tries to upgrade to a write lock. `BEGIN IMMEDIATE` acquires the write lock up front (`WAL_WRITE_LOCK` in WAL mode, `RESERVED` in rollback mode). In WAL mode under the default `PRAGMA locking_mode=NORMAL`, `BEGIN EXCLUSIVE` behaves identically to `BEGIN IMMEDIATE`: it takes `WAL_WRITE_LOCK` and lets concurrent readers continue. Only under `PRAGMA locking_mode=EXCLUSIVE` does a WAL writer take and hold the database file's `EXCLUSIVE` lock, blocking other processes' readers.
-- **Busy handler and `busy_timeout`.** When SQLite hits a lock conflict, it returns `SQLITE_BUSY` (extended code `5`) unless a **busy handler** is configured (via `PRAGMA busy_timeout=MS`) *and* SQLite decides retrying can succeed. A retry sleeps in growing intervals and tries the lock again. A deferred transaction that has already read cannot wait on the busy handler: if another writer holds the lock, SQLite returns `SQLITE_BUSY` (`5`) immediately regardless of `busy_timeout`, and once that other writer commits, upgrading returns `SQLITE_BUSY_SNAPSHOT` (`517`) immediately because the reader's **snapshot** (the frozen database view pinned at its first read) is no longer the newest committed state.
-- **Torn copy versus live snapshot.** A **page** is SQLite's 4,096-byte storage unit; a **frame** is a page image plus 24-byte header appended to `-wal`; a **checkpoint** copies (backfills) committed WAL frames into `.db`. A **torn copy** is a file read with plain OS calls while SQLite writes into `.db` (during a rollback commit or a WAL checkpoint), mixing pages from before and after the write.
+- **Transaction start modes (`BEGIN DEFERRED`, `BEGIN IMMEDIATE`, `BEGIN EXCLUSIVE`).** `BEGIN DEFERRED` (plain `BEGIN`) acquires no lock until the first SQL statement runs; if that statement reads, SQLite starts a read transaction, and only a later write tries to upgrade to a write lock. `BEGIN IMMEDIATE` acquires the write lock up front (`WAL_WRITE_LOCK` in WAL mode, `RESERVED` in rollback mode). In WAL mode under the default `PRAGMA locking_mode=NORMAL`, `BEGIN EXCLUSIVE` behaves identically to `BEGIN IMMEDIATE`: it takes `WAL_WRITE_LOCK` and lets concurrent readers continue. Only under `PRAGMA locking_mode=EXCLUSIVE` does a WAL writer take and hold the database file's `EXCLUSIVE` lock, blocking other processes' readers.
+- **Busy handler and `busy_timeout`.** When SQLite hits a lock conflict, it returns `SQLITE_BUSY` (extended code `5`) unless a **busy handler** is configured (`PRAGMA busy_timeout=MS`) *and* retrying can succeed. Each retry sleeps for a growing interval and tries the lock again. A deferred transaction that has already read cannot wait on the busy handler: while another writer holds the lock, SQLite returns `SQLITE_BUSY` (`5`) immediately regardless of `busy_timeout`, and once that writer commits, upgrading returns `SQLITE_BUSY_SNAPSHOT` (`517`) immediately because the reader's pinned snapshot (Chapter 5) is no longer the newest committed state.
+- **Torn copy versus live snapshot.** Building on 4,096-byte pages (Chapter 2), WAL frames (a page image plus 24-byte header), and checkpoints (Chapter 5), a **torn copy** is a file read with plain OS calls while SQLite writes into `.db` (during a rollback commit or a WAL checkpoint), mixing pages from before and after the write.
 
-**WAL mode as the platform default.** Platform databases in this course run in WAL mode (`journal_mode=wal`, `locking_mode=NORMAL`). Every experiment in this chapter uses WAL mode, and rollback mode (`journal_mode=delete`) appears only as the contrast listed in the outline (Experiments 6.1 A, 6.2 D, and 6.3 B). Nothing measured here argues against WAL as the platform default; concurrency and live capture both depend on it:
+**WAL mode as the platform default.** Platform databases in this book run in WAL mode (`journal_mode=wal`, `locking_mode=NORMAL`). Every experiment in this chapter uses WAL mode, and rollback mode (`journal_mode=delete`) appears only as a contrast (Experiments 6.1 A, 6.2 D, and 6.3 B). Concurrency and live capture both depend on WAL:
 
 | Question | WAL mode (`locking_mode=NORMAL`) | Rollback mode (`journal_mode=delete`) | Evidence |
 | --- | --- | --- | --- |
@@ -94,9 +94,9 @@ Three further terms appear throughout the chapter:
 | Outcome of broken locks | Depends on state: `SQLITE_PROTOCOL` (`15`) after ~10 s on an empty WAL (Part B), or both commits return `SQLITE_OK` and one is silently lost (Parts C and D) | Commit that returned `SQLITE_OK` is silently lost; holder gets `SQLITE_IOERR_DELETE_NOENT` (`5898`) and persists | Experiment 6.1 A–D |
 | Safe live capture without blocking the writer? | Yes (Rung R4, both methods) | No (an open reader blocks commits for the whole capture) | Experiments 6.4, 6.2 D |
 
-WAL adds two operational obligations proven here: the `-shm` file carries the active locks and must never be opened and closed by non-SQLite code in a serving process, and because WAL relies on POSIX locks and local shared memory, databases stay on local disk rather than network filesystems.
+WAL adds two operational obligations proven here: because `-shm` carries the active locks, non-SQLite code in a serving process must never open and close it; and because WAL relies on POSIX locks and local shared memory, databases stay on local disk rather than network filesystems.
 
-**The Rebuild Ladder (rung R4 — Live snapshot).** Chapters 1–5 established **R0 (Recipe)**, **R1 (Pages)**, **R2 (Canonical form)**, and **R3 (Redo log)**. This chapter adds **R4 (Live snapshot)**: capturing a consistent database from a live WAL writer without stopping writes. Experiment 6.4 proves two methods: reading every page through `sqlite_dbpage` inside one read transaction (rebuilt equal at **E1 bytes** to the recipe run to that snapshot step and checkpointed), and copying `.db` followed by `-wal` while holding a read transaction and replaying with `internal/walfile` (rebuilt to a consistent recipe state at or after the snapshot, even when a concurrent checkpoint tears `.db` during the copy).
+**The Rebuild Ladder (rung R4 — Live snapshot).** Chapters 1–5 established **R0 (Recipe)**, **R1 (Pages)**, **R2 (Canonical form)**, and **R3 (Redo log)**. This chapter adds **R4 (Live snapshot)**: capturing a consistent database from a live WAL writer without stopping writes. Experiment 6.4 proves two methods: reading every page through SQLite's `sqlite_dbpage` virtual table (Chapter 2) inside one read transaction (rebuilt equal at **E1 bytes** to the recipe run to that snapshot step and checkpointed), and copying `.db` followed by `-wal` while holding a read transaction and replaying with Chapter 5's `internal/walfile` (rebuilt to a consistent recipe state at or after the snapshot, even when a concurrent checkpoint tears `.db` during the copy).
 
 ---
 
@@ -111,14 +111,14 @@ Four scripted multi-process experiments answer each part without timing guesswor
 - **Experiment 6.3 (`6.3-torn-copy`)** copies a live WAL database without its `-wal` (Part A1) and copies `.db` in two halves across a WAL checkpoint (Part A2) and a rollback commit (Part B).
 - **Experiment 6.4 (`6.4-live-snapshot`, rung R4)** captures a live WAL database under active commits and checkpoints using `sqlite_dbpage` in one read transaction (Method 1) and a plain `.db` + `-wal` copy under a held read transaction replayed with `internal/walfile` (Method 2).
 
-The experiments reuse five shared packages from earlier chapters (linked here, not inlined):
+The experiments reuse six shared Go packages from earlier chapters (linked here, not inlined):
 
-- [`internal/sqlitex`](../internal/sqlitex/): opens databases with explicit settings and verifies `sqlite_source_id()`. This chunk adds two backward-compatible files to `internal/sqlitex`: [`codes.go`](../internal/sqlitex/codes.go) (constants and `ResultCodeName` for primary and extended codes such as `SQLITE_BUSY_SNAPSHOT = 517`, `SQLITE_PROTOCOL = 15`, and `SQLITE_IOERR_DELETE_NOENT = 5898`, because `modernc.org/sqlite`'s `ErrorCodeString` omits several extended codes) and [`display.go`](../internal/sqlitex/display.go) (`DisplayPath`, which formats repo-relative paths cleanly without leaking host directories).
-- [`internal/recipe`](../internal/recipe/): builds the seeded R0 database and matches captured files against its known step hashes (`MatchStep`).
-- [`internal/capture`](../internal/capture/): writes and rebuilds R1 page manifests (`Pages`, `Rebuild`).
-- [`internal/equal`](../internal/equal/): checks **E1 bytes** equality (`CompareFiles`, `FileSHA256`).
-- [`internal/walfile`](../internal/walfile/): replays a base `.db` plus `-wal` into a standalone database file (`ReplayFiles`).
-- [`internal/trace`](../internal/trace/): prints the standard `LINUX-ONLY:` banner on non-Linux hosts (`PrintLinuxOnly`).
+- [`internal/sqlitex`](../internal/sqlitex/) (Chapter 1): opens databases with explicit settings and verifies `sqlite_source_id()`. This chapter extends `internal/sqlitex` with two files: [`codes.go`](../internal/sqlitex/codes.go) (constants and `ResultCodeName` for primary and extended codes such as `SQLITE_BUSY_SNAPSHOT = 517`, `SQLITE_PROTOCOL = 15`, and `SQLITE_IOERR_DELETE_NOENT = 5898`, because `modernc.org/sqlite`'s `ErrorCodeString` omits several extended codes) and [`display.go`](../internal/sqlitex/display.go) (`DisplayPath`, which formats repository-relative paths without leaking host directories).
+- [`internal/recipe`](../internal/recipe/) (Chapter 1): builds the seeded R0 database and matches captured files against its known step hashes (`MatchStep`).
+- [`internal/capture`](../internal/capture/) (Chapter 2): writes and rebuilds R1 page manifests (`Pages`, `Rebuild`).
+- [`internal/equal`](../internal/equal/) (Chapter 2): checks **E1 bytes** equality (`CompareFiles`, `FileSHA256`).
+- [`internal/walfile`](../internal/walfile/) (Chapter 5): replays a base `.db` plus `-wal` into a standalone database file (`ReplayFiles`).
+- [`internal/trace`](../internal/trace/) (Chapter 1): prints the standard `LINUX-ONLY:` banner on non-Linux hosts (`PrintLinuxOnly`).
 
 This chapter introduces one new shared package, `internal/procs`, which drives child processes through numbered step barriers over pipes and inspects POSIX locks. It is inlined in full in Section 5.
 
@@ -126,7 +126,7 @@ This chapter introduces one new shared package, `internal/procs`, which drives c
 
 ## 3. Call path
 
-This section traces the pinned SQLite `version-3.53.4` C source for file locks, `-shm` locks, `BEGIN` modes, busy retries, and `SQLITE_BUSY_SNAPSHOT`. Two files are copied whole into this chapter directory and verified by `SOURCES.sha256`: [`os.h`](os.h) and [`os_unix.c`](os_unix.c). Five larger files (`src/wal.c`, `src/pager.c`, `src/btree.c`, `src/build.c`, `src/main.c`) are linked in the pinned tree (`$SQLITE_SRC` or `_src/sqlite-3.53.4`).
+This section walks the pinned SQLite `version-3.53.4` C source for file locks, `-shm` locks, `BEGIN` modes, busy retries, and `SQLITE_BUSY_SNAPSHOT`. Two C source files are copied whole into this chapter's directory and checksummed in `SOURCES.sha256` against the pinned tree: [`os.h`](os.h) and [`os_unix.c`](os_unix.c). Five larger files (`src/wal.c`, `src/pager.c`, `src/btree.c`, `src/build.c`, `src/main.c`) are linked in the pinned SQLite source tree (`$SQLITE_SRC` inside the `lab` container or `_src/sqlite-3.53.4` on the host).
 
 ### 3.1 Database-file lock levels and POSIX advisory locking
 
@@ -137,21 +137,21 @@ This section traces the pinned SQLite `version-3.53.4` C source for file locks, 
    #define SHARED_FIRST      (PENDING_BYTE+2)
    #define SHARED_SIZE       510
    ```
-   The pager never stores database data in the page containing byte `0x40000000` (`1073741824`) so mandatory locking on Windows and advisory locking on Unix share the same byte ranges.
-2. **Why POSIX advisory locks require an in-process inode table** — [`src/os_unix.c:1189-1342`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L1189-L1342) and `struct unixInodeInfo` at [`src/os_unix.c:1323-1342`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L1323-L1342) (local copy: [`os_unix.c`](os_unix.c)). The block comment opens with `"POSIX advisory locks are broken by design"` and explains both defects: a lock placed through one descriptor overrides locks the same process placed through another, and closing *any* descriptor to the file releases all of that process's locks on that inode. SQLite therefore allocates one `unixInodeInfo` per `(dev, ino)` holding process-wide lock counters (`nShared`, `nLock`, `eFileLock`, `bProcessLock`), a pointer to the shared-memory node (`pShmNode`), and a list of descriptors whose `close()` must wait (`pUnused`). SQLite invokes `fcntl(F_SETLK)` only when the process-wide state changes.
-3. **Deferred descriptor close (`setPendingFd` and `closePendingFds`)** — [`src/os_unix.c:2101-2109`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L2101-L2109) and [`src/os_unix.c:1471-1482`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L1471-L1482) (local copy: [`os_unix.c`](os_unix.c)). When one SQLite connection closes while another connection in the same process still holds a lock on the same inode, `setPendingFd` moves the closing file descriptor onto `pInode->pUnused` instead of calling `close()`. Once the last lock on that inode clears, `closePendingFds` closes every parked descriptor.
-4. **Lock escalation (`unixLock`)** — doc comment and transition chart at [`src/os_unix.c:1842-1865`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L1842-L1865), function body at [`src/os_unix.c:1866-2095`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L1866-L2095) (local copy: [`os_unix.c`](os_unix.c); note: line `1843` in earlier notes fell inside the doc comment, while the C function itself starts at line `1866`). Allowed upward transitions are `UNLOCKED -> SHARED`, `SHARED -> RESERVED`, `SHARED -> EXCLUSIVE`, `RESERVED -> (PENDING) -> EXCLUSIVE`, and `PENDING -> EXCLUSIVE`:
+   The pager never stores database data in the page containing byte `0x40000000` (`1073741824`), so mandatory locking on Windows and advisory locking on Unix share the same byte ranges.
+2. **Why POSIX advisory locks require an in-process inode table** — [`src/os_unix.c:1189-1342`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L1189-L1342) and `struct unixInodeInfo` at [`src/os_unix.c:1323-1342`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L1323-L1342) (local copy: [`os_unix.c`](os_unix.c)). The block comment opens with `"POSIX advisory locks are broken by design"` and names both defects: a lock placed through one descriptor overrides locks the same process placed through another, and closing *any* descriptor to the file releases every lock that process holds on that inode. SQLite therefore allocates one `unixInodeInfo` per `(dev, ino)` holding process-wide lock counters (`nShared`, `nLock`, `eFileLock`, `bProcessLock`), a pointer to the shared-memory node (`pShmNode`), and a list of descriptors whose `close()` must wait (`pUnused`). SQLite invokes `fcntl(F_SETLK)` only when the process-wide state changes.
+3. **Deferred descriptor close (`setPendingFd` and `closePendingFds`)** — [`src/os_unix.c:2101-2109`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L2101-L2109) and [`src/os_unix.c:1471-1482`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L1471-L1482) (local copy: [`os_unix.c`](os_unix.c)). When one SQLite connection closes while another connection in the same process still holds a lock on that inode, `setPendingFd` parks the closing descriptor on `pInode->pUnused` instead of calling `close()`. Once the last lock on the inode clears, `closePendingFds` closes every parked descriptor.
+4. **Lock escalation (`unixLock`)** — doc comment and transition chart at [`src/os_unix.c:1842-1865`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L1842-L1865), function body at [`src/os_unix.c:1866-2095`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L1866-L2095) (local copy: [`os_unix.c`](os_unix.c)). Allowed upward transitions are `UNLOCKED -> SHARED`, `SHARED -> RESERVED`, `SHARED -> EXCLUSIVE`, `RESERVED -> (PENDING) -> EXCLUSIVE`, and `PENDING -> EXCLUSIVE`:
    - For `SHARED`, SQLite read-locks `PENDING_BYTE`, read-locks all `510` bytes of `SHARED_FIRST..SHARED_FIRST+509`, and unlocks `PENDING_BYTE`.
    - For `RESERVED`, SQLite write-locks `RESERVED_BYTE` (`1073741825`).
-   - For `EXCLUSIVE` from `RESERVED`, SQLite first write-locks `PENDING_BYTE` (`1073741824`) so no new readers can start, then tries to write-lock the 510-byte `SHARED` range. If existing readers hold `SHARED`, `EXCLUSIVE` fails with `SQLITE_BUSY` and SQLite **keeps the `PENDING` write lock** until the writer retries or rolls back.
-5. **Broken-lock guard (`unixIsSharingShmNode`)** — [`src/os_unix.c:2034-2041`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L2034-L2041) and [`src/os_unix.c:4679-4695`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L4679-L4695) (local copy: [`os_unix.c`](os_unix.c)). Added in SQLite 3.51.0: before granting `EXCLUSIVE` on a WAL database (which happens on last close or `PRAGMA journal_mode=DELETE`), `unixLock` calls `unixIsSharingShmNode`, which runs `fcntl(F_GETLK)` for a write lock on the `-shm` dead-man-switch byte (`UNIX_SHM_DMS`, byte `128`):
+   - For `EXCLUSIVE` from `RESERVED`, SQLite first write-locks `PENDING_BYTE` (`1073741824`) so no new readers can start, then tries to write-lock the 510-byte `SHARED` range. If existing readers still hold `SHARED`, `EXCLUSIVE` fails with `SQLITE_BUSY` and SQLite **keeps the `PENDING` write lock** until the writer retries or rolls back.
+5. **Broken-lock guard (`unixIsSharingShmNode`)** — [`src/os_unix.c:2034-2041`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L2034-L2041) and [`src/os_unix.c:4679-4695`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L4679-L4695) (local copy: [`os_unix.c`](os_unix.c)). Added in SQLite 3.51.0: before granting `EXCLUSIVE` on a WAL database (which happens on last close or `PRAGMA journal_mode=DELETE`), `unixLock` calls `unixIsSharingShmNode`, which probes `-shm` with `fcntl(F_GETLK)` for a write lock on the dead-man-switch byte (`UNIX_SHM_DMS`, byte `128`):
    ```c
    }else if( unixIsSharingShmNode(pFile) ){
      rc = SQLITE_BUSY;
    }
    ```
-   If another process still holds the `DMS` lock on `-shm`, `unixLock` refuses `EXCLUSIVE` with `SQLITE_BUSY` even if the other process's `.db` `SHARED` lock was wiped out by a stray `close(open(db))`.
-6. **Journal deletion error (`unixDelete`)** — [`src/os_unix.c:6833-6869`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L6833-L6869) (local copy: [`os_unix.c`](os_unix.c)). Calls `unlink`; if `errno == ENOENT` (line `6842`), returns `SQLITE_IOERR_DELETE_NOENT` (`5898`, line `6847`). In Experiment 6.1 A, when two rollback-mode writers commit after a stray close, the second writer deletes the shared `-journal` first and the holder's commit hits line `6847`.
+   If another process still holds `DMS` on `-shm`, `unixLock` refuses `EXCLUSIVE` with `SQLITE_BUSY` even if a stray `close(open(db))` wiped out that process's `.db` `SHARED` lock.
+6. **Journal deletion error (`unixDelete`)** — [`src/os_unix.c:6833-6869`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L6833-L6869) (local copy: [`os_unix.c`](os_unix.c)). Calls `unlink`; when `errno == ENOENT` (line `6842`), it returns `SQLITE_IOERR_DELETE_NOENT` (`5898`, line `6847`). In Experiment 6.1 A, when two rollback-mode writers commit after a stray close, the second writer deletes the shared `-journal` first and the holder's commit hits line `6847`.
 
 ### 3.2 WAL `-shm` locks, restarts, close, and `SQLITE_PROTOCOL`
 
@@ -161,24 +161,24 @@ This section traces the pinned SQLite `version-3.53.4` C source for file locks, 
      ```c
      if( pWal->readLock==0 ){
      ```
-     That condition is true only when the writer's transaction started on an empty or fully backfilled WAL (so it took `WAL_READ_LOCK(0)`). Inside that branch, `walRestartLog` acquires `WAL_READ_LOCK(1..4)` exclusively — notably *not* `WAL_READ_LOCK(0)` — calls `walRestartHdr` if `nBackfill > 0`, unlocks `WAL_READ_LOCK(0)`, and calls `walTryBeginRead` with `useWal=1` to claim a WAL read slot.
-   - If another writer committed after a stray close of `-shm`, `walTryBeginRead` with `useWal=1` retains the holder's stale cached header; every retry sees the shared header mismatch (`memcmp` at lines `3261-3265`) and loops. After `100` retries (`WAL_RETRY_PROTOCOL_LIMIT`, sleeps growing up to ~10 s total), lines `3053-3056` return `SQLITE_PROTOCOL` (`15`), which the source comment (lines `2992-2997`) attributes to `"some other process has gone rogue"`.
+     That condition holds only when the writer's transaction started on an empty or fully backfilled WAL (so it took `WAL_READ_LOCK(0)`). Inside that branch, `walRestartLog` acquires `WAL_READ_LOCK(1..4)` exclusively — notably *not* `WAL_READ_LOCK(0)` — calls `walRestartHdr` if `nBackfill > 0`, unlocks `WAL_READ_LOCK(0)`, and calls `walTryBeginRead` with `useWal=1` to claim a WAL read slot.
+   - If another writer committed after a stray close of `-shm`, `walTryBeginRead` with `useWal=1` keeps the holder's stale cached header; every retry sees the shared header mismatch (`memcmp` at lines `3261-3265`) and loops. After `100` retries (`WAL_RETRY_PROTOCOL_LIMIT`, sleeps growing up to ~10 s total), lines `3053-3056` return `SQLITE_PROTOCOL` (`15`), which the source comment (lines `2992-2997`) attributes to `"some other process has gone rogue"`.
    - If the writer's transaction started when uncheckpointed frames already sat in `-wal`, it holds `WAL_READ_LOCK(1)` (`readLock != 0`), so line `3879` skips `walRestartLog` completely. After a stray close of `-shm`, the writer never re-reads the shared header and writes its frames right over the other process's frames, returning `SQLITE_OK` (Experiment 6.1 C).
-9. **Last-connection close (`sqlite3WalClose`)** — [`src/wal.c:2507-2571`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2507-L2571) (in the pinned tree). On close, a connection tries to acquire `EXCLUSIVE` on `.db` (line `2529`). If it succeeds — which happens either when it truly is the last connection, or after another process dropped both its `.db` and `-shm` locks via stray closes — it checkpoints, unlinks `-shm` (line `2559`), and unlinks `-wal` (line `2563`). If a displaced holder still has `-wal` open, its later `COMMIT` writes frames into the unlinked inode and returns `SQLITE_OK` (Experiment 6.1 D).
-10. **Reader-limited checkpoint skipping and `WAL_READ_LOCK(0)` backfill lock** — [`src/wal.c:2199-2395`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2199-L2395) (`walCheckpoint`), [`src/wal.c:2254-2260`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2254-L2260), [`src/wal.c:2312-2314`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2312-L2314), and [`src/wal.c:1764-1792`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L1764-L1792) (`walIteratorNext`, in the pinned tree). Two subtle rules matter for live captures:
+9. **Last-connection close (`sqlite3WalClose`)** — [`src/wal.c:2507-2571`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2507-L2571) (in the pinned tree). On close, a connection tries to acquire `EXCLUSIVE` on `.db` (line `2529`). If it succeeds — either because it truly is the last connection, or because another process dropped both its `.db` and `-shm` locks via stray closes — it checkpoints, unlinks `-shm` (line `2559`), and unlinks `-wal` (line `2563`). If a displaced holder still has `-wal` open, its later `COMMIT` writes frames into the unlinked inode and returns `SQLITE_OK` (Experiment 6.1 D).
+10. **Reader-limited checkpoint skipping and `WAL_READ_LOCK(0)` backfill lock** — [`src/wal.c:2199-2395`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2199-L2395) (`walCheckpoint`), [`src/wal.c:2254-2260`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2254-L2260), [`src/wal.c:2312-2314`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2312-L2314), and [`src/wal.c:1764-1792`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L1764-L1792) (`walIteratorNext`, in the pinned tree). Two rules govern live captures:
     - Before backfilling a single page, lines `2254-2260` must take `WAL_READ_LOCK(0)` exclusively. A reader on `WAL_READ_LOCK(0)` therefore blocks all checkpoint backfills (keeping `.db` untouched for its snapshot) even though `walRestartLog` can restart the WAL under it.
     - `walIteratorNext` yields each page in the WAL **once**, at its newest frame number. At lines `2312-2314`, `walCheckpoint` copies that page only if its newest frame is `<= mxSafeFrame` (the oldest reader's mark). If a later commit rewrote page 1 past `mxSafeFrame`, page 1 is skipped altogether — so `nBackfill` can advance to `61` while page 1 in `.db` remains at an older state (Experiment 6.4).
 
 ### 3.3 `BEGIN` modes, busy retries, and `SQLITE_BUSY_SNAPSHOT`
 
 11. **`BEGIN` code generation (`sqlite3BeginTransaction`)** — [`src/build.c:5245-5274`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/build.c#L5245-L5274) (in the pinned tree). `BEGIN DEFERRED` emits no `OP_Transaction` opcode, so SQLite takes no lock until the first statement executes. `BEGIN IMMEDIATE` emits `OP_Transaction` with `p2 = 1` (write lock), and `BEGIN EXCLUSIVE` emits `p2 = 2`.
-12. **Pager write-lock acquisition (`sqlite3PagerBegin`)** — [`src/pager.c:5968-6032`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L5968-L6032) (in the pinned tree). In WAL mode, only when `pPager->exclusiveMode` (`PRAGMA locking_mode=EXCLUSIVE`) is set do lines [`5982-5988`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L5982-L5988) acquire the `.db` `EXCLUSIVE` lock; otherwise both `IMMEDIATE` and `EXCLUSIVE` proceed straight to `sqlite3WalBeginWriteTransaction` (line `5995`), without calling the busy handler inside the pager. In rollback mode, `sqlite3PagerBegin` takes `RESERVED_LOCK` (line `6002`), and upgrades via `pager_wait_on_lock(pPager, EXCLUSIVE_LOCK)` only if `exFlag` (`BEGIN EXCLUSIVE`, line `6003`) is set.
+12. **Pager write-lock acquisition (`sqlite3PagerBegin`)** — [`src/pager.c:5968-6032`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L5968-L6032) (in the pinned tree). In WAL mode, lines [`5982-5988`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L5982-L5988) acquire `.db`'s `EXCLUSIVE` lock only when `pPager->exclusiveMode` (`PRAGMA locking_mode=EXCLUSIVE`) is set; otherwise both `IMMEDIATE` and `EXCLUSIVE` proceed straight to `sqlite3WalBeginWriteTransaction` (line `5995`), without calling the busy handler inside the pager. In rollback mode, `sqlite3PagerBegin` takes `RESERVED_LOCK` (line `6002`), and upgrades via `pager_wait_on_lock(pPager, EXCLUSIVE_LOCK)` only if `exFlag` (`BEGIN EXCLUSIVE`, line `6003`) is set.
 13. **Where the busy handler is — and is not — called (`btreeBeginTrans` and `sqliteDefaultBusyCallback`)** — [`src/btree.c:3598-3804`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L3598-L3804) (`btreeBeginTrans`), [`src/main.c:1730-1792`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L1730-L1792) (`sqliteDefaultBusyCallback`), and [`src/main.c:1782-1792`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L1782-L1792) (`sqlite3InvokeBusyHandler`, in the pinned tree). When `btreeBeginTrans` starts a write transaction, its retry loop at [`src/btree.c:3740-3741`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L3740-L3741) is:
     ```c
     }while( (rc&0xFF)==SQLITE_BUSY && pBt->inTransaction==TRANS_NONE &&
             btreeInvokeBusyHandler(pBt) );
     ```
-    The `pBt->inTransaction==TRANS_NONE` guard is decisive: if a connection has *not* opened a transaction yet (`BEGIN IMMEDIATE`, or `BEGIN DEFERRED` whose first statement is a write), `btreeBeginTrans` calls `sqlite3InvokeBusyHandler` → `sqliteDefaultBusyCallback`, which sleeps `1, 2, 5, 10, 15, 20, 25, 25, 25, 50, 50, 100` ms per retry up to `busy_timeout`. If the connection is *already* inside a read transaction (`TRANS_READ`), `inTransaction != TRANS_NONE`, so the loop exits immediately with `SQLITE_BUSY` (`5`) without sleeping a single millisecond — even with `busy_timeout=120000`.
+    The `pBt->inTransaction==TRANS_NONE` guard is decisive: if a connection has *not* opened a transaction yet (`BEGIN IMMEDIATE`, or `BEGIN DEFERRED` whose first statement writes), `btreeBeginTrans` calls `sqlite3InvokeBusyHandler` → `sqliteDefaultBusyCallback`, which sleeps `1, 2, 5, 10, 15, 20, 25, 25, 25, 50, 50, 100` ms per retry up to `busy_timeout`. If the connection is *already* inside a read transaction (`TRANS_READ`), `inTransaction != TRANS_NONE`, so the loop exits immediately with `SQLITE_BUSY` (`5`) without sleeping a millisecond — even with `busy_timeout=120000`.
 14. **Stale snapshot detection (`sqlite3WalBeginWriteTransaction`)** — [`src/wal.c:3699-3746`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L3699-L3746) (in the pinned tree). Acquires `WAL_WRITE_LOCK` exclusively (line `3724`). If another connection committed since this connection's read transaction began, lines [`3734-3737`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L3734-L3737) compare the cached and shared `WalIndexHdr`:
     ```c
     if( memcmp(&pWal->hdr, (void *)walIndexHdr(pWal), sizeof(WalIndexHdr))!=0 ){
@@ -189,18 +189,18 @@ This section traces the pinned SQLite `version-3.53.4` C source for file locks, 
 
 ### Version notes
 
-Behavior differences across SQLite releases relevant to locking (sources: [`docs/knowledge/source-inventory-ch05-09.md`](../docs/knowledge/source-inventory-ch05-09.md), `changes.html`, and the copied source):
+Locking behavior differences across SQLite releases (from this repository's C source inventory [`docs/knowledge/source-inventory-ch05-09.md`](../docs/knowledge/source-inventory-ch05-09.md), SQLite's release changelog `changes.html`, and the copied source):
 
 - **`sqlite3_setlk_timeout()` (added in 3.50.0; fixed in 3.50.1 and 3.50.2).** Enables kernel-level blocking locks (`F_SETLKW` with timeout) only when SQLite is compiled with `SQLITE_ENABLE_SETLK_TIMEOUT`. That compile option is **off** in our pinned 3.53.4 build, which uses non-blocking POSIX `F_SETLK` plus the user-space busy handler. Linux Open File Description locks (`F_OFD_*`) are not used anywhere in `os_unix.c`.
-- **Broken-lock resistance via `unixIsSharingShmNode` (added in 3.51.0; deadlock fix in 3.51.2; [`src/os_unix.c:2034-2041`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L2034-L2041)).** Prevents a second connection from taking `EXCLUSIVE` on a WAL database file (to switch out of WAL mode or delete `-wal`/`-shm` on close) if another process still holds the `-shm` `DMS` lock after losing its `.db` locks to a stray `close(open(db))`. Older 3.x releases lack this guard.
+- **Broken-lock resistance via `unixIsSharingShmNode` (added in 3.51.0; deadlock fix in 3.51.2; [`src/os_unix.c:2034-2041`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L2034-L2041)).** Prevents a second connection from taking `EXCLUSIVE` on a WAL database file (to leave WAL mode or delete `-wal`/`-shm` on close) while another process still holds `-shm`'s `DMS` lock after losing its `.db` locks to a stray `close(open(db))`. Older 3.x releases lack this guard.
 
 ### Experiment 6.1 — Locks belong to the process (`6.1-locks-belong-to-the-process`)
 
-- **Claim:** SQLite's locks are POSIX byte-range locks owned by the process on a specific file inode — `.db` in rollback mode (`RESERVED` byte `1073741825`, `SHARED` bytes `1073741826-1073742335`) and `-shm` in WAL mode (`WAL_WRITE_LOCK` byte `120`, `WAL_READ_LOCK(i)` bytes `123-127`, `DMS` byte `128`). Closing any file descriptor to a file inside the holding process releases all of that process's locks on *that* file (so in WAL mode, a stray close of `.db` leaves writer exclusion intact, whereas a stray close of `-shm` breaks it). A second writer refused before the stray close is admitted after it while the first writer still believes its transaction is intact, and committing both loses a transaction: in rollback mode (Part A) the contender's `SQLITE_OK` commit is silently lost while the holder gets `SQLITE_IOERR_DELETE_NOENT` (`5898`) and persists; in WAL mode the outcome depends on state — `SQLITE_PROTOCOL` (`15`) after ~10 s on an empty WAL (Part B), or both commits returning `SQLITE_OK` with the contender's commit silently lost when uncheckpointed frames already exist in `-wal` (Part C) or when the contender closes and exits first (Part D).
-- **Why kept:** This is the hazard a Go platform is most likely to hit by accident (hashing, stat-by-open, or copying a file it also has open).
+- **Claim:** SQLite's locks are POSIX byte-range locks owned by the process on a specific file inode — `.db` in rollback mode (`RESERVED` byte `1073741825`, `SHARED` bytes `1073741826-1073742335`) and `-shm` in WAL mode (`WAL_WRITE_LOCK` byte `120`, `WAL_READ_LOCK(i)` bytes `123-127`, `DMS` byte `128`). Closing any file descriptor to a file inside the holding process drops every lock that process holds on *that* file (so in WAL mode, a stray close of `.db` leaves writer exclusion intact, whereas a stray close of `-shm` breaks it). A second writer refused before the stray close is admitted after it while the first writer still believes its transaction is intact, and committing both loses a transaction: in rollback mode (Part A) the contender's `SQLITE_OK` commit is silently lost while the holder gets `SQLITE_IOERR_DELETE_NOENT` (`5898`) and persists; in WAL mode the outcome depends on state — `SQLITE_PROTOCOL` (`15`) after ~10 s on an empty WAL (Part B), or both commits returning `SQLITE_OK` with the contender's commit silently lost when uncheckpointed frames already sit in `-wal` (Part C) or when the contender closes and exits first (Part D).
+- **Why this matters:** Hashing, stat-by-open, or copying a file inside the same Go process that serves it is the locking hazard a platform is most likely to hit by accident.
 - **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
 - **Linux only (partial):** The `/proc/locks` listing and its 11 `/proc/locks:` checks run on Linux only; the `fcntl(F_GETLK)` probe and all 32 behavioral checks run on both Linux and macOS. `course run` runs the full Linux version in the `lab` container.
-- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
+- **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
   go run ./cmd/course run 6.1
   ```
@@ -1077,25 +1077,87 @@ Experiment verdict: LOCKS BELONG TO THE PROCESS OK
   - At step 4, `holder` executes `stray-close db` (plain `os.Open` + `Close` on `lab.db`). Both `F_GETLK` and `/proc/locks` immediately show **zero** locks on `lab.db`, yet step 5 shows `holder` still counts `1` row — SQLite's in-memory `unixInodeInfo` has no idea the kernel dropped its locks.
   - At steps 6–8, `contender` enters `BEGIN IMMEDIATE`, inserts `(2, 'contender')`, and commits with `SQLITE_OK` (taking `RESERVED` and `SHARED` while `holder` holds nothing).
   - At step 9, `holder` commits. It overwrites the database page with its own cached page containing only `(1, 'holder')`, then tries to unlink `lab.db-journal`, which `contender` already deleted — hitting `unixDelete` (`src/os_unix.c:6847`) and returning `SQLITE_IOERR_DELETE_NOENT (5898)`.
-  - After both processes close, `integrity_check` is `ok` and the database holds `1 row(s): holder`. **The commit that returned `SQLITE_OK` vanished silently, and the transaction that returned an I/O error is the one on disk.**
+  - After both processes close, `integrity_check` is `ok` and the database holds `1 row(s): holder`. **The commit that returned `SQLITE_OK` vanished silently, while the transaction that returned an I/O error is the one on disk.**
 - **Part B — WAL mode on an empty WAL (steps 10–20):**
-  - After steps 10–11, `-shm` has `holder` write-locking `WAL_WRITE_LOCK` (`120`) and read-locking `WAL_READ_LOCK(0)` (`123`), while **both** processes read-lock `DMS` (`128`) and `.db`'s `SHARED` range (`1073741826-1073742335`). `PENDING` and `RESERVED` on `.db` stay unlocked. Notice why `/proc/locks` is essential alongside `F_GETLK`: `F_GETLK` reports only `"read-locked"` on `SHARED` both before and after step 13, whereas `/proc/locks` proves both processes held `SHARED` before step 13 and only `contender` holds it after.
+  - After steps 10–11, `-shm` has `holder` write-locking `WAL_WRITE_LOCK` (`120`) and read-locking `WAL_READ_LOCK(0)` (`123`), while **both** processes read-lock `DMS` (`128`) and `.db`'s `SHARED` range (`1073741826-1073742335`). `PENDING` and `RESERVED` on `.db` stay unlocked. Here `/proc/locks` shows what `F_GETLK` cannot: `F_GETLK` reports only `"read-locked"` on `SHARED` both before and after step 13, whereas `/proc/locks` proves both processes held `SHARED` before step 13 and only `contender` holds it after.
   - Step 13 (`holder stray-close db`) strips `holder`'s `.db` `SHARED` lock, yet `-shm` byte `120` stays write-locked by `holder`, so step 14 still refuses `contender` with `SQLITE_BUSY (5)`. POSIX lock release is strictly **per inode**.
   - Step 15 (`holder stray-close -shm`) strips every `-shm` lock held by `holder` (`120`, `123`, `128`), leaving only `contender`'s `DMS` lock. Steps 17–19 admit `contender` and commit `SQLITE_OK`.
   - At step 20, `holder`'s `COMMIT` enters `walRestartLog` because `holder` held `WAL_READ_LOCK(0)` (`src/wal.c:3879`). Its `walTryBeginRead(..., useWal=1)` sees the shared wal-index header changed by `contender`, retries `100` times (~10 s), and returns `SQLITE_PROTOCOL (15)`. The final database holds `1 row(s): contender`.
 - **Part C — WAL mode when `-wal` already holds uncheckpointed frames (steps 21–30):**
-  - This part corrects the initial assumption that a broken WAL lock always reports `SQLITE_PROTOCOL`. Step 21 commits `'seed'` into `-wal` (`wal_autocheckpoint=0`), so steps 22–23 place `holder` on `WAL_READ_LOCK(1)` (byte `124`), leaving `WAL_READ_LOCK(0)` (`123`) unlocked.
+  - A broken WAL lock does not always report `SQLITE_PROTOCOL`. Step 21 commits `'seed'` into `-wal` (`wal_autocheckpoint=0`), so steps 22–23 place `holder` on `WAL_READ_LOCK(1)` (byte `124`), leaving `WAL_READ_LOCK(0)` (`123`) unlocked.
   - After `stray-close -shm` (step 25) and `contender`'s `SQLITE_OK` commit (steps 26–28), `holder`'s `COMMIT` at step 29 skips `walRestartLog` (`readLock == 1 != 0`, `src/wal.c:3879`), writes its frames over `contender`'s frames using its stale `mxFrame`, and **returns `SQLITE_OK` immediately**.
   - At step 30, `contender` — still open — queries the table and sees `2 row(s): seed,holder`. Its own committed row is gone, `integrity_check` is `ok`, and neither process received an error.
 - **Part D — WAL mode when the second process exits first (steps 31–38):**
-  - Even on an empty WAL (same setup as Part B), if `holder` drops both `db` and `-shm` locks (steps 33–34) and `contender` commits and closes before `holder` commits, `contender` sees no other locks on `.db` or `DMS` and closes as the last connection (`sqlite3WalClose`, `src/wal.c:2507-2571`), deleting `lab.db-wal` and `lab.db-shm`.
-  - Step 38's `holder` `COMMIT` returns `SQLITE_OK` while `lab.db-wal` remains `gone` on disk — `holder` wrote its commit into the unlinked `-wal` file descriptor it still held open, and its own close later checkpoints that deleted WAL into `lab.db`. Final state: integrity `ok`, `1 row(s): holder`. Again, a `SQLITE_OK` commit is silently lost with zero errors reported.
+  - Even on an empty WAL (the same starting state as Part B), if `holder` drops both `.db` and `-shm` locks (steps 33–34) and `contender` commits and closes before `holder` commits, `contender` sees no other locks on `.db` or `DMS` and closes as the last connection (`sqlite3WalClose`, `src/wal.c:2507-2571`), deleting `lab.db-wal` and `lab.db-shm`.
+  - Step 38's `holder` `COMMIT` returns `SQLITE_OK` while `lab.db-wal` remains `gone` on disk: `holder` wrote its commit into the unlinked `-wal` descriptor it still held open, and its own close later checkpoints that deleted WAL into `lab.db`. Final state: integrity `ok`, `1 row(s): holder`. Again, a `SQLITE_OK` commit is silently lost with zero errors reported.
+
+The sequence below traces how one stray close of `-shm` (plus `.db` in Part D) splits into the three WAL outcomes in Parts B, C, and D:
+
+<!-- draw-visual: diagrams/ch06-locking-and-concurrency-stray-close.mmd -->
+```text
+    ┌────────┐     ┌────────────┐     ┌───────────┐
+    │ holder │     │ -shm locks │     │ contender │
+    └────┬───┘     └──────┬─────┘     └─────┬─────┘
+         │                │                 │
+         │ 1. lock b120   │                 │
+         ├───────────────►│                 │
+         │                │                 │
+         │                │ 2. BEGIN IMM    │
+         │                │◄────────────────┤
+         │                │                 │
+         │                │ 3. BUSY (5)     │
+         │                ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈►│
+         │                │                 │
+┌──────────────────┐      │                 │
+│ stray-close -shm │      │                 │
+└──────────────────┘      │                 │
+         │                │                 │
+         │ 4. drop all    │                 │
+         ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈×│                 │
+         │                │                 │
+         │                │ 5. BEGIN IMM    │
+         │                │◄────────────────┤
+         │                │                 │
+         │                │ 6. SQLITE_OK    │
+         │                ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈►│
+         │                │                 │
+         │                │ 7. COMMIT (OK)  │
+         │                │◄────────────────┤
+       ┌─[alt empty WAL (Part B: readLock=0)]───────────┐
+       │ │                │                 │           │
+       │ │ 8. COMMIT      │                 │           │
+       │ ├───────────────►│                 │           │
+       │ │                │                 │           │
+       │ │ 9. PROTOCOL 15 │                 │           │
+       │ │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤                 │           │
+       ├┈[active WAL (Part C: readLock=1)]┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤
+       │ │                │                 │           │
+       │ │ 10. COMMIT     │                 │           │
+       │ ├───────────────►│                 │           │
+       │ │                │                 │           │
+       │ │ 11. OK, C lost │                 │           │
+       │ │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤                 │           │
+       ├┈[Part D: db+-shm dropped, C exits]┈┈┈┈┈┈┈┈┈┈┈┈┈┤
+       │ │                │                 │           │
+       │ │                │       ┌───────────────────┐ │
+       │ │                │       │ unlinks -wal,-shm │ │
+       │ │                │       └───────────────────┘ │
+       │ │                │                 │           │
+       │ │ 12. COMMIT (fd)│                 │           │
+       │ ├───────────────►│                 │           │
+       │ │                │                 │           │
+       │ │ 13. OK, C lost │                 │           │
+       │ │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤                 │           │
+       │ │                │                 │           │
+       └────────────────────────────────────────────────┘
+         │                │                 │
+```
 
 ---
 
 ## 4. Timeline
 
-The two tables below lay out lock transitions across a writer and a reader (or second writer), contrasting WAL mode (default) with rollback mode.
+The two tables below trace lock transitions across a writer and a reader (or second writer), contrasting WAL mode (default) with rollback mode.
 
 ### 4.1 WAL mode (`journal_mode=wal`, `locking_mode=NORMAL`)
 
@@ -1122,9 +1184,9 @@ Lock bytes on `.db`: `1073741824` (`PENDING`), `1073741825` (`RESERVED`), `10737
 
 ### Experiment 6.2 — Busy rules (`6.2-busy-rules`)
 
-- **Claim:** In WAL mode under default `PRAGMA locking_mode=NORMAL`, readers never block the writer, the writer never blocks readers, and `BEGIN EXCLUSIVE` behaves like `BEGIN IMMEDIATE`. A second writer receives `SQLITE_BUSY (5)` at `BEGIN` under `BEGIN IMMEDIATE` and at its first write under `BEGIN DEFERRED`. A generous `busy_timeout` turns that failure into a wait **only** for transactions that have not read yet (`BEGIN IMMEDIATE`, or `BEGIN DEFERRED` whose first statement writes); a deferred transaction that has already read skips the busy handler (`src/btree.c:3740-3741`) and fails immediately with `SQLITE_BUSY (5)` while the other writer is open and `SQLITE_BUSY_SNAPSHOT (517)` once it commits, succeeding only after `ROLLBACK` and restart. In rollback mode, an open reader blocks the writer's `COMMIT` and the writer retains `PENDING` to block new readers. With `BEGIN IMMEDIATE` and a generous `busy_timeout`, alternating writers commit every transaction under contention and match the deterministic recipe state.
+- **Claim:** In WAL mode under default `PRAGMA locking_mode=NORMAL`, readers never block the writer, the writer never blocks readers, and `BEGIN EXCLUSIVE` behaves like `BEGIN IMMEDIATE`. A second writer receives `SQLITE_BUSY (5)` at `BEGIN` under `BEGIN IMMEDIATE` and at its first write under `BEGIN DEFERRED`. A generous `busy_timeout` turns that failure into a wait **only** for transactions that have not read yet (`BEGIN IMMEDIATE`, or `BEGIN DEFERRED` whose first statement writes). A deferred transaction that has already read skips the busy handler (`src/btree.c:3740-3741`) and fails immediately with `SQLITE_BUSY (5)` while the other writer is open and `SQLITE_BUSY_SNAPSHOT (517)` once it commits, succeeding only after `ROLLBACK` and restart. In rollback mode, an open reader blocks the writer's `COMMIT` and the writer retains `PENDING` to block new readers. With `BEGIN IMMEDIATE` and a generous `busy_timeout`, alternating writers commit every transaction under contention and match the deterministic recipe state.
 - **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
-- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
+- **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
   go run ./cmd/course run 6.2
   ```
@@ -1837,14 +1899,71 @@ The script sets a `30s` per-step deadline (`stepDeadline`) against a `120,000ms`
 | D (delete, `0ms`) | — | Writer `COMMIT`, then reader `count` | `SQLITE_OK`, then `SQLITE_OK 2` |
 | E (WAL, `120s`) | Two writers alternating recipe steps 6–15 | Each waiter sends `BEGIN IMMEDIATE` while holder owns lock | All 5 waiting steps report `no answer` at 250ms, then `SQLITE_OK`; closed file equals recipe step `15` |
 
-- **What `no answer` at 250ms proves (and its limit):** `modernc.org/sqlite` does not expose a Go callback for `sqlite3_busy_handler`, so the experiment cannot print an in-process busy-handler call count. Instead, `Lab.StillWaiting` waits `250ms` (`StillWaitingWindow`) via `Call.AnsweredWithin` without killing the child. A non-waiting failure (`busy_timeout=0`) answers over the local pipe in well under `250ms` and is recorded as answered (`at_250ms` is `answered` in the walkthrough; a printing `Lab` shows `.. already answered`) (verified by `TestStillWaitingSeesImmediateBusy` and adversarial test `BUSY-09`, whose `strace` of Experiment 6.2 recorded `87` `EAGAIN` return values on `-shm` byte `120`).
-- **Part E match (E3):** `user_version` `15`, matched step `15`, exact `false`: the closed file equals recipe step 15 except the change counter at bytes 24-27 and 92-95. Because two long-lived connections applied steps 6–15 instead of opening a fresh connection per step, the file's change-counter bytes differ from the per-step reference build while every other byte of every page is identical (the Chapter 1 and Chapter 2 rule).
+The sequence below contrasts Part C1 (`BEGIN IMMEDIATE`, where `writer-2` is in `TRANS_NONE` and sleeps on `busy_timeout`) against Part C3 (`BEGIN DEFERRED` followed by `SELECT`, where `writer-2` is in `TRANS_READ` and fails immediately with `SQLITE_BUSY (5)` and then `SQLITE_BUSY_SNAPSHOT (517)`):
+
+<!-- draw-visual: diagrams/ch06-locking-and-concurrency-busy-upgrade.mmd -->
+```text
+┌──────────┐     ┌───────────────┐     ┌──────────┐
+│ writer-1 │     │ SQLite / -shm │     │ writer-2 │
+└─────┬────┘     └───────┬───────┘     └─────┬────┘
+    ┌─[alt C1: BEGIN IMMEDIATE (TRANS_NONE)]────────────────┐
+    │ │                  │                   │              │
+    │ │ 1. BEGIN IMM     │                   │              │
+    │ ├─────────────────►│                   │              │
+    │ │                  │                   │              │
+    │ │                  │ 2. BEGIN IMM      │              │
+    │ │                  │◄──────────────────┤              │
+    │ │                  │                   │              │
+    │ │                  │       ┌────────────────────────┐ │
+    │ │                  │       │ sleeps on busy_timeout │ │
+    │ │                  │       └────────────────────────┘ │
+    │ │                  │                   │              │
+    │ │ 3. COMMIT        │                   │              │
+    │ ├─────────────────►│                   │              │
+    │ │                  │                   │              │
+    │ │                  │ 4. SQLITE_OK      │              │
+    │ │                  ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈►│              │
+    ├┈[C3: DEFERRED + SELECT (TRANS_READ)]┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤
+    │ │                  │                   │              │
+    │ │                  │ 5. SELECT (pin)   │              │
+    │ │                  │◄──────────────────┤              │
+    │ │                  │                   │              │
+    │ │ 6. BEGIN IMM     │                   │              │
+    │ ├─────────────────►│                   │              │
+    │ │                  │                   │              │
+    │ │                  │ 7. INSERT         │              │
+    │ │                  │◄──────────────────┤              │
+    │ │                  │                   │              │
+    │ │                  │ 8. BUSY (5) now   │              │
+    │ │                  ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈►│              │
+    │ │                  │                   │              │
+    │ │ 9. COMMIT        │                   │              │
+    │ ├─────────────────►│                   │              │
+    │ │                  │                   │              │
+    │ │                  │ 10. INSERT again  │              │
+    │ │                  │◄──────────────────┤              │
+    │ │                  │                   │              │
+    │ │                  │ 11. BUSY_SNAPSHOT │              │
+    │ │                  ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈►│              │
+    │ │                  │                   │              │
+    │ │                  │ 12. ROLLBACK, IMM │              │
+    │ │                  │◄──────────────────┤              │
+    │ │                  │                   │              │
+    │ │                  │ 13. SQLITE_OK     │              │
+    │ │                  ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈►│              │
+    │ │                  │                   │              │
+    └───────────────────────────────────────────────────────┘
+      │                  │                   │
+```
+
+- **What `no answer` at 250ms proves (and its limit):** `modernc.org/sqlite` does not expose a Go callback for `sqlite3_busy_handler`, so the experiment cannot count busy-handler invocations in process. Instead, `Lab.StillWaiting` waits `250ms` (`StillWaitingWindow`) via `Call.AnsweredWithin` without killing the child. A non-waiting failure (`busy_timeout=0`) answers over the local pipe in well under `250ms` and is recorded as answered (`at_250ms` is `answered` in the walkthrough; a printing `Lab` shows `.. already answered`) — verified by `TestStillWaitingSeesImmediateBusy` in `internal/procs/procs_test.go` and stress test `BUSY-09` (under "What attacked this chapter" below), whose `strace` of Experiment 6.2 recorded `87` `EAGAIN` return values on `-shm` byte `120`.
+- **Part E match (E3):** `user_version` `15`, matched step `15`, exact `false`: the closed file equals recipe step 15 except the change counter at bytes 24-27 and 92-95. Because two long-lived connections applied steps 6–15 instead of opening a fresh connection per step, the change-counter bytes differ from the per-step reference build while every other byte of every page is identical (the change-counter rule from Chapters 1 and 2).
 
 ---
 
 ## 5. Lab
 
-Every multi-process lab in this chapter (and later chapters) uses `internal/procs` to eliminate timing races. Section 5.1 walks through and inlines `internal/procs` in full. Section 5.2 runs Experiment 6.3 to prove why plain OS copies of a live database fail.
+Every multi-process lab in this chapter (and later chapters) uses `internal/procs` to eliminate timing races. Section 5.1 walks through and inlines `internal/procs` in full; Section 5.2 runs Experiment 6.3 to prove why plain OS copies of a live database fail.
 
 ### 5.1 Shared package `internal/procs`
 
@@ -2508,7 +2627,7 @@ func (b *tailBuffer) String() string {
 }
 ```
 
-- **Transcript and lab harness (`script.go`, `lab.go`):** `Script` assigns global step numbers across all children and prints aligned transcript lines. `Lab` adds `Must`, `Check`, `Begin`/`StillWaiting`/`Finish`, `Locks` (returning `LockView` with `ProcHolders`), and `Report`. A lab made with `NewQuietLab` prints no transcript; it hands each answered step, each claim and each lock look to the `OnStep`, `OnCheck` and `OnLocks` hooks, which is how this chapter's experiments write their tables.
+- **Transcript and lab harness (`script.go`, `lab.go`):** `Script` assigns global step numbers across all children and prints aligned transcript lines. `Lab` adds `Must`, `Check`, `Begin`/`StillWaiting`/`Finish`, `Locks` (returning `LockView` with `ProcHolders`), and `Report`. A lab made with `NewQuietLab` prints no transcript; it hands each answered step, claim, and lock probe to the `OnStep`, `OnCheck`, and `OnLocks` hooks, which is how this chapter's experiments write their CSV tables.
 
 <!-- include: ../internal/procs/script.go -->
 ```go
@@ -4179,9 +4298,9 @@ func FileInode(path string) (uint64, error) { return 0, ErrNoProcLocks }
 
 ### 5.2 Experiment 6.3 — Torn copy (`6.3-torn-copy`)
 
-- **Claim:** Copying a database file with plain OS reads while SQLite writes to it is not safe: a copy straddling a WAL checkpoint or a rollback commit produces a torn file that fails `PRAGMA integrity_check` or matches no recipe state. In WAL mode, copying only the main `.db` file between commits opens cleanly and passes `integrity_check`, but silently loses every uncheckpointed commit.
+- **Claim:** Copying a database file with plain OS reads while SQLite writes to it is not safe: a copy straddling a WAL checkpoint or a rollback commit produces a torn file that fails `PRAGMA integrity_check` or matches no recipe state. In WAL mode, copying only the main `.db` file between commits opens cleanly and passes `integrity_check`, yet silently drops every uncheckpointed commit.
 - **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
-- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
+- **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
   go run ./cmd/course run 6.3
   ```
@@ -4628,10 +4747,10 @@ Experiment verdict: TORN COPY OK
 **Reading the evidence:**
 
 - **Part A1 — Main `.db` file copied alone in WAL mode (steps 1–8):** The writer builds from recipe step `5`, commits steps `6–8`, checkpoints all `61` frames (`busy=0 log=61 checkpointed=61`), and commits steps `9–10` (which sit in the `251,352`-byte `-wal`). The copier reads `r.db` (`323,584` bytes, `79` pages) into `main-only.db`. Opening `main-only.db` succeeds with integrity `ok`, `user_version` `8`, `50 accounts, 336 events, 25 documents`, matching recipe step `8`. **Commits 9 and 10 vanished with no error and a passing `integrity_check`.**
-- **Part A2 — WAL `.db` file copied across a checkpoint (steps 9–12):** The copier reads the first half (`bytes 0-204800`, 50 pages) of `r.db`. While it pauses, the writer checkpoints steps `9–10` (`busy=0 log=40 checkpointed=40`), growing `r.db` to `100` pages (`409,600` bytes). The copier reads `bytes 204800-409600`. The resulting `torn.db` mixes step-8 pages in its first half with step-10 pages in its second half: `integrity_check` reports `25 problem(s)` (index `events_by_account` missing rows 335, 336, …), `user_version` still reads `8`, and `r.MatchStep` reports `no recipe step`.
+- **Part A2 — WAL `.db` file copied across a checkpoint (steps 9–12):** The copier reads the first half (`bytes 0-204800`, 50 pages) of `r.db`. While it pauses, the writer checkpoints steps `9–10` (`busy=0 log=40 checkpointed=40`), growing `r.db` to `100` pages (`409,600` bytes). The copier then reads `bytes 204800-409600`. The resulting `torn.db` mixes step-8 pages in its first half with step-10 pages in its second half: `integrity_check` reports `25 problem(s)` (index `events_by_account` missing rows 335, 336, …), `user_version` still reads `8`, and the recipe matcher (`r.MatchStep`) reports `no recipe step`.
 - **Part B — Rollback contrast (steps 13–16):** On a step-5 `journal_mode=delete` database (`50` pages), the copier reads `bytes 0-102400` (`25` pages), the writer commits step `6` (growing the file to `60` pages, `245,760` bytes), and the copier reads `bytes 102400-245760`. `torn.db` fails `integrity_check` with `6 problem(s)` (corrupt freelist trunk on page 35, invalid page 52, truncated overflow chain on page 24) and matches `no recipe step`.
-- Note on inspection order and safety: in Part A the parent inspects the separate copy files `main-only.db` and `torn.db` while the writer and copier children are still running (then calls `StopChildren`), whereas in Part B it stops the children first. Because the copies are distinct files with distinct inodes, opening them touches no POSIX lock on `r.db`, and `examine` verifies each copy's SHA-256 is unchanged before and after inspection.
-- Note on "not safe" versus "always corrupt": because the interleaving is scripted, Experiment 6.3 demonstrates one guaranteed failure per mode rather than a failure rate. A lucky uncoordinated copy can pass `integrity_check` (Part A1 is already a valid stale copy, and adversarial test `TORN-02b` below shows a torn split copy can even pass `integrity_check` while breaking transaction atomicity). Passing once proves luck, not safety.
+- **Inspection order and safety:** In Part A, the parent inspects the separate copy files `main-only.db` and `torn.db` while the writer and copier children are still running (then calls `StopChildren`); in Part B, it stops the children first. Because the copies are distinct files with distinct inodes, opening them touches no POSIX lock on `r.db`, and `examine` in `main.go` verifies each copy's SHA-256 is unchanged before and after inspection.
+- **"Not safe" versus "always corrupt":** Because the interleaving is scripted, Experiment 6.3 demonstrates one guaranteed failure per mode rather than a failure rate. A lucky uncoordinated copy can pass `integrity_check` (Part A1 is already a valid stale copy, and stress test `TORN-02b` under "What attacked this chapter" below shows a torn split copy can even pass `integrity_check` while breaking transaction atomicity). Passing once proves luck, not safety.
 
 ---
 
@@ -4641,9 +4760,9 @@ A live capture works only when it cooperates with SQLite's WAL snapshot mechanis
 
 ### 6.1 Experiment 6.4 — Live snapshot (`6.4-live-snapshot`, Rebuild Ladder rung R4)
 
-- **Claim:** Inside a single held read transaction in WAL mode (`BEGIN DEFERRED` followed by a read), reading every page through `sqlite_dbpage` produces a consistent database that passes `integrity_check` and matches (at equality level **E1 bytes**) the recipe run on one connection to that exact snapshot step and checkpointed — even while a writer commits new steps and runs `PASSIVE` checkpoints between chunks. Second, copying `.db` (even torn mid-copy by a checkpoint) and then copying `-wal` while holding a read transaction rebuilds via `internal/walfile` to a consistent recipe state at or after the snapshot (here, the last commit before `-wal` was copied).
+- **Claim:** Inside a single held read transaction in WAL mode (`BEGIN DEFERRED` followed by a read), reading every page through `sqlite_dbpage` produces a consistent database that passes `integrity_check` and matches (at equality level **E1 bytes**) the recipe run on one connection to that exact snapshot step and checkpointed — even while a writer commits new steps and runs `PASSIVE` checkpoints between chunks. Second, copying `.db` (even when torn mid-copy by a checkpoint) and then copying `-wal` while holding a read transaction rebuilds via `internal/walfile` to a consistent recipe state at or after the snapshot (here, the last commit before `-wal` was copied).
 - **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
-- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
+- **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
   go run ./cmd/course run 6.4
   ```
@@ -5256,22 +5375,66 @@ Experiment verdict: LIVE SNAPSHOT OK
 **Reading the evidence:**
 
 - **Method 1 — Page capture via `sqlite_dbpage` inside one read transaction (steps 4–24):**
-  - After the writer commits steps `6–8` (`wal_autocheckpoint=0`), `capture` runs `BEGIN DEFERRED` and `user-version` (`8`). That first read acquires `WAL_READ_LOCK(1)` and pins frame `61` (step 8's commit frame). `PRAGMA page_count` reports `79` pages.
+  - After the writer commits steps `6–8` (`wal_autocheckpoint=0`), `capture` runs `BEGIN DEFERRED` and reads `user-version` (`8`). That first read acquires `WAL_READ_LOCK(1)` and pins frame `61` (step 8's commit frame). `PRAGMA page_count` reports `79` pages.
   - `capture` reads pages in four chunks (`1..20`, `21..40`, `41..60`, `61..79`) via `SELECT data FROM sqlite_dbpage WHERE pgno = ?`. Between chunks, the writer commits steps `9`, `10`, and `11` (`log` grows `84` → `101` → `116`) and runs `PASSIVE` checkpoints.
   - Look closely at steps 9–21: the first `PASSIVE` checkpoint advances `checkpointed` from `0` to `61` **while the capture is between page 20 and page 21**, writing into `.db` underneath the open capture. The next two `PASSIVE` checkpoints stay pinned at `checkpointed=61` because `capture` holds its read mark at frame `61`. At step 23, `capture` still sees `user-version = 8`.
-  - After all processes close, the 79 captured pages (`manifest sha256 fdacd7ac2cf9defb`) are rebuilt through Chapter 2's `capture.Rebuild` into `rebuilt.db` (sha256 `1558477d01bc85e9…`, integrity `ok`, `user_version` `8`; D1 and D3). Comparing against the reference database built by applying steps `6–8` on one connection and running `wal_checkpoint(TRUNCATE)` yields **E1 bytes: equal** (`sha256 1558477d01bc85e9ec8dfa29e63f245bc427ee31a6da515ffc3f75a892579529`). (Using one connection for steps `6–8` matches the writer child's change-counter history so the proof holds at E1 bytes, not just the masked step match.)
-- **Method 2 — Plain `.db` + `-wal` copy under a held read transaction (steps 25–38 and D2–D3):**
+  - After all processes close, the 79 captured pages (`manifest sha256 fdacd7ac2cf9defb`) are rebuilt through Chapter 2's `capture.Rebuild` into `rebuilt.db` (sha256 `1558477d01bc85e9…`, integrity `ok`, `user_version` `8`; walkthrough tables D1 and D3 above). Comparing against the reference database built by applying steps `6–8` on one connection and running `wal_checkpoint(TRUNCATE)` yields **E1 bytes: equal** (`sha256 1558477d01bc85e9ec8dfa29e63f245bc427ee31a6da515ffc3f75a892579529`). Using one connection for steps `6–8` matches the writer child's change-counter history so the proof holds at E1 bytes, not just the masked step match.
+- **Method 2 — Plain `.db` + `-wal` copy under a held read transaction (steps 25–38 and walkthrough tables D2–D3):**
   - `capture` opens a second read transaction (`user-version = 11`, pinning frame `116`). The copier copies the first half of `r.db` (`bytes 0-221184`). Between the two halves, the writer commits step `12` and runs a `PASSIVE` checkpoint that advances `checkpointed` from `61` to `116` — writing into `r.db` **while `copy.db` is half copied**. The copier copies the rest (`bytes 221184-438272`), the writer commits step `13`, and the copier copies the `-wal` (`688,072` bytes, `167` frames).
-  - Inspecting `copy.db` on its own (the last row of the two D3 tables) shows a severe surprise: **integrity `10 problem(s)`**, **`user_version` `5`**, and **no recipe step**. Why is `copy.db`'s page 1 still step `5` even though checkpoints reported `checkpointed=61` (step 8) and `checkpointed=116` (step 11)? Because `walIteratorNext` (`src/wal.c:1764-1792`) yields each page in `-wal` **once, at its newest frame**, and `walCheckpoint` (`src/wal.c:2312-2314`) skips any page whose newest frame exceeds `mxSafeFrame`. Page 1 was modified by step 9 (frame > 61) and step 12 (frame > 116), so neither checkpoint copied page 1 into `.db` while other pages *were* copied. **A checkpoint's `checkpointed` (`nBackfill`) count does not mean `.db` alone holds that state:** between complete checkpoints, `.db` is a mixture of states that only `-wal` makes whole.
+  - Inspecting `copy.db` on its own (the last row of the two D3 tables) reveals a sharp surprise: **integrity `10 problem(s)`**, **`user_version` `5`**, and **no recipe step**. Why is `copy.db`'s page 1 still at step `5` even though checkpoints reported `checkpointed=61` (step 8) and `checkpointed=116` (step 11)? Because `walIteratorNext` (`src/wal.c:1764-1792`) yields each page in `-wal` **once, at its newest frame**, and `walCheckpoint` (`src/wal.c:2312-2314`) skips any page whose newest frame exceeds `mxSafeFrame`. Page 1 was modified by step 9 (frame > 61) and step 12 (frame > 116), so neither checkpoint copied page 1 into `.db` even while other pages *were* copied. **A checkpoint's `checkpointed` (`nBackfill`) count does not mean `.db` alone holds that state:** between complete checkpoints, `.db` is a mixture of states that only `-wal` makes whole.
   - Because `capture` kept the WAL from restarting, all `167` frames (steps `6–13`, `92` distinct pages) remained in `copy.wal`. Replaying `copy.db` + `copy.wal` with `walfile.ReplayFiles` overwrites every torn page in `copy.db` and extends the file from `438,272` bytes to `507,904` bytes (`124` pages), matching **recipe step 13** (integrity `ok`, `user_version` `13`, sha256 `fbe88f844fab4985`) — the last commit before `-wal` was copied.
-- **What `-hold immediate` shows:** Running `6.4-live-snapshot -hold immediate` holds `BEGIN IMMEDIATE` (`WAL_WRITE_LOCK`) during both captures. Writers cannot commit (`SQLITE_BUSY`), yet another connection's `PASSIVE` checkpoints **still run** (copying `61` frames into `.db` during Method 1, and tearing `.db` alone in adversarial test `SNAP-03b`). Holding `BEGIN IMMEDIATE` does not make a bare `.db` copy safe against concurrent checkpoints; a file + WAL copy stays valid only because `-wal` is copied after `.db` and replayed whole.
-- **A subtle boundary on `WAL_READ_LOCK(0)` (discovered by adversarial test `SNAP-04`):** A read transaction that starts on an already fully checkpointed WAL (`nBackfill == mxFrame`) takes `WAL_READ_LOCK(0)` (byte `123`) rather than a mark in `1..4`. When the next commit runs, `walRestartLog` (`src/wal.c:3885`) locks only `WAL_READ_LOCK(1..4)` and therefore **restarts the WAL under the open reader** (`salt-1 + 1`, `nBackfill = 0`). That is safe for the reader itself — it reads only `.db`, and `walCheckpoint` (`src/wal.c:2254-2260`) cannot backfill a single page while `WAL_READ_LOCK(0)` is held — so Method 1 still rebuilds E1-identically. However, any WAL-shipping design (Chapter 9, Rung R6) that relies on a held read mark to stop WAL restarts must acquire that read mark while uncheckpointed frames exist in `-wal`.
+
+The sequence below follows Method 2's four actors across the mid-copy `PASSIVE` checkpoint that tears `copy.db`, then shows why copying `-wal` afterward and replaying restores step 13:
+
+<!-- draw-visual: diagrams/ch06-locking-and-concurrency-live-snapshot.mmd -->
+```text
+┌────────┐     ┌────────────┐     ┌─────────┐     ┌────────┐
+│ writer │     │ .db / -wal │     │ capture │     │ copier │
+└────┬───┘     └──────┬─────┘     └────┬────┘     └────┬───┘
+     │                │                │               │
+     │                │ 1. SELECT f116 │               │
+     │                │◄───────────────┤               │
+     │                │                │               │
+     │                │ 2. .db half 1  │               │
+     │                │◄───────────────────────────────┤
+     │                │                │               │
+     │ 3. s12 + ckpt  │                │               │
+     ├───────────────►│                │               │
+     │                │                │               │
+     │   ┌──────────────────────────┐  │               │
+     │   │ backfill <=116 (skip p1) │  │               │
+     │   └──────────────────────────┘  │               │
+     │                │                │               │
+     │                │ 4. .db half 2  │               │
+     │                │◄───────────────────────────────┤
+     │                │                │               │
+     │                │                │      ┌─────────────────┐
+     │                │                │      │ copy.db is torn │
+     │                │                │      └─────────────────┘
+     │                │                │               │
+     │ 5. step 13     │                │               │
+     ├───────────────►│                │               │
+     │                │                │               │
+     │                │ 6. copy -wal   │               │
+     │                │◄───────────────────────────────┤
+     │                │                │               │
+     │                │ 7. end read    │               │
+     │                │◄───────────────┤               │
+     │                │                │               │
+     │             ┌──────────────────────────────────────┐
+     │             │ replay copy.db + copy.wal -> step 13 │
+     │             └──────────────────────────────────────┘
+     │                │                │               │
+```
+
+- **What `-hold immediate` shows:** Running `6.4-live-snapshot -hold immediate` holds `BEGIN IMMEDIATE` (`WAL_WRITE_LOCK`) during both captures. Writers cannot commit (`SQLITE_BUSY`), yet another connection's `PASSIVE` checkpoints **still run** (copying `61` frames into `.db` during Method 1, and tearing `.db` alone in stress test `SNAP-03b` below). Holding `BEGIN IMMEDIATE` does not make a bare `.db` copy safe against concurrent checkpoints; a file + WAL copy stays valid only because `-wal` is copied after `.db` and replayed whole.
+- **A boundary on `WAL_READ_LOCK(0)` (verified by stress test `SNAP-04` below):** A read transaction that starts on an already fully checkpointed WAL (`nBackfill == mxFrame`) takes `WAL_READ_LOCK(0)` (byte `123`) rather than a mark in `1..4`. When the next commit runs, `walRestartLog` (`src/wal.c:3885`) locks only `WAL_READ_LOCK(1..4)` and therefore **restarts the WAL under the open reader** (`salt-1 + 1`, `nBackfill = 0`). The reader itself stays safe — it reads only `.db`, and `walCheckpoint` (`src/wal.c:2254-2260`) cannot backfill a single page while `WAL_READ_LOCK(0)` is held — so Method 1 still rebuilds E1-identically. However, any WAL-shipping design (Chapter 9, rung R6) that relies on a held read mark to stop WAL restarts must acquire that read mark while uncheckpointed frames exist in `-wal`.
 
 ### 6.2 Failure cases summary
 
-The experiments and adversarial tests establish five concrete failure modes a platform must prevent:
+The experiments and standalone stress tests establish five concrete failure modes a platform must prevent (parenthetical codes such as `LOCK-01`, `BUSY-06`, `TORN-02b`, and `SNAP-05` name stress tests listed under "What attacked this chapter" below):
 
-1. **Stray `os.Open` + `Close` inside a serving process (Experiment 6.1, `LOCK-01`–`LOCK-06`).** Drops all of the process's POSIX locks on that inode. In rollback mode (Part A) and in two of three WAL states (Parts C and D), a commit reported as `SQLITE_OK` is silently lost while `integrity_check` still reports `ok`.
+1. **Stray `os.Open` + `Close` inside a serving process (Experiment 6.1, `LOCK-01`–`LOCK-06`).** Drops every POSIX lock that process holds on that inode. In rollback mode (Part A) and in two of three WAL states (Parts C and D), a commit reported as `SQLITE_OK` is silently lost while `integrity_check` still reports `ok`.
 2. **Deferred read-then-write upgrades under contention (Experiment 6.2 C3, `BUSY-06`).** Even with `busy_timeout=120000`, `btreeBeginTrans` (`src/btree.c:3740-3741`) never calls the busy handler once `inTransaction != TRANS_NONE`, failing immediately with `SQLITE_BUSY (5)` and then `SQLITE_BUSY_SNAPSHOT (517)`.
 3. **Plain file copies and `integrity_check` blind spots (Experiment 6.3, `TORN-02a`, `TORN-02b`).** Copying `.db` without `-wal` silently drops commits (6.3 A1); copying across writes tears the file (6.3 A2, B); and a torn split-half copy across an atomic two-table transfer can **pass `PRAGMA integrity_check=ok`** while violating transaction atomicity (`500 + 600 = 1100 != 1000`, `TORN-02b`).
 4. **Splitting a `sqlite_dbpage` capture across two read transactions (`SNAP-01a`, `SNAP-01b`).** Produces either a corrupt file (`28` integrity problems in `SNAP-01a`) or a file with constant `page_count` and `integrity_check=ok` that silently breaks atomicity (`500 + 600 = 1100`, `SNAP-01b`).
@@ -5281,7 +5444,7 @@ The experiments and adversarial tests establish five concrete failure modes a pl
 
 <!-- adversarial-results -->
 
-Five adversarial Go programs (`49` attacks total, driven by [`run-all.sh`](../agent_work/ch06/adversarial/run-all.sh)) attacked this chapter's claims and shared code against the pinned SQLite `3.53.4` build:
+Five standalone Go stress-test programs in this repository (`49` attacks total, driven by [`run-all.sh`](../agent_work/ch06/adversarial/run-all.sh)) tried to break this chapter's claims and shared code against the pinned SQLite `3.53.4` build (`HELD` means the code or claim stood up to the test; `BROKEN` means the test exposed a bug or an overly broad claim):
 
 - [`locks-process`](../agent_work/ch06/adversarial/locks-process/main.go) (`LOCK-01`–`LOCK-06`, 12 attacks): stray close of `-wal`, SQLite 3.51+ `unixIsSharingShmNode` guarding `PRAGMA journal_mode=delete` after a stray close of `.db`, stray close of `-shm` releasing a reader's `WAL_READ_LOCK`, two connections inside one process (verifying 0 extra `F_SETLK` calls, deferred fd parking via `setPendingFd`, intra-process exclusion, and whole-process lock loss on a stray `.db` close), cross-build interop with the C `sqlite3` CLI as both contender and holder in rollback and WAL modes, multi-page indexed rollback stray-close writes, and active-WAL stray-close of `-shm`.
 - [`busy-contention`](../agent_work/ch06/adversarial/busy-contention/main.go) (`BUSY-01a`–`BUSY-09`, 12 attacks): three queued WAL writers plus a zero-timeout reader across four processes, three writers alternating recipe steps `6–17`, three-process rollback `PENDING` lock blocking a third-process reader while an existing reader continues, C `sqlite3` CLI busy waits and immediate `SQLITE_BUSY_SNAPSHOT`, `100` full scripted re-runs of every Experiment 6.2 cell (`100/100` exact in A, B, C1, C2, C3, and D), `BEGIN EXCLUSIVE` lock probing under `locking_mode=NORMAL` vs `locking_mode=EXCLUSIVE`, rollback-mode deferred upgrade skipping `busy_timeout`, genuine busy-handler sleep and expiration at `100ms` (`102ms`), negative control for `517` when a concurrent writer rolls back, and falsifying `Lab.StillWaiting` plus `strace` counting `EAGAIN` on `-shm` byte `120`.
@@ -5289,33 +5452,33 @@ Five adversarial Go programs (`49` attacks total, driven by [`run-all.sh`](../ag
 - [`live-snapshot-attacks`](../agent_work/ch06/adversarial/live-snapshot-attacks/main.go) (`SNAP-01a`–`SNAP-06`, 9 attacks): `sqlite_dbpage` capture split across two read transactions (both growing and constant `page_count`), a third independent process running `PASSIVE`, `FULL`, `RESTART`, and `TRUNCATE` checkpoints mid-copy, `6.4-live-snapshot -hold immediate` and a third-process `PASSIVE` checkpoint tearing `.db` under `BEGIN IMMEDIATE`, a slow capture reader starting on a fully checkpointed WAL (`wal_autocheckpoint=20`, steps `6–18`), holding `BEGIN DEFERRED` with no initial `SELECT`, and Method 2 ignoring `48` spilled uncommitted tail frames after a rollback.
 - [`procs-and-codes`](../agent_work/ch06/adversarial/procs-and-codes/main.go) (`PROCS-01`–`PROCS-06`, 8 attacks): every `internal/procs` loud-failure sentinel (`ErrChildDied`, `ErrTimeout` + reap, `ErrBusyChild`, duplicate name, `ErrStopped`), live host `/proc/locks` and kernel line variants (`OFDLCK`, `->`, `FLOCK`, `LEASE`, `EOF`, `<none>:0`, `MSNFS`, `UNKNOWN`), merged and `0-EOF` lock formatting, `F_GETLK` self-process blind spot and invalid ranges, `sqlitex.ResultCodeName` and `DisplayPath` symlink escape checks, pin-mismatch refusal across Experiments 6.1–6.4, and `InspectDatabase`/`CopierRole` safety boundaries.
 
-**Run 1** ([`results-run1.txt`](../agent_work/ch06/adversarial/results-run1.txt)) produced **43 HELD, 6 BROKEN** (`LOCK-04b`, `LOCK-06`, `BUSY-05b`, `BUSY-09`, `SNAP-04`, `PROCS-02c`). Two broken attacks exposed real defects that were fixed in the repair round (alongside code-review fixes adding `/proc/locks` assertions via `LockView.ProcHolders` in 6.1, slicing short reads in `copierSession.copyRange`, and cleaning up `Child.Stop` / `readReplies`):
+**Run 1** ([`results-run1.txt`](../agent_work/ch06/adversarial/results-run1.txt)) produced **43 HELD, 6 BROKEN** (`LOCK-04b`, `LOCK-06`, `BUSY-05b`, `BUSY-09`, `SNAP-04`, `PROCS-02c`). Two broken attacks exposed real defects that were fixed (alongside adding `/proc/locks` assertions via `LockView.ProcHolders` in 6.1, slicing short reads in `copierSession.copyRange`, and tightening `Child.Stop` / `readReplies`):
 
-- `BUSY-09` (with Review 1 Finding 1): `Lab.StillWaiting` previously used a non-blocking 0 ns poll (`Answered`), so it returned `true` even for a `busy_timeout=0` child that failed immediately, and Experiment 6.2 Part E regenerated recipe steps before `BEGIN IMMEDIATE`, leaving some rounds uncontended (`24` `EAGAIN`s total). Fixed by adding `Call.AnsweredWithin(250ms)` and sending `begin immediate` as the waiting call in Part E; after repair, `still_waiting_on_timeout0=false` and `strace` counted `82`–`87` `EAGAIN`s on `-shm` byte `120`.
-- `PROCS-02c` (with Review 1 Finding 4): `ParseProcLockLine` rejected valid Linux `fs/locks.c` host entries (`<none>:0`, `MSNFS`, `UNKNOWN`, `NONE`), which could abort Experiment 6.1 on a reader's host. Fixed to accept those variants while still rejecting malformed lines (`parsed=3/3`).
+- `BUSY-09`: `Lab.StillWaiting` previously used a non-blocking 0 ns poll (`Answered`), so it returned `true` even for a `busy_timeout=0` child that failed immediately, and Experiment 6.2 Part E regenerated recipe steps before `BEGIN IMMEDIATE`, leaving some rounds uncontended (`24` `EAGAIN`s total). Fixed by adding `Call.AnsweredWithin(250ms)` and sending `begin immediate` as the waiting call in Part E; after the fix, `still_waiting_on_timeout0=false` and `strace` counted `82`–`87` `EAGAIN`s on `-shm` byte `120`.
+- `PROCS-02c`: `ParseProcLockLine` rejected valid Linux `fs/locks.c` host entries (`<none>:0`, `MSNFS`, `UNKNOWN`, `NONE`), which could abort Experiment 6.1 on a host with those kernel entries. Fixed to accept those variants while still rejecting malformed lines (`parsed=3/3`).
 
-**Run 2** ([`results-run2.txt`](../agent_work/ch06/adversarial/results-run2.txt)) produced **45 HELD, 4 BROKEN**. All four remaining `BROKEN` lines reflected claims that needed correction or narrowing (or a wrong expectation in the attack itself):
+**Run 2** ([`results-run2.txt`](../agent_work/ch06/adversarial/results-run2.txt)) produced **45 HELD, 4 BROKEN**. All four remaining `BROKEN` lines reflected claims that needed narrowing or an overly broad expectation in the test itself:
 
-- `LOCK-06`: proved that a stray close of `-shm` when `-wal` already holds uncheckpointed frames (`WAL_READ_LOCK(1)`) skips `walRestartLog` (`src/wal.c:3879`), returning `SQLITE_OK` to both writers and silently overwriting the contender's commit. Experiment 6.1 added Part C, and Section 3.2 and Experiment 6.1 now restrict the `SQLITE_PROTOCOL` outcome to `WAL_READ_LOCK(0)` only.
+- `LOCK-06`: proved that a stray close of `-shm` when `-wal` already holds uncheckpointed frames (`WAL_READ_LOCK(1)`) skips `walRestartLog` (`src/wal.c:3879`), returning `SQLITE_OK` to both writers and silently overwriting the contender's commit. Experiment 6.1 added Part C, and Section 3.2 and Experiment 6.1 restrict the `SQLITE_PROTOCOL` outcome to `WAL_READ_LOCK(0)` only.
 - `LOCK-04b`: proved that when the second process closes and exits before the holder commits (as the C `sqlite3` CLI always does after a batch), `sqlite3WalClose` (`src/wal.c:2507-2571`) deletes `-wal` and `-shm` and the holder's `COMMIT` returns `SQLITE_OK` into its unlinked `-wal`, silently losing the CLI's commit. Experiment 6.1 added Part D to reproduce this cleanly with Go children, and the chapter reports all three WAL outcomes.
 - `BUSY-05b`: proved that setting `PRAGMA locking_mode=EXCLUSIVE` in WAL mode takes the database file's `EXCLUSIVE` lock (`src/pager.c:5982-5988`) and blocks a second process's reader at open (`SQLITE_BUSY (5)`). Sections 1, 4, and 6.2 narrow WAL non-blocking reader/writer concurrency to the default `locking_mode=NORMAL`.
-- `SNAP-04`: the attack expected `salt-1 + 1`, but step 6 (`22` frames `>= wal_autocheckpoint=20`) triggered a full checkpoint before the capture opened, placing the capture on `WAL_READ_LOCK(0)`. Step 7 restarted the WAL under it (`salt-1 + 1`, `nBackfill = 0`), and step 19 restarted it again (`salt-1 + 2`), confirmed by [`snap04-restart`](../agent_work/ch06/probes/snap04-restart/main.go). Section 6.1 records this `WAL_READ_LOCK(0)` rule and its consequence for Rung R6.
+- `SNAP-04`: the test expected `salt-1 + 1`, but step 6 (`22` frames `>= wal_autocheckpoint=20`) triggered a full checkpoint before the capture opened, placing the capture on `WAL_READ_LOCK(0)`. Step 7 restarted the WAL under it (`salt-1 + 1`, `nBackfill = 0`), and step 19 restarted it again (`salt-1 + 2`), confirmed by the standalone probe [`snap04-restart`](../agent_work/ch06/probes/snap04-restart/main.go). Section 6.1 records this `WAL_READ_LOCK(0)` rule and its consequence for Chapter 9's WAL shipper (rung R6).
 
-After updating those four attack expectations to match the verified rules, the final run ([`results-run3.txt`](../agent_work/ch06/adversarial/results-run3.txt) and [`results.txt`](../agent_work/ch06/adversarial/results.txt)) passed **49 HELD, 0 BROKEN**.
+After aligning those four test expectations with the verified rules, the final run ([`results-run3.txt`](../agent_work/ch06/adversarial/results-run3.txt) and [`results.txt`](../agent_work/ch06/adversarial/results.txt)) passed **49 HELD, 0 BROKEN**.
 
 ---
 
 ## 7. Platform implications
 
-Every operational rule below is supported directly by this chapter's experiments and verified source spans:
+Every operational rule below follows directly from this chapter's experiments and verified source spans:
 
-1. **One writer per database is SQLite's rule; the platform decides who (Experiment 6.2 B, C, E; `BUSY-01a/b`).** All writers on one database serialize on a single lock byte (`-shm` byte `120` in WAL mode). With `BEGIN IMMEDIATE` and a generous `busy_timeout`, competing writers queue and commit cleanly without losing transactions (Experiment 6.2 E: all 10 alternating recipe steps committed and matched step `15`).
+1. **One writer per database is SQLite's rule; the platform decides who (Experiment 6.2 B, C, E; `BUSY-01a/b`).** All writers on one database serialize on a single lock byte (`-shm` byte `120` in WAL mode). With `BEGIN IMMEDIATE` and a generous `busy_timeout`, competing writers queue and commit without losing transactions (Experiment 6.2 E: all 10 alternating recipe steps committed and matched step `15`).
 2. **Use `BEGIN IMMEDIATE` for every write transaction (Experiment 6.2 B, C1, C3; `BUSY-06`).** It is the only start mode whose lock conflict is always handled by `busy_timeout`, and when `busy_timeout` expires it fails at `BEGIN` before doing application work. Starting a write with `BEGIN DEFERRED` and reading first bypasses `busy_timeout` (`src/btree.c:3740-3741`) and fails immediately with `SQLITE_BUSY (5)` or `SQLITE_BUSY_SNAPSHOT (517)`.
-3. **Never touch a database file or its `-shm` with ordinary file calls inside a serving process (Experiment 6.1 A–D; `LOCK-02b`, `LOCK-03d`, `LOCK-04a/b`, `LOCK-06`).** A single `os.Open` + `Close` drops every POSIX lock that process holds on that inode. The result is a silently lost `SQLITE_OK` commit in rollback mode (6.1 A) and in two of three WAL states (6.1 C and D), or a `SQLITE_PROTOCOL (15)` failure after ~10 s (6.1 B). Hashing, copying, log shipping, backup, and any file-opening inspection must run either in a separate process (`internal/procs` `CopierRole` pattern) or after the last connection to that file has closed.
+3. **Never touch a database file or its `-shm` with ordinary file calls inside a serving process (Experiment 6.1 A–D; `LOCK-02b`, `LOCK-03d`, `LOCK-04a/b`, `LOCK-06`).** One `os.Open` + `Close` drops every POSIX lock that process holds on that inode. The result is a silently lost `SQLITE_OK` commit in rollback mode (6.1 A) and in two of three WAL states (6.1 C and D), or a `SQLITE_PROTOCOL (15)` failure after ~10 s (6.1 B). Hashing, copying, log shipping, backup, and any file-opening inspection must run either in a separate process (the `internal/procs` `CopierRole` pattern) or after the last connection to that file has closed.
 4. **SQLite's locks work between processes on one machine and nowhere else (Experiment 6.1 `/proc/locks` and `F_GETLK`; `src/os_unix.c:1189-1342`).** Locking relies on local kernel POSIX advisory locks on one inode and a local shared-memory `-shm` mapping. A platform that moves or serves databases across machines must coordinate single-writer ownership at the platform layer (Chapter 10), never by sharing a database file over a network filesystem.
-5. **Every live capture must go through SQLite's locking, never around it (Experiments 6.3 and 6.4; `TORN-01a`–`TORN-04b`, `SNAP-01a`–`SNAP-06`).** Plain reads of a live `.db` file produce torn copies (6.3 A2, B; 6.4's `copy.db` alone) or valid-looking stale databases that silently drop commits (6.3 A1). Use one of the two R4 live captures: read all pages via `sqlite_dbpage` inside a single read transaction (E1-exact to the snapshot), or copy `.db` then `-wal` while holding an active read transaction (after at least one `SELECT`, never bare `BEGIN DEFERRED`) and replay with `internal/walfile`. Remember that holding `BEGIN IMMEDIATE` stops commits but does not stop another connection's `PASSIVE` checkpoints from writing into `.db` (`SNAP-03b`).
+5. **Every live capture must go through SQLite's locking, never around it (Experiments 6.3 and 6.4; `TORN-01a`–`TORN-04b`, `SNAP-01a`–`SNAP-06`).** Plain reads of a live `.db` file produce torn copies (6.3 A2, B; 6.4's `copy.db` alone) or valid-looking stale databases that silently drop commits (6.3 A1). Use one of the two R4 live captures: read every page via `sqlite_dbpage` inside a single read transaction (E1-exact to the snapshot), or copy `.db` then `-wal` while holding an active read transaction (after at least one `SELECT`, never bare `BEGIN DEFERRED`) and replay with `internal/walfile`. Holding `BEGIN IMMEDIATE` stops commits, but does not stop another connection's `PASSIVE` checkpoints from writing into `.db` (`SNAP-03b`).
 6. **Bound live-capture durations, and know which read slot a reader pins (Experiment 6.4; `SNAP-04`; Chapter 5 Experiment 5.3).** While a capture holds its read transaction, checkpoints stop at its mark (frame `61` throughout Experiment 6.4 Method 1), so `-wal` grows for as long as the capture lasts. Conversely, if a reader starts on an already fully checkpointed WAL (`WAL_READ_LOCK(0)`), it blocks all checkpoint backfill (`src/wal.c:2254-2260`) but does *not* stop the next write from restarting the WAL (`src/wal.c:3885`) — a constraint Chapter 9's WAL shipper must honor when pinning WAL generations.
-7. **Alert on `SQLITE_PROTOCOL (15)` and `SQLITE_IOERR_DELETE_NOENT (5898)` in production logs, but do not treat their absence as proof that locks are intact (Experiment 6.1 A–D).** On local storage both codes indicate broken POSIX locks (6.1 A and B), yet 6.1 C and D lose committed transactions while every statement returns `SQLITE_OK`.
+7. **Alert on `SQLITE_PROTOCOL (15)` and `SQLITE_IOERR_DELETE_NOENT (5898)` in production logs, but do not treat their absence as proof that locks are intact (Experiment 6.1 A–D).** On local storage both codes signal broken POSIX locks (6.1 A and B), yet 6.1 C and D lose committed transactions while every statement returns `SQLITE_OK`.
 
 ---
 
@@ -5323,8 +5486,8 @@ Every operational rule below is supported directly by this chapter's experiments
 
 Answers are in [answers.md](answers.md).
 
-1. In Experiment 6.1 Part B, why did `holder stray-close db` leave `contender` still blocked with `SQLITE_BUSY (5)`, whereas `holder stray-close -shm` admitted `contender` immediately? Compare all three WAL commit outcomes after a stray close of `-shm` (Parts B, C, and D) and name the C guard in `walRestartLog` (`src/wal.c:3879`) that separates Part B from Part C.
+1. In Experiment 6.1 Part B, why did `holder stray-close db` leave `contender` blocked with `SQLITE_BUSY (5)`, whereas `holder stray-close -shm` admitted `contender` immediately? Compare all three WAL commit outcomes after a stray close of `-shm` (Parts B, C, and D) and name the C guard in `walRestartLog` (`src/wal.c:3879`) that separates Part B from Part C.
 2. In Experiment 6.2 Part C3, why did `writer-2`'s `INSERT` return `SQLITE_BUSY (5)` immediately — and then `SQLITE_BUSY_SNAPSHOT (517)` immediately after `writer-1` committed — even though `busy_timeout` was `120,000ms`, whereas Parts C1 and C2 waited? Cite the exact loop condition in `src/btree.c:3740-3741`.
 3. In Experiment 6.2 Part D (rollback mode), why did `reader`'s new `SELECT count(*) FROM lab` at step 58 return `SQLITE_BUSY (5)` immediately after `reader` finished its own transaction at step 57, and what happens under WAL mode with `PRAGMA locking_mode=NORMAL` versus `PRAGMA locking_mode=EXCLUSIVE`?
-4. In Experiment 6.4 Method 2, `PASSIVE` checkpoints reported `checkpointed=61` and then `checkpointed=116`, yet `copy.db` on its own reported `user_version 5` and `10` integrity problems. Explain why `nBackfill` advanced while page 1 remained at step 5 (`src/wal.c:1764-1792`, `src/wal.c:2312-2314`), and why replaying `copy.db` + `copy.wal` still produced a valid recipe step `13`.
-5. Why does holding `BEGIN DEFERRED` with no initial `SELECT` fail to protect a `.db` + `-wal` copy (`SNAP-05`), why does holding `BEGIN IMMEDIATE` still not prevent another connection's `PASSIVE` checkpoint from tearing `.db` (`SNAP-03b`), and why can a WAL still restart under an open read transaction that started on a fully checkpointed WAL (`SNAP-04`)?
+4. In Experiment 6.4 Method 2, `PASSIVE` checkpoints reported `checkpointed=61` and then `checkpointed=116`, yet `copy.db` on its own reported `user_version 5` and `10` integrity problems. Explain why `nBackfill` advanced while page 1 stayed at step 5 (`src/wal.c:1764-1792`, `src/wal.c:2312-2314`), and why replaying `copy.db` + `copy.wal` still produced a valid recipe step `13`.
+5. Why does holding `BEGIN DEFERRED` with no initial `SELECT` fail to protect a `.db` + `-wal` copy (`SNAP-05`), why does holding `BEGIN IMMEDIATE` still not stop another connection's `PASSIVE` checkpoint from tearing `.db` (`SNAP-03b`), and why can a WAL still restart under an open read transaction that started on a fully checkpointed WAL (`SNAP-04`)?

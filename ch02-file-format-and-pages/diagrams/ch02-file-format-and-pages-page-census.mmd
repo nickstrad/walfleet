@@ -1,0 +1,11 @@
+%% draw-visual: -x 2 -y 2 -p 0
+graph LR
+  P1[Page 1 hdr] -->|100| SC[sqlite_schema]
+  SC -->|tbl| TB[table B-tree]
+  TB -->|ov| OV[overflow]
+  SC -->|idx| IB[index B-tree]
+  IB -->|ov| OV
+  P1 -->|52| PM[pointer-map]
+  P1 -->|32| FT[freelist-trunk]
+  FT -->|pg| FL[freelist-leaf]
+  P1 -->|1G| LB[lock-byte]

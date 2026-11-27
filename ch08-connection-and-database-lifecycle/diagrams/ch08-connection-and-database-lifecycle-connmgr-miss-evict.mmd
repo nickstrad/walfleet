@@ -1,0 +1,26 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant C as Caller
+  participant M as Manager
+  participant V as Victim DB
+  participant T as Target DB
+  Note over C,T: Acquire(ctx, id) on miss at capacity K
+  C->>M: Acquire
+  Note over M: miss; check ctx.Err() first
+  M->>V: db.Close()
+  alt OpenConnections == 0
+    M->>V: CheckAtRest
+    V-->>M: SHA-256
+    Note over M: save hash record
+  else OpenConnections > 0 (open Rows/Tx)
+    Note over M: skip CheckAtRest (no lock drop)
+  end
+  alt Target has recorded SHA-256
+    M->>T: verifyBeforeOpen
+    T-->>M: match / err
+  end
+  M->>T: Open target
+  T-->>M: *sqlitex.DB
+  Note over M: bump Misses after Open ok
+  M-->>C: Handle

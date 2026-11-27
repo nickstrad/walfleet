@@ -1,0 +1,9 @@
+%% draw-visual: -x 3 -y 1 -p 0
+graph TD
+  DB[.db at rest] --> AR[CheckAtRest: empty -wal, no hot journal]
+  AR -->|ok| TMP[Write .capture-tmp + verify SHA-256]
+  TMP --> RE[Re-check at-rest, size, mtime]
+  RE -->|ok| CAP[Rename -> pages.bin + manifest.txt]
+  CAP --> VAL[Rebuild: check sequence + page SHA-256]
+  VAL --> RTMP[Write .rebuild-tmp + Sync + census]
+  RTMP -->|match| OUT[Atomic rename -> E1 .db]

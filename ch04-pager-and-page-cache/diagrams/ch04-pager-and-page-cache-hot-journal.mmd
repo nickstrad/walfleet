@@ -1,0 +1,15 @@
+%% draw-visual: -x 3 -y 1 -p 0
+graph TD
+  S[SHARED + hasHotJournal] --> F[Journal, no RESERVED?]
+  F -->|yes| Z[db nPage > 0?]
+  F -->|no| N[Normal SHARED read]
+  Z -->|yes| B[byte 0 != 0x00?]
+  Z -->|no| D0[Delete stale journal]
+  B -->|yes| E[EXCLUSIVE + sync jnl]
+  B -->|no| C[Ignore cold journal]
+  E --> SJ[Named super-jnl gone?]
+  SJ -->|no| H[Header >= 1 sector?]
+  SJ -->|yes| SK[Skip playback]
+  H -->|yes| R[Truncate + replay]
+  H -->|no| SK
+  R --> END[fsync t.db + end tx]

@@ -1,0 +1,21 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant A as Node a (e1)
+  participant S3 as S3 store
+  participant B as Node b (e2)
+  participant Cat as Catalog
+  Note over A,S3: a owns e1, local step 2 acked
+  B->>Cat: claim b, e2
+  B->>S3: stale list
+  S3-->>B: end = 1
+  B->>S3: put 2 (e2)
+  S3-->>B: 412 (e1<e2)
+  B->>S3: fresh list
+  S3-->>B: end = 2
+  B->>S3: put 3 (e2)
+  S3-->>B: 200 (e2 ok)
+  Note over A,B: unshipped step 2 lost
+  A->>S3: put 3 (e1)
+  S3-->>A: 412 (e2>e1)
+  Note over A,S3: FencedError, drop .owner

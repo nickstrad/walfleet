@@ -1,0 +1,17 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant W as writer
+  participant F as .db / -wal
+  participant R as capture
+  participant P as copier
+  R->>F: SELECT f116
+  P->>F: .db half 1
+  W->>F: s12 + ckpt
+  Note over F: backfill <=116 (skip p1)
+  P->>F: .db half 2
+  Note over P: copy.db is torn
+  W->>F: step 13
+  P->>F: copy -wal
+  R->>F: end read
+  Note over F,P: replay copy.db + copy.wal -> step 13

@@ -1,0 +1,9 @@
+%% draw-visual: -x 4 -y 1 -p 0
+graph TD
+  SRC[source builds] -->|dump| SQL[capture/r0.sql]
+  SRC -->|WalkLogical| E3[E3 logical hash]
+  SQL -->|replay| REP[replayed .db]
+  REP -->|VACUUM INTO| CAN[canonical .db]
+  CAN -->|same schema| E1[E1 SHA-256 match]
+  CAN -->|cookie diff| E2[E2 only byte 43]
+  CAN -->|diff order| DIF[E1 and E2 differ]

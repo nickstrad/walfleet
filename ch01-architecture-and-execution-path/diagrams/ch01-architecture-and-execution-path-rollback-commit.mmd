@@ -1,0 +1,23 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant S as SQLite pager
+  participant D as t.db (main)
+  participant J as t.db-journal
+  Note over S,J: BEGIN IMMEDIATE (OP_Transaction)
+  S->>D: lock SHARED
+  S->>D: read hdr 16B
+  S->>D: lock RESERVED
+  Note over S,J: INSERT (OP_Insert)
+  S->>D: read page 2
+  S->>J: open & write 512B hdr
+  S->>J: save original page 2
+  Note over S,J: COMMIT (vdbeCommit)
+  S->>D: lock EXCLUSIVE
+  S->>J: save original page 1
+  S->>J: sync journal & dir .
+  S->>J: write pg count & sync
+  S->>D: write p1 & p2
+  S->>D: sync t.db
+  S->>J: close & unlink (COMMIT POINT)
+  S->>D: unlock NONE

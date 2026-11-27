@@ -13,62 +13,62 @@
 
 > **How to run the experiments**
 >
-> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to start the runner from the host. Build the `lab` image once, from the repository root:
+> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to invoke this repository's experiment runner (`cmd/course`) from the host. Build the `lab` container image (defined in `Dockerfile.lab` and `compose.yaml` at the repository root) once:
 >   ```text
 >   docker compose build lab
 >   ```
->   The image already contains the pinned SQLite `3.53.4` source tree (with the linked `src/os_unix.c`), the C tools (none of Chapter 10's four experiments invokes the C `sqlite3` CLI), `strace` (Experiment 10.2 Part A), and the DuckDB CLI that presents the results.
-> - **Start SeaweedFS** (the local S3-compatible object store, `SeaweedFS 4.48`) from the repository root before running any S3-backed experiment (`10.1-one-writer -model-only` runs Part A without a store):
+>   The image bundles the pinned SQLite `3.53.4` source tree (including the linked `src/os_unix.c`), the compiled SQLite C tools (none of Chapter 10's four experiments invokes the C `sqlite3` CLI), `strace` (for Experiment 10.2 Part A), and the DuckDB CLI that formats each experiment's walkthrough.
+> - **Start SeaweedFS** (the local S3-compatible object store, `SeaweedFS 4.48`, defined in `compose.yaml`) from the repository root before running any S3-backed experiment (`10.1-one-writer -model-only` runs Part A without a store):
 >   ```text
 >   docker compose up -d seaweedfs
 >   ```
->   Every S3-backed experiment exits `1` with `STORE UNREACHABLE:` if the endpoint does not answer within `10` seconds. The `lab` container reaches it at `COURSE_S3_ENDPOINT=http://seaweedfs:8333`.
-> - **Run the experiments** from the repository root. Each command starts the `lab` container, runs the experiment in it, and prints its walkthrough; add `-i` (`go run ./cmd/course run -i 10.4`) to stay in DuckDB afterwards with the tables loaded:
+>   Every S3-backed experiment exits `1` with `STORE UNREACHABLE:` if the endpoint does not answer within `10` seconds. Inside the `lab` container, `COURSE_S3_ENDPOINT` is preconfigured to `http://seaweedfs:8333`.
+> - **Run the experiments** from the repository root. Each command starts a temporary `lab` container, runs the experiment inside it, and prints its DuckDB walkthrough. Add `-i` (`go run ./cmd/course run -i 10.4`) to stay in the DuckDB shell afterwards with the result tables loaded:
 >   ```text
 >   go run ./cmd/course run 10.1
 >   go run ./cmd/course run 10.2
 >   go run ./cmd/course run 10.3
 >   go run ./cmd/course run 10.4
 >   ```
->   Experiment 10.4 defaults to `500` databases (`-databases 500 -writers 8 -capacity 32`). `course run` cannot pass experiment flags, so run flag variants directly in the container; the full `2,000`-database run is:
+>   Experiment 10.4 defaults to `500` databases (`-databases 500 -writers 8 -capacity 32`). Because `course run` does not forward extra experiment flags, run flag variants directly in the container; the full `2,000`-database run is:
 >   ```text
 >   docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.4-rebuild-the-fleet -databases 2000 -prefix exp-10-4-2000
 >   ```
->   In the container, scratch files and tables go under `/work/10.1/` through `/work/10.4/` (the `lab-work` volume); run directly, under `_work/10.1/` through `_work/10.4/`, which are git-ignored. Both are wiped at the start of each run. Each experiment uses its own S3 key prefix (`exp-10-1/` in bucket `course-ch10a`; `exp-10-2/`, `exp-10-3/`, `exp-10-4/` in bucket `course-ch10b`).
-> - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch10-multi-database-platform-capstone/experiments/10.4-rebuild-the-fleet`). Run this way it prints only its verdict and leaves its tables under `_work/10.4/results/`.
-> - **Linux-only parts and macOS:** Experiments 10.1, 10.3, and 10.4 are portable (S3 over HTTP, `SIGKILL`, and descriptor/RSS sampling through `internal/procstat`). **Linux only:** Experiment 10.2 Part A kills the node process on entry to a chosen `fsync`/`fdatasync` using `strace`; `course run` runs it in the Linux `lab` container (which has `strace` and `SYS_PTRACE`). Run directly on macOS—or on Linux with `-portable`—Part A prints a `LINUX-ONLY:` notice while Parts B and C run natively and exit `0`.
-> - **Measurement environment:** The stored evidence in this chapter, including the `strace` kill sweeps and the SeaweedFS runs, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26, SeaweedFS 4.48). The adversarial suites were run separately, on a `linux/amd64` host (4 shared cores, 7.7 GiB RAM, descriptor soft limit `1,048,576`). Timings, byte totals and memory readings are run-dependent; `course run` prints them. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; nothing was run on macOS.
+>   Inside the container, scratch files and CSV tables go under `/work/10.1/` through `/work/10.4/` (the `lab-work` Docker volume); when run directly on the host, they go under git-ignored `_work/10.1/` through `_work/10.4/`. Both directories are wiped at the start of each run. Each experiment writes to its own S3 key prefix (`exp-10-1/` in bucket `course-ch10a`; `exp-10-2/`, `exp-10-3/`, and `exp-10-4/` in bucket `course-ch10b`).
+> - **Running an experiment directly:** Each experiment is an ordinary Go program (`go run ./ch10-multi-database-platform-capstone/experiments/10.4-rebuild-the-fleet`). Run this way on the host, it prints only its verdict line and leaves its CSV result tables under `_work/10.4/results/` without running the DuckDB walkthrough.
+> - **Linux-only parts and macOS:** Experiments 10.1, 10.3, and 10.4 are portable (S3 over HTTP, `SIGKILL`, and descriptor/RSS sampling via the repository's process-metrics package `internal/procstat`, introduced in Chapter 8). **Linux only:** Experiment 10.2 Part A kills the node process on entry to a chosen `fsync`/`fdatasync` call using `strace`; `course run` runs it in the Linux `lab` container (which provides `strace` and `SYS_PTRACE`). Run directly on macOS—or on Linux with `-portable`—Part A prints a `LINUX-ONLY:` notice while Parts B and C run natively and exit `0`.
+> - **Measurement environment:** The stored evidence in this chapter, including the `strace` kill sweeps and SeaweedFS runs, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26, SeaweedFS 4.48). The standalone stress-test suites under "What attacked this chapter" in Section 6 ran separately on a `linux/amd64` host (4 shared cores, 7.7 GiB RAM, descriptor soft limit `1,048,576`). Timings, byte totals, and memory readings are run-dependent and printed by `course run`. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; nothing was run on macOS.
 
 ---
 
 ## 1. Model
 
-Chapters 1 through 9 showed how SQLite stores pages, commits transactions, writes a **WAL** (write-ahead log), locks files across processes on one host, bounds open connections, and captures a live database continuously into snapshots and WAL segments (`internal/walship`). None of those mechanisms stops two machines from writing the same database at the same time, tracks which node owns which file, moves a database cleanly from one node to another, or rebuilds an entire fleet onto empty disks. Those responsibilities belong to the platform built around SQLite.
+Chapters 1 through 9 showed how SQLite stores pages, commits transactions, writes a **WAL** (write-ahead log), locks files across processes on one host, bounds open connections, and captures a live database continuously into snapshots and WAL segments (`internal/walship`, introduced in Chapter 9). None of those mechanisms stops two machines from writing the same database at once, tracks which node owns which file, moves a database cleanly from one node to another, or rebuilds a whole fleet onto empty disks. Those responsibilities belong to the platform built around SQLite.
 
 ### Three layers of guarantee
 
 A multi-database platform fails when it blurs which component owns which guarantee. This capstone keeps three layers strictly separate:
 
 1. **SQLite's local guarantees (per file, on one machine):**
-   - **Atomic commit and local durability:** in WAL mode with `PRAGMA synchronous=FULL`, `walFrames` (`src/wal.c:4195-4213`) syncs the `-wal` file before `COMMIT` returns.
-   - **Crash recovery:** after a process kill, the next open runs `walIndexRecover` (`src/wal.c:1390-1614`), verifies the WAL header and running frame checksums, stops at the first invalid frame, and keeps every transaction whose commit frame reached the kernel page cache.
-   - **Snapshot isolation and single-writer exclusion on one host:** POSIX advisory byte-range locks (`fcntl`) keyed by local device and inode (`unixFileId` and `unixInodeInfo`, `src/os_unix.c:1189-1342`) keep the shipper's read mark and `BEGIN IMMEDIATE` cycles mutually consistent with the writer on the same host. Nothing in SQLite's locking reaches across machines.
-   - **Clean close at rest:** when the last connection to a WAL database closes, `sqlite3WalClose` (`src/wal.c:2507-2571`) takes an `EXCLUSIVE` lock, runs a `PASSIVE` checkpoint, and deletes `-wal` and `-shm`, leaving a single at-rest `.db` file.
+   - **Atomic commit and local durability:** In WAL mode with `PRAGMA synchronous=FULL`, `walFrames` (`src/wal.c:4195-4213`) syncs `-wal` before `COMMIT` returns.
+   - **Crash recovery:** After a process kill, the next open runs `walIndexRecover` (`src/wal.c:1390-1614`), checks the WAL header and running frame checksums, stops at the first invalid frame, and keeps every transaction whose commit frame reached the kernel page cache.
+   - **Snapshot isolation and single-writer exclusion on one host:** POSIX advisory byte-range locks (`fcntl`, Chapter 6) keyed by local device and inode (`unixFileId` and `unixInodeInfo`, `src/os_unix.c:1189-1342`) keep the shipper's read mark and `BEGIN IMMEDIATE` cycles mutually consistent with the writer on the same host. Nothing in SQLite's locking reaches across machines.
+   - **Clean close at rest:** When the last connection to a WAL database closes, `sqlite3WalClose` (`src/wal.c:2507-2571`) takes an `EXCLUSIVE` lock, runs a `PASSIVE` checkpoint, and deletes `-wal` and `-shm`, leaving one at-rest `.db` file.
 
 2. **The coordination the Go service adds (`ch10-multi-database-platform-capstone/service/`):**
-   - **Control-plane catalog (`service/catalog`):** one WAL-mode SQLite database shared by all nodes on the host. Its `databases` table maps each database ID to `owner`, monotonically increasing `epoch`, `location`, `last_shipped` stream position, `schema_version` (`user_version`), and per-connection SQLite settings from Chapter 8. Its `relocations` table stores the coordinator's sole durable state for an in-flight or finished move.
-   - **Fenced slot chain (`service/fence`):** every database's capture stream lives under fixed-width keys `dbs/<id>/log/<12-digit position>`. Each object begins with a single-line envelope (`fenced-slot v1 epoch=<e> kind=<snapshot|segment> first=<p> last=<q>`) followed by the unchanged Chapter 9 `walship` snapshot or segment bytes. Every new epoch opens with a full **fence snapshot**. A writer (`fence.Adapter`) lists the chain, refuses to proceed (`FencedError`) if any slot carries an epoch higher than its own, and appends only at `end + 1` of the chain it validated.
-   - **Explicit acknowledgement modes (`service/node`):** every write chooses either **local-durable** (acknowledged after local commit at `synchronous=FULL`) or **store-durable** (acknowledged only after `walship` puts the segment into the object store).
-   - **Crash-surviving local sidecars (`service/node`):** beside `<id>.db` (plus `-wal` and `-shm` while open), each node writes four small sidecar files atomically via write-temp-and-rename: `<id>.owner` (`epoch N\n`), `<id>.atrest` (64-hex SHA-256 after a clean close), `<id>.sealed` (`epoch N\n` while draining a relocation), and `<id>.staged` (the destination's rebuilt image before activation).
-   - **Seven-step relocation (`service/relocate`):** catalog epoch bump, source seal, final drain to at-rest, destination rebuild into `.staged`, hash verification, store fence and activation, and source retirement—plus crash-safe `Resume` and `Rollback` decided from the catalog row and whether the destination's fence landed in the store.
-   - **Standing resource bounds (`service/bounds`):** every node process checks open descriptors and RSS growth against Chapter 8's per-connection bounds after every command.
+   - **Control-plane catalog (`service/catalog`):** One WAL-mode SQLite database shared by all nodes on the host. Its `databases` table maps each database ID to `owner`, monotonically increasing `epoch`, `location`, `last_shipped` stream position, `schema_version` (`user_version`), and per-connection SQLite settings from Chapter 8. Its `relocations` table holds the coordinator's sole durable record for an in-flight or finished move.
+   - **Fenced slot chain (`service/fence`):** Every database's capture stream lives under fixed-width object keys `dbs/<id>/log/<12-digit position>`. Each object begins with a single-line envelope (`fenced-slot v1 epoch=<e> kind=<snapshot|segment> first=<p> last=<q>`) followed by the unchanged Chapter 9 `walship` snapshot or segment bytes. Every new epoch opens with a full **fence snapshot**. A writer (`fence.Adapter`) lists the chain, stops with `FencedError` if any slot carries a higher epoch than its own, and appends only at `end + 1` of the chain it validated.
+   - **Explicit acknowledgement modes (`service/node`):** Every write chooses either **local-durable** (acknowledged after local commit at `synchronous=FULL`) or **store-durable** (acknowledged only after `walship` puts the segment into the object store).
+   - **Crash-surviving local sidecars (`service/node`):** Beside `<id>.db` (plus `-wal` and `-shm` while open), each node writes four small sidecar files atomically via write-temp-and-rename: `<id>.owner` (`epoch N\n`), `<id>.atrest` (64-hex SHA-256 after a clean close), `<id>.sealed` (`epoch N\n` while draining a relocation), and `<id>.staged` (the destination's rebuilt image before activation).
+   - **Seven-step relocation (`service/relocate`):** Catalog epoch bump, source seal, final drain to at-rest, destination rebuild into `.staged`, hash verification, store fence and activation, and source retirement—plus crash-safe `Resume` and `Rollback` driven from the catalog row and whether the destination's fence landed in the store.
+   - **Standing resource bounds (`service/bounds`):** Every node process checks open descriptors and RSS growth against Chapter 8's per-connection bounds after every command.
 
 3. **What the object store provides (as measured on SeaweedFS 4.48, single server, on this machine):**
-   - **Atomic put-if-absent (`If-None-Match: *`):** probed under `2` and `8` concurrent writers (`agent_work/probes/seaweedfs-s3/RESULT.md`), with strictly one winner and HTTP `412 PreconditionFailed` (`walship.ErrExists`) for every loser. Every slot refusal in Experiments 10.1 and 10.3 relies on this.
-   - **Read-after-write and list-after-write visibility:** measured consistent on single-server SeaweedFS; Experiment 10.3's `Resume` relies on reading back fences whose replies were lost (`fail-after-put` and `crash-after-put`).
-   - **Atomic single PUT:** objects are either absent or complete (`partial-put` in `service/faultstore` is a stress test for readers, not behavior observed from SeaweedFS).
-   - **Not provided by S3 / SeaweedFS:** epoch comparison (an S3 server cannot parse an epoch inside an object and compare it against another object—it enforces only write-once key creation), sorted listing order (the service sorts keys itself), or multi-key transactions.
-   - **Not measured and not claimed:** AWS S3 behavior, volume durability of SeaweedFS under disk/power loss, multi-server SeaweedFS clusters, or network partitions.
+   - **Atomic put-if-absent (`If-None-Match: *`):** Probed under `2` and `8` concurrent writers in this repository's SeaweedFS concurrency probe (`agent_work/probes/seaweedfs-s3/RESULT.md`), with strictly one winner and HTTP `412 PreconditionFailed` (`walship.ErrExists`) for every loser. Every slot refusal in Experiments 10.1 and 10.3 relies on this.
+   - **Read-after-write and list-after-write visibility:** Measured consistent on single-server SeaweedFS; Experiment 10.3's `Resume` relies on reading back fences whose replies were lost (`fail-after-put` and `crash-after-put`).
+   - **Atomic single PUT:** Objects are either absent or complete (`partial-put` in `service/faultstore` is a stress test for readers, not behavior observed from SeaweedFS).
+   - **Not provided by S3 / SeaweedFS:** Epoch comparison (an S3 server cannot parse an epoch inside an object and compare it against another—it enforces only write-once key creation), sorted listing order (the service sorts keys itself), or multi-key transactions.
+   - **Not measured and not claimed:** AWS S3 behavior, volume durability of SeaweedFS under disk or power loss, multi-server SeaweedFS clusters, or network partitions.
 
 ### Component diagram
 
@@ -99,21 +99,21 @@ A multi-database platform fails when it blurs which component owns which guarant
 
 Every write names one of two modes:
 
-| Mode | When acknowledged | Survives process kill? | Survives deleting all local files (store rebuild)? | Survives takeover (`claim`)? | Survives relocation (`relocate`)? | Power cut (from Chapter 9.2) |
+| Mode | When acknowledged | Survives process kill? | Survives deleting all local files (store rebuild)? | Survives takeover (`claim`)? | Survives relocation (`relocate`)? | Power cut (Chapter 9, Experiment 9.2) |
 | --- | --- | --- | --- | --- | --- | --- |
-| **`local-durable`** | After local SQLite `COMMIT` at `synchronous=FULL` (`ErrNotLocallyDurable` otherwise) | Yes (restart on local files; Experiment 10.2) | No (unshipped commits are only on local disk) | **No** — unshipped commits are lost (Experiment 10.1 step 3–4) | **Yes** — step 3 drains local commits before fencing (Experiment 10.3) | Zero acknowledged commits lost if the disk honors `fsync` (Chapter 9.2) |
+| **`local-durable`** | After local SQLite `COMMIT` at `synchronous=FULL` (`ErrNotLocallyDurable` otherwise) | Yes (restart on local files; Experiment 10.2) | No (unshipped commits are only on local disk) | **No** — unshipped commits are lost (Experiment 10.1 steps 3–4) | **Yes** — step 3 drains local commits before fencing (Experiment 10.3) | Zero acknowledged commits lost if the disk honors `fsync` (Chapter 9, Experiment 9.2) |
 | **`store-durable`** | Only after `walship` puts the segment into S3 (`If-None-Match: *`) | Yes (Experiment 10.2) | **Yes** — rebuilt from S3 alone (Experiments 10.2, 10.4) | **Yes** (Experiment 10.1) | **Yes** (Experiment 10.3) | Survives host loss as long as the store kept the accepted object |
 
-**WAL mode as the platform default (ruling 10).** WAL is not merely the default here—it is **required** by the design. `internal/walship` reads committed frames directly from `-wal` while holding a read mark on the wal-index (`-shm`), which rollback-journal mode has no equivalent for; and the shared control-plane `catalog.db` runs in WAL mode so multiple node processes can read it concurrently while one writes. Chapter 10 measures two operational costs of WAL at fleet scale:
+**WAL mode as the platform default.** WAL is not merely the default here—it is **required** by the design. `internal/walship` reads committed frames directly from `-wal` while holding a read mark on the wal-index (`-shm`), which rollback-journal mode has no equivalent for, and the shared control-plane `catalog.db` runs in WAL mode so multiple node processes can read it concurrently while one writes. Chapter 10 measures two operational costs of WAL at fleet scale:
 
-1. **Sync amplification per store-durable write:** in Experiment 10.2, `12` local-durable writes triggered `77` `fsync`/`fdatasync` calls and `12` store-durable writes triggered `85` (each write pays the WAL commit sync at `synchronous=FULL`, the shipper's checkpoint syncs, and the catalog update sync). That sync load makes the `500`- and `2,000`-database write streams in Experiment 10.4 I/O-bound.
-2. **Last-close WAL deletion:** `sqlite3WalClose` deletes `-wal` and `-shm` on clean close. That gives relocation step 3 and Experiment 10.4's quiesce a single at-rest file (`WAL frames found: 0`), and `walship.AdoptAtRest` prevents clean reopens from uploading a full snapshot. Conversely, if a relocation drain's final segment PUT fails before reaching the store, the eviction's close still checkpoints the unshipped frames into `.db`, so the retried drain finds no WAL and must upload a full **discontinuity snapshot** instead of a segment (Experiment 10.3 cases 22 and 26).
+1. **Sync amplification per store-durable write:** In Experiment 10.2, `12` local-durable writes triggered `77` `fsync`/`fdatasync` calls and `12` store-durable writes triggered `85`, because each write pays the WAL commit sync at `synchronous=FULL`, the shipper's checkpoint syncs, and the catalog update sync. That sync load makes the `500`- and `2,000`-database write streams in Experiment 10.4 I/O-bound.
+2. **Last-close WAL deletion:** `sqlite3WalClose` deletes `-wal` and `-shm` on clean close. That gives relocation step 3 and Experiment 10.4's quiesce a single at-rest file (`WAL frames found: 0`), and `walship.AdoptAtRest` keeps clean reopens from uploading a full snapshot. Conversely, if a relocation drain's final segment PUT fails before reaching the store, the eviction's close still checkpoints the unshipped frames into `.db`, so the retried drain finds no WAL and must upload a full **discontinuity snapshot** instead of a segment (Experiment 10.3 cases 22 and 26).
 
 No experiment in Chapter 10 runs in rollback mode, and there is no exception to WAL as the platform default.
 
-**Where this chapter sits on the Rebuild Ladder (rung R7).** Rung **R7 (Fleet)** closes the course's through-line: R6's continuous capture (`internal/walship`) applied to every database owned by a bounded multi-process service, combined with catalog ownership and store-backed fencing, verified by wiping every local file and rebuilding the entire fleet from the object store alone to **E1 bytes** (`500/500` by default; `2,000/2,000` at full outline scale).
+**Where this chapter sits on the Rebuild Ladder (rung R7).** Rung **R7 (Fleet)** closes the book's Rebuild Ladder: R6's continuous capture (`internal/walship`, Chapter 9) applied to every database owned by a bounded multi-process service, combined with catalog ownership and store-backed fencing, verified by wiping every local file and rebuilding the entire fleet from the object store alone to **E1 bytes** (`500/500` by default; `2,000/2,000` at the full `2,000`-database scale).
 
-**Design context (prior art).** Production WAL shippers such as Litestream ([how it works](https://litestream.io/how-it-works/)) use the same SQLite mechanism proven in Chapters 5 and 9—holding a read transaction to prevent uncontrolled checkpoints while reading WAL frames and triggering checkpoints manually, shipping ordered TXID-indexed LTX files ([superfly/ltx](https://github.com/superfly/ltx))—while LiteFS ([ARCHITECTURE.md](https://github.com/superfly/litefs/blob/main/docs/ARCHITECTURE.md)) intercepts filesystem calls via FUSE and tracks a rolling XOR-of-CRC64 checksum over pages (see [`docs/knowledge/determinism-and-rebuild.md`](../docs/knowledge/determinism-and-rebuild.md); Litestream's internal WAL-restart detection is not verified against its source here). This capstone stays in plain Go on local disk with no FUSE layer, using `walship` segments wrapped in write-once fenced S3 slots.
+**Design context (prior art).** Production WAL shippers such as Litestream ([how it works](https://litestream.io/how-it-works/)) use the same SQLite mechanism proven in Chapters 5 and 9—holding a read transaction to prevent uncontrolled checkpoints while reading WAL frames and triggering checkpoints manually, shipping ordered TXID-indexed LTX files ([superfly/ltx](https://github.com/superfly/ltx)). LiteFS ([ARCHITECTURE.md](https://github.com/superfly/litefs/blob/main/docs/ARCHITECTURE.md)) instead intercepts filesystem calls via FUSE and tracks a rolling XOR-of-CRC64 checksum over pages (see this repository's determinism and rebuild notes in [`docs/knowledge/determinism-and-rebuild.md`](../docs/knowledge/determinism-and-rebuild.md); Litestream's internal WAL-restart detection is not verified against its source here). This capstone stays in plain Go on local disk with no FUSE layer, wrapping `walship` segments in write-once fenced S3 slots.
 
 ---
 
@@ -127,27 +127,27 @@ Can a small Go service own thousands of SQLite database files—bounded in memor
 | --- | --- | --- | --- |
 | 1 | **At most one authorized writer owns a database at a time** | (a) In store order: once an epoch's object is accepted, no older epoch's object is accepted; no two epochs are accepted for overlapping positions; no accepted slot is overwritten. (b) At every relocation step boundary, at most `1` node reports `writable`. | Experiment 10.1 (`9,595,507,962` interleavings to depth `16`, `0` violations; two broken mutants fail; real processes agree `13/13`). Experiment 10.3 (`most writable nodes at any boundary 1` in `32/32` fault cases; `skip-fence` self-test finds `2`). |
 | 2 | **No acknowledged durable write is lost under the stated durability model** | For every database, recovered `user_version >=` last `user_version` acknowledged in its mode. Local-durable: restart on local files. Store-durable: delete all local files and rebuild from S3. Relocation: every ack (either mode) is in the final lineage. Takeover: store-durable kept; unshipped local-durable may be lost. | Experiment 10.2 (`8` `strace` fsync kills + `4` in-flight random kills, `0` violations; `ack-before-put` self-test caught). Experiment 10.3 (`final user_version == acknowledged count` in `32/32` cases). Experiment 10.1 (takeover). |
-| 3 | **Every published snapshot is internally consistent** | Every published restore point (every position of every database in the store) rebuilds to a valid recipe state (SHA-256 matches the recipe's step file, exact or differing only at change counter bytes `24–27 == 92–95`). | Experiment 10.4 (concurrent checker passes while writers run + final pass: `3,248` restore points at `500` DBs and `13,000` at `2,000` DBs, `0` failures). Experiment 10.3 (every store-durable ack slot restores to its `user_version`). |
+| 3 | **Every published snapshot is internally consistent** | Every published restore point (every position of every database in the store) rebuilds to a valid Chapter 1 deterministic recipe state (SHA-256 matches the recipe's step file, exact or differing only at change counter bytes `24–27 == 92–95`, Chapter 2). | Experiment 10.4 (concurrent checker passes while writers run + final pass: `3,248` restore points at `500` DBs and `13,000` at `2,000` DBs, `0` failures). Experiment 10.3 (every store-durable ack slot restores to its `user_version`). |
 | 4 | **A database can be reopened after process failure** | After `SIGKILL` at any chosen fsync or random time, every database opens cleanly, `PRAGMA integrity_check = ok`, and the file matches a recipe state. | Experiment 10.2 (`reopened 4 of 4` after every kill). Experiment 10.1 step 14 (reopen after killing node `b` with an open WAL). Experiment 10.3 (killed nodes restart and finish). |
 | 5 | **File descriptors and memory remain bounded** | After every command of every node process: descriptors above startup baseline `<= 3 * 3 * K + 32` and RSS growth `<= 3K * (2 * cache + 256 KiB) + 32 MiB` (Chapter 8's per-connection bounds for `3` connections per open database). | Standing assertion inside every experiment: 10.1 (`15` commands), 10.2 (`308` replies), 10.3 (`1,726` replies), 10.4 (`2,760` replies at `500` DBs; `11,016` at `2,000` DBs; plus rebuild workers and checker). Reply counts after 10.1 are run-dependent; these are from one lab run of each. |
 | 6 | **An interrupted migration cannot silently create two authoritative copies** | Under a crash or store fault at every relocation step, after `Resume` or `Rollback`: catalog owner, newest store slot epoch, and `relocations` record agree; `<= 1` writable node at every boundary; destination image equals drained source state at the fence point (SHA-256); every acknowledged write is present and no refused write is; owner's closed file equals the store's last state. | Experiment 10.3 (`32 of 32` fault cases hold every invariant; `skip-fence` self-test fails as designed). |
 
 ### Reused shared packages and new code in this chapter
 
-Chapter 10 imports seven shared packages from earlier chapters (linked here, not inlined): [`internal/sqlitex`](../internal/sqlitex/), [`internal/recipe`](../internal/recipe/), [`internal/connmgr`](../internal/connmgr/), [`internal/procstat`](../internal/procstat/), [`internal/rangefs`](../internal/rangefs/), [`internal/trace`](../internal/trace/), and [`internal/walship`](../internal/walship/).
+Chapter 10 imports seven shared Go packages from earlier chapters (linked here, not repeated inline): [`internal/sqlitex`](../internal/sqlitex/) (Chapter 1), [`internal/recipe`](../internal/recipe/) (Chapter 1), [`internal/connmgr`](../internal/connmgr/) (Chapter 8), [`internal/procstat`](../internal/procstat/) (Chapter 8), [`internal/rangefs`](../internal/rangefs/) (Chapter 7), [`internal/trace`](../internal/trace/) (Chapter 1), and [`internal/walship`](../internal/walship/) (Chapter 9).
 
-Because `internal/connmgr/connmgr.go` is inlined byte for byte in Chapter 8 and `internal/walship/shipper.go` is inlined byte for byte in Chapter 9, neither file was modified. Instead, Chapter 10 adds one new file to `internal/walship`—[`internal/walship/atrest.go`](../internal/walship/atrest.go) (`AdoptAtRest`)—and introduces nine capstone packages under `ch10-multi-database-platform-capstone/service/` (`s3store`, `faultstore`, `fence`, `catalog`, `bounds`, `model`, `node`, `relocate`, `lab`). Every non-test `.go` file introduced by this chapter is inlined once in Section 5.
+Rather than altering `internal/connmgr/connmgr.go` (Chapter 8) or `internal/walship/shipper.go` (Chapter 9), Chapter 10 extends `internal/walship` with one new file—[`internal/walship/atrest.go`](../internal/walship/atrest.go) (`AdoptAtRest`)—and adds nine capstone packages under `ch10-multi-database-platform-capstone/service/` (`s3store`, `faultstore`, `fence`, `catalog`, `bounds`, `model`, `node`, `relocate`, `lab`). Every non-test `.go` file introduced by this chapter is inlined once in Section 5.
 
 ---
 
 ## 3. Call path
 
-Every span cited below is listed in [`SPANS.txt`](SPANS.txt) and verified against SQLite `version-3.53.4` in the pinned tree (`$SQLITE_SRC` or `_src/sqlite-3.53.4`). [`wal.c`](wal.c) is copied whole into this chapter directory and verified by [`SOURCES.sha256`](SOURCES.sha256); `src/os_unix.c` is linked at the pinned tag.
+Every span cited below is listed in this chapter's line-span manifest ([`SPANS.txt`](SPANS.txt)) and verified against SQLite `version-3.53.4` in the pinned source tree (`$SQLITE_SRC` inside the `lab` container or `_src/sqlite-3.53.4` on the host). [`wal.c`](wal.c) is copied whole into this chapter directory and verified by the SHA-256 manifest [`SOURCES.sha256`](SOURCES.sha256); `src/os_unix.c` is linked at the pinned tag.
 
 ### 3.1 Shipper read marks, checkpoints, and WAL restarts
 
 1. **`walTryBeginRead`** — [`src/wal.c:3020-3272`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L3020-L3272) (local copy: [`wal.c`](wal.c)). When `walship` opens its pin connection and starts a read transaction, SQLite picks read-lock **slot `0`** if the WAL is fully backfilled (`nBackfill == mxFrame`, meaning readers read `.db` only) or a **slot `1–4`** pinned to a frame mark `<= mxFrame` otherwise.
-2. **`walCheckpoint`** — [`src/wal.c:2199-2395`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2199-L2395) (local copy: [`wal.c`](wal.c)). Before copying frames back into `.db`, `walCheckpoint` lowers `mxSafeFrame` to the oldest held read mark across slots `1–4` (lines `2233–2251`), then takes an exclusive lock on **slot `0`** (lines `2259–2260`), verifies the WAL salts did not change (`memcmp`, line `2272`), syncs `-wal` (`sqlite3OsSync`, line `2277`), and copies pages up to `mxSafeFrame` (lines `2304–2321`). Only when `mxSafeFrame == mxFrame` does it truncate and sync `.db` (lines `2328–2334`):
+2. **`walCheckpoint`** — [`src/wal.c:2199-2395`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2199-L2395) (local copy: [`wal.c`](wal.c)). Before copying frames back into `.db`, `walCheckpoint` lowers `mxSafeFrame` to the oldest held read mark across slots `1–4` (lines `2233–2251`), takes an exclusive lock on **slot `0`** (lines `2259–2260`), verifies that the WAL salts did not change (`memcmp`, line `2272`), syncs `-wal` (`sqlite3OsSync`, line `2277`), and copies pages up to `mxSafeFrame` (lines `2304–2321`). Only when `mxSafeFrame == mxFrame` does it truncate and sync `.db` (lines `2328–2334`):
    ```c
    mxSafeFrame = pWal->hdr.mxFrame;
    mxPage = pWal->hdr.nPage;
@@ -178,7 +178,7 @@ Every span cited below is listed in [`SPANS.txt`](SPANS.txt) and verified agains
 
 ### 3.2 Clean close at rest and `AdoptAtRest`
 
-4. **`sqlite3WalClose`** — [`src/wal.c:2507-2571`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2507-L2571) (local copy: [`wal.c`](wal.c)). When a node evicts or drains a database, `connmgr` closes the writer connection first and `Node.evicted` runs a final `walship.Cycle` and closes the shipper's two connections. Because the shipper's close is the **last** connection to the database, `sqlite3WalClose` acquires `SQLITE_LOCK_EXCLUSIVE` on `.db` (line `2529`), runs a `PASSIVE` checkpoint (lines `2534–2536`), and—because `PERSIST_WAL` is not set—sets `isDelete = 1` (line `2546`) and unlinks `-shm` and `-wal` (lines `2559–2565`):
+4. **`sqlite3WalClose`** — [`src/wal.c:2507-2571`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2507-L2571) (local copy: [`wal.c`](wal.c)). When a node evicts or drains a database, `connmgr` closes the writer connection first, and `Node.evicted` runs a final `walship.Cycle` before closing the shipper's two connections. Because the shipper's close is the **last** connection to the database, `sqlite3WalClose` acquires `SQLITE_LOCK_EXCLUSIVE` on `.db` (line `2529`), runs a `PASSIVE` checkpoint (lines `2534–2536`), and—because `PERSIST_WAL` is not set—sets `isDelete = 1` (line `2546`) and unlinks `-shm` and `-wal` (lines `2559–2565`):
    ```c
    if( zBuf!=0
     && SQLITE_OK==(rc = sqlite3OsLock(pWal->pDbFd, SQLITE_LOCK_EXCLUSIVE))
@@ -196,8 +196,8 @@ Every span cited below is listed in [`SPANS.txt`](SPANS.txt) and verified agains
    ```
    Three capstone behaviors come directly from these lines:
    - Relocation step 3 (`Drain`) and Experiment 10.4's quiesce leave a single at-rest `.db` file with `WAL frames found: 0`.
-   - If an external long reader stays open during relocation, `sqlite3WalClose` cannot obtain `SQLITE_LOCK_EXCLUSIVE`, `-wal`/`-shm` stay on disk, and `Drain` refuses cleanly rather than handing off an uncheckpointed file (verified by adversarial attack `REL-03a`).
-   - On reopen after a clean eviction, `-wal` is gone while `walship`'s saved `WALPosition` still names the old WAL generation. Without `AdoptAtRest`, `walship.Cycle` would treat the missing WAL as a discontinuity and upload a full snapshot on every eviction reopen. `AdoptAtRest` (`internal/walship/atrest.go`) checks under `BEGIN IMMEDIATE` that `-wal` has zero committed frames and that every page through `sqlite_dbpage` hashes to the last shipped state, resetting `WALPosition` so the next commit ships as a cheap `WALNewGeneration` segment at frame `1`.
+   - If an external long reader stays open during relocation, `sqlite3WalClose` cannot obtain `SQLITE_LOCK_EXCLUSIVE`, `-wal` and `-shm` stay on disk, and `Drain` refuses cleanly rather than handing off an uncheckpointed file (verified by stress test `REL-03a` under "What attacked this chapter" in Section 6).
+   - On reopen after a clean eviction, `-wal` is gone while `walship`'s saved `WALPosition` still names the old WAL generation. Without `AdoptAtRest`, `walship.Cycle` would treat the missing WAL as a discontinuity and upload a full snapshot on every eviction reopen. `AdoptAtRest` (`internal/walship/atrest.go`) checks under `BEGIN IMMEDIATE` that `-wal` holds zero committed frames and that every page read through `sqlite_dbpage` hashes to the last shipped state, resetting `WALPosition` so the next commit ships as a cheap `WALNewGeneration` segment at frame `1`.
 
 ### 3.3 Local-durable commits and post-crash recovery
 
@@ -212,7 +212,7 @@ Every span cited below is listed in [`SPANS.txt`](SPANS.txt) and verified agains
    }
    ```
    Those syncs—plus directory syncs after `-wal` creation and `catalog.db-wal` syncs after shipping—are the exact syscalls Experiment 10.2 Part A kills with `strace`.
-6. **`walIndexRecover`** — [`src/wal.c:1390-1614`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L1390-L1614) (local copy: [`wal.c`](wal.c)). When a restarted node reopens a database after `SIGKILL`, `walIndexRecover` takes exclusive locks (line `1407`), validates the 32-byte WAL header magic and checksum (lines `1445–1466`), walks every frame verifying its running checksum via `walDecodeFrame` (line `1510`), stops at the first invalid or incomplete frame, and advances `mxFrame` only at commit frames carrying a non-zero database size (lines `1516–1518`). Every committed transaction whose commit frame reached the OS kernel survives, and any partial write is discarded (`reopened 4 of 4` in Experiment 10.2 and `8/8` mid-`pwrite64` kills in adversarial attack `KILL-05`).
+6. **`walIndexRecover`** — [`src/wal.c:1390-1614`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L1390-L1614) (local copy: [`wal.c`](wal.c)). When a restarted node reopens a database after `SIGKILL`, `walIndexRecover` takes exclusive locks (line `1407`), validates the 32-byte WAL header magic and checksum (lines `1445–1466`), and walks every frame verifying its running checksum via `walDecodeFrame` (line `1510`). It stops at the first invalid or incomplete frame and advances `mxFrame` only at commit frames carrying a non-zero database size (lines `1516–1518`). Every committed transaction whose commit frame reached the OS kernel survives, and any partial write is discarded (`reopened 4 of 4` in Experiment 10.2 and `8/8` mid-`pwrite64` kills in stress test `KILL-05` in Section 6).
 
 ### 3.4 Why POSIX locks cannot provide cross-machine ownership
 
@@ -220,13 +220,13 @@ Every span cited below is listed in [`SPANS.txt`](SPANS.txt) and verified agains
    - `unixFileId` identifies an open file solely by its local kernel's `(dev, ino)` pair.
    - `unixInodeInfo` keeps process-wide lock counters (`nShared`, `nLock`, `eFileLock`), deferred-close file descriptors (`pUnused`), and the single shared-memory node (`pShmNode`) per inode—which is why one open service database with `3` SQLite connections uses `7` file descriptors (`3` `.db` + `3` `-wal` + `1` shared `-shm`), not `9`.
    - `unixLock` drives `SHARED -> RESERVED -> PENDING -> EXCLUSIVE` transitions through `unixFileLock` -> `osSetPosixAdvisoryLock` (`fcntl`), whose lock table lives inside one local kernel and vanishes when the process exits.
-   - Because another machine has its own kernel, inode table, and lock table—and network filesystem lock implementations cannot be trusted by SQLite—cross-machine single-writer ownership cannot come from SQLite. It must live above SQLite in the catalog epoch and the object store's write-once slots.
+   - Because another machine has its own kernel, inode table, and lock table—and SQLite cannot trust network filesystem lock implementations—cross-machine single-writer ownership cannot come from SQLite. It must live above SQLite in the catalog epoch and the object store's write-once slots.
 
 ---
 
 ## 4. Timeline
 
-Chapter 10 moves ownership in two ways: an abrupt **takeover** (`Node.Claim`, Experiment 10.1) and a cooperative seven-step **relocation** (`relocate.Coordinator`, Experiment 10.3). Keeping their timelines side by side shows why they differ on local-durable acknowledgements and why bumping the catalog epoch alone is never a fence.
+Chapter 10 moves ownership in two ways: an abrupt **takeover** (`Node.Claim`, Experiment 10.1) and a cooperative seven-step **relocation** (`relocate.Coordinator`, Experiment 10.3). Keeping their timelines side by side shows why they differ on `local-durable` acknowledgements and why bumping the catalog epoch alone is never a fence.
 
 ### 4.1 Takeover (`claim`) timeline
 
@@ -243,14 +243,69 @@ From Experiment 10.1 Part B steps `2–7` on `db-0001` (node `b`'s store wrapper
 | 6 | Step 5: `a` writes `store-durable` (commits step `3` locally, tries to ship `3–4` at slot `3`) | `412`; reads holder `e2 > e1` -> **`FencedError`**, deletes `.owner`, evicts; write **not** acknowledged | owner `e2` | `b, 2` | unchanged |
 | 7 | Step 7: `b` writes `store-durable` | fenced (refuses step 6 at once) | ships step `2` at slot `4` | `b, 2` (`last_shipped 4`) | `+ 4` (`e2` seg, step `2`) |
 
+The sequence below traces how `b`'s stale-list retry lands epoch `2` at slot `3` and how that slot fences stale `a`:
+
+<!-- draw-visual: diagrams/ch10-multi-database-platform-capstone-takeover-fencing.mmd -->
+```text
+┌─────────────┐     ┌──────────┐     ┌─────────────┐     ┌─────────┐
+│ Node a (e1) │     │ S3 store │     │ Node b (e2) │     │ Catalog │
+└──────┬──────┘     └─────┬────┘     └──────┬──────┘     └────┬────┘
+       │                  │                 │                 │
+ ┌───────────────────────────────┐          │                 │
+ │ a owns e1, local step 2 acked │          │                 │
+ └───────────────────────────────┘          │                 │
+       │                  │                 │                 │
+       │                  │                 │ 1. claim b, e2  │
+       │                  │                 ├────────────────►│
+       │                  │                 │                 │
+       │                  │ 2. stale list   │                 │
+       │                  │◄────────────────┤                 │
+       │                  │                 │                 │
+       │                  │ 3. end = 1      │                 │
+       │                  ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈►│                 │
+       │                  │                 │                 │
+       │                  │ 4. put 2 (e2)   │                 │
+       │                  │◄────────────────┤                 │
+       │                  │                 │                 │
+       │                  │ 5. 412 (e1<e2)  │                 │
+       │                  ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈►│                 │
+       │                  │                 │                 │
+       │                  │ 6. fresh list   │                 │
+       │                  │◄────────────────┤                 │
+       │                  │                 │                 │
+       │                  │ 7. end = 2      │                 │
+       │                  ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈►│                 │
+       │                  │                 │                 │
+       │                  │ 8. put 3 (e2)   │                 │
+       │                  │◄────────────────┤                 │
+       │                  │                 │                 │
+       │                  │ 9. 200 (e2 ok)  │                 │
+       │                  ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈►│                 │
+       │                  │                 │                 │
+      ┌──────────────────────────────────────┐                │
+      │        unshipped step 2 lost         │                │
+      └──────────────────────────────────────┘                │
+       │                  │                 │                 │
+       │ 10. put 3 (e1)   │                 │                 │
+       ├─────────────────►│                 │                 │
+       │                  │                 │                 │
+       │ 11. 412 (e2>e1)  │                 │                 │
+       │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤                 │                 │
+       │                  │                 │                 │
+   ┌──────────────────────────┐             │                 │
+   │ FencedError, drop .owner │             │                 │
+   └──────────────────────────┘             │                 │
+       │                  │                 │                 │
+```
+
 Two consequences follow directly from this timeline:
 
-1. **Ownership is lost when the new owner's fence lands in the store (event 5), not when the catalog bumps (event 2).** Any segment `a` shipped between events 2 and 5 would simply land before `b`'s fence in the same unbroken lineage, causing `b` to retry at the new end.
+1. **Ownership is lost when the new owner's fence lands in the store (event 5), not when the catalog bumps (event 2).** Any segment `a` shipped between events 2 and 5 would land before `b`'s fence in the same unbroken lineage, causing `b` to retry at the new end.
 2. **A takeover loses `a`'s unshipped `local-durable` acknowledgement (step `2` from event 1)** as well as `a`'s unacknowledged local commit (step `3` from event 6). Store-durable acknowledgements (step `1`, slot `2`) survive.
 
 ### 4.2 Seven-step relocation timeline
 
-From Experiment 10.3 case `7` (every step boundary `1–6` reached; step `7` with `b` alive verified by `TestRelocationMovesOwnershipAndKeepsEveryWrite` and every case's `after recovery` boundary). Before step 1: `a` owns `db-0001` at epoch `1`; store holds slots `1` (`e1` snap, step `0`), `2` (`e1` seg, step `1`), `3` (`e1` seg, step `2`); `a`'s local file also holds unshipped `local-durable` step `3`.
+From Experiment 10.3 case `7` (every step boundary `1–6` is reached; step `7` with `b` alive is verified by `TestRelocationMovesOwnershipAndKeepsEveryWrite` in `service/relocate/relocate_test.go` and every case's `after recovery` boundary). Before step 1, `a` owns `db-0001` at epoch `1`; the store holds slots `1` (`e1` snap, step `0`), `2` (`e1` seg, step `1`), and `3` (`e1` seg, step `2`); and `a`'s local file also holds unshipped `local-durable` step `3`.
 
 | After step | Step name (`relocate.Step`) | Catalog (`owner, epoch`) | Node `a` (source) | Node `b` (destination) | Store end | Client writes at this boundary |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -263,9 +318,63 @@ From Experiment 10.3 case `7` (every step boundary `1–6` reached; step `7` wit
 | 6 | `Activate` (`b` puts `e2` fence snapshot `= H` at slot `6`, installs `.db` and `.owner`, updates catalog) | `b, 2` (`last_shipped 6`) | `owner at epoch 1, sealed` (and fenced at slot `6` even if unsealed) | **`owner at epoch 2, writable`** | `6` (`e2` snapshot `= H`) | To `b` (`store-durable`): **accepted** (step `5`, slot `7`). To `a`: refused (`sealed`). |
 | 7 | `RetireSource` (`a` deletes `.db`, `.owner`, `.sealed`, `.atrest`, `.staged`) | `b, 2` | `not owner` (no local files) | `owner at epoch 2, writable` | `7` (`e2` segment) | To `b`: accepted (verified in unit test and `after recovery`). To `a`: refused (`not the owner`). |
 
-Notice two corrections over a naive six-step design:
+The sequence below shows how the coordinator moves `a`, `b`, and S3 through the zero-writer window (steps `2–5`) before `b` writes the epoch-2 fence at step `6`:
 
-- **Bumping the epoch in step 1 does not stop `a`.** At boundary 1, `a` is still `writable` and accepts a `local-durable` write (step `4`). That is safe—and never creates two writable nodes—because `b` is still `not owner`. Step 2 (`SealSource`) is the cooperative pause that stops new writes on `a` so step 3 (`ShipFinal`) can drain both unshipped local-durable commits (steps `3` and `4`) into the store before step 6 (`Activate`) binds any uncooperative source with the store fence.
+<!-- draw-visual: diagrams/ch10-multi-database-platform-capstone-relocation-flow.mmd -->
+```text
+┌─────────────┐     ┌────────┐     ┌────────┐     ┌──────────────┐
+│ Coordinator │     │ Node a │     │ Node b │     │ SeaweedFS S3 │
+└──────┬──────┘     └────┬───┘     └────┬───┘     └───────┬──────┘
+       │                 │              │                 │
+   ┌──────────────────────────┐         │                 │
+   │ 1. FenceEpoch -> (b, e2) │         │                 │
+   └──────────────────────────┘         │                 │
+       │                 │              │                 │
+       │           ┌───────────────────────────┐          │
+       │           │ a writable (local step 4) │          │
+       │           └───────────────────────────┘          │
+       │                 │              │                 │
+       │ 2. SealSource   │              │                 │
+       ├────────────────►│              │                 │
+       │                 │              │                 │
+       │            ┌────────────────────────┐            │
+       │            │ 0 writable (steps 2-5) │            │
+       │            └────────────────────────┘            │
+       │                 │              │                 │
+       │ 3. ShipFinal    │              │                 │
+       ├────────────────►│              │                 │
+       │                 │              │                 │
+       │                 │ put seg 4-5, close .db = H     │
+       │                 ├───────────────────────────────►│
+       │                 │              │                 │
+       │ 4. Rebuild (.staged)           │                 │
+       ├───────────────────────────────►│                 │
+       │                 │              │                 │
+       │                 │              │ restore slot 5  │
+       │                 │              │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤
+       │                 │              │                 │
+      ┌──────────────────────────────────┐                │
+      │  5. Verify P == 5, sha256 == H   │                │
+      └──────────────────────────────────┘                │
+       │                 │              │                 │
+       │ 6. Activate e2  │              │                 │
+       ├───────────────────────────────►│                 │
+       │                 │              │                 │
+       │                 │              │ put 6 (e2=H)    │
+       │                 │              ├────────────────►│
+       │                 │              │                 │
+       │                 │             ┌────────────────────┐
+       │                 │             │ install .db/.owner │
+       │                 │             └────────────────────┘
+       │                 │              │                 │
+       │ 7. RetireSource │              │                 │
+       ├────────────────►│              │                 │
+       │                 │              │                 │
+```
+
+Two subtleties separate this seven-step protocol from a naive six-step design:
+
+- **Bumping the epoch in step 1 does not stop `a`.** At boundary 1, `a` is still `writable` and accepts a `local-durable` write (step `4`). That is safe—and never creates two writable nodes—because `b` is still `not owner`. Step 2 (`SealSource`) is the cooperative pause that stops new writes on `a` so step 3 (`ShipFinal`) can drain both unshipped `local-durable` commits (steps `3` and `4`) into the store before step 6 (`Activate`) binds any uncooperative source with the store fence.
 - **If the final ship fails after `a`'s close (or `a` is killed before draining), the fence-point position shifts from `5` to `4` while the state hash stays identical.** Closing `a` checkpoints steps `3` and `4` into `.db` and deletes `-wal`, so the retried drain uploads one **discontinuity snapshot** (`4-4 e1 snapshot`) instead of segment `4-5` (`4-5 e1 segment`). Both produce the exact same drained SHA-256 (`d53fc07b1293…`), and `b`'s fence lands at `P + 1` (`5` instead of `6`).
 
 ### 4.3 Interrupted relocation: resume and rollback decision tree
@@ -297,17 +406,17 @@ Because the coordinator's only durable state is the catalog's `relocations` row,
                          -> best-effort destination Discard (Result.DiscardErr)
 ```
 
-Marking `rolled-back` **before** calling `Destination.Discard` is critical (exposed by adversarial attack `REL-04`): once the source's higher-epoch fence is in S3, a dead destination's `.staged` file can never activate, so an unreachable destination must not leave `relocations.state = running` wedged in the control plane.
+Marking `rolled-back` **before** calling `Destination.Discard` is critical (exposed by stress test `REL-04` under "What attacked this chapter" in Section 6): once the source's higher-epoch fence is in S3, a dead destination's `.staged` file can never activate, so an unreachable destination must not leave `relocations.state = running` wedged in the control plane.
 
 ---
 
 ## 5. Lab
 
-This section builds the capstone service piece by piece—every non-test Go file introduced by Chapter 10 is inlined in full below—and then runs Experiment 10.1 to prove the single-writer fencing invariant on both an exhaustive finite-state model and two real service processes on SeaweedFS.
+This section builds the capstone service piece by piece—every non-test Go file introduced by Chapter 10 is inlined in full below—and then runs Experiment 10.1 to prove the single-writer fencing invariant on both an exhaustive finite-state model and two live service processes on SeaweedFS.
 
 ### 5.1 Adopting an at-rest database on reopen (`internal/walship/atrest.go`)
 
-When `connmgr` evicts a database and closes the shipper, `sqlite3WalClose` checkpoints and unlinks `-wal`. Without `AdoptAtRest`, reopening that database would trigger `WALDiscontinuity` and upload a full snapshot on every eviction reopen. `AdoptAtRest` verifies under `BEGIN IMMEDIATE` that `-wal` contains no committed frames and that every page through `sqlite_dbpage` hashes to the last shipped state, allowing the next commit to ship as a small `WALNewGeneration` segment at frame `1`.
+When `connmgr` evicts a database and closes the shipper, `sqlite3WalClose` checkpoints and unlinks `-wal`. Without `AdoptAtRest`, reopening that database would trigger `WALDiscontinuity` and upload a full snapshot on every eviction reopen. `AdoptAtRest` checks under `BEGIN IMMEDIATE` that `-wal` contains no committed frames and that every page read through `sqlite_dbpage` hashes to the last shipped state, allowing the next commit to ship as a small `WALNewGeneration` segment at frame `1`.
 
 <!-- include: ../internal/walship/atrest.go -->
 ```go
@@ -761,7 +870,7 @@ func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
 
 ### 5.4 Store-backed fencing and fleet inspection (`service/fence`)
 
-`fence` implements the single-writer slot chain (`dbs/<id>/log/<12-digit position>`). `Adapter` translates `walship`'s `snapshots/<p>` and `segments/<p>` keys to fenced slots, caches **only** slot metadata in RAM (never object bytes—fixed after adversarial attack `CAT-05b`), validates envelopes before uploading, and distinguishes retried identical puts (`nil`) from higher-epoch fencing (`FencedError`) and stale-listing contention (`walship.ErrExists`). `Inspect` reads one database's chain in read-only mode, stops at the first damaged slot or lineage break, and rebuilds every valid position `1..last` in memory so callers know the exact `LastGood` restore point.
+`fence` implements the single-writer slot chain (`dbs/<id>/log/<12-digit position>`). `Adapter` translates `walship`'s `snapshots/<p>` and `segments/<p>` keys into fenced slots, caches **only** slot metadata in RAM (never object bytes—keeping memory bounded per stress test `CAT-05b` in Section 6), validates envelopes before uploading, and distinguishes retried identical puts (`nil`) from higher-epoch fencing (`FencedError`) and stale-listing contention (`walship.ErrExists`). `Inspect` reads one database's chain in read-only mode, stops at the first damaged slot or lineage break, and rebuilds every valid position `1..last` in memory so callers know the exact `LastGood` restore point.
 
 <!-- include: service/fence/fence.go -->
 ```go
@@ -1902,7 +2011,7 @@ func (a *Assertion) Summary() string {
 
 ### 5.7 Finite-state ownership model (`service/model`)
 
-`model` encodes the exact fencing protocol—two nodes, catalog epoch counter up to `3`, write-once store slots, local commits up to stream position `5`, volatile runtime state versus persisted disk state (`Belief` and `Local`), stale listings, crashes, and restarts—plus two broken mutants (`store-accepts-every-put` and `resume-from-global-end`). `Explore` runs memoized exhaustive depth-first counting of all interleavings up to `depth`, breadth-first search for the shortest counterexample, and seeded random walks past the exhaustive bound.
+`model` encodes the exact fencing protocol: two nodes, a catalog epoch counter up to `3`, write-once store slots, local commits up to stream position `5`, volatile runtime state versus persisted disk state (`Belief` and `Local`), stale listings, crashes, and restarts, along with two broken mutants (`store-accepts-every-put` and `resume-from-global-end`). `Explore` runs memoized exhaustive depth-first counting of all interleavings up to `depth`, breadth-first search for the shortest counterexample, and seeded random walks past the exhaustive bound.
 
 <!-- include: service/model/model.go -->
 ```go
@@ -2430,7 +2539,7 @@ func ParseScript(text string) ([]Action, error) {
 
 ### 5.8 Service node runtime, relocation commands, and remote driver (`service/node`)
 
-`node` ties together `connmgr`, `walship.Shipper`, `fence.Adapter`, `catalog.Catalog`, the four on-disk sidecars (`.owner`, `.atrest`, `.sealed`, `.staged`), takeover `Claim`, explicit `LocalDurable`/`StoreDurable` writes, all relocation participant operations (`Seal`, `Drain`, `Stage`, `Activate`, `Retire`, `Discard`, `Status`, `Inspect`), the stdin/stdout line-protocol server (`Serve`, `handleRelocation`), child-process lifecycle (`Process`, `Signal`/`Reap`), and strict typed client (`Remote`, `ParseAck`).
+`node` ties together `connmgr`, `walship.Shipper`, `fence.Adapter`, `catalog.Catalog`, and the four on-disk sidecars (`.owner`, `.atrest`, `.sealed`, `.staged`). It implements takeover `Claim`, explicit `LocalDurable`/`StoreDurable` writes, all relocation participant operations (`Seal`, `Drain`, `Stage`, `Activate`, `Retire`, `Discard`, `Status`, `Inspect`), the stdin/stdout line-protocol server (`Serve`, `handleRelocation`), child-process lifecycle helpers (`Process`, `Signal`/`Reap`), and the strict typed client (`Remote`, `ParseAck`).
 
 <!-- include: service/node/node.go -->
 ```go
@@ -4995,7 +5104,7 @@ func TruncateAndHash(ctx context.Context, path string) (Quiesced, error) {
 
 ### 5.11 Experiment 10.1 — `one-writer`
 
-- **Claim (invariant 1 — at most one authorized writer per database):** With write-once position slots (`If-None-Match: *`) in the store **and** writers that append only after their own last object and stop if a newer epoch is listed, once a newer epoch's object is accepted no older epoch gets an object accepted, no two epochs are accepted for overlapping positions, and no accepted slot is overwritten—across every interleaving of two nodes (`claim`, `fence`, `fence-with-stale-list`, `write`, `ship`, `crash`, `restart`, `restart-with-stale-list`) up to depth `16` (within bounds: `2` nodes, `<= 3` epochs, local commits up to stream position `5`) and `2,000` seeded random walks of `60` steps. Removing either half of the fencing rule (`store-accepts-every-put` or `resume-from-global-end`) causes the model checker to find concrete counterexamples. Two real service processes against SeaweedFS S3 agree with the model at every command step (`13/13`), including stale-list takeover retry, fencing an active stale owner, fencing a `SIGKILL`ed and restarted stale owner holding its `.owner` belief file, keeping store-durable acknowledgements, and losing an unshipped local-durable acknowledgement on takeover.
+- **Claim (invariant 1 — at most one authorized writer per database):** Combine write-once position slots (`If-None-Match: *`) in the store with writers that append only after their own last object and stop if a newer epoch is listed. Under those two rules, once a newer epoch's object is accepted, no older epoch gets an object accepted, no two epochs are accepted for overlapping positions, and no accepted slot is overwritten. This holds across every interleaving of two nodes (`claim`, `fence`, `fence-with-stale-list`, `write`, `ship`, `crash`, `restart`, `restart-with-stale-list`) up to depth `16` (within bounds: `2` nodes, `<= 3` epochs, local commits up to stream position `5`) and `2,000` seeded random walks of `60` steps. Removing either half of the fencing rule (`store-accepts-every-put` or `resume-from-global-end`) causes the model checker to find concrete counterexamples. Two live service processes against SeaweedFS S3 agree with the model at every command step (`13/13`), including stale-list takeover retry, fencing an active stale owner, fencing a `SIGKILL`ed and restarted stale owner holding its `.owner` belief file, keeping `store-durable` acknowledgements, and losing an unshipped `local-durable` acknowledgement on takeover.
 - **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
 
 <!-- include: experiments/10.1-one-writer/main.go -->
@@ -5651,7 +5760,7 @@ Add `-i` (`go run ./cmd/course run -i 10.1`) to stay in the DuckDB shell afterwa
 
 `course run` also prints the run-dependent values, which are not part of the stored evidence: where the store and the work directory were, and the bounds sample each node sent after a command, with its memory reading.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/10.1-one-writer/`](evidence/10.1-one-writer/), and `go run ./cmd/course check evidence ch10` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it live in [`evidence/10.1-one-writer/`](evidence/10.1-one-writer/), and this repository's evidence checker (`go run ./cmd/course check evidence ch10`) compares a fresh run against them byte for byte.
 
 <!-- include: evidence/10.1-one-writer.txt -->
 ```text
@@ -5949,27 +6058,27 @@ Experiment verdict: ONE WRITER OK
 
 #### Reading the Experiment 10.1 evidence
 
-- **Pin check** (the experiment's own output, shown when it is run directly; not part of the walkthrough): confirms `SQLite 3.53.4` check-in `bf7c7f30…59bcc`.
-- **Section A settings and A1 (Part A — correct protocol):** Within the stated bounds (`2` nodes, `<= 3` epochs, local commits stopping at stream position `5` across all epochs and fences), `model.Explore` explores **`9,595,507,962` interleavings** across **`44,134` distinct states** up to depth `16` plus **`2,000` random walks (`120,000` steps)** and finds **`0` invariant violations**.
-- **A1–A2, `store-accepts-every-put` (self-test 1 — removing store slot exclusivity):** With `store-accepts-every-put`, **`451,413,240` of `3,536,900,716` interleavings** violate an invariant. The shortest counterexample is `4` steps: `B` claims epoch `1` and fences at `1`; `A` claims epoch `2`, reads a stale listing, and overwrites `B`'s accepted fence at position `1`.
-- **A1–A2, `resume-from-global-end` (self-test 2 — removing the writer epoch check on restart):** With `resume-from-global-end` (matching unfenced `walship.Open`), **`170,698,606` of `11,458,358,774` interleavings** violate an invariant. The shortest counterexample is `7` steps: `B` fences at `1`, `A` fences at `2`, `B` crashes, restarts at global end `2`, and ships epoch `1` into free slot `3` after epoch `2` was already accepted—proving `If-None-Match: *` alone is insufficient without `fence.Adapter`.
-- **Section B settings (Part B setup):** Connects to SeaweedFS (`course-ch10a`, prefix `exp-10-1/`), registers `db-0001` and `db-0002` with `synchronous=FULL`, `foreign_keys=ON`, `secure_delete=ON`, `cache_size=-256`, `wal_autocheckpoint=0`, `busy_timeout=5000ms`, capacity `4` open databases per node, and installs `stale-list:/log/:1` on node `b`.
-- **B1–B3, steps 1–7 (`db-0001` stale-list retry and active stale-owner fencing):** `a` claims `db-0001` (epoch `1`, fence at `1`), commits step `1` store-durable (slot `2`), and commits step `2` local-durable (not in store). At step `4`, `b` claims epoch `2`: its first listing misses slot `2`, its fence attempt at slot `2` hits `e1` and retries, and attempt `2` restores position `2` (step `1`) and puts its fence at slot `3` (`attempts 2`). At step `5`, stale `a` commits step `3` locally and tries to ship at slot `3`, receives `fenced: db-0001 position 3 is held by epoch 2, this writer has epoch 1`, drops its belief, and refuses step `6` immediately. Node `b` then advances `db-0001` to position `4` (`user_version 2`).
-- **B1–B3, steps 8–15 (`db-0002` crashed and restarted stale owner):** `b` owns `db-0002` (epoch `1`, slot `2`), `a` takes over (epoch `2`, fence at `3`), and `b` is `SIGKILL`ed (step `11`) and restarted (step `12`) with its persisted `.owner` belief files intact. At step `13`, `b`'s write to `db-0002` opens the shipper through `fence.Adapter`, lists slot `3` (`epoch 2`), and refuses before touching the local file. At step `14`, `b` reopens `db-0001` (whose `-wal`/`-shm` survived `SIGKILL`), recovers cleanly, and writes slot `5` (`user_version 3`). At step `15`, `a` writes `db-0002` slot `4`.
-- **B4–B6 (agreement and standing bounds):** Real processes and model agree **`13 of 13`** command steps; `0` node problems; descriptors stayed at `0`, `7`, or `14` above baseline (exactly `7` per open database, well under the `68` limit for `K = 4`) and memory growth stayed within the `41 MiB` bound across all `15` commands (B5; the memory readings themselves are run-dependent and printed by `course run`).
-- **C1–C3 (store, catalog, E1, and durability checks):** For both `db-0001` (`5` slots) and `db-0002` (`4` slots), the S3 chain matches the model slot for slot with `0` damaged objects, the catalog matches the newest epoch/position/`user_version`, the owner's closed file is **E1 byte-identical** to `RestoreAt(last)`, every `store-durable` acknowledgement is stored at its exact epoch and position, and `db-0001`'s unshipped `local-durable` acknowledgement (epoch `1`, `user_version` `2`) reports `in_store` `false`, lost by the takeover as that mode allows.
+- **Pin check** (printed directly by the experiment binary, outside the DuckDB walkthrough): confirms `SQLite 3.53.4` check-in `bf7c7f30…59bcc`.
+- **Section A settings and A1 (Part A — correct protocol):** Within the stated bounds (`2` nodes, `<= 3` epochs, local commits stopping at stream position `5` across all epochs and fences), `model.Explore` checks **`9,595,507,962` interleavings** across **`44,134` distinct states** up to depth `16` plus **`2,000` random walks (`120,000` steps)** and finds **`0` invariant violations**.
+- **A1–A2, `store-accepts-every-put` (self-test 1 — removing store slot exclusivity):** With `store-accepts-every-put`, **`451,413,240` of `3,536,900,716` interleavings** violate an invariant. The shortest counterexample takes `4` steps: `B` claims epoch `1` and fences at `1`; `A` claims epoch `2`, reads a stale listing, and overwrites `B`'s accepted fence at position `1`.
+- **A1–A2, `resume-from-global-end` (self-test 2 — removing the writer epoch check on restart):** With `resume-from-global-end` (matching unfenced `walship.Open`), **`170,698,606` of `11,458,358,774` interleavings** violate an invariant. The shortest counterexample takes `7` steps: `B` fences at `1`, `A` fences at `2`, and `B` crashes, restarts at global end `2`, and ships epoch `1` into free slot `3` after epoch `2` was already accepted—proving `If-None-Match: *` alone is insufficient without `fence.Adapter`.
+- **Section B settings (Part B setup):** Connects to SeaweedFS (`course-ch10a`, prefix `exp-10-1/`), registers `db-0001` and `db-0002` with `synchronous=FULL`, `foreign_keys=ON`, `secure_delete=ON`, `cache_size=-256`, `wal_autocheckpoint=0`, `busy_timeout=5000ms`, and capacity `4` open databases per node, and installs `stale-list:/log/:1` on node `b`.
+- **B1–B3, steps 1–7 (`db-0001` stale-list retry and active stale-owner fencing):** `a` claims `db-0001` (epoch `1`, fence at `1`), commits step `1` `store-durable` (slot `2`), and commits step `2` `local-durable` (not in store). At step `4`, `b` claims epoch `2`: its first listing hides slot `2`, its fence attempt at slot `2` hits `e1` and retries, and attempt `2` restores position `2` (step `1`) and puts its fence at slot `3` (`attempts 2`). At step `5`, stale `a` commits step `3` locally and tries to ship at slot `3`, receives `fenced: db-0001 position 3 is held by epoch 2, this writer has epoch 1`, drops its belief, and refuses step `6` immediately. Node `b` then advances `db-0001` to position `4` (`user_version 2`).
+- **B1–B3, steps 8–15 (`db-0002` crashed and restarted stale owner):** `b` owns `db-0002` (epoch `1`, slot `2`), `a` takes over (epoch `2`, fence at `3`), and `b` is `SIGKILL`ed (step `11`) and restarted (step `12`) with its persisted `.owner` belief files intact. At step `13`, `b`'s write to `db-0002` opens the shipper through `fence.Adapter`, lists slot `3` (`epoch 2`), and refuses before touching the local file. At step `14`, `b` reopens `db-0001` (whose `-wal` and `-shm` survived `SIGKILL`), recovers cleanly, and writes slot `5` (`user_version 3`). At step `15`, `a` writes `db-0002` slot `4`.
+- **B4–B6 (agreement and standing bounds):** Real processes and the model agree on **`13 of 13`** command steps with `0` node problems. Descriptors stayed at `0`, `7`, or `14` above baseline (exactly `7` per open database, well under the `68` limit for `K = 4`), and memory growth stayed within the `41 MiB` bound across all `15` commands (B5; the memory readings themselves are run-dependent and printed by `course run`).
+- **C1–C3 (store, catalog, E1, and durability checks):** For both `db-0001` (`5` slots) and `db-0002` (`4` slots), the S3 chain matches the model slot for slot with `0` damaged objects, the catalog matches the newest epoch, position, and `user_version`, and the owner's closed file is **E1 byte-identical** to `RestoreAt(last)`. Every `store-durable` acknowledgement sits at its exact epoch and position, while `db-0001`'s unshipped `local-durable` acknowledgement (epoch `1`, `user_version` `2`) reports `in_store` `false`—lost by the takeover as that mode allows.
 
-**What Experiment 10.1 does and does not show.** Part A proves safety inside its finite bounds (`2` nodes, `3` epochs, stream position `<= 5`, depth `16`; adversarial attack `MOD-04` extends this to an independent `3`-node, `5`-epoch, multi-slot-stale model). Part B scripts one sequential interleaving on two real processes; truly concurrent S3 `PutIfAbsent` and `catalog.Claim` races are tested in the SeaweedFS probe and adversarial attack `FENCE-02`.
+**What Experiment 10.1 does and does not show.** Part A proves safety inside its finite bounds (`2` nodes, `3` epochs, stream position `<= 5`, depth `16`; stress test `MOD-04` under "What attacked this chapter" in Section 6 extends this to an independent `3`-node, `5`-epoch, multi-slot-stale model). Part B scripts one sequential interleaving on two live processes; truly concurrent S3 `PutIfAbsent` and `catalog.Claim` races are tested in the SeaweedFS concurrency probe (`agent_work/probes/seaweedfs-s3/RESULT.md`) and stress test `FENCE-02` in Section 6.
 
 ---
 
 ## 6. Evidence and failure cases
 
-Experiments 10.2, 10.3, and 10.4 attack the service with process kills, interrupted relocations, store faults, and full-fleet destruction.
+Experiments 10.2, 10.3, and 10.4 stress the service with process kills, interrupted relocations, store faults, and full-fleet destruction.
 
 ### 6.1 Experiment 10.2 — `acknowledged-writes-survive`
 
-- **Claim (invariants 2 and 4 — durability under stated mode and reopen after process failure):** One node owns `4` databases while keeping at most `2` open (forcing LRU eviction on every write). After the node is killed—on entry to evenly spaced `fsync`/`fdatasync` calls via `strace` (**Linux only**, Part A) or by `SIGKILL` at seeded random delays inside the active write loop (portable, Part B)—every database reopens with `PRAGMA integrity_check = ok` as a valid recipe state and holds at least every acknowledged write (`recovered user_version >= acknowledged user_version`): on local files for `local-durable`, and after deleting the node's entire directory and rebuilding from SeaweedFS S3 for `store-durable`. A mutant node that acknowledges `store-durable` writes before putting the segment (`-mutant ack-before-put`, Part C) is caught as a violation.
+- **Claim (invariants 2 and 4 — durability under stated mode and reopen after process failure):** One node owns `4` databases while keeping at most `2` open, forcing LRU eviction on every write. After the node is killed—either on entry to evenly spaced `fsync`/`fdatasync` calls via `strace` (**Linux only**, Part A) or by `SIGKILL` at seeded random delays inside the active write loop (portable, Part B)—every database reopens with `PRAGMA integrity_check = ok` as a valid recipe state and holds at least every acknowledged write (`recovered user_version >= acknowledged user_version`). Recovery runs on local files for `local-durable`, and after deleting the node's entire directory and rebuilding from SeaweedFS S3 for `store-durable`. A mutant node that acknowledges `store-durable` writes before putting the segment (`-mutant ack-before-put`, Part C) is caught as a violation.
 - **Evidence form:** `EXACT` (every stored table must match on every run, including the check requiring every random kill to land while writes are in flight; Part B's timings and random kill points are in the run-dependent `info` tables, which are excluded).
 - **Linux only (Part A):** Killing on entry to `fsync`/`fdatasync` requires Linux `strace`. Run directly on macOS (or with `-portable` on Linux), Part A prints `LINUX-ONLY: killing the node at a chosen fsync with strace skipped on …` while Parts B and C run natively. `course run` runs Part A in the Linux `lab` container.
 
@@ -6801,24 +6910,66 @@ Experiment verdict: ACKNOWLEDGED WRITES SURVIVE OK
 
 #### Reading the Experiment 10.2 evidence
 
-- **Opening settings:** Pin check passes (the experiment's own output, shown when it is run directly); `1` node owns `4` databases with capacity `2` (so every round-robin write evicts one open database and triggers `Node.evicted`'s final ship and at-rest check); `local-durable` restarts on the node directory `a` (`/work/10.2/node/a/` in the container, `_work/10.2/node/a/` when run directly), while `store-durable` deletes that directory completely and rebuilds every database with `claim`.
+- **Opening settings:** The pin check passes (printed directly by the experiment binary). One node owns `4` databases with capacity `2`, so every round-robin write evicts one open database and triggers `Node.evicted`'s final ship and at-rest check. `local-durable` restarts on node directory `a` (`/work/10.2/node/a/` in the container, `_work/10.2/node/a/` when run directly), while `store-durable` deletes that directory completely and rebuilds every database with `claim`.
 - **A1–A4, `local-durable` (Part A — `local-durable` fsync kills):** An uninterrupted `12`-write run executes **`77` `fsync`/`fdatasync` calls**, all `77` on the `runtime.LockOSThread()` command thread (`0` on other threads). `strace` kills the node at evenly spaced indices `1`, `26`, `51`, and `77`:
   - `fsync 1` (`db-0001.db-wal`, command `1`): `0` acked, recovered `0 0 0 0`.
   - `fsync 26` (`db-0001.db-wal`, command `5`): `4` acked, recovered `1 1 1 1`.
   - `fsync 51` (directory `a`—SQLite's directory fsync after creating a `-wal` file—command `9`): `8` acked, recovered `2 2 2 2`.
-  - `fsync 77` (`db-0004.db-wal`, command `12`): `11` acked (`3 3 3 2`), recovered **`3 3 3 3`**—the twelfth commit's WAL frames had already been written to the kernel before `walFrames` entered its final `fsync`, so `walIndexRecover` kept it (`recovered >= acknowledged`).
-- **A1–A4, `store-durable` (Part A — `store-durable` fsync kills):** An uninterrupted `12`-write run executes **`85` `fsync`/`fdatasync` calls** (`8` more than `local-durable` because every write checkpoints immediately after shipping), all on the command thread. Kills land at `1` (`db-0001.db-wal`), `29`, `57`, and `85`—all three later kills land on **`catalog.db-wal`**, because updating the control-plane catalog is the final durable step after the S3 segment PUT already succeeded. Consequently, at `fsync 29`, `57`, and `85`, `db-0004`'s segment is already in SeaweedFS before the node replies, so store-only recovery rebuilds `1 1 1 1` vs acked `1 1 1 0`, `2 2 2 2` vs `2 2 2 1`, and `3 3 3 3` vs `3 3 3 2`. Every database reopens (`4` of `4`, integrity ok, valid recipe state) with `0` violations. Notice that store-only recovery costs one new epoch and one fence snapshot per database.
-- **B1 (Part B — portable random-time kills):** Measures only the interactive write-loop duration (run-dependent: about `102ms` for `local-durable` and `112ms` for `store-durable` in one lab run), draws random delays inside that window, and redraws (up to `5` draws) if a kill ever lands after the last reply while still recovering and checking every draw. All `4` kills landed in flight (`in_flight` `true`) with `0` violations, so every database reopened and `recovered >= acknowledged` held in every run. Which draw landed in flight and how many writes each kill had acknowledged are run-dependent: in one lab run all `4` kills landed on draw `1` (`7–11` of `12` writes acknowledged). `course run` prints every draw.
-- **C1–C2 (Part C — `ack-before-put` self-test):** The mutant node acknowledges `db-0001` `store-durable` with `stored through position 0` (nothing put to S3), is killed, and store-only recovery reports the violation `db-0001 recovered step 0, acknowledged step 1`, proving the checker catches broken store-durable implementations.
-- **D1:** `0` node problems and `0` over-bounds lines; standing bounds held across every node reply (the reply count is run-dependent: **`308`** in one lab run); verdict `ACKNOWLEDGED WRITES SURVIVE OK`.
+  - `fsync 77` (`db-0004.db-wal`, command `12`): `11` acked (`3 3 3 2`), recovered **`3 3 3 3`**. The twelfth commit's WAL frames had already reached the kernel before `walFrames` entered its final `fsync`, so `walIndexRecover` kept it (`recovered >= acknowledged`).
+- **A1–A4, `store-durable` (Part A — `store-durable` fsync kills):** An uninterrupted `12`-write run executes **`85` `fsync`/`fdatasync` calls** (`8` more than `local-durable` because every write checkpoints immediately after shipping), all on the command thread. Kills land at `1` (`db-0001.db-wal`), `29`, `57`, and `85`. All three later kills land on **`catalog.db-wal`**, because updating the control-plane catalog is the final durable step after the S3 segment PUT has already succeeded. Consequently, at `fsync 29`, `57`, and `85`, `db-0004`'s segment is already in SeaweedFS before the node replies, so store-only recovery rebuilds `1 1 1 1` vs acked `1 1 1 0`, `2 2 2 2` vs `2 2 2 1`, and `3 3 3 3` vs `3 3 3 2`. Every database reopens (`4` of `4`, integrity ok, valid recipe state) with `0` violations, at the cost of one new epoch and one fence snapshot per database.
+- **B1 (Part B — portable random-time kills):** Measures only the interactive write-loop duration (run-dependent: about `102ms` for `local-durable` and `112ms` for `store-durable` in one lab run), draws random delays inside that window, and redraws (up to `5` draws) if a kill lands after the last reply while still recovering and checking every draw. All `4` kills landed in flight (`in_flight` `true`) with `0` violations, so every database reopened and `recovered >= acknowledged` held in every run. Which draw landed in flight and how many writes each kill had acknowledged are run-dependent (in one lab run all `4` kills landed on draw `1`, with `7–11` of `12` writes acknowledged); `course run` prints every draw.
+- **C1–C2 (Part C — `ack-before-put` self-test):** The mutant node acknowledges `db-0001` `store-durable` with `stored through position 0` (nothing put to S3) and is killed. Store-only recovery reports the violation `db-0001 recovered step 0, acknowledged step 1`, proving the checker catches broken `store-durable` implementations.
+- **D1:** `0` node problems and `0` over-bounds lines; standing bounds held across every node reply (run-dependent: **`308`** in one lab run); verdict `ACKNOWLEDGED WRITES SURVIVE OK`.
 
-**What Experiment 10.2 does not show:** Power loss (Chapter 9.2's model applies: at `synchronous=FULL`, local-durable loses zero acknowledged commits if the disk honors `fsync`), kills during `Claim` or mid-`pwrite64` (covered by adversarial attacks `KILL-02a`–`KILL-05` below), or concurrent commands inside one node.
+The sequence below shows why killing a `store-durable` write at `catalog.db-wal`'s `fsync` drops the client reply while store-only recovery still restores one step ahead:
+
+<!-- draw-visual: diagrams/ch10-multi-database-platform-capstone-store-durable-kill.mmd -->
+```text
+┌────────┐     ┌────────┐     ┌────────────────┐     ┌──────────────┐
+│ Client │     │ Node a │     │ Local FS (WAL) │     │ SeaweedFS S3 │
+└────┬───┘     └────┬───┘     └────────┬───────┘     └───────┬──────┘
+     │              │                  │                     │
+     │ 1. write S3  │                  │                     │
+     ├─────────────►│                  │                     │
+     │              │                  │                     │
+     │              │ 2. -wal fsync    │                     │
+     │              ├─────────────────►│                     │
+     │              │                  │                     │
+     │              │ 3. put segment (If-None-Match)         │
+     │              ├───────────────────────────────────────►│
+     │              │                  │                     │
+     │              │ 4. 200 ok (S3)   │                     │
+     │              │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤
+     │              │                  │                     │
+     │              │ 5. checkpoint    │                     │
+     │              ├─────────────────►│                     │
+     │              │                  │                     │
+     │              │ 6. catalog fsync │                     │
+     │              ├─────────────────►│                     │
+     │              │                  │                     │
+     │           ┌─────────────────────────┐                 │
+     │           │ strace SIGKILL on fsync │                 │
+     │           └─────────────────────────┘                 │
+     │              │                  │                     │
+     │ 7. ok (lost) │                  │                     │
+     │×┈┈┈┈┈┈┈┈┈┈┈┈┈┤                  │                     │
+     │              │                  │                     │
+    ┌─────────────────────────────────────────────────────────┐
+    │              wipe local dir, Claim from S3              │
+    └─────────────────────────────────────────────────────────┘
+     │              │                  │                     │
+     │              │ 8. restore (version = ack + 1)         │
+     │              │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤
+     │              │                  │                     │
+```
+
+**What Experiment 10.2 does not show:** Power loss (Chapter 9, Experiment 9.2's model applies: at `synchronous=FULL`, `local-durable` loses zero acknowledged commits if the disk honors `fsync`), kills during `Claim` or mid-`pwrite64` (covered by stress tests `KILL-02a`–`KILL-05` under "What attacked this chapter" below), or concurrent commands inside one node.
 
 ---
 
 ### 6.2 Experiment 10.3 — `interrupted-relocation`
 
-- **Claim (invariant 6 — migration safety, plus invariants 1, 2, 4, and 5):** Across `32` fault cases injecting coordinator crashes, node `SIGKILL`s, store faults (`fail-before-put`, `fail-after-put`, `crash-before-put`, `crash-after-put`) on both the final segment (`log/000000000004`) and the destination fence (`log/000000000006`), and a rollback while the destination stays down—with a client probing status and writing at every step boundary—a fresh coordinator recovering via `Resume` or `Rollback` always leaves one owner (catalog, newest store slot, and `relocations` row agree), at most `1` writable node at every boundary, destination SHA-256 equal to the drained source state at the fence point, every acknowledged write (both `store-durable` and `local-durable`) in the one lineage and no refused write present, and the owner's closed file equal to the store's last state. Running the same relocation without the seal and store fence (`skip-fence` self-test) leaves `2` nodes writable at once and breaks the store lineage.
+- **Claim (invariant 6 — migration safety, plus invariants 1, 2, 4, and 5):** Across `32` fault cases, the experiment injects coordinator crashes, node `SIGKILL`s, store faults (`fail-before-put`, `fail-after-put`, `crash-before-put`, `crash-after-put`) on both the final segment (`log/000000000004`) and the destination fence (`log/000000000006`), and a rollback while the destination stays down, while a client probes status and writes at every step boundary. After any of those faults, a fresh coordinator recovering via `Resume` or `Rollback` always leaves one owner (catalog, newest store slot, and `relocations` row agree), at most `1` writable node at every boundary, a destination SHA-256 matching the drained source state at the fence point, every acknowledged write (both `store-durable` and `local-durable`) in the single lineage with no refused write present, and the owner's closed file equal to the store's last state. Running the same relocation without the seal and store fence (`skip-fence` self-test) leaves `2` nodes writable at once and breaks the store lineage.
 - **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
 
 <!-- include: experiments/10.3-interrupted-relocation/main.go -->
@@ -7975,31 +8126,31 @@ Experiment verdict: INTERRUPTED RELOCATION OK
 
 #### Reading the Experiment 10.3 evidence
 
-- **Opening settings and step list (setup and protocol):** Lists the seven numbered relocation steps and the per-case starting state: `a` claims `db-0001` (fence at `1`), commits steps `1–2` `store-durable` (positions `2`, `3`) and step `3` `local-durable` (unshipped). At every reached boundary, the client sends one `store-durable` write to the catalog owner and one `local-durable` write to the other node.
+- **Opening settings and step list (setup and protocol):** Lists the seven numbered relocation steps and each case's starting state: `a` claims `db-0001` (fence at `1`), commits steps `1–2` `store-durable` (positions `2`, `3`), and commits step `3` `local-durable` (unshipped). At every reached boundary, the client sends one `store-durable` write to the catalog owner and one `local-durable` write to the other node.
 - **Section A, cases `1–7` (coordinator crash after each step, `Resume`):**
-  - **Case `1`** stops immediately after `FenceEpoch` (before `AfterStep(1)` runs), so the client's boundary-1 local write never happens; `Resume` drains step `3` into slot `4` (sha256 `c75549790ef1` in A4), fences at `5`, and ends at `user_version` `4` (`4` acknowledged, `1` refused, A5).
-  - **Cases `2–6`** reach boundary `1`, where `a` accepts the client's `local-durable` step `4` (A6, after step 1: catalog owner `b` at epoch `2`; `a` `owner at epoch 1, writable`; `b` `not owner`); step `2` seals `a`; step `3` drains steps `3` and `4` into segment `4-5` (sha256 `d53fc07b1293`); `Resume` rolls forward to fence slot `6` (`user_version` `5`, `5` acknowledged).
+  - **Case `1`** stops immediately after `FenceEpoch` (before `AfterStep(1)` runs), so the client's boundary-1 local write never happens; `Resume` drains step `3` into slot `4` (sha256 `c75549790ef1` in A4), fences at `5`, and finishes at `user_version` `4` (`4` acknowledged, `1` refused, A5).
+  - **Cases `2–6`** reach boundary `1`, where `a` accepts the client's `local-durable` step `4` (A6, after step 1: catalog owner `b` at epoch `2`; `a` `owner at epoch 1, writable`; `b` `not owner`). Step `2` seals `a`, step `3` drains steps `3` and `4` into segment `4-5` (sha256 `d53fc07b1293`), and `Resume` rolls forward to fence slot `6` (`user_version` `5`, `5` acknowledged).
   - **Case `7`** reaches boundary `6` (A6: `a` `owner at epoch 1, sealed`; `b` `owner at epoch 2, writable`), where `b` accepts a client write at slot `7` before the coordinator crashes after step `7`; `Resume` adopts and finishes cleanly at `user_version` `6` (`6` acknowledged, `11` refused).
 - **Cases `8–13` (coordinator crash after steps `1–6`, `Rollback`):**
   - **Cases `8–12`** crash before the destination's fence reaches S3: `Rollback` drains `a`, lets `a` re-claim at **epoch `3`** (fence at `5` in case `8`, `6` in cases `9–12`), marks `rolled-back`, discards `b`'s `.staged`, and preserves every acknowledged write (`user_version` `4` in case `8`, `5` in cases `9–12`).
-  - **Case `13`** crashes after step `6` (`Activate`): the destination's epoch-2 fence is already at slot `6` in S3, so `Rollback` refuses to undo it, **rolls forward** (A2: state `done`, step `7`), and returns `ErrFenceInStore`.
+  - **Case `13`** crashes after step `6` (`Activate`): because the destination's epoch-2 fence is already at slot `6` in S3, `Rollback` refuses to undo it, **rolls forward** (A2: state `done`, step `7`), and returns `ErrFenceInStore`.
 - **Cases `14–21` (node `SIGKILL`s, `Resume` and `Rollback`):**
-  - **Cases `14`, `15`, and `20`** kill source `a` before step `3` completes. When `a` restarts, `openDatabase` recovers its WAL and ships steps `3` and `4` as a **discontinuity snapshot** (A8: position `4`, epoch `1`, `snapshot`), leaving fence point `4` with sha256 `d53fc07b1293` (A4)—the exact same bytes as segment `4-5`, at one position lower.
+  - **Cases `14`, `15`, and `20`** kill source `a` before step `3` finishes. When `a` restarts, `openDatabase` recovers its WAL and ships steps `3` and `4` as a **discontinuity snapshot** (A8: position `4`, epoch `1`, `snapshot`), leaving fence point `4` with sha256 `d53fc07b1293` (A4)—the exact same bytes as segment `4-5`, one position lower.
   - **Case `18`** kills destination `b` after step `6`: `Run` still finishes without interruption (`done`) because step `7` (`RetireSource`) talks only to `a`; restarting `b` reloads its `.owner` belief file cleanly (final `user_version` `6`).
 - **Cases `22–31` (store faults on final segment `log/000000000004` and fence `log/000000000006`):**
   - **Cases `22`, `26`, and `30`** (`fail-before-put` and `crash-before-put` on `a`'s final segment): `a`'s close already checkpointed steps `3–4` into `.db`, so recovery ships them as a discontinuity snapshot at position `4`, epoch `1` (sha256 `d53fc07b1293`), fencing at `5`.
   - **Cases `24` and `28`** (`fail-after-put` and `crash-after-put` on `a`'s final segment): segment `4-5` already landed in S3; recovery sees it and puts the fence at `6`.
-  - **Cases `25` and `29`** (`fail-after-put` and `crash-after-put` on `b`'s fence): `b`'s fence at slot `6` already landed although `b` got an error or died; `Resume` reads it from S3 and **adopts** it with no second fence.
+  - **Cases `25` and `29`** (`fail-after-put` and `crash-after-put` on `b`'s fence): `b`'s fence at slot `6` already landed even though `b` received an error or died; `Resume` reads it from S3 and **adopts** it with no second fence.
   - **Case `31`** (`crash-before-put` on `b`'s fence, `Rollback`): `b` died before putting slot `6`; `a` re-claims at epoch `3`, placing its fence at slot `6`.
-- **A3 and case `32` rows (rollback while destination `b` stays down):** Kills `b` after step `4` and keeps `b` stopped through `Rollback`. `Rollback` drains `a`, claims epoch `3` (fence at `6`), marks `rolled-back` in the catalog, and records the discard error `node process for "discard db-0001" is not running` (A3) without failing. When `b` restarts afterward, its leftover `.staged` cannot activate and `b` reports `not owner`. All **`32 of 32`** fault cases hold every invariant (A9).
-- **B1 and C1 (`skip-fence` self-test and standing bounds):** Without the seal and store fence, from step `6` onward both nodes report writable (`a` `owner at epoch 1, writable`; `b` `owner at epoch 2, writable`), and `fence.Audit` catches `epoch 2 starts at position 4 with a segment, not a fence snapshot`. Standing bounds held across every node reply (the reply count is run-dependent; **`1,726`** in one lab run) with `0` node problems.
+- **A3 and case `32` rows (rollback while destination `b` stays down):** Kills `b` after step `4` and leaves `b` stopped through `Rollback`. `Rollback` drains `a`, claims epoch `3` (fence at `6`), marks `rolled-back` in the catalog, and records the discard error `node process for "discard db-0001" is not running` (A3) without failing. When `b` restarts afterward, its leftover `.staged` cannot activate and `b` reports `not owner`. All **`32 of 32`** fault cases hold every invariant (A9).
+- **B1 and C1 (`skip-fence` self-test and standing bounds):** Without the seal and store fence, from step `6` onward both nodes report writable (`a` `owner at epoch 1, writable`; `b` `owner at epoch 2, writable`), and `fence.Audit` catches `epoch 2 starts at position 4 with a segment, not a fence snapshot`. Standing bounds held across every node reply (run-dependent: **`1,726`** in one lab run) with `0` node problems.
 
 ---
 
 ### 6.3 Experiment 10.4 — `rebuild-the-fleet` (rung R7)
 
-- **Claim (invariant 3 — every published snapshot is internally consistent, plus rung R7 fleet rebuild and invariant 5):** SeaweedFS S3 plus the control-plane catalog is a complete saved state of a multi-database fleet. After `8` writer processes (each owning an equal share and keeping at most `32` databases open) claim every database, drive recipe steps `1–4` `store-durable`, and apply a schema rollout (recipe step `5`, `CREATE INDEX events_by_account ON events(account_id, id)`) to half of each writer's share and stop—while an independent checker subprocess continuously lists S3 and rebuilds every published restore point in memory—quiescing (`TRUNCATE` checkpoint finds `0` WAL frames), deleting **every** local file under the writers' directories, and rebuilding the entire fleet from S3 alone onto empty disks produces `100%` **E1 byte-identical** databases (`500/500` by default; `2,000/2,000` at full outline scale), each at the exact `schema_version` (`user_version`) recorded in the catalog (old step `4` or new step `5`), with `0` restore-point rebuild failures during or after the run, and every existing slot read **exactly twice** during the rebuild (`once to check the lineage, once to restore`).
-- **Evidence form:** `EXACT` for hashes, object/listing/fence counts, restore-point counts, and standing bounds (every stored table must match on every run); `SHAPE` for elapsed wall times and byte totals, which are in the run-dependent `info` tables and excluded (byte totals vary by ~100 bytes run to run because WAL checksums and salts are serialized as variable-width decimal integers inside JSON metadata).
+- **Claim (invariant 3 — every published snapshot is internally consistent, plus rung R7 fleet rebuild and invariant 5):** SeaweedFS S3 plus the control-plane catalog is a complete saved state of a multi-database fleet. Eight writer processes (each owning an equal share and keeping at most `32` databases open) claim every database, drive recipe steps `1–4` `store-durable`, and apply a schema rollout (recipe step `5`, `CREATE INDEX events_by_account ON events(account_id, id)`) to half of each writer's share before stopping—while an independent checker subprocess continuously lists S3 and rebuilds every published restore point in memory. After quiescing (`TRUNCATE` checkpoint finds `0` WAL frames) and deleting **every** local file under the writers' directories, rebuilding the entire fleet from S3 alone onto empty disks produces `100%` **E1 byte-identical** databases (`500/500` by default; `2,000/2,000` at the full `2,000`-database scale). Every rebuilt database lands at the exact `schema_version` (`user_version`) recorded in the catalog (old step `4` or new step `5`), with `0` restore-point rebuild failures during or after the run, and every existing slot read **exactly twice** during the rebuild (once to verify the lineage, once to restore).
+- **Evidence form:** `EXACT` for hashes, object/listing/fence counts, restore-point counts, and standing bounds (every stored table must match on every run); `SHAPE` for elapsed wall times and byte totals, which live in the run-dependent `info` tables and are excluded (byte totals vary by ~100 bytes from run to run because WAL checksums and salts serialize as variable-width decimal integers inside JSON metadata).
 
 <!-- include: experiments/10.4-rebuild-the-fleet/main.go -->
 ```go
@@ -8639,7 +8790,7 @@ Run from the repository root, with SeaweedFS running (this starts the `lab` cont
 go run ./cmd/course run 10.4
 ```
 
-Add `-i` (`go run ./cmd/course run -i 10.4`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries. For the outline's `2,000`-database fleet, run the experiment directly in the container: `docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.4-rebuild-the-fleet -databases 2000 -prefix exp-10-4-2000` (about `40` seconds in the lab container).
+Add `-i` (`go run ./cmd/course run -i 10.4`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries. For the full `2,000`-database fleet, run the experiment directly in the container: `docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.4-rebuild-the-fleet -databases 2000 -prefix exp-10-4-2000` (about `40` seconds in the lab container).
 
 `course run` also prints the run-dependent values, which are not part of the stored evidence: where the store and the work directory were, the descriptor limit and bounds, byte counts, the passes of the concurrent checker, the standing-bounds summary of each writer when it closed, and how long each phase took.
 
@@ -8801,7 +8952,7 @@ E  ✓  after every command of every writer and checker command the descriptors 
 Experiment verdict: REBUILD THE FLEET OK
 ```
 
-Captured evidence (`2,000` databases, full outline size): the walkthrough of a lab-container run with `-databases 2000`, rendered in the same format. No tool checks this file.
+Captured evidence (`2,000` databases, full fleet scale): the walkthrough of a lab-container run with `-databases 2000`, rendered in the same format (informational; not checked by `course check evidence`).
 
 <!-- include: evidence/10.4-rebuild-the-fleet-2000.txt -->
 ```text
@@ -8962,14 +9113,14 @@ Experiment verdict: REBUILD THE FLEET OK
 #### Reading the Experiment 10.4 evidence
 
 - **500-database default run (`evidence/10.4-rebuild-the-fleet.txt`):**
-  - **Opening settings and A1:** Pin check passes (the experiment's own output, shown when it is run directly); the descriptor soft limit (`1,048,576` in one lab run; run-dependent, printed by `course run`) easily exceeds each writer's bound of `320` (`3 * 3 * 32 + 32`). Eight writers (`w1`–`w8`) own `62–63` databases each (`4 * 63 + 4 * 62 = 500`) with at most `32` open at once.
-  - **A1–A2 (write stream, halfway schema rollout, concurrent checker):** Write stream takes about `3.8s` in one lab run (timings are run-dependent); schema rollout applies recipe step `5` (`CREATE INDEX events_by_account ON events(account_id, id)`) to **`248 of 500`** databases (`4 * floor(63/2) + 4 * floor(62/2) = 4*31 + 4*31 = 248`) in about `0.7s`. Meanwhile the checker subprocess rebuilt restore points in memory with `0` failures; how many passes it made depends on timing (`2` passes and `3,354` restore points in one lab run).
-  - **B1 and C1 (quiesce and wipe):** All `8` writers close cleanly within their `320`-descriptor / `104 MiB` bounds (`342–347` checks each in one lab run; the per-writer summaries are run-dependent and printed by `course run`). Opening every file for `PRAGMA wal_checkpoint(TRUNCATE)` finds **`0` WAL frames** because `sqlite3WalClose` already checkpointed and removed `-wal` on writer close. Deleting `w1`–`w8` leaves **`0` files** on disk.
-  - **C1–C4 (empty-disk rebuild):** Eight in-process rebuild workers (`fresh-1`–`fresh-8`) claim and restore all `500` databases in about `1.6s` (one lab run) within the rebuilding process's `104`-descriptor / `50 MiB` bound (`K = 8`). The `CountingStore` records **`5,496` objects read in `500` listings and `500` fence objects written** (the byte count is run-dependent: about `384,547,250` bytes, `769,094` per database, in one lab run). All **`500 of 500`** rebuilt databases are **E1 byte-identical** to the quiesced originals: **`252` at recipe step `4`** and **`248` at recipe step `5`**, matching both the catalog's `schema_version` and the last acknowledged step.
-  - **D1 and E1 (final checker pass and double-read accounting):** The final pass inspects all `500` databases, reading the store's entire contents (about **`296,918,625` bytes** in one lab run), and rebuilds **`3,248` restore points** (`252 * 6 + 248 * 7`: initial claim fence + `4` segments + optional rollout segment + rebuild fence) with **`0` failures**. Excluding the `500` newly written rebuild fences leaves `2,748` pre-rebuild slots, and `5,496 == 2 * 2,748`: `node.Claim` read every slot **exactly twice**—once in `adapter.Refresh` to validate the lineage, and once in `walship.LoadCatalog` to plan and restore. Across all replies (writers + checker; **`2,760`** with total runtime about `8.7s` in one lab run), `0` problems and `0` bounds violations occurred.
-- **2,000-database outline-scale run (`evidence/10.4-rebuild-the-fleet-2000.txt`):**
-  - Each of the `8` writers owns exactly `250` databases (at most `32` open); schema rollout stops halfway at **`1,000 of 2,000`**.
-  - The concurrent checker rebuilds restore points with `0` failures while the writers run (run-dependent: `6` passes and `32,359` points in one lab run, with an about `17.2s` write stream + `2.7s` rollout).
+  - **Opening settings and A1:** The pin check passes (printed directly by the experiment binary). The descriptor soft limit (`1,048,576` in one lab run; run-dependent and printed by `course run`) easily exceeds each writer's bound of `320` (`3 * 3 * 32 + 32`). Eight writers (`w1`–`w8`) own `62–63` databases each (`4 * 63 + 4 * 62 = 500`), keeping at most `32` open at once.
+  - **A1–A2 (write stream, halfway schema rollout, concurrent checker):** The write stream takes about `3.8s` in one lab run (timings are run-dependent). The schema rollout applies recipe step `5` (`CREATE INDEX events_by_account ON events(account_id, id)`) to **`248 of 500`** databases (`4 * floor(63/2) + 4 * floor(62/2) = 4*31 + 4*31 = 248`) in about `0.7s`. Meanwhile, the checker subprocess rebuilds restore points in memory with `0` failures; its pass count depends on timing (`2` passes and `3,354` restore points in one lab run).
+  - **B1 and C1 (quiesce and wipe):** All `8` writers close cleanly within their `320`-descriptor and `104 MiB` bounds (`342–347` checks each in one lab run; per-writer summaries are run-dependent and printed by `course run`). Opening every file for `PRAGMA wal_checkpoint(TRUNCATE)` finds **`0` WAL frames** because `sqlite3WalClose` already checkpointed and removed `-wal` on writer close. Deleting `w1`–`w8` leaves **`0` files** on disk.
+  - **C1–C4 (empty-disk rebuild):** Eight in-process rebuild workers (`fresh-1`–`fresh-8`) claim and restore all `500` databases in about `1.6s` (one lab run) within the rebuilding process's `104`-descriptor and `50 MiB` bound (`K = 8`). `CountingStore` records **`5,496` objects read in `500` listings and `500` fence objects written** (the byte total is run-dependent: about `384,547,250` bytes, `769,094` per database, in one lab run). All **`500 of 500`** rebuilt databases are **E1 byte-identical** to the quiesced originals: **`252` at recipe step `4`** and **`248` at recipe step `5`**, matching both the catalog's `schema_version` and the last acknowledged step.
+  - **D1 and E1 (final checker pass and double-read accounting):** The final pass inspects all `500` databases, reading the store's entire contents (about **`296,918,625` bytes** in one lab run), and rebuilds **`3,248` restore points** (`252 * 6 + 248 * 7`: initial claim fence + `4` segments + optional rollout segment + rebuild fence) with **`0` failures**. Excluding the `500` newly written rebuild fences leaves `2,748` pre-rebuild slots, and `5,496 == 2 * 2,748`: `node.Claim` read every slot **exactly twice**—once in `adapter.Refresh` to validate the lineage, and once in `walship.LoadCatalog` to plan and restore. Across all replies (writers plus checker; **`2,760`** with a total runtime of about `8.7s` in one lab run), `0` problems and `0` bounds violations occurred.
+- **2,000-database full-scale run (`evidence/10.4-rebuild-the-fleet-2000.txt`):**
+  - Each of the `8` writers owns exactly `250` databases (at most `32` open); the schema rollout stops halfway at **`1,000 of 2,000`**.
+  - The concurrent checker rebuilds restore points with `0` failures while the writers run (run-dependent: `6` passes and `32,359` points in one lab run, alongside an approximately `17.2s` write stream and `2.7s` rollout).
   - Quiesce records all `2,000` files (`0` WAL frames found), wipes local disk (`0` files left), and rebuilds all **`2,000 of 2,000`** databases **E1 byte-identical** (`1,000` at step `4`, `1,000` at step `5`) in about `5.6s` (one lab run), reading **`22,000` objects** (`2 * 11,000` slots; about `1,538,925,482` bytes, about `769,462` per database, in that run) in `2,000` listings and writing `2,000` fence objects.
   - The final checker pass reads about `1,188,042,741` bytes in that run and verifies **`13,000` restore points** (`1,000 * 6 + 1,000 * 7`) with **`0` failures**. Standing bounds held across all replies (`11,016` in that run, total runtime about `39s`).
 
@@ -8977,13 +9128,13 @@ Experiment verdict: REBUILD THE FLEET OK
 
 ### 6.4 Version notes
 
-From [`docs/knowledge/source-inventory-ch05-09.md`](../docs/knowledge/source-inventory-ch05-09.md) and [`OUTLINE.md`](../OUTLINE.md):
+From this repository's C source inventory ([`docs/knowledge/source-inventory-ch05-09.md`](../docs/knowledge/source-inventory-ch05-09.md)) and project technical notes ([`OUTLINE.md`](../OUTLINE.md)):
 
 - **SQLite 3.49.0:** Added `SQLITE_DBCONFIG_ENABLE_ATTACH_CREATE` and `SQLITE_DBCONFIG_ENABLE_ATTACH_WRITE` to prevent SQL statements from attaching or creating extra database files outside a platform's connection manager.
 - **SQLite 3.50.0 (fixed in 3.50.1/3.50.2):** Added `sqlite3_setlk_timeout()` (when compiled with `SQLITE_ENABLE_SETLK_TIMEOUT`) for blocking POSIX locks instead of busy-handler polling; 3.50.2 also eliminated checksum-less WAL frames after a savepoint rollback with spilled pages.
 - **SQLite 3.51.0 (fixed in 3.51.2):** Added `SQLITE_CHECKPOINT_NOOP` and hardened POSIX lock handling against accidental `close()` lock drops via `unixIsSharingShmNode` in `unixLock` (`src/os_unix.c:2034-2041`; 3.51.2 fixed a deadlock in that check).
 - **SQLite 3.51.3 / 3.53.0:** Fixed the WAL-reset database corruption bug; our pinned `3.53.4` includes the fix, whereas older embedded builds in some language drivers may not.
-- **Cross-version byte hashes:** SQLite stores the writer's library version in header bytes `96–99` (`3053004` at our pin). E1 byte-identical rebuild checks therefore hold within one SQLite version; across a SQLite library upgrade, compare rebuilt files at **E2 pages** or **E3 logical** (`internal/equal`).
+- **Cross-version byte hashes:** SQLite stores the writer's library version in header bytes `96–99` (`3053004` at our pin). E1 byte-identical rebuild checks therefore hold within one SQLite version; across a SQLite library upgrade, compare rebuilt files at **E2 pages** or **E3 logical** (`internal/equal`, Chapter 2).
 
 ---
 
@@ -8991,36 +9142,36 @@ From [`docs/knowledge/source-inventory-ch05-09.md`](../docs/knowledge/source-inv
 
 <!-- adversarial-results -->
 
-Chapter 10 was built and attacked in two chunks—the service core plus Experiment 10.1 (`ch10a`, `27` attacks across four scripts driven by [`agent_work/ch10a/adversarial/run-all.sh`](../agent_work/ch10a/adversarial/run-all.sh)) and relocation plus Experiments 10.2–10.4 (`ch10b`, `25` attacks across three scripts driven by [`agent_work/ch10b/adversarial/run-all.sh`](../agent_work/ch10b/adversarial/run-all.sh))—for **`52` adversarial attacks** total on real SeaweedFS S3 and SQLite `3.53.4`.
+Seven standalone Go stress-test programs in this repository (`52` attacks total on live SeaweedFS S3 and SQLite `3.53.4`) tried to break the capstone service and its four experiments (`HELD` means the code or claim stood up to the test; `BROKEN` means the test exposed a bug or an overly broad claim). They are grouped into two suites: `ch10a` covers the service core plus Experiment 10.1 (`27` attacks across four scripts driven by [`agent_work/ch10a/adversarial/run-all.sh`](../agent_work/ch10a/adversarial/run-all.sh)), and `ch10b` covers relocation plus Experiments 10.2–10.4 (`25` attacks across three scripts driven by [`agent_work/ch10b/adversarial/run-all.sh`](../agent_work/ch10b/adversarial/run-all.sh)).
 
 #### Chunk 10a (`service/` core, `walship.AdoptAtRest`, and Experiment 10.1)
 
-- [`model-and-mustfail/main.go`](../agent_work/ch10a/adversarial/model-and-mustfail/main.go) (`MOD-01`–`MOD-05b`): verified Experiment 10.1 exits non-zero on both model mutants (`MOD-01`), proved removing `If-None-Match: *` on live SeaweedFS causes a split-brain overwrite caught by `fence.Audit` (`MOD-02`), proved raw `walship.Open` without `fence.Adapter` lets a restarted stale owner clobber newer history despite `PutIfAbsent` (`MOD-03`), checked an independent `3`-node / `5`-epoch / multi-slot-stale state machine (`1,453` BFS states to depth `6` + `4,000,000` random-walk steps, `0` violations vs `496/500` on an overwrite control, `MOD-04`), confirmed seed-independence across `5` seeds (`MOD-05a`), and probed `model.MaxLocal` and `ParseMutant` (`MOD-05b`).
+- [`model-and-mustfail/main.go`](../agent_work/ch10a/adversarial/model-and-mustfail/main.go) (`MOD-01`–`MOD-05b`): verified Experiment 10.1 exits non-zero on both model mutants (`MOD-01`); proved removing `If-None-Match: *` on live SeaweedFS causes a split-brain overwrite caught by `fence.Audit` (`MOD-02`); proved raw `walship.Open` without `fence.Adapter` lets a restarted stale owner clobber newer history despite `PutIfAbsent` (`MOD-03`); checked an independent `3`-node / `5`-epoch / multi-slot-stale state machine (`1,453` BFS states to depth `6` + `4,000,000` random-walk steps, `0` violations vs `496/500` on an overwrite control, `MOD-04`); confirmed seed independence across `5` seeds (`MOD-05a`); and probed `model.MaxLocal` and `ParseMutant` (`MOD-05b`).
 - [`fencing-and-crashes/main.go`](../agent_work/ch10a/adversarial/fencing-and-crashes/main.go) (`FENCE-01a`–`FENCE-05`): `SIGKILL`ed and restarted stale owners with persisted `.owner` files (`FENCE-01a`), unshipped `local-durable` commits (`FENCE-01b`), `stale-list` hiding the new owner's fence (`FENCE-01c`), and `crash-after-put` between fence PUT and `.owner` write (`FENCE-01d`); raced `8` concurrent S3 `PutIfAbsent` writers × `20` rounds and `8` concurrent `catalog.Claim` handles × `25` rounds (`0` S3 violations, `200/200` unique epochs, `0` busy errors, `FENCE-02`); raced `16` rounds of concurrent `node.Claim` vs `node.Claim` (`FENCE-03a`) plus a deterministic `Claim` race before `RecordShipped` (`FENCE-03b`); exhausted `claimAttempts = 3` against an active writer (`FENCE-04`); and injected `fail-before-put`, `fail-after-put`, `partial-put`, and 2-slot `stale-list` on SeaweedFS (`FENCE-05`).
 - [`catalog-and-lifecycle/main.go`](../agent_work/ch10a/adversarial/catalog-and-lifecycle/main.go) (`CAT-01`–`CAT-05b`): checked catalog synchronization after eviction/close (`CAT-01`) and post-crash reopen (`CAT-02`), failed re-`Claim` belief cleanup (`CAT-03a`), malformed `epoch 0` belief rejection (`CAT-03b`), offline file tampering across eviction (`CAT-04a`) and clean close + restart (`CAT-04b`), standing bounds rotating `600` databases (`K = 16`, `DirStore`) plus `50` on SeaweedFS (`K = 4`, `CAT-05a`), and RSS growth across `180` × `256 KiB` updates on one small open database (`CAT-05b`).
-- [`atrest-and-fence-edges/main.go`](../agent_work/ch10a/adversarial/atrest-and-fence-edges/main.go) (`ATREST-01`–`ATREST-03`, `FENCE-EDGE-01`): `AdoptAtRest` after `DELETE` + `VACUUM` shrink (`ATREST-01`), rolled-back spilled WAL / 10-byte stub WAL / external `TRUNCATE` on slot `0` (`ATREST-02`), refusal on 1-bit header byte `80` flip (`integrity_check = ok`) / unshipped WAL / canceled context (`ATREST-03`), and `fence.Adapter` edge errors plus `STORE UNREACHABLE:` exit `1` (`FENCE-EDGE-01`).
+- [`atrest-and-fence-edges/main.go`](../agent_work/ch10a/adversarial/atrest-and-fence-edges/main.go) (`ATREST-01`–`ATREST-03`, `FENCE-EDGE-01`): `AdoptAtRest` after `DELETE` + `VACUUM` shrink (`ATREST-01`); rolled-back spilled WAL, 10-byte stub WAL, and external `TRUNCATE` on slot `0` (`ATREST-02`); refusal on a 1-bit header byte `80` flip (`integrity_check = ok`), unshipped WAL, and canceled context (`ATREST-03`); and `fence.Adapter` edge errors plus `STORE UNREACHABLE:` exit `1` (`FENCE-EDGE-01`).
 
-**10a Run 1** ([`agent_work/ch10a/adversarial/results-run1.txt`](../agent_work/ch10a/adversarial/results-run1.txt)) found **`18 HELD, 9 BROKEN`**, exposing real defects fixed in [`agent_work/ch10a/REPAIR-REPORT.md`](../agent_work/ch10a/REPAIR-REPORT.md) alongside twelve code-review findings:
+**10a Run 1** ([`agent_work/ch10a/adversarial/results-run1.txt`](../agent_work/ch10a/adversarial/results-run1.txt)) produced **`18 HELD, 9 BROKEN`**, uncovering real defects resolved in [`agent_work/ch10a/REPAIR-REPORT.md`](../agent_work/ch10a/REPAIR-REPORT.md) along with twelve code-audit fixes:
 
-- **`CAT-05b` (fixed):** `fence.Adapter` cached raw object bytes of every slot in RAM, pushing RSS growth to `37.9 MiB` on one `276 KiB` database (exceeding the `34 MiB` bound). Fixed so `Adapter` caches metadata only and `Get` fetches from the store; peak RSS growth dropped to `2 MiB`.
+- **`CAT-05b` (fixed):** `fence.Adapter` cached raw object bytes of every slot in RAM, pushing RSS growth to `37.9 MiB` on one `276 KiB` database (exceeding the `34 MiB` bound). Fixed so `Adapter` caches metadata only and `Get` fetches from the store, dropping peak RSS growth to `2 MiB`.
 - **`CAT-04b` (fixed):** At-rest digests lived only in memory, so offline tampering between clean `Close()` and `Start()` was silently published to S3 as a discontinuity snapshot. Fixed by persisting `<id>.atrest` on clean close and deleting it only after the reopen check passes.
 - **`CAT-01` & `CAT-02` (fixed):** Ships performed during `evicted()` and `openDatabase()` did not call `Catalog.RecordShipped`, leaving `last_shipped` and `schema_version` stale. Fixed so every ship path updates the catalog.
-- **`FENCE-03a/b`, `CAT-03a`, `CAT-03b`, and review findings R1/R3/R5/R6/R8/R9/R10/R11/R12 (fixed):** `Claim` now ignores `catalog.ErrStaleEpoch` after its fence lands in S3 and deletes `.owner` and `.atrest` on disk when clearing ownership; `Start` rejects `epoch 0` belief files; `Adapter.Refresh` commits its cached map only after the whole chain passes fencing; `Adapter.PutIfAbsent` validates envelopes before uploading; `Decode` rejects empty database segments in slot keys; `model.ParseMutant` rejects unknown `-mutant` flags; `faultstore` skips empty listings on `stale-list`.
-- **`MOD-05b` (claim narrowed):** Run 1 flagged that `10.1`'s printed banner described `MaxLocal = 5` as `"5 local commits per node"`, whereas `MaxLocal` caps a node's `Local` stream position across all epochs and fences (so a node fencing at `6` cannot commit). The banner and chapter text were narrowed to state the true bound; after aligning `MOD-05b`'s expectation in Run 3, `ch10a` finished **`27 HELD, 0 BROKEN`** ([`agent_work/ch10a/adversarial/results.txt`](../agent_work/ch10a/adversarial/results.txt)).
+- **`FENCE-03a/b`, `CAT-03a`, `CAT-03b`, and audit fixes R1/R3/R5/R6/R8/R9/R10/R11/R12 (fixed):** `Claim` now ignores `catalog.ErrStaleEpoch` after its fence lands in S3 and deletes `.owner` and `.atrest` on disk when clearing ownership; `Start` rejects `epoch 0` belief files; `Adapter.Refresh` commits its cached map only after the whole chain passes fencing; `Adapter.PutIfAbsent` validates envelopes before uploading; `Decode` rejects empty database segments in slot keys; `model.ParseMutant` rejects unknown `-mutant` flags; and `faultstore` skips empty listings on `stale-list`.
+- **`MOD-05b` (bound clarified):** Run 1 flagged that `10.1`'s printed banner described `MaxLocal = 5` as `"5 local commits per node"`, whereas `MaxLocal` caps a node's `Local` stream position across all epochs and fences (so a node fencing at `6` cannot commit). The banner and Experiment 10.1's text now state the exact bound; after aligning `MOD-05b`'s expectation in Run 3, `ch10a` finished **`27 HELD, 0 BROKEN`** ([`agent_work/ch10a/adversarial/results.txt`](../agent_work/ch10a/adversarial/results.txt)).
 
 #### Chunk 10b (relocation, fleet inspection, and Experiments 10.2–10.4)
 
-- [`kills-and-durability/main.go`](../agent_work/ch10b/adversarial/kills-and-durability/main.go) (`KILL-01`–`KILL-05`): verified `10.2` catches `-mutant ack-before-put`, rejects `-mutant bogus`, and passes `-portable` (`KILL-01`); injected `crash-before-put` / `crash-after-put` during LRU eviction (`KILL-02a`), initial and recovery `Claim` fence snapshots (`KILL-03a`), and `openDatabase` discontinuity snapshots (`KILL-03b`); ran `strace` `SIGKILL`s at `8` fsyncs across LRU eviction (`KILL-02b`), `3` fsyncs inside `Claim` (`KILL-03c`), all `6` `catalog.db*` fsyncs × both recovery modes (`12` runs, `KILL-04`), and `8` mid-`pwrite64` points across both modes (`KILL-05`). All `8` attacks held on Run 1.
+- [`kills-and-durability/main.go`](../agent_work/ch10b/adversarial/kills-and-durability/main.go) (`KILL-01`–`KILL-05`): verified `10.2` catches `-mutant ack-before-put`, rejects `-mutant bogus`, and passes `-portable` (`KILL-01`); injected `crash-before-put` and `crash-after-put` during LRU eviction (`KILL-02a`), initial and recovery `Claim` fence snapshots (`KILL-03a`), and `openDatabase` discontinuity snapshots (`KILL-03b`); ran `strace` `SIGKILL`s at `8` fsyncs across LRU eviction (`KILL-02b`), `3` fsyncs inside `Claim` (`KILL-03c`), all `6` `catalog.db*` fsyncs × both recovery modes (`12` runs, `KILL-04`), and `8` mid-`pwrite64` points across both modes (`KILL-05`). All `8` attacks held on Run 1.
 - [`relocation-faults/main.go`](../agent_work/ch10b/adversarial/relocation-faults/main.go) (`REL-01`–`REL-05c`): verified `10.3 -mutant skip-fence` fails and `-mutant bogus` exits `1` (`REL-01`); injected `partial-put` on final segment and fence slots (`REL-02a`); combined `fail-after-put` fence with `stale-list` on `Rollback` (`REL-02b`, fenced at `a.Drain` and cleanly adopted by `Resume`); relocated a database held open by a long reader (`REL-03a`: `Drain` refused cleanly because `-wal` held `90,672` bytes and `-shm` stayed open, `0` writable nodes; `REL-03b`: closing the reader let `Resume` finish cleanly with `user_version = 3` and E1 match); rolled back while destination `b` stayed down (`REL-04`); deleted `a`'s `.sealed` file after `b` activated to verify S3 fencing still stops an uncooperative source (`REL-05a`); ran a third-node `c.Claim` takeover mid-relocation (`REL-05b`); and injected `SQLITE_BUSY` on `catalog.db` during `b.Activate`'s `recordShipped` (`REL-05c`).
 - [`fleet-corruption-and-fencing/main.go`](../agent_work/ch10b/adversarial/fleet-corruption-and-fencing/main.go) (`FLEET-01a`–`FLEET-04`): deleted slot `3` (`FLEET-01a`), bit-flipped slot `3`'s envelope and deep WAL-frame payload (`FLEET-01b`), deleted opening fence slot `1` (`FLEET-01c`), and shipped a valid non-recipe SQL table (`FLEET-01d`) in a `16`-DB SeaweedFS fleet, confirming `InspectFleet` isolated the exact damaged database and named the exact `LastGood` restore point while all healthy DBs rebuilt E1; injected `PartialPut` plus a stray key under `log/` (`FLEET-02`: never counted as restore points, checker bounds ok); rebuilt `8` DBs while old writers held them open (`FLEET-03a`, `8/8` fenced) and raced `4` rebuild workers against `2` active writers hammering `16` DBs (`FLEET-03b`, `16/16` fenced, `0` lost `store-durable` acks); and verified `10.4` at `32` DBs plus `-capacity 200000` hitting `FATAL descriptor limit` (`FLEET-04`).
 
-**10b Run 1** ([`agent_work/ch10b/adversarial/results-run1.txt`](../agent_work/ch10b/adversarial/results-run1.txt)) found **`23 HELD, 2 BROKEN`** (`REL-04` and `REL-05c`), which together with [`agent_work/ch10b/REVIEW-1.md`](../agent_work/ch10b/REVIEW-1.md) (3 blockers, 2 should-fix, 2 nits) were fixed in [`agent_work/ch10b/REPAIR-REPORT.md`](../agent_work/ch10b/REPAIR-REPORT.md):
+**10b Run 1** ([`agent_work/ch10b/adversarial/results-run1.txt`](../agent_work/ch10b/adversarial/results-run1.txt)) produced **`23 HELD, 2 BROKEN`** (`REL-04` and `REL-05c`), which together with the findings in [`agent_work/ch10b/REVIEW-1.md`](../agent_work/ch10b/REVIEW-1.md) (3 blockers, 2 should-fix, 2 nits) were resolved in [`agent_work/ch10b/REPAIR-REPORT.md`](../agent_work/ch10b/REPAIR-REPORT.md):
 
-- **`REL-04` & Review #1 (fixed):** `Coordinator.Rollback` called `Destination.Discard` before `Catalog.FinishRelocation(..., RelocationRolledBack)`, so rolling back when destination `b` was down left `a` owning epoch `3` in `databases` while `relocations.state` stayed `running`—blocking any new relocation and turning a retry into `superseded`. Fixed by recording `rolled-back` immediately after `source.Claim`, making `Destination.Discard` best-effort (`Result.DiscardErr`), recognizing a retried rollback after `source.Claim` via `reclaimedBySource`, and adding Experiment 10.3 case `32`.
-- **`REL-05c` & Review #2 (fixed):** Repeated `Node.Activate` on a node already holding `epoch` returned early without calling `recordShipped`, leaving `location = ""` and stale `last_shipped`/`schema_version` forever if the first activation failed at `catalog.db` or crashed after writing `.owner`. Fixed to re-record the catalog when the store still ends at `position + 1`, while leaving the catalog untouched if the node already shipped writes past the fence.
-- **Review #3–#7 (fixed):** Experiment 10.2 Part B now measures only the write loop (excluding `setup()` and `Reap()`), redraws up to `5` times if a random kill misses the write window, and enforces an `EXACT` check that every random kill landed in flight; Experiment 10.3 defers killing remaining child processes on failed recovery and asserts `len(env.Tracker.Problems) == 0`; `Node.Drain` fails if the final eviction reported problems; `user_version` is decoded as full 4-byte big-endian; and Experiment 10.4 prints `each owns 62-63` for uneven splits.
+- **`REL-04` & Finding #1 (fixed):** `Coordinator.Rollback` called `Destination.Discard` before `Catalog.FinishRelocation(..., RelocationRolledBack)`, so rolling back while destination `b` was down left `a` owning epoch `3` in `databases` while `relocations.state` stayed `running`—blocking any new relocation and turning a retry into `superseded`. Fixed by recording `rolled-back` immediately after `source.Claim`, making `Destination.Discard` best-effort (`Result.DiscardErr`), recognizing a retried rollback after `source.Claim` via `reclaimedBySource`, and adding Experiment 10.3 case `32`.
+- **`REL-05c` & Finding #2 (fixed):** Repeated `Node.Activate` on a node already holding `epoch` returned early without calling `recordShipped`, leaving `location = ""` and stale `last_shipped`/`schema_version` permanently if the first activation failed at `catalog.db` or crashed after writing `.owner`. Fixed to re-record the catalog when the store still ends at `position + 1`, while leaving the catalog untouched if the node already shipped writes past the fence.
+- **Findings #3–#7 (fixed):** Experiment 10.2 Part B now measures only the write loop (excluding `setup()` and `Reap()`), redraws up to `5` times if a random kill misses the write window, and enforces an `EXACT` check that every random kill landed in flight; Experiment 10.3 defers killing remaining child processes on failed recovery and asserts `len(env.Tracker.Problems) == 0`; `Node.Drain` fails if the final eviction reported problems; `user_version` is decoded as full 4-byte big-endian; and Experiment 10.4 prints `each owns 62-63` for uneven splits.
 
-**10b Run 2** ([`agent_work/ch10b/adversarial/results-run2.txt`](../agent_work/ch10b/adversarial/results-run2.txt)) and the final run ([`agent_work/ch10b/adversarial/results.txt`](../agent_work/ch10b/adversarial/results.txt)) passed **`25 HELD, 0 BROKEN`**, and [`agent_work/ch10b/REVIEW-2.md`](../agent_work/ch10b/REVIEW-2.md) passed with `0` new findings.
+**10b Run 2** ([`agent_work/ch10b/adversarial/results-run2.txt`](../agent_work/ch10b/adversarial/results-run2.txt)) and the final run ([`agent_work/ch10b/adversarial/results.txt`](../agent_work/ch10b/adversarial/results.txt)) passed **`25 HELD, 0 BROKEN`**, and the follow-up verification in [`agent_work/ch10b/REVIEW-2.md`](../agent_work/ch10b/REVIEW-2.md) passed with `0` new findings.
 
 ---
 
@@ -9028,45 +9179,45 @@ Chapter 10 was built and attacked in two chunks—the service core plus Experime
 
 ### Answers to the eight platform design questions
 
-Every answer below is grounded in this chapter's experiments and adversarial tests:
+Every answer below is grounded in this chapter's experiments and stress tests:
 
 1. **How many connections and file descriptors can remain open?**
-   Each open service database holds **`3` SQLite connections** (the writer plus `walship`'s control and pin connections) and opens **`7` file descriptors** (`3` `.db` + `3` `-wal` + `1` process-shared `-shm` via `unixInodeInfo`, `src/os_unix.c:1323-1342`, measured in Experiment 10.1's `0 / 7 / 14` descriptor progression). Bounding open databases per node to `K` via LRU eviction (`internal/connmgr`) caps descriptor growth at **`<= 3 * 3 * K + 32`** (e.g., `320` for `K = 32` in Experiment 10.4, verified against `procstat.FileLimit()` at startup and tested by `FLEET-04`). Closed databases hold `0` descriptors.
+   Each open service database holds **`3` SQLite connections** (the writer plus `walship`'s control and pin connections) and opens **`7` file descriptors** (`3` `.db` + `3` `-wal` + `1` process-shared `-shm` via `unixInodeInfo`, `src/os_unix.c:1323-1342`, measured in Experiment 10.1's `0 / 7 / 14` descriptor progression). Bounding open databases per node to `K` via LRU eviction (`internal/connmgr`) caps descriptor growth at **`<= 3 * 3 * K + 32`** (for example, `320` for `K = 32` in Experiment 10.4, verified against `procstat.FileLimit()` at startup and tested by `FLEET-04`). Closed databases hold `0` descriptors.
 2. **How much cache memory is consumed per database?**
-   Each connection sets `cache_size = -256` (`256 KiB`), giving a standing upper bound of `3K * (2 * 256 KiB + 256 KiB) + 32 MiB` (`41 MiB` for `K = 4`, `104 MiB` for `K = 32`), which held across every reply in Experiments 10.1–10.4 (`15`, `308`, `1,726`, `2,760`, and `11,016` replies in one lab run of each; the counts after 10.1 are run-dependent) and across `600` rotated databases in `CAT-05a`. Keeping `fence.Adapter`'s slot cache metadata-only (`CAT-05b`) is essential so long segment histories do not leak RAM inside open handles.
+   Each connection sets `cache_size = -256` (`256 KiB`), giving a standing upper bound of `3K * (2 * 256 KiB + 256 KiB) + 32 MiB` (`41 MiB` for `K = 4`, `104 MiB` for `K = 32`). That bound held across every reply in Experiments 10.1–10.4 (`15`, `308`, `1,726`, `2,760`, and `11,016` replies in one lab run of each; counts after 10.1 are run-dependent) and across `600` rotated databases in `CAT-05a`. Keeping `fence.Adapter`'s slot cache metadata-only (`CAT-05b`) is essential so long segment histories do not leak RAM inside open handles.
 3. **What is the write-ownership model?**
    The control-plane catalog names one `owner` and monotonically increasing `epoch` per database; the object store enforces write-once position slots (`If-None-Match: *`); and every writer obeys `fence.Adapter`'s rule ("append only at `end + 1` of your validated chain, and stop with `FencedError` if any slot holds a higher epoch"). Ownership changes only when the new owner's fence snapshot lands in the store—either abruptly by `claim` (Experiment 10.1, losing unshipped `local-durable` writes) or cooperatively by seven-step relocation (Experiment 10.3, draining and keeping them).
 4. **What happens when a reader blocks checkpoints?**
-   The shipper's own pin deliberately caps `walCheckpoint` (`src/wal.c:2233-2251`) at shipped frames while writers disable autocheckpointing (`wal_autocheckpoint=0`). An external long-lived reader likewise caps `PASSIVE` checkpoints so `-wal` grows while it stays open (Chapter 5.3, Chapter 9.2), and during relocation it blocks `sqlite3WalClose` (`src/wal.c:2529`) from checkpointing and deleting `-wal`/`-shm`—so `Node.Drain` refuses cleanly with `0` writable nodes until the reader closes, after which `Resume` completes without data loss (`REL-03a`, `REL-03b`).
+   The shipper's own pin deliberately caps `walCheckpoint` (`src/wal.c:2233-2251`) at shipped frames while writers disable autocheckpointing (`wal_autocheckpoint=0`). An external long-lived reader likewise caps `PASSIVE` checkpoints so `-wal` grows while it stays open (Chapter 5, Experiment 5.3; Chapter 9, Experiment 9.2). During relocation, it also blocks `sqlite3WalClose` (`src/wal.c:2529`) from checkpointing and deleting `-wal` and `-shm`, so `Node.Drain` refuses cleanly with `0` writable nodes until the reader closes, after which `Resume` completes without data loss (`REL-03a`, `REL-03b`).
 5. **How are consistent snapshots produced?**
-   Two ways: `walship` reads pages `1..N` through `sqlite_dbpage` inside its `BEGIN IMMEDIATE` transaction (Chapter 9.4), and fence snapshots during `Claim` or `Activate` are produced by replaying the validated snapshot + segment chain in Go and checking every commit's SHA-256. Experiment 10.4's checker verified `3,248` (`500` DBs) and `13,000` (`2,000` DBs) published restore points with `0` failures.
+   Two ways: `walship` reads pages `1..N` through `sqlite_dbpage` inside its `BEGIN IMMEDIATE` transaction (Chapter 9, Experiment 9.4), and fence snapshots during `Claim` or `Activate` are produced by replaying the validated snapshot-and-segment chain in Go and verifying every commit's SHA-256. Experiment 10.4's checker verified `3,248` (`500` DBs) and `13,000` (`2,000` DBs) published restore points with `0` failures.
 6. **How is a database moved between machines without two writers?**
    Through the seven-step relocation protocol (`service/relocate`): catalog epoch bump (1), source seal (2), drain to at-rest (3), destination stage (4), hash verify (5), store fence and activate (6), and source retire (7). Step `2` stops a cooperative source; step `6` binds an uncooperative source even if `.sealed` is deleted (`REL-05a`). Experiment 10.3 verified `<= 1` writable node across `32/32` fault cases, while removing steps `2` and `6` (`skip-fence`) immediately produced `2` writable nodes.
 7. **Which metadata belongs in a global control plane versus local SQLite files?**
-   - **Control plane (`catalog`):** `owner`, `epoch`, `location`, `last_shipped`, `schema_version`, per-connection settings (Chapter 8.1), and the `relocations` row (`step`, `position`, `sha256`, `state`).
+   - **Control plane (`catalog`):** `owner`, `epoch`, `location`, `last_shipped`, `schema_version`, per-connection settings (Chapter 8, Experiment 8.1), and the `relocations` row (`step`, `position`, `sha256`, `state`).
    - **Local node disk:** `<id>.db` (carrying persistent file settings: page size, encoding, `application_id`, `user_version`, `journal_mode=wal`) plus crash-surviving sidecars (`.owner`, `.atrest`, `.sealed`, `.staged`).
-   - **Object store:** the authoritative slot lineage. A stale catalog `last_shipped` is self-healing on the next ship or repeated `Activate` (`REL-05c`), and `RecordShipped` ignores `ErrStaleEpoch` once the store accepted a put (`FENCE-03b`).
+   - **Object store:** The authoritative slot lineage. A stale catalog `last_shipped` heals on the next ship or repeated `Activate` (`REL-05c`), and `RecordShipped` ignores `ErrStaleEpoch` once the store accepted a put (`FENCE-03b`).
 8. **What is the recovery path after an interrupted upload or ownership transfer?**
-   - **Interrupted upload:** a failed put marks the shipper broken and evicts the database; the next open lists the store (`fence.Adapter` treats byte-identical retries as success and surfaces `fail-after-put` / `crash-after-put` puts already in S3) and ships any unshipped local commits as a segment or discontinuity snapshot (Experiments 10.2, 10.3 cases `22–31`, `FENCE-05`).
-   - **Interrupted transfer:** a fresh coordinator reads `relocations` and lists S3: newest epoch `== to_epoch` rolls forward by adopting the fence (cases `6`, `7`, `13`, `18`, `19`, `25`, `29`); newest `< to_epoch` either replays idempotent steps `2–7` (`Resume`) or drains and re-claims on the source at `to_epoch + 1`, records `rolled-back`, and best-effort discards `.staged` (`Rollback`, cases `8–12`, `20–21`, `30–32`); newest `> to_epoch` finishes `rolled-back` if the source already reclaimed or `superseded` if another node took over (`REL-05b`).
+   - **Interrupted upload:** A failed put marks the shipper broken and evicts the database. The next open lists the store (`fence.Adapter` treats byte-identical retries as success and surfaces `fail-after-put` or `crash-after-put` puts already in S3) and ships any unshipped local commits as a segment or discontinuity snapshot (Experiments 10.2, 10.3 cases `22–31`, `FENCE-05`).
+   - **Interrupted transfer:** A fresh coordinator reads `relocations` and lists S3. If the newest epoch equals `to_epoch`, it rolls forward by adopting the fence (cases `6`, `7`, `13`, `18`, `19`, `25`, `29`). If the newest epoch is `< to_epoch`, it either replays idempotent steps `2–7` (`Resume`) or drains and re-claims on the source at `to_epoch + 1`, records `rolled-back`, and best-effort discards `.staged` (`Rollback`, cases `8–12`, `20–21`, `30–32`). If the newest epoch is `> to_epoch`, it finishes `rolled-back` when the source already reclaimed or `superseded` when another node took over (`REL-05b`).
 
 ### Operational signals worth exporting
 
 Every signal below is already produced by the capstone packages:
 
-- **Per database:** `owner`, `epoch`, `last_shipped`, and `schema_version` (`catalog`); unshipped local lag (`local_position - last_shipped`, measuring `local-durable` exposure); `walship.CycleReport.Checkpoint` (`busy`, `log`, `checkpointed`) and `FullBackfill` (detecting checkpoint-blocking readers); WAL change kind per cycle (frequent `WALDiscontinuity` means expensive full snapshots); at-rest SHA-256 on clean close; relocation `step` and `state`; node `Status` (`writable`, `sealed`, `fenced`); `fence.Inspect` `LastGood` and failure count; store slot count and total bytes (restore cost).
-- **Per node process:** descriptors above baseline vs `DescriptorLimit()`, RSS growth vs `MemoryLimit()`, `connmgr.Stats` (open count, evictions), and background `TakeProblems()` count.
+- **Per database:** `owner`, `epoch`, `last_shipped`, and `schema_version` (`catalog`); unshipped local lag (`local_position - last_shipped`, measuring `local-durable` exposure); `walship.CycleReport.Checkpoint` (`busy`, `log`, `checkpointed`) and `FullBackfill` (detecting checkpoint-blocking readers); WAL change kind per cycle (frequent `WALDiscontinuity` means expensive full snapshots); at-rest SHA-256 on clean close; relocation `step` and `state`; node `Status` (`writable`, `sealed`, `fenced`); `fence.Inspect` `LastGood` and failure count; and store slot count and total bytes (restore cost).
+- **Per node process:** Descriptors above baseline vs `DescriptorLimit()`, RSS growth vs `MemoryLimit()`, `connmgr.Stats` (open count, evictions), and background `TakeProblems()` count.
 
 ### What this design does not handle
 
 - **Multi-host control plane:** `catalog.db` is one SQLite file on one host; a real multi-machine platform needs a networked consensus-backed control plane exposing the same atomic `Claim` and `BeginRelocation` operations (and managing its own availability).
-- **Automatic failover and leases:** ownership moves only when an operator or orchestrator calls `Claim` or `relocate.Run`; there are no heartbeat leases, failure detectors, or automatic retries of stuck `running` relocations.
+- **Automatic failover and leases:** Ownership moves only when an operator or orchestrator calls `Claim` or `relocate.Run`; there are no heartbeat leases, failure detectors, or automatic retries of stuck `running` relocations.
 - **Periodic compaction snapshots and slot pruning:** `walship.SnapshotEvery` is `0` (only fence snapshots reset restore length). Adding compaction snapshots requires putting them at `end + 1` in the writer's epoch (not at the last segment's position, because slots are write-once), and pruning old prefixes requires recording a floor position in the catalog so `CheckLineage` can distinguish a pruned prefix from a deleted slot `1`.
-- **Garbage collection:** orphaned local files on a fenced node remain until re-claimed or retired, and historical slots in S3 are never deleted.
-- **Non-atomic object stores:** a truncated partial object written into a write-once slot wedges that database past `LastGood` because slots cannot be overwritten (`REL-02a`, `FLEET-02`).
-- **Power loss beyond Chapter 9.2's model:** Chapter 10 injects process kills and store faults, not power cuts, torn disk writes, or SeaweedFS storage failures.
-- **Ambiguous client replies:** if a node dies after committing or shipping and before printing `ok write …` (as at `catalog.db-wal` in Experiment 10.2), the client sees a broken connection and must use idempotent writes or query the database to learn whether its write landed.
-- **Security, quotas, multi-tenant isolation, complex DDL migrations, and SQLite version upgrades:** out of scope; cross-version upgrades invalidate E1 byte hashes at header bytes `96–99`.
+- **Garbage collection:** Orphaned local files on a fenced node remain until re-claimed or retired, and historical slots in S3 are never deleted.
+- **Non-atomic object stores:** A truncated partial object written into a write-once slot wedges that database past `LastGood` because slots cannot be overwritten (`REL-02a`, `FLEET-02`).
+- **Power loss beyond Chapter 9, Experiment 9.2's model:** Chapter 10 injects process kills and store faults, not power cuts, torn disk writes, or SeaweedFS storage failures.
+- **Ambiguous client replies:** If a node dies after committing or shipping and before printing `ok write …` (as at `catalog.db-wal` in Experiment 10.2), the client sees a broken connection and must use idempotent writes or query the database to learn whether its write landed.
+- **Security, quotas, multi-tenant isolation, complex DDL migrations, and SQLite version upgrades:** Out of scope; cross-version upgrades invalidate E1 byte hashes at header bytes `96–99`.
 
 ---
 
@@ -9076,6 +9227,6 @@ Answers are in [answers.md](answers.md).
 
 1. Why can SeaweedFS / S3 conditional writes (`If-None-Match: *`) not enforce single-writer ownership by themselves, and what happens in Experiment 10.1's `resume-from-global-end` mutant when `If-None-Match: *` stays enabled while `fence.Adapter`'s epoch check is removed?
 2. Why does a **takeover** (`Node.Claim`, Experiment 10.1) lose the previous owner's unshipped `local-durable` acknowledgements whereas a **relocation** (`relocate.Coordinator`, Experiment 10.3) preserves them—and why did Experiment 10.3 need a separate `SealSource` step after `FenceEpoch`?
-3. In Experiment 10.2 Part A, why did `store-durable` kills at `fsync 29`, `57`, and `85` land on `catalog.db-wal` and recover `user_version` **one step ahead** of the client's acknowledged count even after the node directory `_work/10.2/node/a/` was completely deleted?
+3. In Experiment 10.2 Part A, why did `store-durable` kills at `fsync 29`, `57`, and `85` land on `catalog.db-wal` and recover `user_version` **one step ahead** of the client's acknowledged count even after node `a`'s directory (`_work/10.2/node/a/` when run directly) was completely deleted?
 4. In Experiment 10.3, why did a `fail-before-put` on `a`'s final segment (case `22`) move the fence point from position `5` to position `4` while keeping the exact same drained SHA-256 (`d53fc07b1293…`), and why must `Coordinator.Rollback` record `rolled-back` in the catalog **before** calling `Destination.Discard` (case `32` / `REL-04`)?
 5. In Experiment 10.4, why did `PRAGMA wal_checkpoint(TRUNCATE)` find **`WAL frames found: 0`** across all `500` (and `2,000`) databases at quiesce, and why did the empty-disk rebuild read **`5,496` objects** (`22,000` at `2,000` databases)—exactly **twice** the number of pre-rebuild slots?

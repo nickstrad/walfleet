@@ -1,0 +1,23 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant W1 as writer-1
+  participant S as SQLite / -shm
+  participant W2 as writer-2
+  alt C1: BEGIN IMMEDIATE (TRANS_NONE)
+    W1->>S: BEGIN IMM
+    W2->>S: BEGIN IMM
+    Note over W2: sleeps on busy_timeout
+    W1->>S: COMMIT
+    S-->>W2: SQLITE_OK
+  else C3: DEFERRED + SELECT (TRANS_READ)
+    W2->>S: SELECT (pin)
+    W1->>S: BEGIN IMM
+    W2->>S: INSERT
+    S-->>W2: BUSY (5) now
+    W1->>S: COMMIT
+    W2->>S: INSERT again
+    S-->>W2: BUSY_SNAPSHOT
+    W2->>S: ROLLBACK, IMM
+    S-->>W2: SQLITE_OK
+  end

@@ -1,0 +1,17 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant N as Node a
+  participant D as Local FS (WAL)
+  participant S3 as SeaweedFS S3
+  C->>N: write S3
+  N->>D: -wal fsync
+  N->>S3: put segment (If-None-Match)
+  S3-->>N: 200 ok (S3)
+  N->>D: checkpoint
+  N->>D: catalog fsync
+  Note over N,D: strace SIGKILL on fsync
+  N--xC: ok (lost)
+  Note over C,S3: wipe local dir, Claim from S3
+  S3-->>N: restore (version = ack + 1)

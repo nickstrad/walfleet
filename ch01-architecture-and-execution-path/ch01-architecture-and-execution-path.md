@@ -12,20 +12,20 @@
 
 > **How to run the experiments**
 >
-> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to start the runner from the host. Build the `lab` image once, from the repository root:
+> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to launch the repository's experiment runner (`cmd/course`) from the host. Build the `lab` Docker image (`Dockerfile.lab`) once, from the repository root:
 >   ```text
 >   docker compose build lab
 >   ```
->   The image already contains the pinned SQLite `3.53.4` source tree, the C tools (`sqlite3`, `showwal`, `dbhash`), `strace`, and the DuckDB CLI that presents the results.
-> - **Run the experiments** from the repository root. Each command starts the `lab` container, runs the experiment in it, and prints its walkthrough; add `-i` (`go run ./cmd/course run -i 1.2`) to stay in DuckDB afterwards with the tables loaded:
+>   The image bundles the pinned SQLite `3.53.4` source tree, SQLite's C tools (`sqlite3`, `showwal`, `dbhash`), `strace`, and the DuckDB CLI that renders result tables.
+> - **Run the experiments** from the repository root. Each command starts the `lab` container, executes the Go experiment inside it, and prints a formatted DuckDB walkthrough; add `-i` (`go run ./cmd/course run -i 1.2`) to stay in the DuckDB shell afterwards with the result tables loaded:
 >   ```text
 >   go run ./cmd/course run 1.1
 >   go run ./cmd/course run 1.2
 >   go run ./cmd/course run 1.3
 >   ```
->   In the container, scratch databases and tables are written under `/work/1.1/`, `/work/1.2/`, and `/work/1.3/` (the `lab-work` volume); run directly, under `_work/1.1/`, `_work/1.2/`, and `_work/1.3/`, which are git-ignored and safe to delete.
-> - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert`). Run this way it prints only its verdict and leaves its tables under `_work/1.2/results/`; it needs the C CLI on the host (`go run ./cmd/course fetch-source`, then `go run ./cmd/course build-tools`), and on macOS it skips the parts marked **Linux only** (in this chapter, the `strace`, twin check, `ANALYZE` limit, and `-vfstrace` sections of Experiment 1.2).
-> - **Measured platform:** The stored evidence in this chapter, including the syscall and VFS traces, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). The CLI's path and its optional compile options, and the sync syscall the CLI uses, are run-dependent and not part of the stored evidence.
+>   Inside the container, scratch databases and result tables are written under `/work/1.1/`, `/work/1.2/`, and `/work/1.3/` (the `lab-work` Docker volume). When run directly on the host, they go under `_work/1.1/`, `_work/1.2/`, and `_work/1.3/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** each experiment is a standalone Go program (for example, `go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert`). Run directly, it prints only its verdict and leaves its CSV result tables under `_work/1.2/results/`. Host runs that cross-check against SQLite's C `sqlite3` CLI require building the pinned C tools first (`go run ./cmd/course fetch-source`, then `go run ./cmd/course build-tools`). On macOS, direct host runs skip sections marked **Linux only** (in this chapter, the `strace`, twin check, `ANALYZE` limit, and `-vfstrace` parts of Experiment 1.2).
+> - **Measured platform:** The stored evidence in this chapter, including the syscall and VFS traces, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). Run-dependent values—the CLI binary's path, its optional compile flags, and which sync syscall it calls—are printed during a run and excluded from the stored evidence.
 
 ---
 
@@ -80,9 +80,9 @@ SQLite is an embedded library, not a separate database server process. A Go prog
 Each layer owns a distinct job:
 
 1. **Interface.** The public C functions (`sqlite3_prepare_v2`, `sqlite3_step`, `sqlite3_finalize`). They acquire the connection's mutex, manage prepared statements, and translate internal status codes into return values.
-2. **SQL Compiler.** The tokenizer splits SQL text into tokens; the parser checks grammar; the query planner chooses table and index scan order; the code generator emits a **bytecode** program. This course names the compiler and does not read its C source. A platform managing many database files cannot observe or replace the compiler, and no state-capture method depends on it.
+2. **SQL Compiler.** The tokenizer splits SQL text into tokens; the parser checks grammar; the query planner chooses table and index scan order; the code generator emits a **bytecode** program. We name the compiler here without reading its C source: a platform managing many database files cannot observe or replace it, and no state-capture method depends on it.
 3. **VDBE (Virtual Database Engine).** A virtual machine that runs compiled bytecode one instruction (an **opcode**) at a time over numbered value slots called **registers**. A **prepared statement** (`sqlite3_stmt`) is a `Vdbe` struct holding its program, registers, and **cursors** (handles pointing at rows inside table or index trees).
-4. **B-tree.** Organizes every table and index as a balanced tree of fixed-size blocks called **pages** (4,096 bytes each by default, numbered starting at 1). Page 1 begins with a 100-byte database header holding persistent file settings and counters, including the **schema cookie** (incremented whenever tables or indexes change) and the **file change counter** (header bytes 24–27, paired with **version-valid-for** at bytes 92–95). Each table row is stored as a **cell** on a **leaf page** and keyed by a 64-bit signed integer called a **rowid**; deleting or shrinking cells leaves unused holes called **freeblocks** inside the page. When a row is larger than one page can hold locally, its trailing bytes spill onto linked **overflow pages**. Emptied pages move onto a **freelist**—a chain of **freelist trunk pages** pointing to **freelist leaf pages**—for later reuse.
+4. **B-tree.** Organizes every table and index as a balanced tree of fixed-size blocks called **pages** (4,096 bytes each by default, numbered starting at 1). Page 1 begins with a 100-byte database header holding persistent file settings and counters, including the **schema cookie** (incremented whenever tables or indexes change) and the **file change counter** (header bytes 24–27, paired with **version-valid-for** at bytes 92–95). Each table row is stored as a **cell** on a **leaf page** and keyed by a 64-bit signed integer called a **rowid**. Deleting or shrinking cells leaves unused holes called **freeblocks** inside the page; when a row exceeds what one page can hold locally, its trailing bytes spill onto linked **overflow pages**. Emptied pages move onto a **freelist**—a chain of **freelist trunk pages** pointing to **freelist leaf pages**—for later reuse.
 5. **Pager and Page Cache.** Reads pages into memory, tracks modified (**dirty**) pages, coordinates locks between connections, and makes transactions **atomic** (all-or-nothing) through one of two logging modes configured by `PRAGMA` (SQLite's command for reading and changing file or connection settings):
    - **Rollback journal (`journal_mode=delete`).** Before changing a page in `.db`, the pager copies the page's original bytes into a sibling `-journal` file and flushes it to durable storage. If the process dies mid-commit, the next opener reads `-journal` and restores the original pages. Deleting `-journal` is the commit point.
    - **Write-ahead log (`journal_mode=wal`).** Instead of overwriting `.db` during a commit, the pager appends each modified page to a sibling `-wal` file as a **frame** (a 24-byte frame header followed by the 4,096-byte page image) and indexes those frames in a shared-memory file (`-shm`). A transaction commits when its final frame records the database's new page count. Later, a **checkpoint** copies committed frames from `-wal` back into `.db`.
@@ -90,9 +90,9 @@ Each layer owns a distinct job:
 
 A platform holding thousands of SQLite files touches only two boundaries in that diagram: **connections** above the pager (SQL statements, transactions, per-connection settings) and **files** below the pager (the `.db` file and its **sidecar files**: `-wal`, `-shm`, and `-journal`).
 
-**WAL mode as the platform default.** Platform databases in this course run in WAL mode (`journal_mode=wal`) because WAL lets readers run concurrently alongside one writer and records committed changes as an append-only stream of page frames. This chapter includes rollback-mode (`journal_mode=delete`) contrasts in two places on purpose: Experiment 1.2 traces the same `INSERT` in both modes to show commits move from overwriting `.db` to appending frames to `-wal`, and Experiment 1.3 runs rollback-mode contrasts beside its canonical WAL database to isolate how each mode handles the header change counter, deleted space, and rolled-back work.
+**WAL mode as the platform default.** Databases in this book default to WAL mode (`journal_mode=wal`) because WAL lets readers run concurrently alongside one writer and records committed changes as an append-only stream of page frames. This chapter includes rollback-mode (`journal_mode=delete`) contrasts in two places: Experiment 1.2 traces the same `INSERT` in both modes to show commits move from overwriting `.db` to appending frames to `-wal`, and Experiment 1.3 runs rollback-mode contrasts beside its canonical WAL database to isolate how each mode handles the header change counter, deleted space, and rolled-back work.
 
-**The Rebuild Ladder (rung R0).** Every chapter advances one operational goal: capture a database's durable state deterministically and prove that a rebuilt copy equals the original. This chapter builds rung **R0 (Recipe)**—a seeded, deterministic workload (`internal/recipe`) whose closed database file has one known SHA-256 hash after every numbered step *k*, proven at equality level **E1 (bytes)** (verbatim file SHA-256). Later chapters verify snapshots, WAL replays, crash recoveries, and fleet rebuilds against those exact hashes.
+**The Rebuild Ladder (rung R0).** Every chapter advances one operational goal: capture a database's durable state deterministically and prove that a rebuilt copy equals the original. This chapter builds rung **R0 (Recipe)**—a seeded, deterministic Go workload (implemented in this repository's `internal/recipe` package) whose closed database file has one known SHA-256 hash after every numbered step *k*, proven at equality level **E1 (bytes)** (verbatim file SHA-256). Later chapters verify snapshots, WAL replays, crash recoveries, and fleet rebuilds against those exact hashes.
 
 ---
 
@@ -100,16 +100,16 @@ A platform holding thousands of SQLite files touches only two boundaries in that
 
 When a Go program commits one `INSERT`, which layer does what between `sqlite3_prepare_v2` and the bytes on disk, and which of those layers can a platform see from outside the library?
 
-Before tracing that `INSERT`, the course verifies the exact SQLite builds it runs. Every experiment in this chapter imports two shared packages introduced by the foundation chunk (linked rather than inlined):
+Before tracing that `INSERT`, we verify the exact SQLite builds under test. Every experiment in this chapter imports two shared Go helper packages from the repository root (linked below rather than inlined in this chapter):
 
-- [`internal/sqlitex`](../internal/sqlitex/): opens databases through `modernc.org/sqlite` with explicit file and connection settings ([`settings.go`](../internal/sqlitex/settings.go), [`open.go`](../internal/sqlitex/open.go)). New databases apply settings in `layout -> journal_mode -> identity` order, and opening an existing database refuses to switch it into or out of WAL mode. The package also verifies `sqlite_source_id()` and linked `modernc.org/sqlite` / `modernc.org/libc` module versions against `sqlite/PIN` (`MustPinCheck`, `MustPinCheckMemory` in [`pin.go`](../internal/sqlitex/pin.go)), manages `_work/N.M/` scratch directories (`MustWorkDir`, `WorkBase` in [`workdir.go`](../internal/sqlitex/workdir.go)), and locates and runs the pinned C `sqlite3` CLI (`LocateCLI`, `OpenScript` in [`cli.go`](../internal/sqlitex/cli.go)).
-- [`internal/trace`](../internal/trace/): runs a child command under Linux `strace` and parses its syscalls ([`strace.go`](../internal/trace/strace.go), [`strace_linux.go`](../internal/trace/strace_linux.go)), merges CLI `-vfstrace` output with `strace` into one ordered stream (`RunCLIMerged` in [`merge.go`](../internal/trace/merge.go), [`vfs.go`](../internal/trace/vfs.go)), and prints the Docker fallback notice on non-Linux hosts (`Supported`, `PrintLinuxOnly` in [`linuxonly.go`](../internal/trace/linuxonly.go)).
+- [`internal/sqlitex`](../internal/sqlitex/): opens databases through `modernc.org/sqlite` (a pure-Go build translated from SQLite's C source) with explicit file and connection settings ([`settings.go`](../internal/sqlitex/settings.go), [`open.go`](../internal/sqlitex/open.go)). New databases apply settings in `layout -> journal_mode -> identity` order (layout settings such as `page_size` and `auto_vacuum`, then `journal_mode`, then identity fields such as `application_id`), and opening an existing database refuses to switch it into or out of WAL mode. The package also verifies `sqlite_source_id()` and linked `modernc.org/sqlite` / `modernc.org/libc` module versions against the repository's version pin file `sqlite/PIN` (`MustPinCheck`, `MustPinCheckMemory` in [`pin.go`](../internal/sqlitex/pin.go)), manages `_work/N.M/` scratch directories (`MustWorkDir`, `WorkBase` in [`workdir.go`](../internal/sqlitex/workdir.go)), and locates and runs the pinned C `sqlite3` CLI (`LocateCLI`, `OpenScript` in [`cli.go`](../internal/sqlitex/cli.go)).
+- [`internal/trace`](../internal/trace/): runs a child command under Linux `strace` and parses its syscalls ([`strace.go`](../internal/trace/strace.go), [`strace_linux.go`](../internal/trace/strace_linux.go)), merges SQLite CLI `-vfstrace` output (the CLI's built-in VFS call tracer) with `strace` into one ordered stream (`RunCLIMerged` in [`merge.go`](../internal/trace/merge.go), [`vfs.go`](../internal/trace/vfs.go)), and prints the Docker fallback notice on non-Linux hosts (`Supported`, `PrintLinuxOnly` in [`linuxonly.go`](../internal/trace/linuxonly.go)).
 
 ### Experiment 1.1 — Pin check (`1.1-pin-check`)
 
-- **Claim:** Both SQLite builds used by the course—the `modernc.org/sqlite` Go driver and the `sqlite3` C CLI—are SQLite 3.53.4 at the pinned Fossil check-in, include the required page-inspection virtual tables (`sqlite_dbpage`, which exposes raw pages, and `dbstat`, which reports per-page B-tree statistics) and upstream's WAL sync default (`DEFAULT_WAL_SYNCHRONOUS=2`, meaning `FULL`), and agree on all 15 listed file-format and I/O compile options.
-- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
-- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
+- **Claim:** Both SQLite builds used by the experiments—the `modernc.org/sqlite` Go driver and the `sqlite3` C CLI—run SQLite 3.53.4 at the pinned Fossil check-in recorded in `sqlite/PIN`. Both include the required page-inspection virtual tables (`sqlite_dbpage`, which exposes raw pages, and `dbstat`, which reports per-page B-tree statistics) and upstream's WAL sync default (`DEFAULT_WAL_SYNCHRONOUS=2`, meaning `FULL`), and both agree on all 15 listed file-format and I/O compile options.
+- **Evidence form:** `EXACT` (every stored CSV table in `evidence/1.1-pin-check/` must match on every run; the run-dependent `info` tables are excluded).
+- **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
   go run ./cmd/course run 1.1
   ```
@@ -457,9 +457,9 @@ SELECT name, driver, cli, CASE WHEN same THEN 'same' ELSE 'DIFFERENT' END AS ver
 FROM format_options ORDER BY name;
 ```
 
-`course run` also prints the run-dependent values of this machine, which are not part of the stored evidence: the path of the CLI it used and the compile options that only one of the two builds has.
+`go run ./cmd/course run 1.1` also prints machine-specific values excluded from the stored evidence: the path of the `sqlite3` CLI binary it found and the compile options enabled in only one of the two builds.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/1.1-pin-check/`](evidence/1.1-pin-check/), and `go run ./cmd/course check evidence ch01` compares a fresh run with them byte for byte.
+Captured evidence below shows the walkthrough as rendered in the `lab` container. The underlying CSV tables live in [`evidence/1.1-pin-check/`](evidence/1.1-pin-check/), and `go run ./cmd/course check evidence ch01` verifies a fresh run against them byte for byte.
 
 <!-- include: evidence/1.1-pin-check.txt -->
 ```text
@@ -636,18 +636,78 @@ Experiment verdict: PIN CHECK OK
 
 **Reading the evidence:**
 
-- **A1–A2 (pin and linked modules).** The driver's `sqlite_source_id()`, read from an in-memory database opened through `database/sql`, is verified against `sqlite/PIN` (A1 shows the pin in full). The module rows of A2 read Go's compiled-in `runtime/debug.ReadBuildInfo()` rather than `go.mod`, proving the binary linked `modernc.org/sqlite v1.60.1` and `modernc.org/libc v1.77.1`, and the `sqlite_version()` rows confirm `3.53.4`.
-- **A3–A4 (driver compile options).** `PRAGMA compile_options` reports 56 options in the Go driver (A4). A3 verifies the three options later labs depend on: `ENABLE_DBPAGE_VTAB`, `ENABLE_DBSTAT_VTAB`, and `DEFAULT_WAL_SYNCHRONOUS=2`.
+- **A1–A2 (pin and linked modules).** The driver's `sqlite_source_id()`, read from an in-memory database opened through `database/sql`, is checked against `sqlite/PIN` (shown in full in A1). The module rows in A2 read Go's compiled-in `runtime/debug.ReadBuildInfo()` rather than `go.mod`, proving the binary linked `modernc.org/sqlite v1.60.1` and `modernc.org/libc v1.77.1`, and the `sqlite_version()` rows confirm `3.53.4`.
+- **A3–A4 (driver compile options).** `PRAGMA compile_options` reports 56 options in the Go driver (A4). A3 verifies the three options later experiments rely on: `ENABLE_DBPAGE_VTAB`, `ENABLE_DBSTAT_VTAB`, and `DEFAULT_WAL_SYNCHRONOUS=2`.
 - **A5 (virtual table smoke test).** After creating table `t` and inserting one row, both `sqlite_dbpage` and `dbstat` return 2 rows: page 1 (`sqlite_schema`) and page 2 (table `t`).
-- **A2 and B1 (C CLI check).** `sqlitex.LocateCLI` finds the pinned C `sqlite3` binary (its path is run-dependent, printed by `course run` and not stored, because it depends on whether the host uses a system binary or the built tools). Its source ID and version (A2) and three required options (B1) match the pin.
+- **A2 and B1 (C CLI check).** `sqlitex.LocateCLI` locates the pinned C `sqlite3` binary. Its filesystem path is run-dependent—printed by `go run ./cmd/course run 1.1` and excluded from stored evidence—because a host may use either a system binary or the CLI built by `go run ./cmd/course build-tools`. Its source ID, release version (A2), and three required options (B1) match the pin.
 - **B2 (file-format and I/O parity).** Both builds agree on all 15 options controlling page size (`4096`), default cache size (`-2000`, meaning 2,000 KiB), mmap default (`0`), and sync defaults (`2` = `FULL`).
-- **Optional feature differences (run-dependent, printed by `course run`).** The two builds differ on optional features not in that 15-option table. The Go driver enables `ENABLE_STAT4` and `ENABLE_SNAPSHOT` (compiled into the translated C even though the Go API does not expose `sqlite3_snapshot_*`), while this CLI enables `ENABLE_BYTECODE_VTAB`, `ENABLE_STMTVTAB`, and `ENABLE_EXPLAIN_COMMENTS` (so `bytecode()` and `sqlite_stmt` exist only in the CLI). Most optional flags do not touch storage, but `ENABLE_STAT4` changes on-disk tables whenever `ANALYZE` (SQLite's query-planner statistics command) runs—a boundary Experiment 1.2 measures directly.
+- **Optional feature differences (run-dependent, printed by `go run ./cmd/course run 1.1`).** The two builds differ on optional features outside that 15-option table. The Go driver enables `ENABLE_STAT4` and `ENABLE_SNAPSHOT` (compiled into its C-to-Go translated library even though the Go API does not expose `sqlite3_snapshot_*`), whereas this CLI enables `ENABLE_BYTECODE_VTAB`, `ENABLE_STMTVTAB`, and `ENABLE_EXPLAIN_COMMENTS` (so `bytecode()` and `sqlite_stmt` exist only in the CLI). Most optional flags never touch storage, but `ENABLE_STAT4` changes on-disk tables whenever `ANALYZE` (SQLite's query-planner statistics command) runs—a boundary Experiment 1.2 measures directly.
 
 ---
 
 ## 3. Call path
 
-This section follows one autocommit statement—`INSERT INTO t(id, v) VALUES(2, 'two')`—through the pinned SQLite `version-3.53.4` C source. Four files are copied whole into this chapter directory (`prepare.c`, `vdbeapi.c`, `vdbeaux.c`, `os.c`); `vdbe.c` is linked in the pinned tree (`$SQLITE_SRC` or `_src/sqlite-3.53.4`) rather than copied.
+This section traces one autocommit statement (not wrapped in an explicit `BEGIN ... COMMIT`)—`INSERT INTO t(id, v) VALUES(2, 'two')`—through the pinned SQLite `version-3.53.4` C source. Four source files are copied whole into this chapter directory (`prepare.c`, `vdbeapi.c`, `vdbeaux.c`, `os.c`); `vdbe.c` is referenced in the pinned SQLite source tree (`$SQLITE_SRC` inside the `lab` container, or `_src/sqlite-3.53.4` when fetched on the host) rather than copied.
+
+The sequence below summarizes how a prepared `INSERT` crosses SQLite's Interface, VDBE engine, and Pager/VFS boundary, including the automatic `SQLITE_SCHEMA` retry loop:
+
+<!-- draw-visual: diagrams/ch01-architecture-and-execution-path-call-path.mmd -->
+```text
+┌────────┐     ┌───────────┐     ┌─────────────┐     ┌─────────────┐
+│ Caller │     │ Interface │     │ VDBE engine │     │ Pager / VFS │
+└────┬───┘     └─────┬─────┘     └──────┬──────┘     └──────┬──────┘
+     │               │                  │                   │
+     │ 1. prepare_v2 │                  │                   │
+     ├──────────────►│                  │                   │
+     │               │                  │                   │
+     │               │ 2. compile+save  │                   │
+     │               ├─────────────────►│                   │
+     │               │                  │                   │
+     │ 3. stmt handle│                  │                   │
+     │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤                  │                   │
+     │               │                  │                   │
+     │ 4. step(stmt) │                  │                   │
+     ├──────────────►│                  │                   │
+     │               │                  │                   │
+     │               │ 5. sqlite3Step   │                   │
+     │               ├─────────────────►│                   │
+     │               │                  │                   │
+     │               │                  │ 6. OP_Transaction │
+     │               │                  ├──────────────────►│
+     │             ┌─[alt schema changed (retry <=50x)]───────┐
+     │             │ │                  │                   │ │
+     │             │ │                  │ 7. SQLITE_SCHEMA  │ │
+     │             │ │                  │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤ │
+     │             │ │                  │                   │ │
+     │             │ │ 8. expire stmt   │                   │ │
+     │             │ │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤                   │ │
+     │             │ │                  │                   │ │
+     │             │ │ 9. Reprepare     │                   │ │
+     │             │ ├─────────────────►│                   │ │
+     │             │ │                  │                   │ │
+     │             └──────────────────────────────────────────┘
+     │               │                  │                   │
+     │               │                  │ 10. OP_Insert     │
+     │               │                  ├──────────────────►│
+     │               │                  │                   │
+     │               │                  │             ┌────────────┐
+     │               │                  │             │ PagerWrite │
+     │               │                  │             └────────────┘
+     │               │                  │                   │
+     │               │                  │ 11. vdbeCommit    │
+     │               │                  ├──────────────────►│
+     │               │                  │                   │
+     │               │                  │           ┌────────────────┐
+     │               │                  │           │ xWrite + xSync │
+     │               │                  │           └────────────────┘
+     │               │                  │                   │
+     │               │ 12. SQLITE_DONE  │                   │
+     │               │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤                   │
+     │               │                  │                   │
+     │ 13. DONE      │                  │                   │
+     │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤                  │                   │
+     │               │                  │                   │
+```
 
 ### 3.1 Prepare: compiling SQL into a VDBE program
 
@@ -660,7 +720,7 @@ Preparation compiles SQL text into bytecode without writing to the database file
    ```
    Saving the SQL text on the statement lets `sqlite3_step` recompile it automatically if another connection changes the schema before execution.
 2. **`sqlite3LockAndPrepare`** — [`src/prepare.c:836-875`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L836-L875) (local copy: [`prepare.c`](prepare.c)). Enters the connection mutex (`sqlite3_mutex_enter(db->mutex)` at line 855) and every attached database's B-tree mutex (`sqlite3BtreeEnterAll` at line 856), then calls `sqlite3Prepare` in a retry loop (lines 857–866). On `SQLITE_SCHEMA`, it resets the connection's cached schema (`sqlite3ResetOneSchema(db, -1)` at line 866) and retries once.
-3. **`sqlite3Prepare`** — [`src/prepare.c:682-835`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L682-L835) (local copy: [`prepare.c`](prepare.c)). Initializes a `Parse` context, checks that no shared-cache connection holds a schema lock (`sqlite3BtreeSchemaLocked` at line 752), and runs the tokenizer and parser via `sqlite3RunParser` (line 779 or 786). Grammar actions emit opcodes into a `Vdbe` object. Line 795 stores the original SQL text via `sqlite3VdbeSetSql`. On failure line 803 checks `schemaIsValid`; on success line 818 returns the `Vdbe` pointer as `sqlite3_stmt *`.
+3. **`sqlite3Prepare`** — [`src/prepare.c:682-835`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L682-L835) (local copy: [`prepare.c`](prepare.c)). Initializes a `Parse` context, checks that no shared-cache connection holds a schema lock (`sqlite3BtreeSchemaLocked` at line 752), and runs the tokenizer and parser via `sqlite3RunParser` (line 779 or 786). Grammar actions emit opcodes into a `Vdbe` object, and line 795 stores the original SQL text via `sqlite3VdbeSetSql`. On failure, line 803 checks `schemaIsValid`; on success, line 818 returns the `Vdbe` pointer as `sqlite3_stmt *`.
 
 ### 3.2 Step: running bytecode and crossing into the B-tree
 
@@ -674,14 +734,14 @@ Execution starts only when the caller steps the prepared statement.
      rc = sqlite3Reprepare(v);
    ```
    If another connection altered the schema since `sqlite3_prepare_v2`, `sqlite3_step` calls `sqlite3Reprepare` (line 933), resets the statement (line 954), and runs it again up to `SQLITE_MAX_SCHEMA_RETRY` (50, [`src/vdbeInt.h:26`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeInt.h#L26)) times. The caller never sees `SQLITE_SCHEMA` unless recompilation fails.
-5. **`sqlite3Step`** — [`src/vdbeapi.c:777-912`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeapi.c#L777-L912) (local copy: [`vdbeapi.c`](vdbeapi.c)). Moves a `VDBE_READY_STATE` statement to `VDBE_RUN_STATE` (line 825), increments `db->nVdbeActive` and (for non-read-only statements) `db->nVdbeWrite` (lines 821–822), and sets program counter `p->pc = 0` (line 824). If the statement is already in `VDBE_HALT_STATE`, line 852 auto-resets it first. It then dispatches to `sqlite3VdbeList` for `EXPLAIN` statements (line 864) or runs the bytecode interpreter `sqlite3VdbeExec` (line 869). When an autocommit statement ends with `SQLITE_DONE`, line 886 calls `doWalCallbacks` (which runs automatic WAL checkpoints when the frame threshold is reached).
+5. **`sqlite3Step`** — [`src/vdbeapi.c:777-912`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeapi.c#L777-L912) (local copy: [`vdbeapi.c`](vdbeapi.c)). Moves a `VDBE_READY_STATE` statement to `VDBE_RUN_STATE` (line 825), increments `db->nVdbeActive` and (for non-read-only statements) `db->nVdbeWrite` (lines 821–822), and sets program counter `p->pc = 0` (line 824). If the statement is already in `VDBE_HALT_STATE`, line 852 auto-resets it first. It then dispatches `EXPLAIN` statements to `sqlite3VdbeList` (line 864) and normal statements to the bytecode interpreter `sqlite3VdbeExec` (line 869). When an autocommit statement ends with `SQLITE_DONE`, line 886 calls `doWalCallbacks` to run automatic WAL checkpoints once the frame threshold is reached.
 6. **`OP_Transaction`** — [`src/vdbe.c:4102-4201`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbe.c#L4102-L4201) (in the pinned tree). Starts a read (`P2=0`) or write (`P2!=0`) transaction on database `P1` via `sqlite3BtreeBeginTrans` (line 4128). On `SQLITE_BUSY`, it saves the program counter and returns so the caller can retry. When `P5` is non-zero, it compares the file's schema cookie against the compiled cookie (`P3`); a mismatch sets `"database schema has changed"` (line 4174) and expires the statement with `SQLITE_SCHEMA` (lines 4191–4192), driving the retry loop in `sqlite3_step`.
 7. **`OP_Insert`** — [`src/vdbe.c:5748-5834`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbe.c#L5748-L5834) (in the pinned tree). Passes the encoded record built by `OP_MakeRecord` (register `P2`) and the rowid (register `P3`) into the B-tree through cursor `P1` via `sqlite3BtreeInsert` (line 5816). When flags in `P5` request it, lines 5802–5803 update the connection's change count and `last_insert_rowid`. `OP_Insert` writes nothing to disk directly; the B-tree calls `sqlite3PagerWrite` to mark the target page writable. In rollback mode, that first `sqlite3PagerWrite` creates `-journal` and saves the page's original image; in WAL mode, no file write happens until commit.
 
 ### 3.3 Halt and commit: crossing into the pager and VFS
 
-8. **`sqlite3VdbeHalt`** — [`src/vdbeaux.c:3315-3517`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeaux.c#L3315-L3517) (local copy: [`vdbeaux.c`](vdbeaux.c)). Runs when a statement hits `OP_Halt` (or `OP_AutoCommit` for an explicit `COMMIT`). Line 3339 closes all cursors. If the connection is in autocommit mode and this is the last active writer (`db->autoCommit && db->nVdbeWrite==(p->readOnly==0)`, lines 3402–3403), it checks deferred foreign keys and calls `vdbeCommit` (line 3421); if `vdbeCommit` fails, line 3429 calls `sqlite3RollbackAll`. Otherwise (inside an explicit transaction or while another writer statement is open), line 3464 closes only the statement's sub-transaction via `sqlite3VdbeCloseStatement`.
-9. **`vdbeCommit`** — [`src/vdbeaux.c:2919-3175`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeaux.c#L2919-L3175) (local copy: [`vdbeaux.c`](vdbeaux.c)). Loops over every attached database with an active write transaction, acquires an `EXCLUSIVE` pager lock (`sqlite3PagerExclusiveLock` at line 2973), and inspects `aMJNeeded` (lines 2954–2961) to count how many need a multi-file super-journal (`DELETE`, `PERSIST`, and `TRUNCATE` need one when two or more databases are written; `WAL` sets `0`). With one database (or in WAL mode), it runs two-phase commit: `sqlite3BtreeCommitPhaseOne` (line 3005) writes and syncs dirty pages; `sqlite3BtreeCommitPhaseTwo` (line 3020) deletes the rollback journal or releases WAL locks. Later, `sqlite3_finalize` ([`src/vdbeapi.c:105-124`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeapi.c#L105-L124), local copy [`vdbeapi.c`](vdbeapi.c)) resets and frees the `Vdbe`.
+8. **`sqlite3VdbeHalt`** — [`src/vdbeaux.c:3315-3517`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeaux.c#L3315-L3517) (local copy: [`vdbeaux.c`](vdbeaux.c)). Runs when a statement hits `OP_Halt` (or `OP_AutoCommit` for an explicit `COMMIT`). Line 3339 closes all cursors. If the connection is in autocommit mode and this is the last active writer (`db->autoCommit && db->nVdbeWrite==(p->readOnly==0)`, lines 3402–3403), it checks deferred foreign keys and calls `vdbeCommit` (line 3421); if `vdbeCommit` fails, line 3429 calls `sqlite3RollbackAll`. Otherwise—inside an explicit transaction or while another writer statement is open—line 3464 closes only the statement's sub-transaction via `sqlite3VdbeCloseStatement`.
+9. **`vdbeCommit`** — [`src/vdbeaux.c:2919-3175`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeaux.c#L2919-L3175) (local copy: [`vdbeaux.c`](vdbeaux.c)). Loops over every attached database with an active write transaction, acquires an `EXCLUSIVE` pager lock (`sqlite3PagerExclusiveLock` at line 2973), and inspects `aMJNeeded` (lines 2954–2961) to count how many need a multi-file super-journal (`DELETE`, `PERSIST`, and `TRUNCATE` need one when a commit modifies two or more attached databases; `WAL` sets `0`). With one database (or in WAL mode), it runs two-phase commit: `sqlite3BtreeCommitPhaseOne` (line 3005) writes and syncs dirty pages, and `sqlite3BtreeCommitPhaseTwo` (line 3020) deletes the rollback journal or releases WAL locks. Later, `sqlite3_finalize` ([`src/vdbeapi.c:105-124`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeapi.c#L105-L124), local copy [`vdbeapi.c`](vdbeapi.c)) resets and frees the `Vdbe`.
 10. **The VFS wrappers** — [`src/os.c:88-102`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os.c#L88-L102) (local copy: [`os.c`](os.c)), specifically `sqlite3OsRead` ([`src/os.c:88-91`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os.c#L88-L91)), `sqlite3OsWrite` ([`src/os.c:92-95`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os.c#L92-L95)), `sqlite3OsTruncate` (lines 96–98), and `sqlite3OsSync` ([`src/os.c:99-102`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os.c#L99-L102)). Everything above the VFS calls these one-line wrappers to dispatch through the open file's method table (`pMethods`):
     ```c
     int sqlite3OsRead(sqlite3_file *id, void *pBuf, int amt, i64 offset){
@@ -704,7 +764,7 @@ Execution starts only when the caller steps the prepared statement.
 
 ### Version notes
 
-Behavior differences across SQLite releases relevant to this chapter (sources: [`docs/knowledge/source-inventory-ch01-04.md`](../docs/knowledge/source-inventory-ch01-04.md), `changes.html`, and the pinned source):
+Behavior differences across SQLite releases relevant to this chapter (from this repository's source inventory [`docs/knowledge/source-inventory-ch01-04.md`](../docs/knowledge/source-inventory-ch01-04.md), SQLite's upstream release notes `changes.html`, and the pinned source):
 
 - **`sqlite3VdbeSerialPut()` removed (2022-04-02).** Record serialization was inlined into `OP_MakeRecord`, noted at [`src/vdbeaux.c:3856`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeaux.c#L3856) (local copy: [`vdbeaux.c`](vdbeaux.c)).
 - **`bytecode` and `tables_used` virtual tables (3.32.0, `changes.html`).** Enabled in the C CLI (`ENABLE_BYTECODE_VTAB`) and absent in the Go driver.
@@ -720,10 +780,10 @@ Behavior differences across SQLite releases relevant to this chapter (sources: [
   - In WAL mode, the commit makes zero writes to `t.db` and writes only the 32-byte WAL header at offset 0 of the new `t.db-wal`, followed by a 24-byte frame header and 4,096-byte page image per changed page.
   - For SQL statements whose behavior does not depend on compile options differing between the two builds, `modernc.org/sqlite` and the C CLI issue the same writes, syncs, reads, locks, opens, unlinks, and closes in the same order and leave byte-identical files, differing only in extra `fcntl(F_SETFD)` calls issued by `modernc.org/libc`'s musl-derived `open()`.
   - Where compile options do differ (`ENABLE_STAT4` on `ANALYZE`), the two builds diverge and write different files.
-- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
-- **Platform:** **Linux only** for `strace`, the twin check, its `ANALYZE` limit, and the `-vfstrace` merged trace; `course run` runs it in the Linux `lab` container, so it runs in full on any host. On macOS, running the experiment package directly (`go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert`) does not require the C CLI: it prints a `LINUX-ONLY:` line, records `EXPLAIN` and the changed page hashes with their expected-page checks (`[1 2]` in rollback mode, `[2]` in WAL mode), and exits 0.
-- **Why kept:** this is the one place the course earns the right to use a translated driver. Everything after relies on it.
-- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
+- **Evidence form:** `EXACT` (every stored CSV table in `evidence/1.2-one-insert/` must match on every run; the run-dependent `info` tables are excluded).
+- **Platform:** **Linux only** for `strace`, the Go-vs-CLI twin check, its `ANALYZE` limit, and the `-vfstrace` merged trace; `go run ./cmd/course run 1.2` executes inside the Linux `lab` container, so it runs in full on any host. On macOS, running the experiment directly (`go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert`) does not require the C CLI: it prints a `LINUX-ONLY:` line, records `EXPLAIN` and the changed page hashes with their expected-page checks (`[1 2]` in rollback mode, `[2]` in WAL mode), and exits 0.
+- **Why this check matters:** every later experiment relies on the pure-Go `modernc.org/sqlite` driver; this twin check establishes where its storage I/O matches SQLite's C build and where compile-option differences break parity.
+- **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
   go run ./cmd/course run 1.2
   ```
@@ -1952,9 +2012,9 @@ FROM analyze_runs
 ORDER BY stage = 'base' DESC, build;
 ```
 
-`course run` also prints the run-dependent values, which are not part of the stored evidence: the work directory, the sync syscall each build used (`fsync` or `fdatasync`), and the VFS calls where the CLI first asks for randomness.
+`go run ./cmd/course run 1.2` also prints machine-specific values excluded from the stored evidence: the work directory, which sync syscall each build called (`fsync` or `fdatasync`), and the VFS calls where the CLI first asks for randomness.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/1.2-one-insert/`](evidence/1.2-one-insert/), and `go run ./cmd/course check evidence ch01` compares a fresh run with them byte for byte.
+Captured evidence below shows the walkthrough as rendered in the `lab` container. The underlying CSV tables live in [`evidence/1.2-one-insert/`](evidence/1.2-one-insert/), and `go run ./cmd/course check evidence ch01` verifies a fresh run against them byte for byte.
 
 <!-- include: evidence/1.2-one-insert.txt -->
 ```text
@@ -2477,14 +2537,14 @@ Experiment verdict: ONE INSERT OK
    - **Database writes (B2, B3):** `pwrite64 t.db off=0 len=4096` equals `(page 1 - 1) * 4096`, and `off=4096 len=4096` equals `(page 2 - 1) * 4096`. Every write to `t.db` is one whole page, matching `[1 2]` exactly.
    - **Syncs (B2):** 4 syncs in order: `fsync t.db-journal`, `fsync .` (makes the new journal directory entry durable), `fsync t.db-journal` (after writing the 12-byte journal header with the page count), and `fsync t.db`.
    - **Errors and short reads (B2 and B4):** `normalized` keeps errno on failed calls and byte counts on short transfers, so SQLite's probe past end-of-file prints `pread64 t.db-journal off=9216 len=8 = 0` in both builds.
-   - **Twin check (B5–B6):** 33 Go syscalls vs 31 CLI syscalls. Writes (10), syncs (4), all 31 non-`F_SETFD` calls, and the closed at-rest database file (`47bae5ed0c8207f2`, distinct from base `0aec0e95a3f65e0c`) are identical. The sole difference (B5, listed below its table) is two `fcntl(..., F_SETFD)` calls from `modernc.org/libc v1.77.1`: its musl-derived `open()` calls `fcntl(fd, F_SETFD, FD_CLOEXEC)` after `O_CLOEXEC`, whereas `os_unix.c`'s `robust_open` ([`src/os_unix.c:867-869`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L867-L869)) skips `F_SETFD` when `O_CLOEXEC` is defined. `./configure`-built CLIs also call `fdatasync` where the Go driver and system CLI call `fsync`, and `openat` vs `open` varies by libc; the experiment normalizes those pairs and records the raw sync syscall in a run-dependent `info` table that `course run` prints.
+   - **Twin check (B5–B6):** Comparing the Go driver against the C `sqlite3` CLI running the same `INSERT` yields 33 Go syscalls versus 31 CLI syscalls. Writes (10), syncs (4), all 31 non-`F_SETFD` calls, and the closed at-rest database file (`47bae5ed0c8207f2`, distinct from base `0aec0e95a3f65e0c`) match identically. The sole difference (listed below table B5) is two `fcntl(..., F_SETFD)` calls from `modernc.org/libc v1.77.1`: its musl-derived `open()` calls `fcntl(fd, F_SETFD, FD_CLOEXEC)` after `O_CLOEXEC`, whereas `os_unix.c`'s `robust_open` ([`src/os_unix.c:867-869`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L867-L869)) skips `F_SETFD` when `O_CLOEXEC` is defined. `./configure`-built CLIs also call `fdatasync` where the Go driver and system CLI call `fsync`, and `openat` vs `open` varies by libc. The experiment normalizes those pairs and records the raw sync syscall in a run-dependent `info` table printed by `go run ./cmd/course run 1.2`.
 
 3. **WAL mode (`journal_mode=wal`, the platform default, section C).**
    - **Changed pages (C1):** `[2]` only. Page 1 is untouched during this `INSERT`, so its change counter does not move.
-   - **WAL writes vs database writes (C2–C3):** Zero `pwrite64` calls hit `t.db` (C3). Because closing the base database (`5de4f3aefd26bcea`) checkpointed and removed its WAL, this `INSERT` creates a fresh WAL: it writes the 32-byte WAL header (`t.db-wal off=0 len=32`), syncs `t.db-wal` and `.`, appends frame 1's 24-byte header (`off=32 len=24`) and page 2's 4,096-byte image (`off=56 len=4096`), and syncs `t.db-wal`. Reading `t.db-wal` before `db.Close()` confirms frame 1 holds page 2 with commit size 2 (C3's frame table), and a check verifies the exact write list with nothing extra.
+   - **WAL writes vs database writes (C2–C3):** Zero `pwrite64` calls hit `t.db` (C3). Because closing the base database (`5de4f3aefd26bcea`) checkpointed and removed its WAL, this `INSERT` creates a fresh WAL: it writes the 32-byte WAL header (`t.db-wal off=0 len=32`), syncs `t.db-wal` and `.`, appends frame 1's 24-byte header (`off=32 len=24`) and page 2's 4,096-byte image (`off=56 len=4096`), and syncs `t.db-wal`. Reading `t.db-wal` before `db.Close()` confirms frame 1 holds page 2 with commit size 2 (table C3), and a check verifies the exact write list with nothing extra.
    - **Syncs (C2):** 3 syncs total (`t.db-wal`, `.`, `t.db-wal`). The first two pay for creating the fresh WAL header and directory entry; only the third is the per-commit sync at `synchronous=FULL`.
-   - **Twin check (C5–C6):** 18 Go syscalls vs 17 CLI syscalls (the single extra call is `fcntl . F_SETFD`, listed in C5). Writes (3), syncs (3), all 17 other syscalls, and the closed at-rest database file (`1afce8154bf3124c`) are identical.
-   - **Marker files and `xRandomness`:** Both processes bracket statements by opening empty marker files (`marker-1`, `marker-2`, and so on) because CLI stdout is buffered; an `open`/`openat` syscall marks the exact statement boundary in `strace`. Some CLI builds call `VFS xRandomness` here on their first PRNG use (to seed a journal nonce or WAL salts); the experiment records that call in a run-dependent `info` table (printed by `course run`, not stored), so the stored evidence matches across both the installed CLI and the `build-tools` CLI.
+   - **Twin check (C5–C6):** 18 Go syscalls vs 17 CLI syscalls (the single extra call is `fcntl . F_SETFD`, listed in C5). Writes (3), syncs (3), all 17 other syscalls, and the closed at-rest database file (`1afce8154bf3124c`) match identically.
+   - **Marker files and `xRandomness`:** Both processes bracket statements by opening empty marker files (`marker-1`, `marker-2`, and so on) because CLI stdout is buffered; an `open`/`openat` syscall marks the exact statement boundary in `strace`. Some CLI builds call `VFS xRandomness` here on their first PRNG use to seed a journal nonce or WAL salts. The experiment records that call in a run-dependent `info` table (printed by `go run ./cmd/course run 1.2`, not stored), so the stored evidence matches across both a system-installed CLI and the CLI built by `go run ./cmd/course build-tools`.
 
 4. **A limit of the twin check: `ANALYZE` and `ENABLE_STAT4` (section D).** Starting from two byte-identical copies (`cd808b1713871cd6`) of a 100-row table `s` with index `s_by_k`, `ANALYZE` in the Go driver (`ENABLE_STAT4 = 1`) creates `[sqlite_stat1 sqlite_stat4]` (`2f6ce76122bda45c`), while the C CLI (`ENABLE_STAT4 = 0`) creates only `[sqlite_stat1]` (`490d8405dea7402c`). Twin parity holds only for statements whose behavior does not depend on compile options differing between the two builds.
 
@@ -2492,11 +2552,73 @@ Experiment verdict: ONE INSERT OK
 
 ## 4. Timeline
 
-The third run per mode in Experiment 1.2 splits the autocommit `INSERT` into `BEGIN IMMEDIATE;`, `INSERT INTO t(id, v) VALUES(2, 'two');`, and `COMMIT;` under the C CLI's `-vfstrace` plus `strace`. Sections B6–B7 and C6–C7 of `evidence/1.2-one-insert.txt` prove that the three phases concatenated execute the exact same syscalls and leave the exact same database bytes as the single autocommit `INSERT`. That ties each VFS call and kernel syscall by measurement to the opcode that caused it: `BEGIN IMMEDIATE` isolates `OP_Transaction`, `INSERT` isolates `OP_Insert`, and `COMMIT` isolates `OP_AutoCommit` → `sqlite3VdbeHalt` → `vdbeCommit` (the same path `OP_Halt` takes in an autocommit `INSERT`).
+The third run per mode in Experiment 1.2 splits the autocommit `INSERT` into `BEGIN IMMEDIATE;`, `INSERT INTO t(id, v) VALUES(2, 'two');`, and `COMMIT;` under the C CLI's `-vfstrace` plus `strace`. Sections B6–B7 and C6–C7 of `evidence/1.2-one-insert.txt` prove that the three phases concatenated issue the exact same syscalls and leave the exact same database bytes as the single autocommit `INSERT`. That ties each VFS call and kernel syscall by measurement to the opcode that caused it: `BEGIN IMMEDIATE` isolates `OP_Transaction`, `INSERT` isolates `OP_Insert`, and `COMMIT` isolates `OP_AutoCommit` → `sqlite3VdbeHalt` → `vdbeCommit` (the same path `OP_Halt` takes in an autocommit `INSERT`).
 
 ### 4.1 Rollback mode (`journal_mode=delete`)
 
-POSIX byte-range locks in rollback mode sit on `t.db` at the 1 GiB lock-byte region: byte `1073741824` (`0x40000000`, `PENDING`), byte `1073741825` (`RESERVED`), and bytes `1073741826..1073742335` (`len=510`, `SHARED`).
+POSIX byte-range locks in rollback mode sit on `t.db` at the 1 GiB lock-byte region: byte `1073741824` (`0x40000000`, `PENDING`), byte `1073741825` (`RESERVED`), and bytes `1073741826..1073742335` (`len=510`, `SHARED`). The sequence below traces how locks, reads, writes, and syncs alternate between `t.db` and `t.db-journal` across the three phases:
+
+<!-- draw-visual: diagrams/ch01-architecture-and-execution-path-rollback-commit.mmd -->
+```text
+┌──────────────┐     ┌─────────────┐     ┌──────────────┐
+│ SQLite pager │     │ t.db (main) │     │ t.db-journal │
+└───────┬──────┘     └──────┬──────┘     └───────┬──────┘
+        │                   │                    │
+       ┌──────────────────────────────────────────┐
+       │     BEGIN IMMEDIATE (OP_Transaction)     │
+       └──────────────────────────────────────────┘
+        │                   │                    │
+        │ 1. lock SHARED    │                    │
+        ├──────────────────►│                    │
+        │                   │                    │
+        │ 2. read hdr 16B   │                    │
+        ├──────────────────►│                    │
+        │                   │                    │
+        │ 3. lock RESERVED  │                    │
+        ├──────────────────►│                    │
+        │                   │                    │
+       ┌──────────────────────────────────────────┐
+       │            INSERT (OP_Insert)            │
+       └──────────────────────────────────────────┘
+        │                   │                    │
+        │ 4. read page 2    │                    │
+        ├──────────────────►│                    │
+        │                   │                    │
+        │ 5. open & write 512B hdr               │
+        ├───────────────────────────────────────►│
+        │                   │                    │
+        │ 6. save original page 2                │
+        ├───────────────────────────────────────►│
+        │                   │                    │
+       ┌──────────────────────────────────────────┐
+       │           COMMIT (vdbeCommit)            │
+       └──────────────────────────────────────────┘
+        │                   │                    │
+        │ 7. lock EXCLUSIVE │                    │
+        ├──────────────────►│                    │
+        │                   │                    │
+        │ 8. save original page 1                │
+        ├───────────────────────────────────────►│
+        │                   │                    │
+        │ 9. sync journal & dir .                │
+        ├───────────────────────────────────────►│
+        │                   │                    │
+        │ 10. write pg count & sync              │
+        ├───────────────────────────────────────►│
+        │                   │                    │
+        │ 11. write p1 & p2 │                    │
+        ├──────────────────►│                    │
+        │                   │                    │
+        │ 12. sync t.db     │                    │
+        ├──────────────────►│                    │
+        │                   │                    │
+        │ 13. close & unlink (COMMIT POINT)      │
+        ├───────────────────────────────────────►│
+        │                   │                    │
+        │ 14. unlock NONE   │                    │
+        ├──────────────────►│                    │
+        │                   │                    │
+```
 
 | Phase (opcode) | Layer path | VFS call (`-vfstrace`) | Kernel syscall(s) (`strace`) |
 | --- | --- | --- | --- |
@@ -2518,7 +2640,51 @@ In rollback mode, `unlink t.db-journal` is the commit point: before it, a crash 
 
 ### 4.2 WAL mode (`journal_mode=wal`, the platform default)
 
-POSIX byte-range locks in WAL mode sit on `t.db-shm`: byte `120` (`WRITE`), `121` (`CKPT`), `122` (`RECOVER`), and `123 + i` (`READ i`, five reader slots). `xShmBarrier` is a memory barrier ordering reads and writes to the shared-memory `-shm` mapping; `xFileControl` passes control notifications (such as `SYNC` or `COMMIT_PHASETWO`) from the pager to the VFS.
+POSIX byte-range locks in WAL mode sit on `t.db-shm` (the shared-memory wal-index file): byte `120` (`WRITE`), `121` (`CKPT`), `122` (`RECOVER`), and `123 + i` (`READ i`, five reader slots). `xShmBarrier` is a memory barrier ordering reads and writes to the shared-memory `-shm` mapping; `xFileControl` passes control notifications (such as `SYNC` or `COMMIT_PHASETWO`) from the pager to the VFS. The sequence below shows how all writes move off `t.db` and onto `t.db-wal`:
+
+<!-- draw-visual: diagrams/ch01-architecture-and-execution-path-wal-commit.mmd -->
+```text
+┌──────────────┐     ┌──────────┐     ┌──────┐     ┌──────────┐
+│ SQLite pager │     │ t.db-shm │     │ t.db │     │ t.db-wal │
+└───────┬──────┘     └─────┬────┘     └───┬──┘     └─────┬────┘
+        │                  │              │              │
+       ┌──────────────────────────────────────────────────┐
+       │         BEGIN IMMEDIATE (OP_Transaction)         │
+       └──────────────────────────────────────────────────┘
+        │                  │              │              │
+        │ 1. READ0 & WRITE │              │              │
+        ├─────────────────►│              │              │
+        │                  │              │              │
+       ┌──────────────────────────────────────────────────┐
+       │        INSERT (OP_Insert -- zero writes)         │
+       └──────────────────────────────────────────────────┘
+        │                  │              │              │
+        │ 2. pread64 page 2 (4096B)       │              │
+        ├────────────────────────────────►│              │
+        │                  │              │              │
+       ┌──────────────────────────────────────────────────┐
+       │     COMMIT (vdbeCommit -- zero t.db writes)      │
+       └──────────────────────────────────────────────────┘
+        │                  │              │              │
+        │ 3. READ0->READ1  │              │              │
+        ├─────────────────►│              │              │
+        │                  │              │              │
+        │ 4. pwrite64 32B WAL hdr         │              │
+        ├───────────────────────────────────────────────►│
+        │                  │              │              │
+        │ 5. sync t.db-wal & dir .        │              │
+        ├───────────────────────────────────────────────►│
+        │                  │              │              │
+        │ 6. append frame 1 (24B + p2 4096B)             │
+        ├───────────────────────────────────────────────►│
+        │                  │              │              │
+        │ 7. sync t.db-wal (COMMIT POINT) │              │
+        ├───────────────────────────────────────────────►│
+        │                  │              │              │
+        │ 8. unlock both   │              │              │
+        ├─────────────────►│              │              │
+        │                  │              │              │
+```
 
 | Phase (opcode) | Layer path | VFS call (`-vfstrace`) | Kernel syscall(s) (`strace`) |
 | --- | --- | --- | --- |
@@ -2536,9 +2702,9 @@ Two structural differences stand out: `OP_Insert` performs zero writes in WAL mo
 
 ## 5. Lab
 
-Every later chapter verifies snapshots, WAL replays, crash recoveries, or fleet rebuilds against a known ground truth: a realistic workload whose closed database file has one exact SHA-256 hash after every numbered step *k*. That is **Rebuild Ladder rung R0 (Recipe)**.
+Every later chapter verifies snapshots, WAL replays, crash recoveries, or fleet rebuilds against a known ground truth: a realistic workload whose closed database file has one exact SHA-256 hash after every numbered step *k*. That baseline is **Rebuild Ladder rung R0 (Recipe)**.
 
-This chapter introduces the shared package `internal/recipe`, inlined in full below. Its unit tests live in [`internal/recipe/recipe_test.go`](../internal/recipe/recipe_test.go) and [`internal/recipe/repair_test.go`](../internal/recipe/repair_test.go) and run with `go test ./internal/recipe/`.
+This chapter introduces the shared Go package `internal/recipe`, inlined in full below. Its unit tests live in [`internal/recipe/recipe_test.go`](../internal/recipe/recipe_test.go) and [`internal/recipe/repair_test.go`](../internal/recipe/repair_test.go) and run from the repository root with `go test ./internal/recipe/`.
 
 ### 5.1 The `internal/recipe` package
 
@@ -2549,8 +2715,8 @@ Three files split generation, execution, and verification:
   - **Steps 1–30** each seed a fresh `math/rand/v2` PCG generator from `(seed, k)` so step *k* depends only on the seed and its index, never on total step count. Each step runs inserts across all three tables, balance updates, occasional document body replacements, periodic deletes (every 3rd step for `events`, every 4th step for `documents`), creates index `events_by_account` at step `5`, and ends with `PRAGMA user_version = k` inside the same transaction.
   - **Overflow pages.** Document bodies range from `MinBodyBytes = 2000` to `MaxBodyBytes = 16000` bytes. On a 4,096-byte page, a table leaf row spills onto overflow pages above 4,061 bytes of payload, so the workload produces both inline rows and multi-page overflow chains.
   - **Explicit settings.** `SQLiteOptions()` sets `secure_delete=ON` and `SingleConnection=true` on top of `sqlitex.DefaultOptions()` (`page_size=4096`, `auto_vacuum=NONE`, `encoding=UTF-8`, `application_id=1397836120`, `synchronous=FULL`, `foreign_keys=ON`, `cache_size=-2000`, `wal_autocheckpoint=1000`, `busy_timeout=5000ms`).
-- **Session execution (`apply.go`).** `Build` and `BuildEach` open and close a fresh connection for every step (`ApplyInSession`) and verify `CheckAtRest` (no `-wal`, `-shm`, or `-journal` remaining). Section 6 proves why: in WAL mode, [`pagerWalFrames` (`src/pager.c:3264`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3264) calls [`pager_write_changecounter` (`src/pager.c:3130-3143`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3130-L3143) only when a commit dirties page 1 (`pList->pgno == 1`), writing `dbFileVers + 1` where `dbFileVers` is refreshed only when page 1 is read from disk ([`src/pager.c:3109-3110`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3109-L3110)). Because every recipe step executes `PRAGMA user_version = k` (dirtying page 1), one session per step advances the counter deterministically by one per step.
-- **Hashes, cache, and lookup (`hashes.go`).** `FileHashes` stores both the exact file SHA-256 and a change-counter-masked SHA-256 (zeroing header bytes 24–27 and 92–95). `StepHashes` caches the per-step list under `_work/recipe-cache/` in format v2 (`FormatVersion = 2`) with a trailing SHA-256 checksum over the cache key, SQLite options, every planned statement and bound argument, and all step hashes. Before trusting a cached file, `StepHashes` verifies that checksum and rebuilds step 0 in a temporary directory to compare entry 0; any tampered, corrupt, or stale cache is rebuilt atomically. `MatchStep` returns a `Match{Step, Exact}` naming which step an at-rest database equals and rejects any masked-only match whose bytes 24–27 and 92–95 disagree (`ChangeCountersAgree`).
+- **Session execution (`apply.go`).** `Build` and `BuildEach` open and close a fresh connection for every step (`ApplyInSession`) and verify `CheckAtRest` (no `-wal`, `-shm`, or `-journal` remaining). Section 6 proves why: in WAL mode, [`pagerWalFrames` (`src/pager.c:3264`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3264) calls [`pager_write_changecounter` (`src/pager.c:3130-3143`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3130-L3143) only when a commit dirties page 1 (`pList->pgno == 1`), writing `dbFileVers + 1`. Because `dbFileVers` is refreshed only when page 1 is read from disk ([`src/pager.c:3109-3110`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3109-L3110)), and every recipe step executes `PRAGMA user_version = k` (dirtying page 1), opening one session per step advances the counter deterministically by one per step.
+- **Hashes, cache, and lookup (`hashes.go`).** `FileHashes` stores both the exact file SHA-256 and a change-counter-masked SHA-256 (zeroing header bytes 24–27 and 92–95). `StepHashes` caches the per-step list under `_work/recipe-cache/` in format v2 (`FormatVersion = 2`) with a trailing SHA-256 checksum covering the cache key, SQLite options, every planned statement and bound argument, and all step hashes. Before trusting a cached file, `StepHashes` verifies that checksum and rebuilds step 0 in a temporary directory to compare entry 0; any tampered, corrupt, or stale cache is rebuilt atomically. `MatchStep` returns a `Match{Step, Exact}` naming which step an at-rest database equals and rejects any masked-only match whose bytes 24–27 and 92–95 disagree (`ChangeCountersAgree`).
 
 #### `internal/recipe/recipe.go`
 
@@ -3505,9 +3671,9 @@ func (r Recipe) writeHashCache(path string, hashes []FileHashes) error {
 
 - **Claim:** A database built by a fixed, seeded workload with explicit settings is reproducible to the exact byte (**E1**), so the recipe `(seed, step count, journal mode)` is a complete saved state with a unique SHA-256 hash after every step *k*. Breaking the determinism rules breaks byte equality in specific, measurable ways (Section 6).
 - **Capture / Rebuild / Verified at:** Capture = recipe `(seed=1, steps=30, journal_mode=wal)`. Rebuild = run the recipe into an empty file. Proven equal at **E1 (bytes)**.
-- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
+- **Evidence form:** `EXACT` (every stored CSV table in `evidence/1.3-recipe-rebuild/` must match on every run; the run-dependent `info` tables are excluded).
 - **Platform:** Portable (runs natively on Linux and macOS without `strace`).
-- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
+- **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
   go run ./cmd/course run 1.3
   ```
@@ -4530,9 +4696,9 @@ SELECT id, first_page, pages_differ, differing_pages, page1_bytes, file_pages FR
 SELECT id, page, bytes_differing, bytes_outside_unused, kind FROM unused_pages WHERE id LIKE '7%' ORDER BY id, page;
 ```
 
-`course run` also prints the run-dependent values, which are not part of the stored evidence: the work directory, how long one build took, and the sha256 of the variant files whose bytes differ between runs (`random()`, the clock, the rowid).
+`go run ./cmd/course run 1.3` also prints machine-specific values excluded from the stored evidence: the work directory, build duration, and the SHA-256 digests of variant files whose bytes intentionally differ between runs (`random()`, the wall clock, and random rowid assignment).
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/1.3-recipe-rebuild/`](evidence/1.3-recipe-rebuild/), and `go run ./cmd/course check evidence ch01` compares a fresh run with them byte for byte.
+Captured evidence below shows the walkthrough as rendered in the `lab` container. The underlying CSV tables live in [`evidence/1.3-recipe-rebuild/`](evidence/1.3-recipe-rebuild/), and `go run ./cmd/course check evidence ch01` verifies a fresh run against them byte for byte.
 
 <!-- include: evidence/1.3-recipe-rebuild.txt -->
 ```text
@@ -4850,7 +5016,7 @@ Experiment verdict: RECIPE REBUILD OK
 **Reading the R0 evidence (opening tables and section A):**
 
 - **Opening tables (recipe plan).** Show the persistent file settings, per-connection settings, and all 31 step summaries (step 0 with 3 `CREATE TABLE` statements; steps 1–30 with inserts, updates, periodic deletes, and the single `CREATE INDEX` at step 5).
-- **A1 (two independent builds).** Building the 30-step WAL recipe into `run-1/recipe.db` and `run-2/elsewhere/another-name.db` takes under a second (about `87ms` in one lab run; the time is run-dependent, printed by `course run` and not stored) and produces `270` pages (`1,105,920` bytes) with identical SHA-256 `24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74` (step 0: `7470585af706eb3de499f126d74bdc98396e1e9853ee11643e2e85f61ef0cdb9`; A2 shows the first 16 hex digits of each step, and the stored table has all 64). Directory path and file name do not enter the database bytes.
+- **A1 (two independent builds).** Building the 30-step WAL recipe into `run-1/recipe.db` and `run-2/elsewhere/another-name.db` takes under a second (about `87ms` in one lab run; timing is run-dependent, printed by `go run ./cmd/course run 1.3` and not stored). Both builds produce `270` pages (`1,105,920` bytes) with identical SHA-256 `24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74` (step 0: `7470585af706eb3de499f126d74bdc98396e1e9853ee11643e2e85f61ef0cdb9`; table A2 prints the first 16 hex digits per step, and the stored CSV has all 64). Directory path and file name never enter the database bytes.
 - **A2–A3 (per-step hashes and lookup).** All 31 per-step hashes match identically between run 1 and run 2, all 31 are distinct, and `recipe.StepHashes` matches the fresh build. A separate database built to step 12 is identified by `recipe.MatchStep` as step `12` with exact bytes.
 - **A1 and A4 (WAL vs rollback).** The same recipe in rollback mode (`journal_mode=delete`) also rebuilds byte for byte at every step (`0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57`). Comparing the closed WAL file against the closed rollback file shows only 4 differing bytes in the entire `1,105,920`-byte database, all on page 1: bytes `18` and `19` (file format write/read versions: `2` for WAL vs `1` for rollback) and bytes `27` and `95` (the low byte of the 4-byte file change counter and version-valid-for field).
 
@@ -4858,10 +5024,10 @@ Experiment verdict: RECIPE REBUILD OK
 
 ## 6. Evidence and failure cases
 
-The second half of Experiment 1.3 (sections B–D of `evidence/1.3-recipe-rebuild.txt`) tests seven sources of physical variation against a 6-step WAL base database, plus two boundary checks (`secure_delete=FAST` vs `ON`, and WAL sessions whose commits never write page 1). Every test starts from fresh files and reports the first differing page (and differing page-1 byte offsets when page 1 changes). Three checks uncovered subtler behavior than a first guess predicts; the checks list marks those `FINDING:`.
+The second half of Experiment 1.3 (sections B–D of `evidence/1.3-recipe-rebuild.txt`) tests seven sources of physical variation against a 6-step WAL base database, plus two boundary checks (`secure_delete=FAST` vs `ON`, and WAL sessions whose commits never write page 1). Every test starts from fresh files and reports the first differing page (and differing page-1 byte offsets when page 1 changes). Three checks uncovered subtler behavior than a first guess predicts; the checks list marks those `FINDING:`. Parenthetical codes such as `DET-08e` or `API-05` cite individual edge-case tests in this chapter's adversarial suite, summarized under *What attacked this chapter* below.
 
 1. **SQL `random()` in a value (B1, variant 1).** Inserting `random()` into `events.amount` makes run 1 and run 2 differ on page `59` (`1` page). SQLite's internal PRNG is seeded from the OS on first use, so any SQL `random()` or `randomblob()` breaks byte reproducibility.
-2. **`current_timestamp` and time zones (B1, variants 2a–2b).** `current_timestamp` has one-second resolution. Two runs inside the same wall-clock second produce `identical` files (2a); a third run after the second advances differs on page `59` (2b). Fast tests can mask a clock dependency unless they span a second boundary. Environment-dependent modifiers sit in the same class: even on a fixed timestamp literal, SQLite's `'localtime'` modifier produces different bytes on page `59` under `TZ=UTC` versus `TZ=America/New_York` (`DET-08e`).
+2. **`current_timestamp` and time zones (B1, variants 2a–2b).** `current_timestamp` has one-second resolution. Two runs inside the same wall-clock second produce `identical` files (2a); a third run after the second advances differs on page `59` (2b). Fast tests can mask a clock dependency unless they span a second boundary. Environment-dependent modifiers sit in the same class: even on a fixed timestamp literal, SQLite's `'localtime'` modifier produces different bytes on page `59` under `TZ=UTC` versus `TZ=America/New_York` (adversarial test `DET-08e`).
 3. **Unordered `INSERT ... SELECT` (B2).**
    - Running `INSERT INTO archive(account_id, amount) SELECT account_id, amount FROM events WHERE amount > 0` twice on the same build with the same schema yields `identical` files (`FINDING`, 3a), because the planner picks the same scan order both times and assigns rowids in that order.
    - Setting `PRAGMA reverse_unordered_selects=ON` on run 2 reverses the scan order without changing query semantics, and the two files differ on page `29` (3b). Adding an index, running `ANALYZE`, or upgrading SQLite can flip an unordered scan the same way.
@@ -4870,16 +5036,16 @@ The second half of Experiment 1.3 (sections B–D of `evidence/1.3-recipe-rebuil
    - **WAL mode, `secure_delete=ON` (recipe settings):** `identical` (`FINDING`, 4a). One WAL connection does not increment the header change counter per commit, and `secure_delete=ON` zeroes freed bytes inside B-tree pages and on freed freelist pages.
    - **WAL mode, `secure_delete=OFF`:** `differ`, first differing page `24`, `2` pages differ (`24 28`) (4b in B3 and B4): `357` bytes on page `24` and `1,207` bytes on page `28`, every byte inside unused space on B-tree leaf pages (the unallocated gap between the cell-pointer array and the cell content area, or freeblocks—not freelist pages). Without `secure_delete`, deleted cell payloads leave history-dependent stale bytes.
    - **Rollback mode, `secure_delete=ON`:** `differ`, first differing page `1`, `1` page differs, page 1 bytes `27 95` (4c), because rollback mode increments the change counter on every commit.
-   - **WAL mode, `secure_delete=FAST` vs `secure_delete=ON` (4d in B3 and B4):** `secure_delete` must be strictly `ON`, not `FAST`. On the exact same one-transaction-per-step history, `FAST` differs from `ON` on 3 pages `[29 36 37]`: page `29` (`4,079` bytes, freelist leaf), page `36` (`4,067` bytes, freelist trunk bytes after the leaf list), and page `37` (`4,078` bytes, freelist leaf)—all in unused space. In [`freePage2` (`src/btree.c:6864-6874`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L6864-L6874), SQLite zeroes freed pages only when `BTS_SECURE_DELETE` (`ON`) is set; [`sqlite3BtreeSecureDelete` (`src/btree.c:3181-3194`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L3181-L3194) maps `FAST` to `BTS_OVERWRITE` only, which zeroes freed cell space inside B-tree pages while leaving old bytes on freed freelist pages. At full 30-step scale, `FAST` also makes 1-transaction vs 31-transaction batchings diverge again (`DET-05d`: `2` pages differ, first page `29`).
+   - **WAL mode, `secure_delete=FAST` vs `secure_delete=ON` (4d in B3 and B4):** `secure_delete` must be strictly `ON`, not `FAST`. On the exact same one-transaction-per-step history, `FAST` differs from `ON` on 3 pages `[29 36 37]`: page `29` (`4,079` bytes, freelist leaf), page `36` (`4,067` bytes, freelist trunk bytes after the leaf list), and page `37` (`4,078` bytes, freelist leaf)—all in unused space. In [`freePage2` (`src/btree.c:6864-6874`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L6864-L6874), SQLite zeroes freed pages only when `BTS_SECURE_DELETE` (`ON`) is set. [`sqlite3BtreeSecureDelete` (`src/btree.c:3181-3194`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L3181-L3194) maps `FAST` to `BTS_OVERWRITE` only, zeroing freed cell space inside B-tree pages while leaving old bytes on freed freelist pages. At full 30-step scale, `FAST` also makes 1-transaction versus 31-transaction batchings diverge again (`DET-05d`: `2` pages differ, first page `29`).
 5. **Omitting a rowid after the maximum 64-bit rowid `9223372036854775807` (B5).** Once a table holds rowid `9223372036854775807` (`2^63 - 1`), SQLite cannot increment past it and picks a random unused rowid for the next insert without an explicit id. The two runs differ on page `29`.
 6. **Connection sessions, page-1 writes, cache eviction, and pool churn in WAL mode (C1).**
-   - **Steps 0–6 (every step dirties page 1 via `PRAGMA user_version = k`):** one connection per step vs one connection for all 7 steps gives `differ`, first differing page `1`, `1` page differs, page 1 bytes `27 95` in WAL mode (`FINDING`, 6a), and `identical` in rollback mode (6b).
-   - **Commits that never write page 1 (6c):** starting from step 6, 3 commits of `UPDATE accounts SET balance = balance + 1 WHERE id = 1` with one connection per commit vs one connection for all three leave `identical` files even in WAL mode. [`pagerWalFrames` (`src/pager.c:3264`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3264) guards the counter write with `if( pList->pgno==1 ) pager_write_changecounter(pList)`. When page 1 is dirty, [`pager_write_changecounter` (`src/pager.c:3130-3143`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3130-L3143) writes `dbFileVers + 1` (line 3135), and `dbFileVers` is refreshed only when page 1 is read through `readDbPage` ([`src/pager.c:3109-3110`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3109-L3110))—either on a new connection or when page 1 is evicted from cache and reloaded.
-   - **Cache eviction and pool churn:** because page-1 eviction reloads `dbFileVers`, `PRAGMA cache_size=0` shifts only the WAL change counter deterministically from step 0 onward (`DET-02`: `walZero=cs=0(exact=false,masked=true)`, while all nine non-zero `cache_size` values tested—`1`, `2`, `5`, `10`, `50`, `-10`, `-100`, `-2000`, `-64000`—matched verbatim in WAL mode, and all ten matched in rollback mode). Likewise, leaving `SingleConnection=false` lets a concurrent read open a second pooled `database/sql` connection with its own `dbFileVers`, shifting page 1 bytes `27` and `95` (`DET-08d`, `masked=true`). Both `cache_size` and `SingleConnection=true` are part of the determinism contract.
+   - **Steps 0–6 (every step dirties page 1 via `PRAGMA user_version = k`):** one connection per step versus one connection for all 7 steps gives `differ`, first differing page `1`, `1` page differs, page 1 bytes `27 95` in WAL mode (`FINDING`, 6a), and `identical` in rollback mode (6b).
+   - **Commits that never write page 1 (6c):** starting from step 6, 3 commits of `UPDATE accounts SET balance = balance + 1 WHERE id = 1` with one connection per commit versus one connection for all three leave `identical` files even in WAL mode. [`pagerWalFrames` (`src/pager.c:3264`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3264) guards the counter write with `if( pList->pgno==1 ) pager_write_changecounter(pList)`. When page 1 is dirty, [`pager_write_changecounter` (`src/pager.c:3130-3143`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3130-L3143) writes `dbFileVers + 1` (line 3135), and `dbFileVers` is refreshed only when page 1 is read through `readDbPage` ([`src/pager.c:3109-3110`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3109-L3110))—either on a new connection or when page 1 is evicted from cache and reloaded.
+   - **Cache eviction and pool churn:** because page-1 eviction reloads `dbFileVers`, `PRAGMA cache_size=0` shifts only the WAL change counter deterministically from step 0 onward. In adversarial test `DET-02`, `cache_size=0` failed exact byte equality in WAL mode while matching with the change counter masked, whereas all nine non-zero `cache_size` values tested—`1`, `2`, `5`, `10`, `50`, `-10`, `-100`, `-2000`, `-64000`—matched verbatim in WAL mode, and all ten matched in rollback mode. Likewise, leaving `SingleConnection=false` lets a concurrent read open a second pooled `database/sql` connection with its own `dbFileVers`, shifting only page 1 bytes `27` and `95` (adversarial test `DET-08d`, masked match only). Both `cache_size` and `SingleConnection=true` belong to the determinism contract.
 7. **Rolled-back `SAVEPOINT` inside a committed transaction (D1).** A **savepoint** is a named nested rollback point inside a larger transaction. Starting from step 6, one transaction commits one `INSERT` into `events`; run 2 first inserts `10` documents of `12,000` bytes (`0xAB`) inside `SAVEPOINT aborted`, executes `ROLLBACK TO aborted` and `RELEASE aborted`, and commits the same `INSERT`:
    - **WAL mode, `secure_delete=ON` (7a):** `differ`, first differing page `1`, `3` pages differ (`1 29 37`), page 1 bytes `27 95`. Pages `29` (`4,092` bytes) and `37` (`4,093` bytes) are freelist leaf pages retaining bytes from the aborted inserts; page 1's change counter also moved because the aborted allocation dirtied page 1's freelist count.
    - **Rollback mode, `secure_delete=ON` (7b):** `differ`, first differing page `29`, `2` pages differ (`29 37`), leaving the same `4,092` and `4,093` bytes on those two freelist leaf pages.
-   - **Why:** when SQLite allocates a freelist leaf page, [`allocateBtreePage` (`src/btree.c:6740`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L6740) fetches it with `PAGER_GET_NOCONTENT`, skipping journaling of its prior content. `ROLLBACK TO` returns the page to the freelist but cannot restore bytes it never saved, and `secure_delete=ON` does not zero those rolled-back leaves. By contrast, rolling back an entire transaction (a failed `ApplyStep` hitting a primary-key conflict) leaves the closed database file byte-identical (`API-05`).
+   - **Why:** when SQLite allocates a freelist leaf page, [`allocateBtreePage` (`src/btree.c:6740`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L6740) fetches it with `PAGER_GET_NOCONTENT`, skipping journaling of its prior content. `ROLLBACK TO` returns the page to the freelist but cannot restore bytes it never saved, and `secure_delete=ON` does not zero those rolled-back leaves. By contrast, rolling back an entire transaction (a failed `ApplyStep` hitting a primary-key conflict) leaves the closed database file byte-identical (adversarial test `API-05`).
 
 ### Determinism rules verified by Experiment 1.3
 
@@ -4899,27 +5065,27 @@ The second half of Experiment 1.3 (sections B–D of `evidence/1.3-recipe-rebuil
 
 <!-- adversarial-results -->
 
-Four adversarial programs (`48` attacks total, driven by [`run-all.sh`](../agent_work/ch01/adversarial/run-all.sh)) attacked this chapter's claims and shared `internal/recipe` package against the pinned SQLite 3.53.4 build:
+Four standalone Go stress-test programs under `agent_work/ch01/adversarial/` (`48` edge-case checks total, driven by [`run-all.sh`](../agent_work/ch01/adversarial/run-all.sh)) probe this chapter's claims and the `internal/recipe` package against the pinned SQLite 3.53.4 build. In the recorded logs, `HELD` means the software or claim stood up to the test and `BROKEN` means a bug or overly broad claim was exposed:
 
-- [`pin-falsify`](../agent_work/ch01/adversarial/pin-falsify/main.go) (`PIN-01`–`PIN-08`) attacked pin enforcement across Experiments 1.1–1.3 by mutating `sqlite/PIN` (`fossil_id` and `driver_version`), spoofing `SQLITE3_BIN` with wrong source IDs, stripped `ENABLE_DBPAGE_VTAB`, and drifted `DEFAULT_PAGE_SIZE`, and checking raw `modernc.org/sqlite` runtime defaults.
-- [`twin-io`](../agent_work/ch01/adversarial/twin-io/main.go) (`TWIN-01`–`TWIN-12`) attacked Experiment 1.2's Go-vs-CLI twin check across steady-state WAL commits (`FULL` and `NORMAL`), 10 KiB overflow inserts, overflow deletes, explicit rollbacks, `CREATE INDEX`, `wal_checkpoint(TRUNCATE)`, `VACUUM`, `ANALYZE`, `PRAGMA mmap_size`, and a must-fail `FULL`-vs-`NORMAL` mismatch.
-- [`recipe-determinism`](../agent_work/ch01/adversarial/recipe-determinism/main.go) (`DET-01`–`DET-08e`) attacked Experiment 1.3's R0 reproducibility across 50 concurrent 30-step builds (varied working directories, spaces, Unicode, symlinks, CPU and disk load), 10 `cache_size` values, 11 other per-connection pragmas, `locking_mode=EXCLUSIVE`, `truncate`/`persist` rollback journals, a full 30-step Go-vs-CLI rebuild, extreme WAL batchings (1 transaction, ~1,700 autocommit transactions, `wal_autocheckpoint=1`, `secure_delete=FAST`), page-1-untouched WAL sessions, a concurrent reader pinning checkpoints, rolled-back `SAVEPOINT`s, `ANALYZE`, `database/sql` pool churn, and `TZ` with `'localtime'`.
-- [`recipe-api-abuse`](../agent_work/ch01/adversarial/recipe-api-abuse/main.go) (`API-01`–`API-09`) attacked `internal/recipe` with single-bit file tampering, disagreeing header change counters, live WAL and orphan-journal files, malformed and tampered step-hash caches, failed mid-recipe steps, mismatched `sqlitex.Open` settings, partial schemas, and invalid `Recipe` values.
+- [`pin-falsify`](../agent_work/ch01/adversarial/pin-falsify/main.go) (`PIN-01`–`PIN-08`) tests pin enforcement across Experiments 1.1–1.3 by mutating `sqlite/PIN` (`fossil_id` and `driver_version`), spoofing `SQLITE3_BIN` with wrong source IDs, stripped `ENABLE_DBPAGE_VTAB`, and drifted `DEFAULT_PAGE_SIZE`, and checking raw `modernc.org/sqlite` runtime defaults.
+- [`twin-io`](../agent_work/ch01/adversarial/twin-io/main.go) (`TWIN-01`–`TWIN-12`) tests Experiment 1.2's Go-vs-CLI twin check across steady-state WAL commits (`FULL` and `NORMAL`), 10 KiB overflow inserts, overflow deletes, explicit rollbacks, `CREATE INDEX`, `wal_checkpoint(TRUNCATE)`, `VACUUM`, `ANALYZE`, `PRAGMA mmap_size`, and a must-fail `FULL`-vs-`NORMAL` mismatch.
+- [`recipe-determinism`](../agent_work/ch01/adversarial/recipe-determinism/main.go) (`DET-01`–`DET-08e`) tests Experiment 1.3's R0 reproducibility across 50 concurrent 30-step builds (varied working directories, spaces, Unicode, symlinks, CPU and disk load), 10 `cache_size` values, 11 other per-connection pragmas, `locking_mode=EXCLUSIVE`, `truncate`/`persist` rollback journals, a full 30-step Go-vs-CLI rebuild, extreme WAL batchings (1 transaction, ~1,700 autocommit transactions, `wal_autocheckpoint=1`, `secure_delete=FAST`), page-1-untouched WAL sessions, a concurrent reader pinning checkpoints, rolled-back `SAVEPOINT`s, `ANALYZE`, `database/sql` pool churn, and `TZ` with `'localtime'`.
+- [`recipe-api-abuse`](../agent_work/ch01/adversarial/recipe-api-abuse/main.go) (`API-01`–`API-09`) tests `internal/recipe` with single-bit file tampering, disagreeing header change counters, live WAL and orphan-journal files, malformed and tampered step-hash caches, failed mid-recipe steps, mismatched `sqlitex.Open` settings, partial schemas, and invalid `Recipe` values.
 
-**Run 1** ([`results-run1.txt`](../agent_work/ch01/adversarial/results-run1.txt)) produced **37 HELD, 11 BROKEN**. Three broken attacks exposed code defects in `internal/recipe` that were fixed in the repair round:
+**Run 1** ([`results-run1.txt`](../agent_work/ch01/adversarial/results-run1.txt)) recorded **37 HELD, 11 BROKEN**. Three failures exposed bugs in `internal/recipe` that were fixed and covered by unit tests:
 
 - `API-02`: `MatchStep` accepted a masked-only match when header bytes 24–27 and 92–95 disagreed; fixed by `ChangeCountersAgree` (`TestMatchStepRejectsDisagreeingCounters`).
 - `API-04b`: `StepHashes` trusted a syntactically valid tampered cache; fixed by cache v2's trailing checksum and fresh step-0 rebuild check (`TestStepHashesRejectsTamperedAndStaleCaches`).
 - `API-09`: `Step(0)` and `Build(..., 0)` bypassed `Recipe.Validate()`; fixed to validate first (`TestInvalidRecipeIsRejectedByStepAndBuild`).
 
-The other eight broken attacks in Run 1 narrowed overly broad claims, now demonstrated in Experiments 1.2 and 1.3 or stated in Section 6: `TWIN-10` and `DET-08c` (`ANALYZE` diverges on `ENABLE_STAT4`), `DET-05d` and `DET-08a` (`secure_delete=FAST` leaves unzeroed freelist pages and re-exposes batching divergence), `DET-06` (WAL change counter advances only on commits that dirty page 1), `DET-08b` (rolled-back `SAVEPOINT`s leave bytes on reused freelist leaves), `DET-08d` (`database/sql` pool churn shifts the WAL counter when `SingleConnection=false`), and `DET-08e` (`'localtime'` depends on `TZ`).
+The other eight failures in Run 1 revealed boundaries where SQLite's behavior is narrower than an unconstrained claim—now demonstrated in Experiments 1.2 and 1.3 or stated in Section 6: `TWIN-10` and `DET-08c` (`ANALYZE` diverges on `ENABLE_STAT4`), `DET-05d` and `DET-08a` (`secure_delete=FAST` leaves unzeroed freelist pages and re-exposes batching divergence), `DET-06` (the WAL change counter advances only on commits that dirty page 1), `DET-08b` (rolled-back `SAVEPOINT`s leave bytes on reused freelist leaves), `DET-08d` (`database/sql` pool churn shifts the WAL counter when `SingleConnection=false`), and `DET-08e` (`'localtime'` depends on `TZ`).
 
-**Run 2** ([`results-run2.txt`](../agent_work/ch01/adversarial/results-run2.txt), after the repair round and foundation merge) produced **37 HELD, 11 BROKEN**: `API-02`, `API-04b`, and `API-09` became `HELD`; the eight narrowed-claim attacks still expected the original broad claims; and three new `BROKEN` lines appeared from the foundation's updated `MustPinCheck` and new-file pragma order:
+**Run 2** ([`results-run2.txt`](../agent_work/ch01/adversarial/results-run2.txt)), executed after those `internal/recipe` fixes and `internal/sqlitex` open-path updates, recorded **37 HELD, 11 BROKEN**: `API-02`, `API-04b`, and `API-09` became `HELD`; the eight boundary checks still asserted the earlier broader claims; and three new `BROKEN` entries appeared from `MustPinCheck`'s stricter module check and `sqlitex`'s new-file pragma order:
 
-- `PIN-04` and `DET-04` had stale expectations: `MustPinCheck` now rejects a mismatched `driver_version` on stderr before Experiment 1.1's own check runs, and `DET-04`'s CLI script still applied `application_id` before `journal_mode`.
-- `DET-02` exposed a real new fact: with the updated pragma order, `cache_size=0` in WAL mode shifts the change counter deterministically from step 0 onward (`masked=true`), while all nine non-zero `cache_size` values match verbatim.
+- `PIN-04` and `DET-04` encoded earlier open-path behavior: `MustPinCheck` now rejects a mismatched `driver_version` on stderr before Experiment 1.1's own check runs, and `DET-04`'s CLI script still applied `application_id` before `journal_mode`.
+- `DET-02` exposed a real SQLite behavior under the updated pragma order: `cache_size=0` in WAL mode shifts the change counter deterministically from step 0 onward (matching only when masked), whereas all nine non-zero `cache_size` values match verbatim.
 
-After aligning those stale and narrowed-claim attack expectations to match the verified rules, the final run ([`results.txt`](../agent_work/ch01/adversarial/results.txt)) passed **48 HELD, 0 BROKEN**.
+With the suite's assertions updated to test the verified rules and boundaries, the final run ([`results.txt`](../agent_work/ch01/adversarial/results.txt)) passed **48 HELD, 0 BROKEN**.
 
 ---
 
@@ -4931,9 +5097,9 @@ Every operational rule below follows directly from this chapter's experiments:
 2. **Design the platform around SQLite's two external boundaries: connections and files (Section 3, Experiment 1.2).** The compiler and VDBE live inside the library and run per connection (`sqlite3_prepare_v2` compiles statements on one handle; `sqlite3_step` auto-reprepares them on schema changes). A multi-database service cannot observe or replace those layers; it governs per-connection settings above the pager and owns files and kernel I/O below the pager.
 3. **Treat `.db` plus `-wal` as the live database unit, not `.db` alone (Experiment 1.2).** In WAL mode, a committed `INSERT` makes zero `pwrite64` calls on `t.db`; the new page lives only in `t.db-wal` until a checkpoint copies it back. Copying `.db` alone while a WAL connection is open silently drops committed writes.
 4. **Account for fresh-WAL creation syncs when opening and closing databases (Experiment 1.2).** Under `synchronous=FULL`, the first commit on a freshly opened WAL database pays 3 syncs (`t.db-wal` header, directory `.`, and `t.db-wal` commit frame), whereas rollback mode pays 4 syncs on every commit (`t.db-journal`, `.`, `t.db-journal`, `t.db`). Opening and closing connections on every write deletes and recreates `-wal`, paying directory syncs repeatedly.
-5. **The translated Go driver (`modernc.org/sqlite`) matches the C build's storage I/O within shared compile options (Experiment 1.2, `TWIN-01`–`TWIN-12`).** Across both rollback and WAL modes, the Go driver and the C CLI execute the same writes, syncs, locks, reads, unlinks, and closes and leave byte-identical files for statements independent of differing compile options. The only syscall difference—extra `fcntl(F_SETFD)` calls from `modernc.org/libc`—touches no disk bytes or POSIX locks. Where compile options differ (`ENABLE_STAT4` on `ANALYZE`), the two builds write different tables and different files.
-6. **Byte-level reproducibility requires `secure_delete=ON` and no rolled-back `SAVEPOINT`s (Experiment 1.3 Variants 4 and 7, `DET-05d`, `DET-08a`, `DET-08b`).** Both `secure_delete=OFF` and `secure_delete=FAST` leave history-dependent stale bytes in unused space (B-tree leaves and freelist pages), and rolled-back `SAVEPOINT`s leave bytes in reused freelist leaf pages even when `secure_delete=ON`.
-7. **Standardize session boundaries, `SingleConnection=true`, and non-zero `cache_size`—or mask the 8 counter bytes with agreement checked (Experiment 1.3 Variant 6, `DET-02`, `DET-08d`, `API-02`).** In WAL mode, bytes 24–27 and 92–95 advance only when a commit dirties page 1 after page 1 was read from storage (new connection, pool churn under `SingleConnection=false`, or cache eviction under `cache_size=0`). Any byte-level verifier must either fix those boundaries or mask bytes 24–27 and 92–95 after confirming the two fields agree.
+5. **Rely on `modernc.org/sqlite` storage I/O parity only within shared compile options (Experiment 1.2, `TWIN-01`–`TWIN-12`).** Across both rollback and WAL modes, the Go driver and the C CLI execute the same writes, syncs, locks, reads, unlinks, and closes and leave byte-identical files for statements independent of differing compile options. The only syscall difference—extra `fcntl(F_SETFD)` calls from `modernc.org/libc`—touches no disk bytes or POSIX locks. Where compile options differ (`ENABLE_STAT4` on `ANALYZE`), the two builds write different tables and different files.
+6. **Require `secure_delete=ON` and ban rolled-back `SAVEPOINT`s for byte-level reproducibility (Experiment 1.3 Variants 4 and 7, `DET-05d`, `DET-08a`, `DET-08b`).** Both `secure_delete=OFF` and `secure_delete=FAST` leave history-dependent stale bytes in unused space (B-tree leaves and freelist pages), and rolled-back `SAVEPOINT`s leave bytes in reused freelist leaf pages even when `secure_delete=ON`.
+7. **Standardize session boundaries, `SingleConnection=true`, and non-zero `cache_size`—or mask the 8 counter bytes after checking agreement (Experiment 1.3 Variant 6, `DET-02`, `DET-08d`, `API-02`).** In WAL mode, bytes 24–27 and 92–95 advance only when a commit dirties page 1 after page 1 was read from storage (new connection, pool churn under `SingleConnection=false`, or cache eviction under `cache_size=0`). Any byte-level verifier must either fix those boundaries or mask bytes 24–27 and 92–95 after confirming the two fields agree.
 
 | Operational rule | Supporting evidence |
 | --- | --- |

@@ -1,0 +1,19 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant W as Writer
+  participant C as Checkpoint
+  participant WAL as -wal
+  participant DB as .db
+  alt No reader (full 74/74)
+    C->>WAL: fsync -wal
+    C->>DB: copy 74f, fsync .db
+    W->>WAL: restart, fsync 32B hdr
+    W->>WAL: steps 8..11 (no sync)
+    Note over WAL,DB: Power cut -> byte 32 (step 7)
+  else Reader at step 5 (36/74)
+    C->>WAL: fsync -wal
+    C->>DB: copy 36f (no fsync)
+    W->>WAL: steps 8..11 (same gen)
+    Note over WAL,DB: Cut -> 304,912 (15 .db safe)
+  end

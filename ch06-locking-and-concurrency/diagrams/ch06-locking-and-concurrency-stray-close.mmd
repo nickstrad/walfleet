@@ -1,0 +1,25 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant H as holder
+  participant S as -shm locks
+  participant C as contender
+  H->>S: lock b120
+  C->>S: BEGIN IMM
+  S-->>C: BUSY (5)
+  Note over H: stray-close -shm
+  H--xS: drop all
+  C->>S: BEGIN IMM
+  S-->>C: SQLITE_OK
+  C->>S: COMMIT (OK)
+  alt empty WAL (Part B: readLock=0)
+    H->>S: COMMIT
+    S-->>H: PROTOCOL 15
+  else active WAL (Part C: readLock=1)
+    H->>S: COMMIT
+    S-->>H: OK, C lost
+  else Part D: db+-shm dropped, C exits
+    Note over C: unlinks -wal,-shm
+    H->>S: COMMIT (fd)
+    S-->>H: OK, C lost
+  end

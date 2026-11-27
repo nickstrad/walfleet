@@ -1,0 +1,20 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant S as SQLite
+  participant W as -wal
+  participant D as .db
+  S->>W: INSERT rows
+  Note over W: old rows in -wal
+  alt secure_delete OFF
+    S->>W: DELETE 5 frames
+    Note over S: DontWrite skips 49
+  else secure_delete ON
+    S->>W: DELETE 54 zeroed
+  end
+  Note over S,D: secure_delete ON checkpoints
+  S->>W: checkpoint PASSIVE
+  W->>D: copy zeroed pages
+  Note over W: INSERT frames remain
+  S->>W: checkpoint TRUNCATE
+  Note over W: reset to 0 bytes

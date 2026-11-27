@@ -139,6 +139,15 @@ Follow-up (2026-11-22, Nick): experiment results as tables, read in the terminal
   `ch07…/evidence/7.4-read-only-snapshot-vfs-s3.txt` and
   `ch10…/evidence/10.4-rebuild-the-fleet-2000.txt` (`course run` cannot pass experiment flags).
 
+Clarity pass (2026-11-27): Neon (high, Clarity skill rewrite mode) rewrote the
+book prose (README, ten chapters, ten answers pages) against the current text,
+with draw-visual diagrams added where prose alone was hard to follow (30
+Mermaid sources under each chapter's diagrams/). The pass writes for a reader
+with no context of this repo, while chapters may build on earlier chapters.
+Verified before landing: headings, fenced code, and link sets identical to the
+pre-pass text; flagged number tokens classified (one genuine drop restored);
+diagram render checks pass; site builds and its link check passes.
+
 Next steps: none required. Possible later work: a version-upgrade experiment against a second
 SQLite release (dropped from this build by ruling); syntax highlighting on the site; tightening
 the link checker's end-tag search inside `script`/`style` bodies (review nit, no effect on the

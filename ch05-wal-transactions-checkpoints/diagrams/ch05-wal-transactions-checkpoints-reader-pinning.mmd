@@ -1,0 +1,16 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant R as Reader
+  participant S as -shm locks
+  participant W as Writer
+  Note over R,W: WAL backfilled: nBackfill == mxFrame (22)
+  R->>S: lock 0 (sh)
+  Note over R: reads .db only
+  W->>S: excl 1..4
+  S-->>W: granted
+  Note over W: restart at frame 1
+  W->>S: commit >200
+  W->>S: excl lock 0
+  S--xW: busy: R on 0
+  Note over W: nBackfill stays 0

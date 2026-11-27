@@ -1,0 +1,12 @@
+%% draw-visual: -x 4 -y 1 -p 0
+graph TD
+  F[Pager page fetch] --> M[mmap_size > 0?]
+  M -->|no| GN[getPageNormal (pcache1)]
+  M -->|yes| W[sqlite3WalFindFrame]
+  W -->|WAL| GN
+  W -->|in .db| MM[OS mmap (RssFile only)]
+  GN --> L[nPage + 1 >= nMax?]
+  L -->|no| AL[Alloc new page]
+  L -->|yes| RC[Recycle global PGroup]
+  AL --> RA[RssAnon (CACHE_USED)]
+  RC --> RA

@@ -1,0 +1,23 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant App
+  participant SQLite
+  participant DB as .db file
+  participant WAL as -wal/-shm
+  Note over App,WAL: Phase 1: sqlite3_open_v2
+  App->>SQLite: open_v2
+  SQLite->>DB: open, 100B
+  DB-->>SQLite: header
+  Note over SQLite: SCHEMA_USED = 0, no lock
+  SQLite-->>App: handle
+  Note over App,WAL: Phase 2: first SQL statement
+  App->>SQLite: SELECT
+  SQLite->>DB: read p1
+  DB-->>SQLite: byte 19=2
+  SQLite->>WAL: open -wal, mmap -shm
+  Note over SQLite: drop p1, retry lockBtree
+  SQLite->>DB: read p1
+  DB-->>SQLite: p1 (WAL)
+  SQLite->>DB: schema
+  SQLite-->>App: rows

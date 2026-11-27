@@ -12,32 +12,32 @@
 
 > **How to run the experiments**
 >
-> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to start the runner from the host. Build the `lab` image once, from the repository root:
+> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to invoke this repository's experiment runner (`cmd/course`) from the host. Build the `lab` container image (`Dockerfile.lab`) once from the repository root:
 >   ```text
 >   docker compose build lab
 >   ```
->   The image already contains the pinned SQLite `3.53.4` source tree, the C tools (`sqlite3`, `showwal`, `dbhash`; Experiment 5.1 uses `showwal` as a cross-check), `strace`, and the DuckDB CLI that presents the results.
-> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment in it, and prints its walkthrough; add `-i` (`go run ./cmd/course run -i 5.1`) to stay in DuckDB afterwards with the tables loaded:
+>   The image bundles the pinned SQLite `3.53.4` source tree, the compiled SQLite C tools (`sqlite3`, `showwal`—SQLite's WAL dump utility—and `dbhash`; Experiment 5.1 cross-checks its Go parser against `showwal`), `strace`, and the DuckDB CLI that renders each experiment's CSV results as a walkthrough.
+> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`go run ./cmd/course run -i 5.1`) to stay in the DuckDB shell afterwards with all tables loaded:
 >   ```text
 >   go run ./cmd/course run 5.1
 >   go run ./cmd/course run 5.2
 >   go run ./cmd/course run 5.3
 >   go run ./cmd/course run 5.4
 >   ```
->   In the container, scratch databases and tables are written under `/work/5.1/` through `/work/5.4/` (the `lab-work` volume); run directly, under `_work/5.1/` through `_work/5.4/`, which are git-ignored and safe to delete.
-> - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch05-wal-transactions-checkpoints/experiments/5.1-wal-inspector`). Run this way it prints only its verdict and leaves its tables under `_work/5.1/results/`. Experiment 5.1's `showwal` cross-check then needs the C tools on the host (`go run ./cmd/course fetch-source`, then `go run ./cmd/course build-tools`); without `showwal`, Experiment 5.1 still runs, prints a `NO-SHOWWAL:` line, and skips that cross-check.
+>   Inside the container, scratch databases and result tables are written under `/work/5.1/` through `/work/5.4/` (the Docker `lab-work` volume). When run directly on the host, they go under `_work/5.1/` through `_work/5.4/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** Each experiment is an ordinary Go program (`go run ./ch05-wal-transactions-checkpoints/experiments/5.1-wal-inspector`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/5.1/results/`. Experiment 5.1's `showwal` cross-check then needs the C tools on the host (`go run ./cmd/course fetch-source` to clone and verify the pinned SQLite source tree, then `go run ./cmd/course build-tools` to compile the C tools); without `showwal`, Experiment 5.1 still runs, prints a `NO-SHOWWAL:` line, and skips that cross-check.
 > - **Cross-platform notes and macOS:** Nothing in Chapter 5 is Linux-only (no `strace`, no `/proc`). All four experiments copy live files by re-executing themselves as a child process and parse bytes in plain Go, so they also run directly on macOS.
-> - **Measured platform:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). The WAL salts, the checksums that depend on them, and checkpoint timings differ on every run and are not part of the stored evidence.
+> - **Measured platform:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). WAL salts, the checksums derived from them, and checkpoint timings vary across runs: `course run` prints them in run-dependent `info` tables, and they are excluded from the stored evidence.
 
 ---
 
 ## 1. Model
 
-In **write-ahead log (WAL)** mode (`PRAGMA journal_mode=WAL`), a write transaction does not overwrite pages in the main database file (`.db`). Instead, SQLite appends each modified database **page** (4,096 bytes by default) to a sibling redo log file named `<db>-wal`. Each entry in the `-wal` file is a **frame**: a 24-byte frame header followed by one complete **page image**.
+In **write-ahead log (WAL)** mode (`PRAGMA journal_mode=WAL`), a write transaction does not overwrite pages in the main database file (`.db`). Instead, SQLite appends each modified database **page** (4,096 bytes by default) to a sibling redo log file named `<db>-wal`. Each entry in `-wal` is a **frame**: a 24-byte frame header followed by one complete **page image**.
 
-Frames in a WAL are linked by a **running checksum** (a two-word cumulative sum seeded from the WAL header) and tagged with two 32-bit **salt** values copied from the 32-byte WAL header. A transaction commits when its final frame records the database's new size in pages (a non-zero **commit size** field); every earlier frame in that transaction stores `0` in that field. Frames written before a commit—either because a large transaction spilled dirty pages out of memory or because the transaction rolled back—remain in the `-wal` file without a following commit frame and are ignored during recovery.
+Every frame carries two 32-bit **salt** values copied from the 32-byte WAL header and continues a two-word **running checksum** seeded from that header. A transaction commits when its final frame records the database's new size in pages (a non-zero **commit size** field); earlier frames in that transaction store `0`. Frames written before a commit—either because a large transaction spilled dirty pages out of the page cache (Chapter 4) or because the transaction rolled back—stay in `-wal` with no following commit frame and are ignored during recovery.
 
-Scanning the entire `-wal` file on every page read would be slow. SQLite therefore maintains a shared-memory lookup table called the **wal-index**, mapped on Unix onto a second sibling file named `<db>-shm`. The `-shm` file is transient and lives in the host's native byte order: if it is missing or damaged, SQLite rebuilds it by scanning `-wal`.
+Scanning the entire `-wal` file on every page read would be slow. SQLite therefore maintains a shared-memory lookup table called the **wal-index**, mapped on Unix onto a second sibling file named `<db>-shm`. The `-shm` file is transient and uses the host's native byte order: if it is missing or damaged, SQLite rebuilds it by scanning `-wal`.
 
 ```text
 Base database (.db)          Write-ahead log (.db-wal)            Wal-index (.db-shm, native endian)
@@ -71,44 +71,44 @@ Checkpoint (one at a time, WAL_CKPT_LOCK):
 
 Five mechanisms in that diagram govern everything that follows:
 
-1. **Snapshot isolation via `mxFrame` and read marks.** When a read transaction starts, SQLite records the current `mxFrame` (the frame number of the last committed transaction). That integer is the reader's **snapshot**: while looking up page *P*, the reader accepts only frames `<= mxFrame` and ignores every frame appended after it began. To keep a **checkpoint** (the process of copying committed WAL frames back into `.db`, called **backfilling**) from overwriting a page that the reader still needs in `.db`, the reader holds a shared **POSIX advisory lock** (an `fcntl` byte-range lock on `-shm` bytes 120–127) on one of five reader slots `0..4`. Slots `1..4` store frame numbers called **read marks** (`aReadMark[1..4]`); slot `0` is a special lock for readers that started when the WAL was already completely backfilled and read only `.db`.
+1. **Snapshot isolation via `mxFrame` and read marks.** When a read transaction starts, SQLite records the current `mxFrame`—the frame number of the last committed transaction. That integer is the reader's **snapshot**: when looking up page *P*, the reader accepts only frames `<= mxFrame` and ignores every frame appended after it began. A **checkpoint** copies committed WAL frames back into `.db` (called **backfilling**). To keep a checkpoint from overwriting a `.db` page the reader still needs, the reader holds a shared **POSIX advisory lock** (an `fcntl` byte-range lock on `-shm` bytes 120–127) on one of five reader slots `0..4`. Slots `1..4` store frame numbers called **read marks** (`aReadMark[1..4]`); slot `0` is reserved for readers that began when the WAL was already completely backfilled and therefore read only `.db`.
 2. **One writer, concurrent readers.** Only one writer may hold `WAL_WRITE_LOCK` at a time. Readers do not block writers from appending frames, and writers do not block readers from reading older snapshots.
-3. **Checkpoints copy frames, not necessarily shrinking `-wal`.** A checkpoint advances `nBackfill` up to the lowest locked read mark (`mxSafeFrame`), calls **fsync** (flushes dirty kernel buffers to durable storage) on `-wal` before writing `.db`, copies the newest frame for each page in `nBackfill+1..mxSafeFrame` into `.db`, and calls `fsync` on `.db` once the entire WAL has been copied. Leaving `-wal` at its current file size is normal; only a `TRUNCATE` checkpoint, `PRAGMA journal_size_limit`, or closing the last connection shrinks or removes `-wal`.
-4. **WAL restart happens at the next write.** Copying all frames (`nBackfill == mxFrame`) does not empty or reset `-wal` in `PASSIVE`, `FULL`, or `RESTART` mode. When the next writer commits and no reader holds locks `1..4`, the writer performs a **WAL restart**: it writes a fresh 32-byte WAL header with new salts and overwrites the file starting at frame 1. Old-generation frames sitting behind the new ones fail the salt check and are ignored.
+3. **Checkpoints copy frames without necessarily shrinking `-wal`.** A checkpoint advances `nBackfill` up to the lowest locked read mark (`mxSafeFrame`), calls `fsync` on `-wal` before writing `.db`, copies the newest frame for each page in `nBackfill+1..mxSafeFrame` into `.db`, and calls `fsync` on `.db` once the entire WAL has been copied. Leaving `-wal` at its current file size is normal; only a `TRUNCATE` checkpoint, `PRAGMA journal_size_limit`, or closing the last connection shrinks or removes `-wal`.
+4. **WAL restart happens at the next write.** Copying all frames (`nBackfill == mxFrame`) does not empty or reset `-wal` in `PASSIVE`, `FULL`, or `RESTART` mode. When the next writer commits and no reader holds locks `1..4`, the writer performs a **WAL restart**: it writes a fresh 32-byte WAL header with new salts and overwrites the file from frame 1. Older-generation frames sitting past the new ones fail the salt check and are ignored.
 5. **The `-shm` file is disposable; `-wal` is not.** While any connection is open, committed changes may exist only in `-wal`. By contrast, `-shm` is pure derived state: deleting it or replacing it with a stale `-shm` from another database causes the first opener to truncate and rebuild it from `-wal`.
 
-**WAL mode as the platform default.** Platform databases in this course run in WAL mode (`journal_mode=wal`), and every experiment in this chapter uses WAL mode—no experiment departs into rollback mode. Nothing measured here argues against WAL as the default, but WAL shifts concrete responsibilities onto the platform: owning checkpoints (`wal_autocheckpoint=0` on application connections), bounding read-transaction lifetimes, treating `-wal` as part of the database while open, never shipping `-shm`, monitoring WAL size and checkpoint progress, detecting WAL restarts by any change in `(salt-1, salt-2)`, and keeping databases on local storage because WAL requires shared memory (`src/wal.c:130-133`, a source-level constraint not tested here). Section 7 ties each obligation to its experiment.
+**WAL mode as the platform default.** Platform databases in this book run in WAL mode (`journal_mode=wal`), and every experiment in this chapter uses WAL mode without departing into rollback mode. Nothing measured here argues against WAL as the default, but WAL shifts concrete responsibilities onto the platform: owning checkpoints (`wal_autocheckpoint=0` on application connections), bounding read-transaction lifetimes, treating `-wal` as part of the database while open, and never shipping `-shm`. A WAL platform must also monitor WAL size and checkpoint progress, detect WAL restarts by any change in `(salt-1, salt-2)`, and keep databases on local storage because WAL requires shared memory (`src/wal.c:130-133`, a source-level constraint not tested here). Section 7 ties each obligation to its experiment.
 
-**The Rebuild Ladder (rung R3).** Earlier chapters built **R0 (Recipe)**, **R1 (Pages)**, and **R2 (Canonical form)**. This chapter builds **R3 (Redo log)**: capture = the base `.db` file plus its `-wal` file; rebuild = apply committed frames in plain Go (`internal/walfile`), stop at `LastCommitFrame`, and truncate to that commit's database size. Experiment 5.2 proves that the rebuilt file matches SQLite's own `wal_checkpoint(TRUNCATE)` at equality level **E1 bytes** (identical SHA-256).
+**The Rebuild Ladder (rung R3).** Chapters 1–3 built **R0 (Recipe)**, **R1 (Pages)**, and **R2 (Canonical form)**. This chapter builds **R3 (Redo log)**: capture the base `.db` file plus its `-wal` file, then rebuild in plain Go (`internal/walfile`, introduced in Section 5.1) by applying committed frames in order, stopping at `LastCommitFrame`, and truncating to that commit's database size. Experiment 5.2 proves that the rebuilt file matches SQLite's own `wal_checkpoint(TRUNCATE)` at equality level **E1 bytes** (identical file SHA-256, introduced in Chapter 2).
 
 ---
 
 ## 2. Question
 
-In WAL mode, where exactly is a committed transaction, what makes a reader see a stable snapshot, and what must a checkpoint do before the WAL can be reused?
+In WAL mode, where exactly does a committed transaction live, what keeps a reader's snapshot stable, and what must a checkpoint do before the WAL can be reused?
 
-To answer this concretely, the chapter traces five commits into a WAL (Experiment 5.1), replays a base file plus WAL in plain Go at a quiet moment, mid-transaction with spilled pages, and after a rollback (Experiment 5.2), holds one reader open while a writer commits 24 steps with autocheckpoint enabled (Experiment 5.3), and runs all four checkpoint modes against three reader states (Experiment 5.4).
+Four experiments answer that question against live files: Experiment 5.1 traces five commits into a WAL and `-shm`; Experiment 5.2 replays a base file plus WAL in plain Go at a quiet moment, mid-transaction with spilled pages, and after a rollback; Experiment 5.3 holds one reader open while a writer commits 24 steps with autocheckpoint enabled; and Experiment 5.4 runs all four checkpoint modes against three reader states.
 
-The experiments reuse three shared packages introduced in earlier chapters (linked rather than inlined):
+The experiments reuse three shared Go packages introduced in Chapters 1 and 2 (linked rather than inlined):
 
-- [`internal/sqlitex`](../internal/sqlitex/): opens SQLite with explicit file and connection settings, checks the pinned `sqlite_source_id()`, manages `_work/N.M/` scratch directories, runs `PRAGMA wal_checkpoint`, and locates pinned C tools (`showwal`).
-- [`internal/recipe`](../internal/recipe/): builds the deterministic R0 database (`accounts`, `documents`, `events`, `events_by_account`), applies numbered steps, and matches rebuilt files against the cached per-step SHA-256 table.
-- [`internal/equal`](../internal/equal/): compares rebuilt database files at equality level **E1 bytes** (`CompareFiles`, `FileSHA256`).
+- [`internal/sqlitex`](../internal/sqlitex/) (Chapter 1): opens SQLite with explicit file and connection settings, checks the pinned `sqlite_source_id()`, manages `_work/N.M/` scratch directories, runs `PRAGMA wal_checkpoint`, and locates pinned C tools (`showwal`).
+- [`internal/recipe`](../internal/recipe/) (Chapter 1): builds the deterministic R0 database (`accounts`, `documents`, `events`, `events_by_account`), applies numbered steps, and matches rebuilt files against the cached per-step SHA-256 table.
+- [`internal/equal`](../internal/equal/) (Chapter 2): compares rebuilt database files at equality level **E1 bytes** (`CompareFiles`, `FileSHA256`).
 
-This chapter introduces one new shared package, `internal/walfile` (WAL parser, region diff, frame replayer, `-shm` wal-index decoder, `showwal` cross-check, and child-process live file copier), which is inlined in full in Section 5.
+This chapter introduces one new shared package, `internal/walfile` (WAL parser, region diff, frame replayer, `-shm` wal-index decoder, `showwal` cross-check, and child-process live file copier), inlined in full in Section 5.
 
 ---
 
 ## 3. Call path
 
-This section reads the pinned SQLite `version-3.53.4` C source for WAL formatting, checksums, read marks, frame writes, sync flags, checkpoints, and recovery. Two files are copied whole into this chapter directory (`wal.c`, `wal.h`); `pager.c` and `main.c` are linked in the pinned tree (`$SQLITE_SRC` or `_src/sqlite-3.53.4`).
+This section walks the pinned SQLite `version-3.53.4` C source for WAL formatting, checksums, read marks, frame writes, sync flags, checkpoints, and recovery. Two C source files are copied whole into this chapter's directory (`wal.c`, `wal.h`, checksummed in `SOURCES.sha256` against the pinned tree); `pager.c` and `main.c` are linked in the pinned SQLite source tree (`$SQLITE_SRC` inside the `lab` container or `_src/sqlite-3.53.4` on the host).
 
 ### 3.1 WAL format, checksums, and recovery
 
 1. **In-source WAL specification** — [`src/wal.c:16-249`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L16-L249) (local copy: [`wal.c`](wal.c)), covering the file format, [`READER ALGORITHM` (`src/wal.c:100-126`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L100-L126), and [`WAL-INDEX FORMAT` (`src/wal.c:127-249`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L127-L249), alongside the header size and magic constants at [`src/wal.c:477-491`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L477-L491):
    - A WAL starts with a 32-byte header (`WAL_HDRSIZE = 32`) of eight big-endian 32-bit unsigned integers: magic (`0x377f0682` for little-endian checksum words or `0x377f0683` for big-endian checksum words), format version (`3007000`), database page size, checkpoint sequence number, `salt-1`, `salt-2`, `checksum-1`, and `checksum-2`.
    - Every frame starts with a 24-byte header (`WAL_FRAME_HDRSIZE = 24`) of six big-endian 32-bit unsigned integers: page number, commit database size in pages (`0` for non-commit frames, `> 0` on the last frame of a committed transaction), `salt-1`, `salt-2`, `checksum-1`, and `checksum-2`, followed immediately by one database page of `pageSize` bytes.
-   - `src/wal.c:130-133` notes that the wal-index lives in shared memory (an mmapped `-shm` file on Unix), which is why WAL mode requires local shared memory and does not operate across network filesystems.
+   - `src/wal.c:130-133` notes that the wal-index lives in shared memory (an `mmap`-ed `-shm` file on Unix), which is why WAL mode requires local shared memory and does not work across network filesystems.
 2. **`walChecksumBytes`** — [`src/wal.c:856-912`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L856-L912) (local copy: [`wal.c`](wal.c)). Computes SQLite's cumulative Fletcher-like checksum over pairs of 32-bit words (`nByte` must be a multiple of 8):
    ```c
    s1 += *aData++ + s2;
@@ -122,23 +122,23 @@ This section reads the pinned SQLite `version-3.53.4` C source for WAL formattin
    walChecksumBytes(nativeCksum, aData, pWal->szPage, aCksum, aCksum);
    ```
    **Source-comment discrepancy:** the comment immediately above those lines (`src/wal.c:1032-1035`) claims the checksum covers "the first 16 bytes of this frame-header". The code at line 1038 (and `walEncodeFrame` at line 985) actually passes `8` bytes (`pgno` and `commit-size`), agreeing with the top format comment (`src/wal.c:65-68`). Our Go parser follows the code.
-4. **`walIndexRecover`** — [`src/wal.c:1390-1614`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L1390-L1614) (local copy: [`wal.c`](wal.c)). Rebuilds `-shm` from `-wal` under exclusive locks. If the WAL header has a bad magic, an invalid page size, or a bad header checksum (lines 1447–1467), SQLite jumps to `finished` and treats the WAL as having zero valid frames. Only after the header checksum verifies does line 1472 check `version != WAL_MAX_VERSION` (`3007000`), returning `SQLITE_CANTOPEN_BKPT`. Line 1489 computes `iLastFrame = (nSize - WAL_HDRSIZE) / szFrame`, silently ignoring any trailing partial-frame bytes. The loop (lines 1502–1525) stops at the first frame rejected by `walDecodeFrame`, appends every valid frame to the wal-index, and advances `mxFrame` and `nPage` only when `nTruncate != 0` (a commit frame). At the end it publishes the wal-index header, sets `nBackfill = 0`, and initializes `aReadMark[1] = mxFrame`.
+4. **`walIndexRecover`** — [`src/wal.c:1390-1614`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L1390-L1614) (local copy: [`wal.c`](wal.c)). Rebuilds `-shm` from `-wal` under exclusive locks. If the WAL header has a bad magic, an invalid page size, or a bad header checksum (lines 1447–1467), SQLite jumps to `finished` and treats the WAL as having zero valid frames. Only after the header checksum verifies does line 1472 check `version != WAL_MAX_VERSION` (`3007000`), returning `SQLITE_CANTOPEN_BKPT`. Line 1489 computes `iLastFrame = (nSize - WAL_HDRSIZE) / szFrame`, silently ignoring any trailing partial-frame bytes. The scan loop (lines 1502–1525) stops at the first frame rejected by `walDecodeFrame`, appends every valid frame to the wal-index, and advances `mxFrame` and `nPage` only when `nTruncate != 0` (a commit frame). At the end, it publishes the wal-index header, sets `nBackfill = 0`, and initializes `aReadMark[1] = mxFrame`.
 
 ### 3.2 Wal-index structures, read marks, and read/write locking
 
-5. **Lock slots, `WalIndexHdr`, and `WalCkptInfo`** — [`src/wal.c:294-401`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L294-L401) (`WalIndexHdr` at [`src/wal.c:321-333`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L321-L333), `WalCkptInfo` at [`src/wal.c:394-401`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L394-L401), local copy: [`wal.c`](wal.c)). Defines the eight lock slots on `-shm` bytes 120–127: `0 = WAL_WRITE_LOCK`, `1 = WAL_CKPT_LOCK`, `2 = WAL_RECOVER_LOCK`, and `3+i = WAL_READ_LOCK(i)` for `i = 0..4` (`WAL_NREADER = 5`). Byte 128 is the dead-man-switch lock (`UNIX_SHM_DMS`): the first connection to open the database acquires it exclusively, truncates `-shm`, and runs `walIndexRecover` so a stale `-shm` file on disk is never trusted. The 136-byte header region holds two 48-byte `WalIndexHdr` copies (bytes 0–47 and 48–95) followed by the 40-byte `WalCkptInfo` (bytes 96–135: `nBackfill`, `aReadMark[0..4]`, 8 lock bytes, `nBackfillAttempted`, `notUsed0`). Block 0 stores 4,062 page numbers (bytes 136–16,383) and an 8,192-slot `uint16` hash table (bytes 16,384–32,767); each subsequent 32 KiB block stores 4,096 page numbers plus an 8,192-slot hash table.
+5. **Lock slots, `WalIndexHdr`, and `WalCkptInfo`** — [`src/wal.c:294-401`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L294-L401) (`WalIndexHdr` at [`src/wal.c:321-333`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L321-L333), `WalCkptInfo` at [`src/wal.c:394-401`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L394-L401), local copy: [`wal.c`](wal.c)). Defines the eight POSIX lock slots on `-shm` bytes 120–127: `0 = WAL_WRITE_LOCK`, `1 = WAL_CKPT_LOCK`, `2 = WAL_RECOVER_LOCK`, and `3+i = WAL_READ_LOCK(i)` for `i = 0..4` (`WAL_NREADER = 5`). Byte 128 is the dead-man-switch lock (`UNIX_SHM_DMS`): the first connection to open the database takes it exclusively, truncates `-shm`, and runs `walIndexRecover` so a stale `-shm` file on disk is never trusted. The 136-byte header region holds two 48-byte `WalIndexHdr` copies (bytes 0–47 and 48–95) followed by the 40-byte `WalCkptInfo` (bytes 96–135: `nBackfill`, `aReadMark[0..4]`, 8 lock bytes, `nBackfillAttempted`, `notUsed0`). Block 0 stores 4,062 page numbers (bytes 136–16,383) and an 8,192-slot `uint16` hash table (bytes 16,384–32,767); each subsequent 32 KiB block stores 4,096 page numbers plus an 8,192-slot hash table.
 6. **`walIndexWriteHdr`** — [`src/wal.c:942-954`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L942-L954) (local copy: [`wal.c`](wal.c)). Sets `isInit = 1` and `iVersion = 3007000`, checksums the first 40 bytes in native byte order, writes copy 2 (`aHdr[1]`), executes a memory barrier (`walShmBarrier`), and then writes copy 1 (`aHdr[0]`). Readers read copy 1, issue a barrier, read copy 2, and compare all 48 bytes with `memcmp` (`walIndexTryHdr`) to detect torn header writes.
 7. **`walTryBeginRead`** — [`src/wal.c:3020-3272`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L3020-L3272) (local copy: [`wal.c`](wal.c)). Starts a read transaction and locks its snapshot:
    - **Database-only path (`WAL_READ_LOCK(0)`, lines 3134–3167):** When `nBackfill == pWal->hdr.mxFrame` (every WAL frame has been copied into `.db`), the reader acquires a shared lock on `WAL_READ_LOCK(0)`, re-checks that `WalIndexHdr` did not change, sets `pWal->readLock = 0`, and ignores the WAL completely. It sets no mark in `aReadMark[1..4]`.
-   - **WAL-reading path (`WAL_READ_LOCK(1..4)`, lines 3174–3224):** Otherwise, the reader scans `aReadMark[1..4]` for the largest mark `<= mxFrame`. If no slot already equals `mxFrame`, it tries to take an exclusive lock on a free slot `i` in `1..4`, stores `aReadMark[i] = mxFrame`, and releases the exclusive lock. It then takes a shared lock on `WAL_READ_LOCK(mxI)` and verifies that neither the mark nor `WalIndexHdr` changed while locking.
-   - **Stale marks stay in `-shm`:** Ending a read transaction releases the shared lock on `WAL_READ_LOCK(i)` without clearing `aReadMark[i]`. The number remains in `-shm` until a later checkpoint or reader overwrites that slot.
-8. **`sqlite3WalBeginWriteTransaction`** — [`src/wal.c:3699-3746`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L3699-L3746) (local copy: [`wal.c`](wal.c)). Acquires `WAL_WRITE_LOCK` exclusively. If `WalIndexHdr` in `-shm` changed since this connection started its read transaction (line 3735), it releases `WAL_WRITE_LOCK` and returns `SQLITE_BUSY_SNAPSHOT`.
+   - **WAL-reading path (`WAL_READ_LOCK(1..4)`, lines 3174–3224):** Otherwise, the reader scans `aReadMark[1..4]` for the largest mark `<= mxFrame`. If no slot already equals `mxFrame`, it tries to take an exclusive lock on a free slot `i` in `1..4`, writes `aReadMark[i] = mxFrame`, and releases the exclusive lock. It then takes a shared lock on `WAL_READ_LOCK(mxI)` and verifies that neither the mark nor `WalIndexHdr` changed while locking.
+   - **Stale marks stay in `-shm`:** Ending a read transaction releases the shared lock on `WAL_READ_LOCK(i)` without clearing `aReadMark[i]`. The old number stays in `-shm` until a later checkpoint or reader overwrites that slot.
+8. **`sqlite3WalBeginWriteTransaction`** — [`src/wal.c:3699-3746`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L3699-L3746) (local copy: [`wal.c`](wal.c)). Acquires `WAL_WRITE_LOCK` exclusively. If `WalIndexHdr` in `-shm` changed since this connection started its read transaction (line 3735), another writer committed first, so it releases `WAL_WRITE_LOCK` and returns `SQLITE_BUSY_SNAPSHOT`.
 
 ### 3.3 Writing frames, restarting the WAL, and sync flags
 
-9. **`pagerWalFrames` and `pagerOpenWalIfPresent`** — [`src/pager.c:3225-3282`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3225-L3282) and [`src/pager.c:3385-3413`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3385-L3413) (in the pinned tree). `pagerOpenWalIfPresent` switches the pager into WAL mode whenever a `-wal` file sits beside the database (deleting an empty `-wal` beside an empty database). `pagerWalFrames` hands the pager's dirty-page list to `sqlite3WalFrames` with `walSyncFlags` and updates page 1's change counter only when page 1 is in that dirty list (as proven in Chapter 2).
-10. **`walRestartLog` and `walRestartHdr`** — [`src/wal.c:3875-3915`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L3875-L3915) and [`src/wal.c:2152-2166`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2152-L2166) (local copy: [`wal.c`](wal.c)). Called at the start of `walFrames`: if the writer is holding `WAL_READ_LOCK(0)` (meaning `nBackfill == mxFrame`) and `nBackfill > 0`, `walRestartLog` tries to take exclusive locks on `WAL_READ_LOCK(1..4)` (line 3885)—notably *not* `WAL_READ_LOCK(0)`. If no reader holds slots `1..4`, it calls `walRestartHdr`, which increments the connection's `pWal->nCkpt`, resets `mxFrame = 0` and `nBackfill = 0`, increments `aSalt[0]` (`salt-1`) by 1, replaces `aSalt[1]` (`salt-2`) with a random value, publishes the new wal-index header, and resets `aReadMark[1] = 0` and `aReadMark[2..4] = 0xffffffff`.
-11. **`walFrames`** — [`src/wal.c:4038-4266`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L4038-L4266) (local copy: [`wal.c`](wal.c)). Calls `walRestartLog` (line 4079). When `iFrame == 0` (fresh or restarted WAL), it writes the 32-byte WAL header and syncs it with `CKPT_SYNC_FLAGS` (unless `synchronous=OFF` or `SQLITE_IOCAP_SEQUENTIAL`):
+9. **`pagerWalFrames` and `pagerOpenWalIfPresent`** — [`src/pager.c:3225-3282`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3225-L3282) and [`src/pager.c:3385-3413`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3385-L3413) (in the pinned tree). `pagerOpenWalIfPresent` switches the pager into WAL mode whenever a `-wal` file sits beside the database (deleting an empty `-wal` beside an empty database). `pagerWalFrames` hands the pager's dirty-page list to `sqlite3WalFrames` with `walSyncFlags` and updates page 1's change counter only when page 1 is in that dirty list (as Chapter 2 proved).
+10. **`walRestartLog` and `walRestartHdr`** — [`src/wal.c:3875-3915`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L3875-L3915) and [`src/wal.c:2152-2166`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2152-L2166) (local copy: [`wal.c`](wal.c)). Called at the start of `walFrames`: if the writer holds `WAL_READ_LOCK(0)` (meaning `nBackfill == mxFrame`) and `nBackfill > 0`, `walRestartLog` tries to take exclusive locks on `WAL_READ_LOCK(1..4)` (line 3885)—notably *not* `WAL_READ_LOCK(0)`. If no reader holds slots `1..4`, it calls `walRestartHdr`, which increments the connection's `pWal->nCkpt`, resets `mxFrame = 0` and `nBackfill = 0`, increments `aSalt[0]` (`salt-1`) by 1, replaces `aSalt[1]` (`salt-2`) with a random value, publishes the new wal-index header, and resets `aReadMark[1] = 0` and `aReadMark[2..4] = 0xffffffff` (`READMARK_NOT_USED`, marking those slots empty).
+11. **`walFrames`** — [`src/wal.c:4038-4266`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L4038-L4266) (local copy: [`wal.c`](wal.c)). Calls `walRestartLog` (line 4079). When `iFrame == 0` (a fresh or restarted WAL), it writes the 32-byte WAL header and syncs it with `CKPT_SYNC_FLAGS` (unless `synchronous=OFF` or `SQLITE_IOCAP_SEQUENTIAL`, a VFS flag indicating sequential-write guarantees, is set):
     ```c
     sqlite3Put4byte(&aWalHdr[0], (WAL_MAGIC | SQLITE_BIGENDIAN));
     sqlite3Put4byte(&aWalHdr[4], WAL_MAX_VERSION);
@@ -147,7 +147,7 @@ This section reads the pinned SQLite `version-3.53.4` C source for WAL formattin
     if( pWal->nCkpt==0 ) sqlite3_randomness(8, pWal->hdr.aSalt);
     memcpy(&aWalHdr[16], pWal->hdr.aSalt, 8);
     ```
-    Lines 4095–4096 hold an important subtlety: `pWal->nCkpt` is **per connection**, updated only when that connection runs `walIndexRecover` (line 1456) or `walRestartHdr` (line 2156). If connection C runs `wal_checkpoint(TRUNCATE)` (calling `walRestartHdr` on C's handle and resetting `mxFrame = 0`), and then connection W—whose own `pWal->nCkpt` is still `0`—writes the next WAL header, line 4096 re-randomizes both salts and writes `checkpoint-seq = 0`. Only when the same connection that ran `walRestartHdr` writes the new header does `salt-1` advance by `+1` and `checkpoint-seq` advance by `+1`. Experiment 5.4 demonstrates both cases.
+    Lines 4095–4096 reveal a per-connection subtlety: `pWal->nCkpt` is **per connection**, updated only when that connection runs `walIndexRecover` (line 1456) or `walRestartHdr` (line 2156). If connection C runs `wal_checkpoint(TRUNCATE)` (calling `walRestartHdr` on C's handle and resetting `mxFrame = 0`), and then connection W—whose own `pWal->nCkpt` is still `0`—writes the next WAL header, line 4096 re-randomizes both salts and writes `checkpoint-seq = 0`. Only when the same connection that ran `walRestartHdr` writes the new header does `salt-1` advance by `+1` and `checkpoint-seq` advance by `+1`. Experiment 5.4 demonstrates both cases.
 
     Next, `walFrames` writes each dirty page (lines 4140–4173). If a page was already spilled to `-wal` earlier in the same open transaction, lines 4147–4163 overwrite its page data in place and record `pWal->iReCksum` so `walRewriteChecksums` (line 4177) recomputes all checksums at commit. On commit (`isCommit != 0`), the last frame gets `nTruncate` = database page count (line 4167). If `WAL_SYNC_FLAGS(sync_flags) != 0`, lines 4195–4214 sync `-wal` (padding to a sector boundary only when `padToSectorBoundary` is set). If this is the first commit after a restart and `journal_size_limit >= 0`, lines 4220–4227 call `walLimitSize` ([`src/wal.c:2401-2413`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2401-L2413)). Finally, lines 4235–4261 append frames to the wal-index and call `walIndexWriteHdr`, making the commit visible to new readers.
 12. **WAL sync flags (`WAL_SYNC_FLAGS` and `CKPT_SYNC_FLAGS`)** — [`src/wal.h:25-26`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.h#L25-L26) (local copy: [`wal.h`](wal.h)) and [`src/pager.c:3658-3704`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3658-L3704) (`sqlite3PagerSetFlags`, in the pinned tree):
@@ -164,20 +164,116 @@ This section reads the pinned SQLite `version-3.53.4` C source for WAL formattin
     ```
     The low two bits (`WAL_SYNC_FLAGS`) control commit syncs; bits 2–3 (`CKPT_SYNC_FLAGS`) control checkpoint (and fresh WAL header) syncs. Under `PRAGMA synchronous=NORMAL`, `pPager->fullSync` is `0`, so the low two bits stay `0`: SQLite syncs at checkpoints and not on steady-state commits. Under `FULL` or `EXTRA`, `fullSync` is `1`, so SQLite syncs `-wal` on every commit as well. **Source-comment bug:** the struct comment at [`src/pager.c:607-617`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L607-L617) describes those bitfields backwards (claiming the low two bits are for checkpoints and bits `0x04`/`0x08` are for commits). Always cite `wal.h:25-26` and `sqlite3PagerSetFlags`.
 
+The sequence below contrasts both `TRUNCATE` paths from step 11—when a separate connection C runs `TRUNCATE` versus when writer W runs `TRUNCATE` itself—showing why per-connection `pWal->nCkpt` changes the next WAL header's salts and sequence number:
+
+<!-- draw-visual: diagrams/ch05-wal-transactions-checkpoints-truncate-salts.mmd -->
+```text
+  ┌────────┐     ┌─────────────┐     ┌──────────┐
+  │ Conn C │     │ -shm / -wal │     │ Writer W │
+  └────┬───┘     └──────┬──────┘     └─────┬────┘
+       │                │                  │
+ ┌───────────────────────────────────────────────┐
+ │ Case 1: Conn C runs TRUNCATE (both nCkpt = 0) │
+ └───────────────────────────────────────────────┘
+       │                │                  │
+       │ 1. TRUNCATE    │                  │
+       ├───────────────►│                  │
+       │                │                  │
+┌─────────────┐         │                  │
+│ C.nCkpt = 1 │         │                  │
+└─────────────┘         │                  │
+       │                │                  │
+       │    ┌───────────────────────┐      │
+       │    │ shm salt1+1, -wal 0 B │      │
+       │    └───────────────────────┘      │
+       │                │                  │
+       │                │ 2. write iFrame=0│
+       │                │◄─────────────────┤
+       │                │                  │
+       │                │        ┌────────────────────┐
+       │                │        │ W.nCkpt is still 0 │
+       │                │        └────────────────────┘
+       │                │                  │
+       │                │ 3. random, seq=0 │
+       │                │◄─────────────────┤
+       │                │                  │
+  ┌──────────────────────────────────────────────┐
+  │ Case 2: Writer W runs TRUNCATE (W.nCkpt = 0) │
+  └──────────────────────────────────────────────┘
+       │                │                  │
+       │                │ 4. TRUNCATE      │
+       │                │◄─────────────────┤
+       │                │                  │
+       │                │           ┌─────────────┐
+       │                │           │ W.nCkpt = 1 │
+       │                │           └─────────────┘
+       │                │                  │
+       │                │ 5. write iFrame=0│
+       │                │◄─────────────────┤
+       │                │                  │
+       │                │ 6. salt1+1, seq=1│
+       │                │◄─────────────────┤
+       │                │                  │
+```
+
 ### 3.4 Checkpoints, autocheckpoint, and last close
 
-13. **`sqlite3WalCheckpoint` and `walBusyLock`** — [`src/wal.c:4301-4432`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L4301-L4432) and [`src/wal.c:2107-2125`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2107-L2125) (local copy: [`wal.c`](wal.c)). `SQLITE_CHECKPOINT_NOOP` takes no locks and only reads `mxFrame` and `nBackfill` from `-shm` (lines 4341, 4399–4403). All other modes first try `WAL_CKPT_LOCK` without invoking the busy handler (line 4342: if another checkpoint is running, it returns `SQLITE_BUSY` with `-1, -1` immediately). `FULL`, `RESTART`, and `TRUNCATE` then request `WAL_WRITE_LOCK` through `walBusyLock` (line 4358); if a writer holds it past the busy timeout, they fall back to `PASSIVE` backfill (`eMode2 = SQLITE_CHECKPOINT_PASSIVE`, lines 4361–4365) and still report `SQLITE_BUSY` at line 4431.
+13. **`sqlite3WalCheckpoint` and `walBusyLock`** — [`src/wal.c:4301-4432`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L4301-L4432) and [`src/wal.c:2107-2125`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2107-L2125) (local copy: [`wal.c`](wal.c)). `SQLITE_CHECKPOINT_NOOP` takes no locks and only reads `mxFrame` and `nBackfill` from `-shm` (lines 4341, 4399–4403). All other modes first try `WAL_CKPT_LOCK` without invoking the busy handler (line 4342): if another checkpoint is already running, the call returns `SQLITE_BUSY` immediately with `log=-1, checkpointed=-1`. `FULL`, `RESTART`, and `TRUNCATE` then request `WAL_WRITE_LOCK` through `walBusyLock` (line 4358); if a writer holds it past the busy timeout, they fall back to `PASSIVE` backfill (`eMode2 = SQLITE_CHECKPOINT_PASSIVE`, lines 4361–4365) and still report `SQLITE_BUSY` at line 4431.
 14. **`walCheckpoint`** — [`src/wal.c:2199-2395`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2199-L2395) (local copy: [`wal.c`](wal.c)). Runs in three phases:
     - **Compute `mxSafeFrame` (lines 2233–2251):** Starts at `mxFrame` and loops over slots `1..4`. For each slot whose mark `y < mxSafeFrame`, it tries `walBusyLock(WAL_READ_LOCK(i))` (with `xBusy = 0` in `PASSIVE` mode). If unlocked, it updates slot `1` to `mxSafeFrame` and clears slots `2..4` to `READMARK_NOT_USED`; if locked by a reader, it lowers `mxSafeFrame = y` and disables further busy waits (`xBusy = 0`).
     - **Backfill pages under `WAL_READ_LOCK(0)` (lines 2254–2344):** Before copying a single page, line 2260 must take `WAL_READ_LOCK(0)` exclusively. If any database-only reader holds `WAL_READ_LOCK(0)`, no frames are copied at all (`nBackfill` stays `0`). Otherwise, it verifies the WAL salts did not wrap, sets `nBackfillAttempted = mxSafeFrame`, syncs `-wal` with `CKPT_SYNC_FLAGS` (line 2277), checks the corruption bound `nSize + 65536 + mxFrame*szPage < mxPage*szPage` (line 2288), copies the newest frame for each page `<= mxPage` in `nBackfill+1..mxSafeFrame` into `.db` (lines 2304–2323), truncates `.db` to `nPage * szPage` and syncs `.db` if all frames were copied (lines 2328–2335), and stores `nBackfill = mxSafeFrame` (line 2337).
     - **Mode tail (lines 2358–2389):** For `FULL` and above, if `nBackfill < mxFrame`, it returns `SQLITE_BUSY` (line 2362). For `RESTART` and `TRUNCATE`, once `nBackfill == mxFrame`, line 2367 calls `walBusyLock` for exclusive `WAL_READ_LOCK(1..4)` so no reader still uses the WAL. `RESTART` then releases those locks without touching the WAL header or size—leaving the restart itself to the next writer. Only `TRUNCATE` calls `walRestartHdr` and `sqlite3OsTruncate(pWal->pWalFd, 0)` (lines 2383–2384).
-15. **`sqlite3WalDefaultHook` and `sqlite3WalClose`** — [`src/main.c:2484-2496`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L2484-L2496) (in the pinned tree) and [`src/wal.c:2507-2571`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2507-L2571) (local copy: [`wal.c`](wal.c)). By default, every connection installs `sqlite3WalDefaultHook` with a threshold of 1,000 frames: after any commit where `nFrame >= N`, that committing connection runs `sqlite3_wal_checkpoint` (`PASSIVE`). On close, `sqlite3WalClose` tries to obtain an `EXCLUSIVE` lock on `.db` (line 2529); if it succeeds—meaning this is the last open connection—it runs a `PASSIVE` checkpoint (line 2534) and deletes `-wal` and `-shm` (lines 2559–2564), unless `SQLITE_FCNTL_PERSIST_WAL` is set (then truncating `-wal` to 0 when `journal_size_limit >= 0`).
+15. **`sqlite3WalDefaultHook` and `sqlite3WalClose`** — [`src/main.c:2484-2496`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L2484-L2496) (in the pinned tree) and [`src/wal.c:2507-2571`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2507-L2571) (local copy: [`wal.c`](wal.c)). By default, every connection installs `sqlite3WalDefaultHook` with a threshold of 1,000 frames: after any commit where `nFrame >= N`, that committing connection runs `sqlite3_wal_checkpoint` (`PASSIVE`). On close, `sqlite3WalClose` tries to obtain an `EXCLUSIVE` lock on `.db` (line 2529). If it succeeds—meaning this is the last open connection—it runs a `PASSIVE` checkpoint (line 2534) and deletes `-wal` and `-shm` (lines 2559–2564), unless `SQLITE_FCNTL_PERSIST_WAL` (a file-control option that keeps `-wal` on disk after the last close) is set, in which case it truncates `-wal` to 0 when `journal_size_limit >= 0`.
+
+Putting steps 13 and 14 together, the flow below shows how `NOOP`, `PASSIVE`, `FULL`, `RESTART`, and `TRUNCATE` branch across locks, backfill, and truncation:
+
+<!-- draw-visual: diagrams/ch05-wal-transactions-checkpoints-checkpoint-flow.mmd -->
+```text
+┌─────────────────────────┐
+│      wal_checkpoint     │
+└────────────┬────────────┘
+             │
+             ├────────────────────────────────────┐
+             │                                    │
+           NOOP                               PASSIVE+
+             │                                    │
+             ▼                                    ▼
+┌─────────────────────────┐             ┌───────────────────┐
+│ Read mxFrame, nBackfill │      PASSIVE┤ Try WAL_CKPT_LOCK │
+└─────────────────────────┘      │      └─────────┬─────────┘
+                                 │                │
+             ┌───────────────────┘              FULL+
+             ▼                                    ▼
+┌─────────────────────────┐             ┌───────────────────┐
+│Scan marks 1..4 -> mxSafe│◄ok─or─busy──┤Wait WAL_WRITE_LOCK│
+└────────────┬────────────┘             └───────────────────┘
+             ▼
+┌─────────────────────────┐
+│   Excl WAL_READ_LOCK 0  │
+└────────────┬────────────┘
+             ▼
+┌─────────────────────────┐
+│ Sync -wal, backfill .db │
+└────────────┬────────────┘
+             │
+         RESTART+
+             ▼
+┌─────────────────────────┐
+│ Wait WAL_READ_LOCK 1..4 │
+└────────────┬────────────┘
+             │
+         TRUNCATE
+             ▼
+┌─────────────────────────┐
+│ walRestartHdr, -wal = 0 │
+└─────────────────────────┘
+```
 
 Two experimental SQLite branches often mentioned online—**WAL2** and **`BEGIN CONCURRENT`**—are not present in SQLite 3.53.4.
 
 ### Version notes
 
-Behavior differences across SQLite releases relevant to WAL mode (sources: [`docs/knowledge/source-inventory-ch05-09.md`](../docs/knowledge/source-inventory-ch05-09.md), `changes.html`, `wal.html`, and the copied source):
+Behavior differences across SQLite releases relevant to WAL mode (from this repository's C-source inventory [`docs/knowledge/source-inventory-ch05-09.md`](../docs/knowledge/source-inventory-ch05-09.md), SQLite's release notes `changes.html`, WAL documentation `wal.html`, and the copied source):
 
 - **`SQLITE_CHECKPOINT_NOOP` (added in 3.51.0, `changes.html`).** `PRAGMA wal_checkpoint(NOOP)` reports `(busy, log, checkpointed)` without taking `WAL_CKPT_LOCK` or copying frames; older releases do not recognize `NOOP`.
 - **WAL-reset database corruption fix (3.51.3 and 3.53.0, `wal.html#walresetbug`).** Fixed a race that could corrupt a database across a WAL reset. Our 3.53.4 pin includes the fix; older 3.x builds bundled in other drivers may not.
@@ -186,9 +282,9 @@ Behavior differences across SQLite releases relevant to WAL mode (sources: [`doc
 
 ### Experiment 5.1 — WAL inspector (`5.1-wal-inspector`)
 
-- **Claim:** A WAL file is a 32-byte header plus whole frames of a 24-byte header and one page image, linked by salts and a running checksum; a transaction commits exactly on the frame carrying a non-zero commit size (equal to `PRAGMA page_count`); the frame count equals `PRAGMA wal_checkpoint(NOOP)`'s `log` column, `-shm`'s `mxFrame`, and `showwal`'s listing; and repeated runs (and different `synchronous` levels: `FULL`, `NORMAL`, `OFF`) write the exact same `(page, page sha256, commit size)` frame sequence, differing only inside salt and checksum bytes.
-- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
-- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
+- **Claim:** A WAL file consists of a 32-byte header followed by whole frames (each a 24-byte header plus one page image) linked by salts and a running checksum. A transaction commits on the frame carrying a non-zero commit size equal to `PRAGMA page_count`, and the frame count matches `PRAGMA wal_checkpoint(NOOP)`'s `log` column, `-shm`'s `mxFrame`, and `showwal`'s listing. Repeated runs—and different `synchronous` levels (`FULL`, `NORMAL`, `OFF`)—write the exact same `(page, page sha256, commit size)` frame sequence, differing only in salt and checksum bytes.
+- **Evidence form:** `EXACT` (every stored CSV table must match byte for byte on every run; run-dependent `info` tables are excluded).
+- **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
   go run ./cmd/course run 5.1
   ```
@@ -575,9 +671,9 @@ SELECT run, synchronous, wal_bytes, frames, commits, same_sequence, first_differ
 FROM sequences WHERE part = 'C' ORDER BY run;
 ```
 
-`course run` also prints the run-dependent values, which are not part of the stored evidence: the random salts, the checksums that depend on them, and how many bytes differ between run 1 and run 2.
+`course run` also prints the run-dependent values excluded from the stored evidence: the random salts, the checksums derived from them, and how many bytes differ between run 1 and run 2.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/5.1-wal-inspector/`](evidence/5.1-wal-inspector/), and `go run ./cmd/course check evidence ch05` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough rendered by the `lab` container. Its backing CSV tables live in [`evidence/5.1-wal-inspector/`](evidence/5.1-wal-inspector/), and `go run ./cmd/course check evidence ch05` compares a fresh run against them byte for byte.
 
 <!-- include: evidence/5.1-wal-inspector.txt -->
 ```text
@@ -821,21 +917,21 @@ Experiment verdict: WAL INSPECTOR OK
 
 **Reading the evidence:**
 
-- **Header and file size (A1):** `magic=0x377f0682` selects little-endian 32-bit word reads for the checksum (`WAL_MAGIC | SQLITE_BIGENDIAN` on this little-endian host), `version=3007000`, `page-size=4096`, and `checkpoint-seq=0`. The random salts (`0x802a9331` and `0x94ead34f` in one lab run) and the header checksum change on every run, so they are in a run-dependent `info` table that `course run` prints, not in the stored evidence. The file is `387,312` bytes, matching `32 + 94 * (24 + 4096)` with `0` trailing bytes.
-- **Frames and commits (A2–A4):** Every one of the 94 frames verifies (`94` valid frames of `94`, stop reason `valid`). Five frames carry a non-zero commit size (`<- commit`): frames 22, 40, 58, 83, and 94, matching recipe steps 1–5 (22, 18, 18, 25, and 11 frames). Each commit starts with page 1 because every recipe step writes `PRAGMA user_version`, and each commit size (`22, 29, 39, 51, 51`) matches `PRAGMA page_count` read right after that step.
-- **Three independent oracles (A5–A7):** `PRAGMA wal_checkpoint(NOOP)` reports busy `false`, log `94`, checkpointed `0`; our plain-Go `-shm` decoder reads `32,768` bytes, little-endian, matching header copies, valid header checksum, `mxFrame=94`, `nPage=51`, `nBackfill=0`, identical salts, and a 94-entry page-number array identical to the WAL frames; and SQLite's pinned C `showwal` lists 94 frames with `0` disagreements.
-- **Part B — Repeat run (B1–B2):** Run 2 produces the same `387,312`-byte size. The region breakdown shows `differs` only on `header salts`, `header checksum`, `frame salts`, and `frame checksums` (the count of differing bytes is run-dependent, printed by `course run`: `1,519` in one lab run, `8 + 8 + 752 + 751`, where one checksum byte happened to collide). Every page number, commit size, and page-data byte is `same`, and the `(page, page sha256, commit size)` tuple sequences are equal.
+- **Header and file size (A1):** `magic=0x377f0682` selects little-endian 32-bit word reads for the checksum (`WAL_MAGIC | SQLITE_BIGENDIAN` on this little-endian host), with `version=3007000`, `page-size=4096`, and `checkpoint-seq=0`. Because the random salts (`0x802a9331` and `0x94ead34f` in one lab run) and the header checksum change on every run, they go to a run-dependent `info` table printed by `course run` rather than the stored evidence. The file is `387,312` bytes, matching `32 + 94 * (24 + 4096)` with `0` trailing bytes.
+- **Frames and commits (A2–A4):** All 94 frames verify (`94` valid frames of `94`, stop reason `valid`). Five frames carry a non-zero commit size (`<- commit`): frames 22, 40, 58, 83, and 94, corresponding to recipe steps 1–5 (22, 18, 18, 25, and 11 frames). Each commit starts with page 1 because every recipe step writes `PRAGMA user_version`, and each commit size (`22, 29, 39, 51, 51`) matches `PRAGMA page_count` read right after that step.
+- **Three independent oracles (A5–A7):** `PRAGMA wal_checkpoint(NOOP)` reports busy `false`, log `94`, and checkpointed `0`. Our plain-Go `-shm` decoder reads `32,768` bytes in little-endian order with matching header copies, a valid header checksum, `mxFrame=94`, `nPage=51`, `nBackfill=0`, salts matching the WAL header, and a 94-entry page-number array identical to the WAL frames. Finally, SQLite's pinned C `showwal` lists 94 frames with `0` disagreements.
+- **Part B — Repeat run (B1–B2):** Run 2 produces the same `387,312`-byte file. The region breakdown shows `differs` only on `header salts`, `header checksum`, `frame salts`, and `frame checksums` (the differing byte count is run-dependent and printed by `course run`: `1,519` in one lab run—`8 + 8 + 752 + 751`, where one checksum byte happened to collide). Every page number, commit size, and page-data byte is `same`, and the `(page, page sha256, commit size)` tuple sequences are equal.
 - **Part C — `synchronous` levels (C1):** `NORMAL` and `OFF` both write 94 frames and 5 commits with tuple sequences identical to `FULL`: `synchronous` controls when SQLite calls `fsync`, never which frames it writes.
 
 ---
 
 ## 4. Timeline
 
-Four timelines capture the life of a WAL: frame append offsets per commit, read marks and backfill under a held reader, WAL restart on the next write, and uncommitted frames left behind by a rollback.
+Four timelines trace the life of a WAL: frame append offsets per commit, read marks and backfill under a held reader, WAL restart on the next write, and uncommitted frames left behind by a rollback.
 
 ### 4.1 Frame layout across five commits (Experiment 5.1)
 
-Frame *k* (1-based) always begins at byte offset `32 + (k - 1) * (24 + pageSize)` (`32 + (k - 1) * 4120` for 4,096-byte pages), and its page image sits 24 bytes later:
+Frame *k* (1-based) begins at byte offset `32 + (k - 1) * (24 + pageSize)` (`32 + (k - 1) * 4120` for 4,096-byte pages), and its page image sits 24 bytes later:
 
 | Recipe step | Frames | Frame count | First frame offset | Commit frame offset | Commit size (pages) |
 | --- | --- | --- | --- | --- | --- |
@@ -868,9 +964,53 @@ Part B (reader begins after PASSIVE made nBackfill=22 == mxFrame=22):
   reader + PASSIVE WAL=2,195,992 B mx=533  nBackfill=533  marks=0,533,unused,... <- full backfill once reader closes
 ```
 
+Part B's lock interaction is easy to misread in prose alone: the reader holds only `WAL_READ_LOCK(0)`, so the writer's restart succeeds on exclusive locks `1..4`, yet every autocheckpoint past frame 200 fails to take exclusive lock `0` and leaves `nBackfill` at `0`:
+
+<!-- draw-visual: diagrams/ch05-wal-transactions-checkpoints-reader-pinning.mmd -->
+```text
+   ┌────────┐     ┌────────────┐     ┌────────┐
+   │ Reader │     │ -shm locks │     │ Writer │
+   └────┬───┘     └──────┬─────┘     └────┬───┘
+        │                │                │
+   ┌───────────────────────────────────────────┐
+   │ WAL backfilled: nBackfill == mxFrame (22) │
+   └───────────────────────────────────────────┘
+        │                │                │
+        │ 1. lock 0 (sh) │                │
+        ├───────────────►│                │
+        │                │                │
+┌────────────────┐       │                │
+│ reads .db only │       │                │
+└────────────────┘       │                │
+        │                │                │
+        │                │ 2. excl 1..4   │
+        │                │◄───────────────┤
+        │                │                │
+        │                │ 3. granted     │
+        │                ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈►│
+        │                │                │
+        │                │      ┌────────────────────┐
+        │                │      │ restart at frame 1 │
+        │                │      └────────────────────┘
+        │                │                │
+        │                │ 4. commit >200 │
+        │                │◄───────────────┤
+        │                │                │
+        │                │ 5. excl lock 0 │
+        │                │◄───────────────┤
+        │                │                │
+        │                │ 6. busy: R on 0│
+        │                ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈×│
+        │                │                │
+        │                │      ┌───────────────────┐
+        │                │      │ nBackfill stays 0 │
+        │                │      └───────────────────┘
+        │                │                │
+```
+
 ### 4.3 Spilled frames and rollback (Experiment 5.2 parts B and C)
 
-When a write transaction spills dirty pages out of a small page cache (`cache_size=10`), frames land in `-wal` before `COMMIT`, but `WalIndexHdr.mxFrame` in `-shm` does not advance until commit:
+When a write transaction spills dirty pages out of a small page cache (`cache_size=10`, covered in Chapter 4), frames land in `-wal` before `COMMIT`, while `WalIndexHdr.mxFrame` in `-shm` stays unchanged until commit:
 
 - After committing steps 9–10: `-wal` is `168,952` bytes (`41` frames, `mxFrame = 41`).
 - After running `UPDATE documents SET title = upper(title)` without committing: `-wal` grows to `247,232` bytes (`60` frames, `19` valid uncommitted frames after frame `41`).
@@ -878,9 +1018,9 @@ When a write transaction spills dirty pages out of a small page cache (`cache_si
 
 ### 4.4 Experiment 5.3 — Reader pins the WAL (`5.3-reader-pins-the-wal`)
 
-- **Claim:** An open read transaction stops checkpoints and forces unbounded WAL growth in both possible starting states: (A) when the WAL is not fully backfilled, the reader pins a read mark in `aReadMark[1..4]` equal to `mxFrame` when it began, so `nBackfill` stops at that mark, the WAL never restarts, and the reader's row count stays constant until it closes (leaving its stale mark in `-shm` until a checkpoint updates it, after which one `PASSIVE` checkpoint finishes backfilling and the next write restarts at frame 1 without shrinking the file); (B) when the WAL is already fully backfilled (`nBackfill == mxFrame`), the reader takes `WAL_READ_LOCK(0)` with no mark in `1..4`, allowing the next write to restart the WAL once while blocking every subsequent backfill (`nBackfill` stays `0`) until the reader closes.
-- **Evidence form:** `EXACT` throughout (scripted two-connection order with child-process sampling and no sleeps—narrowing the outline's original `SHAPE` expectation).
-- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
+- **Claim:** An open read transaction stops checkpoints and forces unbounded WAL growth in both possible starting states. In Part A (when the WAL is not fully backfilled), the reader pins a read mark in `aReadMark[1..4]` equal to `mxFrame` when it began: `nBackfill` stops at that mark, the WAL never restarts, and the reader's row count stays constant until it closes. Its stale mark remains in `-shm` until a `PASSIVE` checkpoint finishes backfilling, after which the next write restarts at frame 1 without shrinking the file. In Part B (when `nBackfill == mxFrame`), the reader takes `WAL_READ_LOCK(0)` with no mark in `1..4`, letting the next write restart the WAL once while blocking every subsequent backfill (`nBackfill` stays `0`) until the reader closes.
+- **Evidence form:** `EXACT` throughout (scripted two-connection order with child-process sampling and no sleeps, so every stored CSV table matches byte for byte on every run).
+- **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
   go run ./cmd/course run 5.3
   ```
@@ -1356,7 +1496,7 @@ SELECT moment, wal_bytes, mx_frame, n_backfill, read_marks
 FROM samples WHERE part = 'B' AND moment = 'reader ended + PASSIVE' ORDER BY seq;
 ```
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/5.3-reader-pins-the-wal/`](evidence/5.3-reader-pins-the-wal/), and `go run ./cmd/course check evidence ch05` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough rendered by the `lab` container. Its backing CSV tables live in [`evidence/5.3-reader-pins-the-wal/`](evidence/5.3-reader-pins-the-wal/), and `go run ./cmd/course check evidence ch05` compares a fresh run against them byte for byte.
 
 <!-- include: evidence/5.3-reader-pins-the-wal.txt -->
 ```text
@@ -1545,15 +1685,15 @@ Experiment verdict: READER PINS THE WAL OK
 - **Part A — Read mark in slot 1 (A1–A4):**
   - `after step 6` shows `WAL bytes = 90672`, `mxFrame = 22`, `nBackfill = 0`, and `read marks = 0,0,unused,unused,unused` (the writer did not run a `SELECT` before `openReader`, so slot 1 is still `0`).
   - `reader began` updates slot 1 to `22` (`0,22,unused,unused,unused`) and reads `251` rows.
-  - Across steps 7–30, the writer's own `SELECT count(*)` after each commit updates slot 2 (`38, 61, ..., 555`) while slot 1 stays pinned at `22` and the reader sees `251` rows as the writer climbs to `1177`.
-  - At step 15 (`mxFrame = 209 >= 200`), autocheckpoint fires for the first time and advances `nBackfill` from `0` to `22`. On every step from 16 through 30, autocheckpoint fires again and cannot move `nBackfill` past `22`; `533` of `555` frames remain uncheckpointed and the WAL reaches `2,286,632` bytes.
-  - `reader ended` prints the exact same `-shm` row (`0,22,555,unused,unused`) as `step 30 committed`, confirming that read marks outlive their readers—only the POSIX lock on `-shm` tells SQLite the slot is now free.
-  - One `PASSIVE` checkpoint then returns busy `false`, log `555`, checkpointed `555` (A3), advancing `nBackfill` to `555` and moving mark 1 to `555` while leaving the file at `2,286,632` bytes.
+  - Across steps 7–30, the writer's own `SELECT count(*)` after each commit updates slot 2 (`38, 61, ..., 555`), while slot 1 stays pinned at `22` and the reader sees `251` rows as the writer climbs to `1177`.
+  - At step 15 (`mxFrame = 209 >= 200`), autocheckpoint fires for the first time and advances `nBackfill` from `0` to `22`. On steps 16 through 30, autocheckpoint fires again on every commit and cannot move `nBackfill` past `22`; `533` of `555` frames stay uncheckpointed and the WAL grows to `2,286,632` bytes.
+  - `reader ended` prints the exact same `-shm` row (`0,22,555,unused,unused`) as `step 30 committed`, confirming that read marks outlive their readers—only the POSIX lock on `-shm` tells SQLite the slot is free.
+  - One `PASSIVE` checkpoint then returns busy `false`, log `555`, checkpointed `555` (A3), advancing `nBackfill` and mark 1 to `555` while leaving the file at `2,286,632` bytes.
   - `step 31 committed` restarts the WAL at frame 1 (`mxFrame = 18`, `nBackfill = 0`, `checkpoint-seq 0 -> 1`, `salt-1 + 1`, `18` valid frames of `555` in the file, with the remaining `537` frames belonging to the old generation), still at `2,286,632` bytes.
 - **Part B — Database-only reader on `WAL_READ_LOCK(0)` (B1–B4):**
   - After step 6, `PASSIVE` brings `nBackfill = 22 == mxFrame`. When the reader begins, `read marks` stay `0,22,unused,unused,unused`: the reader took `WAL_READ_LOCK(0)` and reads only `.db`.
-  - On step 7, the writer immediately restarts the WAL (`salt-1 + 1`, `mxFrame = 16`, `WAL bytes = 90672`) because `walRestartLog` only needs exclusive locks `1..4`.
-  - Yet from step 7 through step 30 (`mxFrame = 533`, `2,195,992` bytes), `nBackfill` remains `0` on every single row even though autocheckpoint ran on every commit past frame 200 (`walCheckpoint` cannot take `WAL_READ_LOCK(0)` exclusively). Once the reader closes, one `PASSIVE` checkpoint copies all `533` frames.
+  - On step 7, the writer immediately restarts the WAL (`salt-1 + 1`, `mxFrame = 16`, `WAL bytes = 90672`) because `walRestartLog` needs only exclusive locks `1..4`.
+  - Yet from step 7 through step 30 (`mxFrame = 533`, `2,195,992` bytes), `nBackfill` stays `0` on every row even though autocheckpoint ran on every commit past frame 200 (`walCheckpoint` cannot take `WAL_READ_LOCK(0)` exclusively). Once the reader closes, one `PASSIVE` checkpoint copies all `533` frames.
 
 ---
 
@@ -1563,7 +1703,7 @@ This section inlines the `internal/walfile` package introduced by this chapter a
 
 ### 5.1 The `internal/walfile` package
 
-`internal/walfile` imports only the Go standard library (its live integration test imports `internal/sqlitex`) and is organized into eight files:
+`internal/walfile` imports only the Go standard library (its live integration test imports `internal/sqlitex`) and is organized into eight implementation files:
 
 - **`errors.go`** — typed sentinel errors matching SQLite's recovery and checkpoint failure classes (`ErrWALIgnored`, `ErrUnsupportedVersion`, `ErrBaseNotDatabase`, `ErrBaseSize`, `ErrPageSizeMismatch`, `ErrCommitSizeTooLarge`, `ErrOutputExists`, `ErrShortIndex`, `ErrIndexVersion`, `ErrFrameNotIndexed`) plus `HeaderError`.
 
@@ -2216,7 +2356,7 @@ func CompareBytes(a, b []byte, pageSize int) ByteComparison {
 }
 ```
 
-- **`replay.go`** — implements rung R3 (`Replay`, `ReplayFiles`): validates the base header and page-size alignment even on zero-commit WALs, enforces `walCheckpoint`'s commit-size bound (`base + 65536 + frames*pageSize`), applies committed frames in order up to `LastCommitFrame`, skips pages past the final commit size, truncates or zero-extends to `DatabasePages * pageSize`, reports every ignored frame group with its reason, refuses existing outputs or sidecar files (`ErrOutputExists`), and writes atomically via `outPath.replay-tmp` (`O_EXCL` + `fsync` + `rename`, preserving any foreign `.replay-tmp` on `os.ErrExist`).
+- **`replay.go`** — implements rung R3 (`Replay`, `ReplayFiles`). It validates the base header and page-size alignment even on zero-commit WALs, enforces `walCheckpoint`'s commit-size bound (`base + 65536 + frames*pageSize`), applies committed frames in order up to `LastCommitFrame`, skips pages past the final commit size, and truncates or zero-extends to `DatabasePages * pageSize`. It also reports every ignored frame group with its reason, refuses existing outputs or sidecar files (`ErrOutputExists`), and writes atomically via `outPath.replay-tmp` (`O_EXCL` + `fsync` + `rename`, leaving any pre-existing `.replay-tmp` untouched on `os.ErrExist`).
 
 <!-- include: ../internal/walfile/replay.go -->
 ```go
@@ -2484,7 +2624,7 @@ func writeSynced(f *os.File, data []byte) error {
 }
 ```
 
-- **`shm.go`** — decodes the native-endian `-shm` wal-index (`ParseIndex`, `ParseIndexFile`): auto-detects host byte order from version word `3007000`, detects torn headers where copy 1 is zeroed and copy 2 is populated (the midpoint of `walIndexWriteHdr`), compares both raw 48-byte header copies including the `unused` padding field (`HeadersAgree`), decodes `WalCkptInfo` (`nBackfill`, `aReadMark[0..4]`, `nBackfillAttempted`), and maps frame numbers across block boundaries (`4062` entries in block 0, `4096` per later 32 KiB block) via `FramePage` and `FramePages`.
+- **`shm.go`** — decodes the native-endian `-shm` wal-index (`ParseIndex`, `ParseIndexFile`). It detects host byte order from version word `3007000`, catches torn headers where copy 1 is zeroed and copy 2 is populated (the midpoint of `walIndexWriteHdr`), and compares both raw 48-byte header copies including the `unused` padding field (`HeadersAgree`). It also decodes `WalCkptInfo` (`nBackfill`, `aReadMark[0..4]`, `nBackfillAttempted`) and maps frame numbers across block boundaries (`4062` entries in block 0, `4096` per later 32 KiB block) via `FramePage` and `FramePages`.
 
 <!-- include: ../internal/walfile/shm.go -->
 ```go
@@ -3118,9 +3258,9 @@ func ReadLiveState(ctx context.Context, database, scratchDirectory string) (Live
 
 ### 5.2 Experiment 5.2 — WAL replay, rung R3 (`5.2-wal-replay`)
 
-- **Claim:** A base database file plus the committed frames of its WAL is the complete database state. Applying committed frames in order in plain Go (`internal/walfile`), stopping at `LastCommitFrame`, and truncating to that commit's database size produces a file equal at **E1 bytes** to SQLite's own `wal_checkpoint(TRUNCATE)`—at a quiet moment (Part A), mid-transaction with valid spilled uncommitted frames at the tail (Part B), and after a `ROLLBACK` that leaves those frames in `-wal` (Part C). Furthermore, `-shm` is disposable: SQLite recovers the exact same bytes whether `-shm` is absent or replaced by a stale `-shm` copied from another database. *(Scope boundary: raw `base + WAL` files alone cannot detect a base from an earlier WAL generation because the `.db` header stores no WAL salt or generation; that check requires capture metadata recorded at capture time in Chapter 9's `internal/walship`.)*
-- **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
-- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
+- **Claim:** A base database file plus the committed frames of its WAL holds the complete database state. Applying committed frames in order in plain Go (`internal/walfile`), stopping at `LastCommitFrame`, and truncating to that commit's database size produces a file equal at **E1 bytes** to SQLite's own `wal_checkpoint(TRUNCATE)`—at a quiet moment (Part A), mid-transaction with valid spilled uncommitted frames at the tail (Part B), and after a `ROLLBACK` that leaves those frames in `-wal` (Part C). Furthermore, `-shm` is disposable: SQLite recovers the exact same bytes whether `-shm` is absent or replaced by a stale `-shm` copied from another database. *(Scope boundary: raw `base + WAL` files alone cannot detect a base from an earlier WAL generation because the `.db` header stores no WAL salt or generation; that check requires capture metadata recorded at capture time in Chapter 9's `internal/walship`.)*
+- **Evidence form:** `EXACT` (every stored CSV table must match byte for byte on every run; run-dependent `info` tables are excluded).
+- **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
   go run ./cmd/course run 5.2
   ```
@@ -3636,7 +3776,7 @@ SELECT against, user_version, integrity_check, unchanged_by_open
 FROM comparisons WHERE part = 'C' AND user_version IS NOT NULL ORDER BY seq;
 ```
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/5.2-wal-replay/`](evidence/5.2-wal-replay/), and `go run ./cmd/course check evidence ch05` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough rendered by the `lab` container. Its backing CSV tables live in [`evidence/5.2-wal-replay/`](evidence/5.2-wal-replay/), and `go run ./cmd/course check evidence ch05` compares a fresh run against them byte for byte.
 
 <!-- include: evidence/5.2-wal-replay.txt -->
 ```text
@@ -3881,9 +4021,9 @@ Experiment verdict: WAL REPLAY OK
 
 **Reading the evidence:**
 
-- **Part A — Quiet moment (A1–A5):** After 8 commits with `wal_autocheckpoint=0`, the child copies `r.db` (`16,384` bytes) and `r.db-wal` (`638,632` bytes). Hashing `r.db` alone matches recipe step `0` with exact bytes (A2): every single change from 8 committed transactions lives exclusively in `-wal`. `walfile.ReplayFiles` applies all `155` frames (`79` distinct pages, `8` transactions, `0` ignored), growing the output from `16,384` to `323,584` bytes (`79 * 4096`). SQLite then runs `wal_checkpoint(TRUNCATE)` on the original and closes; both files have identical SHA-256 `00eac4cab1747d717e2cebf666b7c63ed0504b8f83e8a2f15d02155130989af6`. Opening the replay with SQLite shows `user_version` `8`, `integrity_check` `ok`, and leaves the file unchanged. Recipe lookup matches step 8 under the WAL change-counter mask (one long-lived connection, Chapter 2).
-- **Part B — Mid-transaction spill and disposable `-shm` (B1–B4):** Starting from canonical step 8 (`323,584` bytes) with `cache_size=10`, the writer commits steps 9–10 (`41` frames, `168,952` bytes) and then executes `UPDATE documents SET title = upper(title)` without committing. That single update dirties each page at most once, so `19` pages spill into `-wal` (`247,232` bytes, `60` frames total) without overwriting any spilled frame in place: all `60` frames pass salt and checksum checks (`60` valid frames, last commit frame `41`). `walfile.ReplayFiles` applies frames `1–41` (`34` distinct pages, output `409,600` bytes = `100` pages) and reports ignored `frames 42-60 (19): valid but uncommitted: no commit frame follows`. Two separate SQLite recoveries of the same base + `-wal` copy—first with **no `-shm`**, then with a **stale `-shm` from Part A** (`mxFrame` `155`, `nPage` `79`, different salts)—both recover `user_version` `10` and checkpoint to the exact same SHA-256 `fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7`.
-- **Part C — After rollback (C1–C3):** Calling `tx.Rollback()` leaves `-wal` at `247,232` bytes (`60` frames, unchanged) while `-shm` keeps `mxFrame 41`. Replaying the post-rollback capture produces the exact same report (ignored `frames 42-60 (19): valid but uncommitted: no commit frame follows`) and the exact same SHA-256 `fb68a521…`, matching both SQLite's `TRUNCATE` checkpoint after rollback and Part B's replay byte for byte.
+- **Part A — Quiet moment (A1–A5):** After 8 commits with `wal_autocheckpoint=0`, the child copies `r.db` (`16,384` bytes) and `r.db-wal` (`638,632` bytes). Hashing `r.db` alone matches recipe step `0` with exact bytes (A2): every change from those 8 committed transactions lives exclusively in `-wal`. `walfile.ReplayFiles` applies all `155` frames (`79` distinct pages, `8` transactions, `0` ignored), growing the output from `16,384` to `323,584` bytes (`79 * 4096`). SQLite then runs `wal_checkpoint(TRUNCATE)` on the original and closes; both files share SHA-256 `00eac4cab1747d717e2cebf666b7c63ed0504b8f83e8a2f15d02155130989af6`. Opening the replay with SQLite returns `user_version` `8` and `integrity_check` `ok`, leaving the file unchanged. Recipe lookup matches step 8 under the WAL change-counter mask (the one-connection header difference proved in Chapter 2).
+- **Part B — Mid-transaction spill and disposable `-shm` (B1–B4):** Starting from canonical step 8 (`323,584` bytes) with `cache_size=10`, the writer commits steps 9–10 (`41` frames, `168,952` bytes) and runs `UPDATE documents SET title = upper(title)` without committing. Because that single update dirties each page at most once, `19` pages spill into `-wal` (`247,232` bytes, `60` frames total) with no in-place overwrites: all `60` frames pass salt and checksum checks (`60` valid frames, last commit frame `41`). `walfile.ReplayFiles` applies frames `1–41` (`34` distinct pages, output `409,600` bytes = `100` pages) and reports ignored `frames 42-60 (19): valid but uncommitted: no commit frame follows`. Two separate SQLite recoveries of the same base + `-wal` copy—first with **no `-shm`**, then with a **stale `-shm` from Part A** (`mxFrame` `155`, `nPage` `79`, different salts)—both recover `user_version` `10` and checkpoint to the exact same SHA-256 `fb68a521594158576391416edfaf14c310865c3eb929cb1e127d2a6f1bf215d7`.
+- **Part C — After rollback (C1–C3):** Calling `tx.Rollback()` leaves `-wal` at `247,232` bytes (`60` frames, unchanged) while `-shm` keeps `mxFrame 41`. Replaying the post-rollback capture produces the same report (ignored `frames 42-60 (19): valid but uncommitted: no commit frame follows`) and the same SHA-256 `fb68a521…`, matching both SQLite's `TRUNCATE` checkpoint after rollback and Part B's replay byte for byte.
 
 ---
 
@@ -3891,16 +4031,16 @@ Experiment verdict: WAL REPLAY OK
 
 ### 6.1 Experiment 5.4 — Checkpoint modes (`5.4-checkpoint-modes`)
 
-**Why kept:** The R6 WAL shipper (Chapter 9) must own checkpoints and must notice whenever anything else restarts the WAL. The salt change in the WAL header is how it notices.
+**Why this experiment matters:** The R6 WAL shipper in Chapter 9 must own checkpoints and notice whenever anything else restarts the WAL. The salt change in the WAL header is how it notices.
 
-- **Claim:** `PASSIVE`, `FULL`, `RESTART`, and `TRUNCATE` differ in what locks they wait for, what `(busy, log, checkpointed)` triple they return, and what they leave behind:
+- **Claim:** `PASSIVE`, `FULL`, `RESTART`, and `TRUNCATE` differ in which locks they wait for, what `(busy, log, checkpointed)` triple they return, and what they leave on disk:
   - `PASSIVE` never sets `busy=1` for readers and copies up to the oldest pinned read mark (`22` of `38` for a reader behind; `38` of `38` for a current reader or no reader).
   - `FULL` copies the same frames as `PASSIVE`, returning `busy=1` when any frame could not be copied (`reader behind`) and `busy=0` when all frames are copied (`no reader`, `reader current`).
-  - `RESTART` does not restart the WAL itself; after copying all frames it waits for read locks `1..4` so the next writer can restart, returning `busy=1` even for a `reader current` (whose snapshot is already at frame 38).
+  - `RESTART` does not restart the WAL itself; after copying all frames, it waits for read locks `1..4` so the next writer can restart, returning `busy=1` even for a `reader current` (whose snapshot is already at frame 38).
   - `TRUNCATE` behaves like `RESTART` and, when no reader blocks it, immediately restarts the wal-index (`shm salt-1 + 1`, `mxFrame = 0`), truncates `-wal` to `0` bytes, and returns `0/0/0`.
-  - `PASSIVE`, `FULL`, and `RESTART` change neither the WAL size nor its salts; the WAL restarts at the **next write** whenever every frame was backfilled (or `TRUNCATE` emptied it). When the writer itself restarts the WAL (or wrote after its own `TRUNCATE`), the new WAL header has `salt-1 + 1` and `checkpoint-seq + 1`; when another connection ran `TRUNCATE`, the writer's per-connection `pWal->nCkpt` is still `0`, so its next WAL header carries **fresh random salts** and `checkpoint-seq = 0`.
-- **Evidence form:** `EXACT` (elapsed times are in a run-dependent `info` table, printed by `course run`, not stored, and not pass conditions).
-- **Run command** (from the repository root; this starts the `lab` container, runs the experiment in it, and prints the walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
+  - `PASSIVE`, `FULL`, and `RESTART` change neither the WAL size nor its salts; the WAL restarts at the **next write** whenever every frame was backfilled (or `TRUNCATE` emptied it). When the writer itself restarts the WAL (or writes after its own `TRUNCATE`), the new WAL header has `salt-1 + 1` and `checkpoint-seq + 1`; when another connection ran `TRUNCATE`, the writer's per-connection `pWal->nCkpt` is still `0`, so its next WAL header carries **fresh random salts** and `checkpoint-seq = 0`.
+- **Evidence form:** `EXACT` (elapsed times go to a run-dependent `info` table printed by `course run`, excluded from stored evidence and not pass conditions).
+- **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
   go run ./cmd/course run 5.4
   ```
@@ -4369,9 +4509,9 @@ SELECT moment, busy, log_frames AS log, checkpointed, wal_bytes, mx_frame, shm_s
 FROM own_truncate ORDER BY seq;
 ```
 
-`course run` also prints the run-dependent values, which are not part of the stored evidence: how long each checkpoint took (the ones near 300 ms waited out the checkpointer's `busy_timeout`).
+`course run` also prints the run-dependent values excluded from the stored evidence: how long each checkpoint took (the ones near 300 ms waited out the checkpointer's `busy_timeout`).
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/5.4-checkpoint-modes/`](evidence/5.4-checkpoint-modes/), and `go run ./cmd/course check evidence ch05` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough rendered by the `lab` container. Its backing CSV tables live in [`evidence/5.4-checkpoint-modes/`](evidence/5.4-checkpoint-modes/), and `go run ./cmd/course check evidence ch05` compares a fresh run against them byte for byte.
 
 <!-- include: evidence/5.4-checkpoint-modes.txt -->
 ```text
@@ -4482,68 +4622,68 @@ Experiment verdict: CHECKPOINT MODES OK
 
 - **First table — right after the checkpoint (A1–A2):** Before every case, the WAL holds `38` frames (`156,592` bytes); `"reader behind"` holds frame `22` (between steps 6 and 7), and `"reader current"` holds frame `38`.
   - With `no reader`, `PASSIVE`, `FULL`, and `RESTART` all return busy `false`, log `38`, checkpointed `38`, leave `WAL bytes = 156592`, and leave both `file salt-1` and `shm salt-1` `same`. Only `TRUNCATE` returns busy `false`, log `0`, checkpointed `0`, shrinks `-wal` to `0` bytes (`(no header)`), and advances `shm salt-1` by `+1`.
-  - With `reader behind`, all four modes copy the exact same `22` frames (`nBackfill = 22`). `PASSIVE` returns busy `false`; `FULL`, `RESTART`, and `TRUNCATE` wait on the `300ms` busy timeout (run-dependent elapsed times printed by `course run`, not stored: about `340ms`, `346ms`, `338ms` in one lab run) and return busy `true`.
-  - With `reader current`, `PASSIVE` and `FULL` copy all `38` frames and return busy `false` because copying does not overwrite any page the reader needs. `RESTART` and `TRUNCATE` copy all `38` frames too, then wait (run-dependent elapsed times: about `336ms` and `345ms` in one lab run) for the reader to leave `WAL_READ_LOCK(1)` and return busy `true`.
+  - With `reader behind`, all four modes copy the same `22` frames (`nBackfill = 22`). `PASSIVE` returns busy `false`; `FULL`, `RESTART`, and `TRUNCATE` wait out the `300ms` busy timeout (run-dependent elapsed times printed by `course run`, excluded from stored evidence: about `340ms`, `346ms`, `338ms` in one lab run) and return busy `true`.
+  - With `reader current`, `PASSIVE` and `FULL` copy all `38` frames and return busy `false` because copying overwrites no page the reader needs. `RESTART` and `TRUNCATE` copy all `38` frames too, then wait (run-dependent elapsed times: about `336ms` and `345ms` in one lab run) for the reader to leave `WAL_READ_LOCK(1)` before returning busy `true`.
 - **Second table — after the reader ends and the writer commits step 8 (A3):**
   - Every `reader behind` case (`nBackfill = 22 < 38`) does **not** restart: step 8 appends `23` frames to frame `38`, growing `-wal` to `251,352` bytes (`61 / 61` valid frames) with `file salt-1 = same` and `checkpoint-seq = same`.
   - Every `no reader` and `reader current` case for `PASSIVE`, `FULL`, and `RESTART`—plus `TRUNCATE / reader current`, where `TRUNCATE` had copied all `38` frames before returning busy `true`—restarts at frame 1 when the writer commits step 8: `WAL bytes = 156592` (file reused, not shrunk), `mxFrame = 23`, `23 / 38` valid frames (frames 24–38 are old-generation frames), `file salt-1 = +1`, and `checkpoint-seq = +1`.
-  - **`TRUNCATE / no reader` (that row of A3) is the surprise that corrected the outline:** the checkpointer connection C had already called `walRestartHdr` and truncated `-wal` to `0` bytes. When writer W—whose own `pWal->nCkpt` is still `0`—writes the new WAL header, `-wal` grows to `94,792` bytes (`32 + 23 * 4120`), `file salt-1` is a **`new value`** (fresh random bytes, not `before + 1`), and `checkpoint-seq` stays `same` (`0`).
+  - **`TRUNCATE / no reader` (that row of A3) exposes the per-connection sequence rule:** checkpointer connection C had already called `walRestartHdr` and truncated `-wal` to `0` bytes. When writer W—whose own `pWal->nCkpt` is still `0`—writes the new WAL header, `-wal` grows to `94,792` bytes (`32 + 23 * 4120`), `file salt-1` is a **`new value`** (fresh random bytes, not `before + 1`), and `checkpoint-seq` stays `same` (`0`).
 - **Same-connection `TRUNCATE` contrast (B1):** When the writer itself runs `TRUNCATE` (advancing its own `pWal->nCkpt` from `0` to `1`) and then commits step 8, the new WAL header has `file salt-1 = +1` and `checkpoint-seq = +1 (0 -> 1)`. Because a platform cannot assume which connection ran `TRUNCATE`, WAL generation detection must treat **any change in `(salt-1, salt-2)`** as a new generation, never `salt-1 + 1` or `checkpoint-seq`.
 
 ### 6.2 Failure cases and replay boundaries
 
-The experiments, unit tests (`go test ./internal/walfile`, including 3,000 mutated inputs, 200 random inputs, and `FuzzParseAndReplay`), and adversarial tests establish six concrete failure boundaries:
+The experiments, unit tests (`go test ./internal/walfile`, including 3,000 mutated inputs, 200 random inputs, and `FuzzParseAndReplay` in `internal/walfile/walfile_test.go`), and standalone stress tests establish six concrete failure boundaries (parenthetical codes such as `REP-01`, `REP-02`, `REP-03`, `CHK-04`, and `CHK-05` name stress tests listed under "What attacked this chapter" below):
 
-1. **Applying frames past `LastCommitFrame` corrupts the database.** Rolled-back and in-flight spilled frames stay in `-wal` (Experiment 5.2 B/C) and can even have valid checksums. Applying all frames instead of stopping at `LastCommitFrame` leaks rolled-back bytes and fails `PRAGMA integrity_check` (`REP-03` below).
-2. **A stale-generation base cannot be caught from raw `base + WAL` bytes alone.** Neither `.db` nor `-wal` records which WAL generation the `.db` file has absorbed. Replaying a generation-2 WAL onto a generation-0 base succeeds with `err == nil` and produces a corrupt database (`REP-02` below). Safe replay requires recording capture metadata (base SHA-256 and WAL salts together), built in Chapter 9 (`internal/walship`).
+1. **Applying frames past `LastCommitFrame` corrupts the database.** Rolled-back and in-flight spilled frames stay in `-wal` (Experiment 5.2 B/C) and can still carry valid checksums. Applying all frames instead of stopping at `LastCommitFrame` leaks rolled-back bytes and fails `PRAGMA integrity_check` (`REP-03` below).
+2. **A stale-generation base cannot be caught from raw `base + WAL` bytes alone.** Neither `.db` nor `-wal` records which WAL generation `.db` has absorbed. Replaying a generation-2 WAL onto a generation-0 base succeeds with `err == nil` and produces a corrupt database (`REP-02` below). Safe replay requires capture metadata pairing base SHA-256 and WAL salts, built in Chapter 9 (`internal/walship`).
 3. **Damaged WAL frames truncate recovery cleanly at the last valid commit.** Flipping any bit in a WAL frame breaks the running checksum chain at that frame, causing both `walfile.Replay` and SQLite recovery to stop at the previous commit frame and produce identical bytes (`REP-01` below).
 4. **Torn `-shm` headers and `unused` padding bytes.** Because `walIndexWriteHdr` writes copy 2 before the memory barrier and copy 1 after (`src/wal.c:951-953`), a zeroed copy 1 beside a populated copy 2 is a torn write (`Initialized=false`, `HeadersAgree()=false`, `FramePage` returns `ErrFrameNotIndexed`), and `HeadersAgree()` compares all 48 raw bytes including the 4-byte `unused` field (`src/wal.c:323`).
-5. **Zero-commit WALs still validate the base file, and foreign `.replay-tmp` files are never overwritten or deleted.** `walfile.Replay` checks that a non-empty base has a valid power-of-two page size in `512..65536`, matches the WAL page size, and is a whole multiple of that page size even when `LastCommitFrame == 0`; `ReplayFiles` opens `.replay-tmp` with `O_EXCL` and leaves any pre-existing file untouched on `os.ErrExist`.
-6. **Concurrent checkpointers fail immediately; read-only connections cannot backfill.** A second checkpointer hitting `WAL_CKPT_LOCK` ignores `busy_timeout` and immediately returns `busy=1, log=-1, checkpointed=-1` (`src/wal.c:4342`, `CHK-04`). A `mode=ro` connection calling `PRAGMA wal_checkpoint(PASSIVE)` on an un-backfilled WAL fails with `disk I/O error (778)` and leaves `nBackfill = 0`; it returns `busy=0` only when there are zero frames left to write (`CHK-05`).
+5. **Zero-commit WALs still validate the base file, and foreign `.replay-tmp` files are never overwritten or deleted.** `walfile.Replay` checks that a non-empty base has a valid power-of-two page size in `512..65536`, matches the WAL page size, and is a whole multiple of that page size even when `LastCommitFrame == 0`. `ReplayFiles` opens `.replay-tmp` with `O_EXCL` and leaves any pre-existing file untouched on `os.ErrExist`.
+6. **Concurrent checkpointers fail immediately; read-only connections cannot backfill.** A second checkpointer hitting `WAL_CKPT_LOCK` ignores `busy_timeout` and immediately returns `busy=1, log=-1, checkpointed=-1` (`src/wal.c:4342`, `CHK-04`). A `mode=ro` connection calling `PRAGMA wal_checkpoint(PASSIVE)` on an un-backfilled WAL fails with `disk I/O error (778)` and leaves `nBackfill = 0`; it returns `busy=0` only when zero frames remain to write (`CHK-05`).
 
 ### What attacked this chapter
 
 <!-- adversarial-results -->
 
-Four adversarial programs (`28` attacks total, driven by [`run-all.sh`](../agent_work/ch05/adversarial/run-all.sh)) attacked this chapter's claims against the pinned SQLite 3.53.4 build:
+Four standalone Go stress-test programs in this repository (`28` attacks total, driven by [`run-all.sh`](../agent_work/ch05/adversarial/run-all.sh)) tried to break this chapter's claims, `internal/walfile`, and Experiments 5.1–5.4 against the pinned SQLite 3.53.4 build (`HELD` means the code or claim stood up to the test; `BROKEN` means the test exposed a bug or an overly broad claim):
 
-- [`wal-inspector-edge`](../agent_work/ch05/adversarial/wal-inspector-edge/main.go) (`INS-01`–`INS-07`, including `INS-05a`/`INS-05b`) attacked Experiment 5.1 and `internal/walfile` across all 8 valid page sizes (`512..65536`), restarted WALs with older-generation tails, all 4 `synchronous` levels (`OFF`, `NORMAL`, `FULL`, `EXTRA`), big-endian magic `0x377f0683` against `showwal`, synthetic bad headers/versions/page-0/partial-frame tails, a real 512-byte-page WAL crossing the 4,062/4,063 `-shm` block boundary (`4,531` frames, `65,536`-byte `-shm`), a torn `-shm` header (copy 1 zeroed, copy 2 populated), 5,000 seeded parser/replayer mutations, and pin enforcement across Experiments 5.1–5.4.
-- [`wal-replay-falsify`](../agent_work/ch05/adversarial/wal-replay-falsify/main.go) (`REP-01`–`REP-07`, including `REP-07a`/`REP-07b`) attacked Experiment 5.2 and `walfile.Replay`/`ReplayFiles` with single-bit flips in the last and middle commits, replaying a generation-2 WAL onto a generation-0 base, naive replay past `LastCommitFrame`, `auto_vacuum=FULL` database shrinkage (`93` pages to `8`, `85` skipped), `cache_size=5` in-place spills with `SAVEPOINT`/`ROLLBACK TO`/`RELEASE`, page sizes `512` and `65536` including from an empty base, 0-commit header-only WAL base validation, and pre-existing `.replay-tmp` files.
-- [`reader-pinning`](../agent_work/ch05/adversarial/reader-pinning/main.go) (`PIN-01a`, `PIN-01b`, `PIN-02`–`PIN-05`) attacked Experiment 5.3 with 3 readers closing oldest-first, 5 readers at 5 distinct commits exceeding the 4 read-mark slots `aReadMark[1..4]` (confirming reader 5 shares slot 4 conservatively without error), a half-read `*sql.Rows` cursor with no explicit `BEGIN`, shrinking a ~1 MB WAL via `PRAGMA journal_size_limit` (`65536` and `0` shrink on the first commit after restart), `TRUNCATE`, and last close, a `WAL_READ_LOCK(0)` reader against all 4 checkpoint modes, and stale `-shm` marks immediately after a reader closes.
-- [`checkpoint-races`](../agent_work/ch05/adversarial/checkpoint-races/main.go) (`CHK-01a`, `CHK-01b`, `CHK-02`–`CHK-05`) attacked Experiment 5.4 with a writer holding `BEGIN IMMEDIATE` (`WAL_WRITE_LOCK`) against all 4 modes, 40 concurrent commits racing all 4 modes, a rogue second connection triggering autocheckpoint or `TRUNCATE`, cross-connection vs same-connection `TRUNCATE` salt/sequence behavior, two concurrent checkpointers contending on `WAL_CKPT_LOCK`, lock-free `NOOP` under active writer+checkpointer+reader locks, multi-connection close cleanup vs `Replay` E1, and `mode=ro` checkpoints before vs after backfill.
+- [`wal-inspector-edge`](../agent_work/ch05/adversarial/wal-inspector-edge/main.go) (`INS-01`–`INS-07`, including `INS-05a`/`INS-05b`) tested Experiment 5.1 and `internal/walfile` across all 8 valid page sizes (`512..65536`), restarted WALs with older-generation tails, all 4 `synchronous` levels (`OFF`, `NORMAL`, `FULL`, `EXTRA`), big-endian magic `0x377f0683` against `showwal`, synthetic bad headers/versions/page-0/partial-frame tails, a real 512-byte-page WAL crossing the 4,062/4,063 `-shm` block boundary (`4,531` frames, `65,536`-byte `-shm`), a torn `-shm` header (copy 1 zeroed, copy 2 populated), 5,000 seeded parser/replayer mutations, and pin enforcement across Experiments 5.1–5.4.
+- [`wal-replay-falsify`](../agent_work/ch05/adversarial/wal-replay-falsify/main.go) (`REP-01`–`REP-07`, including `REP-07a`/`REP-07b`) tested Experiment 5.2 and `walfile.Replay`/`ReplayFiles` with single-bit flips in the last and middle commits, replaying a generation-2 WAL onto a generation-0 base, naive replay past `LastCommitFrame`, `auto_vacuum=FULL` database shrinkage (`93` pages to `8`, `85` skipped), `cache_size=5` in-place spills with `SAVEPOINT`/`ROLLBACK TO`/`RELEASE`, page sizes `512` and `65536` including from an empty base, 0-commit header-only WAL base validation, and pre-existing `.replay-tmp` files.
+- [`reader-pinning`](../agent_work/ch05/adversarial/reader-pinning/main.go) (`PIN-01a`, `PIN-01b`, `PIN-02`–`PIN-05`) tested Experiment 5.3 with 3 readers closing oldest-first, 5 readers at 5 distinct commits exceeding the 4 read-mark slots `aReadMark[1..4]` (confirming reader 5 shares slot 4 conservatively without error), a half-read `*sql.Rows` cursor with no explicit `BEGIN`, shrinking a ~1 MB WAL via `PRAGMA journal_size_limit` (`65536` and `0` shrink on the first commit after restart), `TRUNCATE`, and last close, a `WAL_READ_LOCK(0)` reader against all 4 checkpoint modes, and stale `-shm` marks immediately after a reader closes.
+- [`checkpoint-races`](../agent_work/ch05/adversarial/checkpoint-races/main.go) (`CHK-01a`, `CHK-01b`, `CHK-02`–`CHK-05`) tested Experiment 5.4 with a writer holding `BEGIN IMMEDIATE` (`WAL_WRITE_LOCK`) against all 4 modes, 40 concurrent commits racing all 4 modes, a rogue second connection triggering autocheckpoint or `TRUNCATE`, cross-connection vs same-connection `TRUNCATE` salt/sequence behavior, two concurrent checkpointers contending on `WAL_CKPT_LOCK`, lock-free `NOOP` under active writer+checkpointer+reader locks, multi-connection close cleanup vs `Replay` E1, and `mode=ro` checkpoints before vs after backfill.
 
-**Run 1** ([`results-run1.txt`](../agent_work/ch05/adversarial/results-run1.txt)) produced **21 HELD, 7 BROKEN**. Three broken attacks exposed real bugs in `internal/walfile` that were fixed in the repair round (alongside the code-review fixes to Experiments 5.2, 5.3, and 5.4, including switching 5.2's open transaction so its 19 spilled frames remain checksum-valid, fixing 5.3's sampling order, and removing 5.4's wall-clock `waited` column):
+**Run 1** ([`results-run1.txt`](../agent_work/ch05/adversarial/results-run1.txt)) produced **21 HELD, 7 BROKEN**. Three failures exposed real defects in `internal/walfile` that were fixed:
 
 - `INS-05b`: `ParseIndex` previously returned `HeadersAgree() == true` when copy 1 was zeroed and copy 2 was populated; fixed to decode copy 2's byte order and return `Initialized=false, HeadersAgree()==false` (`TestParseIndexTornHeader`).
 - `REP-07a`: `Replay` previously returned early on `LastCommitFrame == 0` before checking `ErrPageSizeMismatch` and `ErrBaseSize` (and accepted invalid base page-size bytes); fixed to validate the base before the zero-commit return (`TestReplayValidatesBaseWithoutCommits`).
 - `REP-07b`: `ReplayFiles` previously called `os.Remove` on a pre-existing `.replay-tmp` after `O_EXCL` failed; fixed to leave foreign temp files untouched (`TestReplayFilesKeepsForeignTempFile`).
 
-**Run 2** ([`results-run2.txt`](../agent_work/ch05/adversarial/results-run2.txt)) passed **24 HELD, 4 BROKEN**. All four remaining `BROKEN` lines reflected outline claims or attack checks that needed narrowing rather than code defects:
+**Run 2** ([`results-run2.txt`](../agent_work/ch05/adversarial/results-run2.txt)) passed **24 HELD, 4 BROKEN**. The four remaining failures reflected overly broad claims or test checks that needed narrowing to match measured SQLite behavior:
 
-- `REP-02` confirmed that raw `walfile.Replay(gen0Base, gen2WAL)` cannot detect a stale-generation base because the `.db` header stores no WAL generation; the result fails `PRAGMA integrity_check` (`database disk image is malformed (11)`). Section 5.2 and Section 6.2 narrow the claim explicitly to require capture metadata (Chapter 9).
-- `REP-05` flagged `savepoint_ghost=true` by scanning raw output bytes for `"SAVEPOINT_SHOULD_VANISH"`, which also appeared in SQLite's own `TRUNCATE`-checkpointed file (`87` raw matches in unused page space on both sides, E1 byte-identical) with `0` SQL rows matching and `integrity_check = ok`. The attack was updated to assert SQL row absence, integrity, and E1 parity.
-- `CHK-03` tested the outline's original wording ("salt-1 increments on restart") across a cross-connection `TRUNCATE`, observing `shm salt-1 + 1` followed by a fresh random `salt-1` and `ckpt_seq 0->0` when the other writer created the next header (`src/wal.c:4095-4096`). Section 3.3 and Section 6.1 state the corrected per-connection rule, and `CHK-03` was updated to test both cross-connection and same-connection `TRUNCATE`.
-- `CHK-05` called `mode=ro` `PASSIVE` only after a `RESTART` checkpointer had already backfilled all 38 frames, misreading the reported `checkpointed=38` as a read-only backfill. A dedicated probe ([`readonly-checkpoint`](../agent_work/ch05/repair-probes/readonly-checkpoint/main.go)) confirmed `mode=ro` `PASSIVE` fails with `disk I/O error (778)` and `nBackfill = 0` on an un-backfilled WAL and succeeds without writing only after backfill completes; `CHK-05` was updated to test both before and after backfill.
+- `REP-02` confirmed that raw `walfile.Replay(gen0Base, gen2WAL)` cannot detect a stale-generation base because the `.db` header stores no WAL generation; the result fails `PRAGMA integrity_check` (`database disk image is malformed (11)`). Sections 5.2 and 6.2 state this boundary explicitly: safe replay requires capture metadata (Chapter 9).
+- `REP-05` flagged `savepoint_ghost=true` by scanning raw output bytes for `"SAVEPOINT_SHOULD_VANISH"`, which also appeared in SQLite's own `TRUNCATE`-checkpointed file (`87` raw matches in unused page space on both sides, E1 byte-identical) with `0` SQL rows matching and `integrity_check = ok`. The test was updated to assert SQL row absence, integrity, and E1 parity.
+- `CHK-03` assumed `salt-1` always increments by `+1` on restart, even across a cross-connection `TRUNCATE`. Instead, it observed `shm salt-1 + 1` followed by a fresh random `salt-1` and `ckpt_seq 0->0` when the other writer created the next header (`src/wal.c:4095-4096`). Sections 3.3 and 6.1 state the per-connection rule, and `CHK-03` was updated to test both cross-connection and same-connection `TRUNCATE`.
+- `CHK-05` called `mode=ro` `PASSIVE` only after a `RESTART` checkpointer had already backfilled all 38 frames, misreading `checkpointed=38` as a read-only backfill. A dedicated probe ([`readonly-checkpoint`](../agent_work/ch05/repair-probes/readonly-checkpoint/main.go)) confirmed `mode=ro` `PASSIVE` fails with `disk I/O error (778)` and `nBackfill = 0` on an un-backfilled WAL and succeeds without writing only after backfill completes; `CHK-05` was updated to test both before and after backfill.
 
-After updating those four attack assertions to match the verified rules, the final run ([`results-run3.txt`](../agent_work/ch05/adversarial/results-run3.txt) and [`results.txt`](../agent_work/ch05/adversarial/results.txt)) passed **28 HELD, 0 BROKEN**.
+After aligning those four assertions to the verified SQLite rules, **Run 3** ([`results-run3.txt`](../agent_work/ch05/adversarial/results-run3.txt) and [`results.txt`](../agent_work/ch05/adversarial/results.txt)) passed **28 HELD, 0 BROKEN**.
 
 ---
 
 ## 7. Platform implications
 
-Every operational rule below is tied directly to this chapter's experiments and verified source spans:
+Every operational rule below follows directly from this chapter's experiments and verified source spans:
 
-1. **One stuck reader grows the WAL without bound—even without a read mark (Experiment 5.3 A & B, `PIN-01a/b`, `PIN-02`).** A reader pinning mark 1 (`22`) prevented `533` of `555` frames from being checkpointed (`2,286,632` bytes after 24 commits); a reader that opened on a fully checkpointed WAL held `WAL_READ_LOCK(0)` and kept `nBackfill = 0` for all `533` frames (`2,195,992` bytes). Even a single unclosed `*sql.Rows` cursor pins the WAL (`PIN-02`). Meanwhile autocheckpoint keeps firing on every commit past its threshold, syncing the WAL and accomplishing nothing. Bound read-transaction and cursor lifetimes on every database.
-2. **The platform must own checkpoints; set `wal_autocheckpoint=0` on every application connection (Experiment 5.4, `src/main.c:2484-2496`, `CHK-02`).** Default autocheckpoint runs a `PASSIVE` checkpoint inside whichever connection commits past 1,000 frames, and any complete checkpoint lets the next write restart the WAL (Experiment 5.4). A WAL shipper that leaves autocheckpoint on—or lets another connection checkpoint—will lose frames when generations wrap behind its back.
-3. **Treat `-wal` as part of the database while any connection is open (Experiment 5.2 A).** Across 8 committed transactions with `wal_autocheckpoint=0`, the `.db` file stays byte-for-byte recipe step 0 (`16,384` bytes) while all committed state sits in the `638,632`-byte `-wal`. Capturing a live WAL database means capturing base + WAL together with generation metadata (Chapter 9) or checkpointing first.
+1. **One stuck reader grows the WAL without bound—even without a read mark (Experiment 5.3 A & B, `PIN-01a/b`, `PIN-02`).** A reader pinning mark 1 (`22`) prevented `533` of `555` frames from being checkpointed (`2,286,632` bytes after 24 commits); a reader opened on a fully checkpointed WAL held `WAL_READ_LOCK(0)` and kept `nBackfill = 0` for all `533` frames (`2,195,992` bytes). Even a single unclosed `*sql.Rows` cursor pins the WAL (`PIN-02`). Meanwhile autocheckpoint keeps firing on every commit past its threshold, syncing the WAL and accomplishing nothing. Bound read-transaction and cursor lifetimes on every database.
+2. **The platform must own checkpoints; set `wal_autocheckpoint=0` on every application connection (Experiment 5.4, `src/main.c:2484-2496`, `CHK-02`).** Default autocheckpoint runs a `PASSIVE` checkpoint inside whichever connection commits past 1,000 frames, and any complete checkpoint lets the next write restart the WAL (Experiment 5.4). A WAL shipper that leaves autocheckpoint on—or lets another connection checkpoint—loses frames when generations wrap behind its back.
+3. **Treat `-wal` as part of the database while any connection is open (Experiment 5.2 A).** Across 8 committed transactions with `wal_autocheckpoint=0`, `.db` stays byte-for-byte recipe step 0 (`16,384` bytes) while all committed state sits in the `638,632`-byte `-wal`. Capturing a live WAL database means capturing base + WAL together with generation metadata (Chapter 9) or checkpointing first.
 4. **Never back up, ship, or open+close `-shm` in the serving process (Experiment 5.2 B, `internal/walfile/livecopy.go`, `src/os_unix.c:4703-4750`).** SQLite rebuilds `-shm` identically whether it is absent or replaced by a stale `-shm` from another database (`fb68a521…`). Because Unix SQLite stores WAL locks as POSIX `fcntl` locks on `-shm`, opening and closing `.db` or `-shm` inside a process holding SQLite connections drops those locks; copy live files only from a child process or after all connections close.
 5. **Monitor three signals per database (Experiments 5.1, 5.3, 5.4):** `-wal` size in bytes; `log` and `checkpointed` from checkpoints or lock-free `PRAGMA wal_checkpoint(NOOP)` (`log - checkpointed` is the backlog pinned by readers); and `busy` from `FULL`/`RESTART`/`TRUNCATE` (`1` means a reader or writer blocked completion).
 6. **Expect `-wal` not to shrink after `PASSIVE`, `FULL`, or `RESTART` (Experiments 5.3 A and 5.4, `PIN-03`).** After a full backfill, SQLite reuses the existing `-wal` file from frame 1 (`2,286,632` bytes in 5.3 A; `156,592` bytes in 5.4). To reclaim disk space after a WAL spike, run `wal_checkpoint(TRUNCATE)`, set `PRAGMA journal_size_limit` (which takes effect on the first commit after restart), or close the last connection.
-7. **Detect WAL restarts by any change in `(salt-1, salt-2)` (Experiment 5.4, `src/wal.c:4095-4096`, `CHK-03`).** Do not assume `salt-1` increments by 1 or `checkpoint-seq` increments by 1: after another connection runs `TRUNCATE`, the next writer's header carries fresh random salts and `checkpoint-seq = 0`. Old-generation frames remain behind new frames in a reused WAL (`18 / 555` in 5.3 A, `23 / 38` in 5.4) and are excluded by the salt check.
+7. **Detect WAL restarts by any change in `(salt-1, salt-2)` (Experiment 5.4, `src/wal.c:4095-4096`, `CHK-03`).** Do not assume `salt-1` or `checkpoint-seq` increments by 1: after another connection runs `TRUNCATE`, the next writer's header carries fresh random salts and `checkpoint-seq = 0`. Old-generation frames stay behind new frames in a reused WAL (`18 / 555` in 5.3 A, `23 / 38` in 5.4) and are excluded by the salt check.
 8. **Stop shipping and replaying at `LastCommitFrame` (Experiment 5.2 B/C, `REP-01`, `REP-03`).** Rolled-back and in-flight spilled frames stay in `-wal` until overwritten and can carry valid checksums. Only frames up to the last valid commit frame are committed state.
 9. **Keep WAL databases on local filesystems (`src/wal.c:130-133`).** WAL requires shared memory (`-shm`) and local POSIX locks; do not place WAL files on NFS or other network filesystems.
 
-Summary of what the WAL-default ruling obliges a platform to own:
+Summary of what running in WAL mode obliges a platform to own:
 
 | Platform obligation in WAL mode | Supporting evidence |
 | --- | --- |
@@ -4562,8 +4702,8 @@ Summary of what the WAL-default ruling obliges a platform to own:
 
 Answers are in [answers.md](answers.md).
 
-1. In Experiment 5.1, which exact byte regions differ between two WAL files produced by identical deterministic runs (and across `synchronous=FULL`, `NORMAL`, and `OFF`), what bytes of each 24-byte frame header does `walDecodeFrame` (`src/wal.c:1000-1053`) actually include in its running checksum—and how does that disagree with its own source comment?
+1. In Experiment 5.1, which exact byte regions differ between two WAL files produced by identical deterministic runs (and across `synchronous=FULL`, `NORMAL`, and `OFF`), which bytes of each 24-byte frame header does `walDecodeFrame` (`src/wal.c:1000-1053`) actually include in its running checksum, and how does that disagree with its own source comment?
 2. In Experiment 5.2, what happens to the 19 spilled frames (`42–60`) in `-wal` after `ROLLBACK`, why does SQLite recover the exact same SHA-256 (`fb68a521…`) whether `-shm` is missing or replaced with Part A's stale `-shm` (`mxFrame=155`), and why can `walfile.Replay(base, wal)` not detect a base file from an earlier WAL generation?
 3. In Experiment 5.3, compare how a reader pins the WAL in Part A (`nBackfill < mxFrame`) versus Part B (`nBackfill == mxFrame`). Why did the writer restart the WAL on step 7 in Part B while `nBackfill` stayed `0` through step 30, and why did `aReadMark[1]` still hold `22` right after the reader closed in Part A?
-4. In Experiment 5.4, why did `RESTART` and `TRUNCATE` return `busy=1` against a `"reader current"` while `PASSIVE` and `FULL` returned `busy=0`, and why did the writer's next commit after another connection's `TRUNCATE` write fresh random salts and `checkpoint-seq = 0` whereas `TRUNCATE` run by the writer itself produced `salt-1 + 1` and `checkpoint-seq = 1`?
+4. In Experiment 5.4, why did `RESTART` and `TRUNCATE` return `busy=1` against `"reader current"` while `PASSIVE` and `FULL` returned `busy=0`, and why did the writer's next commit after another connection's `TRUNCATE` write fresh random salts and `checkpoint-seq = 0` whereas `TRUNCATE` run by the writer itself produced `salt-1 + 1` and `checkpoint-seq = 1`?
 5. In WAL mode, which operations call `fsync` under `PRAGMA synchronous=NORMAL` versus `PRAGMA synchronous=FULL` (`src/wal.h:25-26`, `src/pager.c:3658-3704`), what is wrong with the comment at `src/pager.c:607-617`, and why must a WAL-shipping platform set `wal_autocheckpoint=0` on every application connection?

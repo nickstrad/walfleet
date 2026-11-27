@@ -1,0 +1,24 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant C as Caller
+  participant I as Interface
+  participant V as VDBE engine
+  participant P as Pager / VFS
+  C->>I: prepare_v2
+  I->>V: compile+save
+  I-->>C: stmt handle
+  C->>I: step(stmt)
+  I->>V: sqlite3Step
+  V->>P: OP_Transaction
+  alt schema changed (retry <=50x)
+    P-->>V: SQLITE_SCHEMA
+    V-->>I: expire stmt
+    I->>V: Reprepare
+  end
+  V->>P: OP_Insert
+  Note over P: PagerWrite
+  V->>P: vdbeCommit
+  Note over P: xWrite + xSync
+  V-->>I: SQLITE_DONE
+  I-->>C: DONE

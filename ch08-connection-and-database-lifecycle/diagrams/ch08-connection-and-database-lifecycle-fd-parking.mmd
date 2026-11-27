@@ -1,0 +1,16 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant C1 as Conn 1
+  participant C2 as Conn 2
+  participant UX as os_unix.c
+  Note over C1,UX: Same WAL file in one process
+  C1->>UX: 1st read
+  Note over UX: open .db,-wal,-shm (nLock=1, 3 FDs)
+  C2->>UX: 1st read
+  Note over UX: open .db,-wal; share -shm (nLock=2, 5 FDs)
+  C2->>UX: close
+  Note over UX: close -wal; nLock>0 -> park .db (4 FDs)
+  C1->>UX: close
+  Note over UX: ckpt, unlink -wal/-shm; nLock=0
+  Note over UX: closePendingFds -> close 2x .db (0 FDs)

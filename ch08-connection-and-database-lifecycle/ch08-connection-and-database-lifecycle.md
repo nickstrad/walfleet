@@ -12,38 +12,38 @@
 
 > **How to run the experiments**
 >
-> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to start the runner from the host. Build the `lab` image once, from the repository root:
+> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to invoke this repository's experiment runner (`cmd/course`) from the host. Build the `lab` container image (`Dockerfile.lab`) once from the repository root:
 >   ```text
 >   docker compose build lab
 >   ```
->   The image already contains the pinned SQLite `3.53.4` source tree (for browsing the linked C files), the C tools (none of Chapter 8's experiments invokes the C `sqlite3` CLI), `strace` (Experiment 8.1's per-phase syscall breakdown), and the DuckDB CLI that presents the results.
-> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment in it, and prints its walkthrough; add `-i` (`go run ./cmd/course run -i 8.1`) to stay in DuckDB afterwards with the tables loaded:
+>   The image bundles the pinned SQLite `3.53.4` source tree (for browsing the linked C files), the compiled SQLite C tools (none of Chapter 8's experiments invokes the C `sqlite3` CLI), `strace` (used for Experiment 8.1's per-phase syscall breakdown), and the DuckDB CLI that renders each experiment's CSV tables as a walkthrough.
+> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`go run ./cmd/course run -i 8.1`) to stay in the DuckDB shell afterwards with all tables loaded:
 >   ```text
 >   go run ./cmd/course run 8.1
 >   go run ./cmd/course run 8.2
 >   go run ./cmd/course run 8.3
 >   ```
->   Optional flags: Experiment 8.2 accepts `-n` (default `200`, minimum `20`) and `-step` (default `3`); Experiment 8.3 accepts `-dbs` (`1000`), `-k` (`64`), `-ops` (`4000`), `-seed` (`1`), `-max-step` (`4`), `-write-percent` (`20`), `-hot-percent` (`50`), `-cache-size` (`-256`), `-sample-every` (`10`), and `-memory-every` (`100`). `course run` cannot pass them; run a flag variant directly in the container, for example `docker compose run --rm lab go run ./ch08-connection-and-database-lifecycle/experiments/8.3-bounded-manager -k 32`. In the container, scratch databases and tables are written under `/work/8.1/` through `/work/8.3/` (the `lab-work` volume); run directly, under `_work/8.1/` through `_work/8.3/`, which are git-ignored and safe to delete.
-> - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch08-connection-and-database-lifecycle/experiments/8.3-bounded-manager`). Run this way it prints only its verdict and leaves its tables under `_work/8.3/results/`.
-> - **Linux-only parts and macOS:** Experiment 8.1's `strace` phase breakdown and Experiment 8.2's descriptor target filenames (`/proc/self/fd` symlinks) are **Linux only**; `course run` runs them in the Linux `lab` container. Run directly on macOS, Experiment 8.1 still measures `SCHEMA_USED` and runs all of Part B, Experiment 8.2 still counts descriptors from `/dev/fd` and reads memory from `ps -o rss= -p <pid>`, and Experiment 8.3 runs natively.
-> - **Measurement environment:** The stored evidence in this chapter, including the `strace` traces and descriptor target names, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). Timings, process memory and raw `CACHE_USED` bytes differ between runs: `course run` prints them, and they are not part of the stored evidence. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; nothing was run on macOS.
+>   Optional flags: Experiment 8.2 accepts `-n` (default `200`, minimum `20`) and `-step` (default `3`); Experiment 8.3 accepts `-dbs` (`1000`), `-k` (`64`), `-ops` (`4000`), `-seed` (`1`), `-max-step` (`4`), `-write-percent` (`20`), `-hot-percent` (`50`), `-cache-size` (`-256`), `-sample-every` (`10`), and `-memory-every` (`100`). Because `course run` cannot pass experiment flags, run a flag variant directly in the container—for example, `docker compose run --rm lab go run ./ch08-connection-and-database-lifecycle/experiments/8.3-bounded-manager -k 32`. Inside the container, scratch databases and result tables are written under `/work/8.1/` through `/work/8.3/` (the Docker `lab-work` volume); when run directly on the host, they go under `_work/8.1/` through `_work/8.3/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** Each experiment is an ordinary Go program (`go run ./ch08-connection-and-database-lifecycle/experiments/8.3-bounded-manager`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/8.3/results/`.
+> - **Linux-only parts and macOS:** Experiment 8.1's `strace` phase breakdown and Experiment 8.2's descriptor target filenames (`/proc/self/fd` symlinks) are **Linux only**; `course run` runs them in full inside the Linux `lab` container. Run directly on macOS, Experiment 8.1 still measures `SCHEMA_USED` and runs all of Part B, Experiment 8.2 still counts descriptors from `/dev/fd` and reads memory from `ps -o rss= -p <pid>`, and Experiment 8.3 runs natively.
+> - **Measurement environment:** The stored evidence in this chapter, including the `strace` traces and descriptor target names, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). Timings, process memory, and raw `CACHE_USED` bytes vary between runs: `course run` prints them, and they are not part of the stored evidence. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; nothing was run on macOS.
 
 ---
 
 ## 1. Model
 
-An SQLite **connection** is a `sqlite3` struct allocated inside your process when you open a database file. A connection is not a lightweight handle into a shared server; it owns its own in-memory copies of everything needed to compile and run SQL against that file:
+An SQLite **connection** is a `sqlite3` struct allocated inside your process when you open a database file. Unlike a handle into a shared database server, each connection owns its own in-memory copies of everything needed to compile and run SQL against that file:
 
-- **File descriptors** (integer handles returned by the OS `open`/`openat` syscalls): in rollback `DELETE` mode, one descriptor for the `.db` file when idle and a second for `.db-journal` during a write transaction; in **WAL** (write-ahead log) mode, one for `.db` immediately on open, plus `.db-wal` (the redo log of appended **frames**, each carrying a 24-byte header and one 4,096-byte **page** image) and `.db-shm` (the memory-mapped **wal-index** lookup table) opened at the first statement.
-- **Schema cache:** the parsed in-memory `Table`, `Index`, `Trigger`, and foreign-key structures rebuilt by scanning `sqlite_schema`. It starts empty at open and is populated lazily on the first statement.
-- **Page cache:** fixed-size page buffers holding recently read or modified database pages. Each connection configures its own `cache_size` limit, though `modernc.org/sqlite` is built with `SQLITE_ENABLE_MEMORY_MANAGEMENT`, which places every connection's cache into one process-wide `pcache1` group (shown in Experiment 8.2 Part C).
-- **Prepared statements:** compiled bytecode programs (`Vdbe` structs) kept alive until finalized.
+- **File descriptors** (integer handles returned by the OS `open`/`openat` syscalls, Chapter 7): in rollback `DELETE` mode (Chapter 4), one descriptor for `.db` when idle and a second for `.db-journal` during a write transaction; in **WAL** (write-ahead log) mode (Chapter 5), one for `.db` immediately on open, plus `.db-wal` (the redo log of 24-byte headers plus 4,096-byte page frames) and `.db-shm` (the memory-mapped **wal-index** lookup table) opened at the first statement.
+- **Schema cache:** the parsed in-memory `Table`, `Index`, `Trigger`, and foreign-key structures rebuilt by scanning `sqlite_schema`. It starts empty at open and loads lazily on the first statement.
+- **Page cache:** fixed-size page buffers holding recently read or modified database pages (Chapter 4). Each connection configures its own `cache_size` limit, though `modernc.org/sqlite` is built with `SQLITE_ENABLE_MEMORY_MANAGEMENT`, which places every connection's cache into one process-wide `pcache1` group (shown in Experiment 8.2 Part C).
+- **Prepared statements:** compiled bytecode programs (`Vdbe` structs, Chapter 1) kept alive until finalized.
 - **Lookaside buffer:** a per-connection fixed-size scratch slab (`1,200` bytes × `40` slots = `48 KiB` by default) used for small short-lived allocations without calling `malloc`.
 - **Connection-scoped settings:** runtime flags such as `synchronous`, `foreign_keys`, `busy_timeout`, `wal_autocheckpoint`, `secure_delete`, and `cache_size` that live only inside the connection struct and reset to SQLite defaults on every new open.
 
-None of the schema cache, prepared statements, lookaside buffer, or connection settings is shared across separate connections to different database files. When two connections in the same process open the **same** WAL file, they share one `-shm` descriptor (`unixShmNode`), and closing one connection while the other still holds a **POSIX advisory lock** (an `fcntl` byte-range lock on the `.db` file) forces `os_unix.c` to **park** the closed connection's `.db` descriptor in a `UnixUnusedFd` list rather than calling `close()`—because on Unix, closing any file descriptor to an inode releases every POSIX lock the process holds on that inode.
+Separate connections to different database files share none of the schema cache, prepared statements, lookaside buffer, or connection settings. When two connections in the same process open the **same** WAL file, they share one `-shm` descriptor (`unixShmNode`). Closing one connection while the other still holds a **POSIX advisory lock** (Chapter 6's `fcntl` byte-range lock on `.db`) forces `os_unix.c` to **park** the closed connection's `.db` descriptor in a `UnixUnusedFd` list rather than calling `close()`—because on Unix, closing any descriptor to an inode releases every POSIX lock the process holds on that inode.
 
-To serve thousands of SQLite files inside one process without exhausting **RLIMIT_NOFILE** (the OS open-descriptor limit) or **RSS** (resident set size, the RAM mapped into the process), a platform puts a bounded **LRU** (least-recently-used) connection manager (`internal/connmgr`) in front of the files. At most `K` databases stay open at once. When a request arrives for a closed database and `K` are already open, the manager evicts the least recently used idle connection, waits for SQLite's close to **checkpoint** (copy committed WAL frames back into `.db` and call **fsync** to flush dirty OS buffers to durable storage) and unlink `-wal` and `-shm`, verifies the file is **at rest**, and records its SHA-256 hash.
+To serve thousands of SQLite files inside one process without exhausting **RLIMIT_NOFILE** (the OS open-descriptor limit) or **RSS** (resident set size, the RAM mapped into the process), a platform puts a bounded **LRU** (least-recently-used) connection manager (this chapter's `internal/connmgr`) in front of the files. At most `K` databases stay open at once. When a request arrives for a closed database and `K` are already open, the manager evicts the least recently used idle connection, waits for SQLite's close to **checkpoint** committed WAL frames back into `.db` (Chapter 5) and call **fsync** (Chapter 7) and unlink `-wal` and `-shm`, verifies the file is **at rest**, and records its SHA-256 hash.
 
 ```text
   Application requests (IDs db-0000 .. db-0999)
@@ -73,12 +73,12 @@ To serve thousands of SQLite files inside one process without exhausting **RLIMI
   VFS (os_unix.c) -> Linux/Unix kernel (pread64, fcntl, mmap, fsync)
 ```
 
-**WAL mode as the platform default.** Platform databases in this course default to `journal_mode=wal`. Every experiment in this chapter evaluates WAL mode (with rollback `DELETE` mode used only as a descriptor-count contrast in Experiment 8.2 Part A and a settings contrast in Experiment 8.1 Part B), and no exception to WAL-as-default is recommended. Two measured costs and conditions govern WAL databases at scale:
+**WAL mode as the platform default.** Platform databases in this book default to `journal_mode=wal` (Chapter 5). Every experiment in this chapter evaluates WAL mode (with rollback `DELETE` mode used only as a descriptor-count contrast in Experiment 8.2 Part A and a settings contrast in Experiment 8.1 Part B), and no exception to WAL-as-default is recommended. Two measured costs and conditions govern WAL databases at scale:
 
 1. **Three descriptors per active database instead of one.** An idle WAL connection holds `.db`, `-wal`, and `-shm` (opened lazily on the first statement, Experiment 8.2 A–B), so a manager capped at `K` open WAL databases uses `3K` database descriptors (Experiment 8.3 A).
-2. **Closed-file at-rest state is conditional, not automatic.** Closing a WAL connection leaves a single, fully checkpointed `.db` file only when every one of seven conditions holds: (1) the closing connection is the last connection in every process, (2) no `*sql.Rows`, `*sql.Tx`, or `*sql.Conn` keeps the underlying connection checked out in Go's `database/sql` pool, (3) the process was not killed before closing, (4) `SQLITE_FCNTL_PERSIST_WAL` is off, (5) the file was not moved or renamed while open, (6) `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` is off, and (7) the close-time checkpoint succeeds. Experiment 8.3 Part B demonstrates the first five directly; the last two are read from the pinned source. In addition, `VACUUM INTO` always writes a rollback-mode file (header bytes 18–19 = `1`, Experiment 8.1 B), so a rebuild using `VACUUM INTO` must switch the output back to WAL.
+2. **Closed-file at-rest state is conditional, not automatic.** Closing a WAL connection leaves a single, fully checkpointed `.db` file only when every one of seven conditions holds: (1) the closing connection is the last connection in every process, (2) no `*sql.Rows`, `*sql.Tx`, or `*sql.Conn` keeps the underlying connection checked out in Go's `database/sql` pool, (3) the process was not killed before closing, (4) `SQLITE_FCNTL_PERSIST_WAL` is off, (5) the file was not moved or renamed while open, (6) `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` is off, and (7) the close-time checkpoint succeeds. Experiment 8.3 Part B demonstrates the first five directly; the last two are read from the pinned source. In addition, `VACUUM INTO` (Chapter 3) always writes a rollback-mode file (header bytes 18–19 = `1`, Chapter 2; Experiment 8.1 B), so a rebuild using `VACUUM INTO` must switch the output back to WAL.
 
-**Where this chapter sits on the Rebuild Ladder (rung R5).** Earlier chapters built **R0 (Recipe)**, **R1 (Pages)**, **R2 (Canonical form)**, and **R3 (Redo log)** (with **R4 (Live snapshot)** in Chapter 6). Chapter 8 adds **R5 (At-rest state)**: capture = the single `.db` file left after the last connection closes cleanly and passes `connmgr.CheckAtRest`; rebuild = a plain byte copy of that file; proven equal at **E1 bytes** (SHA-256 recorded at close and verified before reopen). R5 is the cheapest correct capture in the course, and Section 5 and Section 6 establish the exact conditions under which it is valid.
+**Where this chapter sits on the Rebuild Ladder (rung R5).** Earlier chapters built **R0 (Recipe, Chapter 1)**, **R1 (Pages, Chapter 2)**, **R2 (Canonical form, Chapter 3)**, **R3 (Redo log, Chapter 5)**, and **R4 (Live snapshot, Chapter 6)**. Chapter 8 adds **R5 (At-rest state)**: capture = the single `.db` file left after the last connection closes cleanly and passes `connmgr.CheckAtRest`; rebuild = a plain byte copy of that file; proven equal at **E1 bytes** (Chapter 2: SHA-256 recorded at close and verified before reopen). R5 is the cheapest correct capture in this book, and Sections 5 and 6 establish the exact conditions under which it is valid.
 
 ---
 
@@ -86,23 +86,23 @@ To serve thousands of SQLite files inside one process without exhausting **RLIMI
 
 What does it cost to open, hold open, and close an SQLite database, what happens when a Go service must open and query 1,000 database files, and what exact state is a WAL database in after its last connection closes?
 
-This chapter reuses three shared packages from earlier chunks (linked here, not inlined):
+This chapter reuses three shared Go packages from earlier chapters (linked here, not inlined):
 
-- [`internal/sqlitex`](../internal/sqlitex/): opens databases with explicit file and connection settings, checks `sqlite_source_id()` against `sqlite/PIN`, wraps `sqlite3_db_status` and `SQLITE_FCNTL_PERSIST_WAL`, and manages `_work/N.M/` directories. This chapter adds [`internal/sqlitex/placement.go`](../internal/sqlitex/placement.go) (`SettingPlacements()`, `RollbackJournalModes()`, `SettingPlacementFor()`), the machine-readable table of which settings live in the file header versus per connection.
-- [`internal/trace`](../internal/trace/): runs a child process under Linux `strace` and parses its syscall log (used in Experiment 8.1 Part A).
-- [`internal/recipe`](../internal/recipe/): builds the deterministic R0 workload (`accounts`, `documents`, `events`, `events_by_account`), applies numbered steps, and supplies cached step hashes (`StepHashes`, `MatchHashes`, `ChangeCountersAgree`).
+- [`internal/sqlitex`](../internal/sqlitex/) (Chapter 1): opens databases with explicit file and connection settings, checks `sqlite_source_id()` against the pinned release record in `sqlite/PIN`, wraps `sqlite3_db_status` and `SQLITE_FCNTL_PERSIST_WAL`, and manages per-experiment scratch directories under `_work/N.M/`. This chapter adds [`internal/sqlitex/placement.go`](../internal/sqlitex/placement.go) (`SettingPlacements()`, `RollbackJournalModes()`, `SettingPlacementFor()`), the machine-readable table of which settings live in the file header versus per connection.
+- [`internal/trace`](../internal/trace/) (Chapter 1): runs a child process under Linux `strace` and parses its syscall log (used in Experiment 8.1 Part A).
+- [`internal/recipe`](../internal/recipe/) (Chapter 1): builds the deterministic R0 workload (`accounts`, `documents`, `events`, `events_by_account`), applies numbered steps, and supplies cached step hashes (`StepHashes`, `MatchHashes`, `ChangeCountersAgree`).
 
-This chapter introduces two new shared packages—`internal/procstat` (open-descriptor counting, Linux target resolution, RSS memory reading, and `RLIMIT_NOFILE`) and `internal/connmgr` (bounded LRU connection manager and `CheckAtRest`)—both inlined in full in Section 5.
+This chapter introduces two new shared Go packages—`internal/procstat` (open-descriptor counting, Linux target resolution, RSS memory reading, and `RLIMIT_NOFILE`) and `internal/connmgr` (bounded LRU connection manager and `CheckAtRest`)—both inlined in full in Section 5.
 
 ---
 
 ## 3. Call path
 
-Every span below is verified in [`SPANS.txt`](SPANS.txt) against SQLite `version-3.53.4` in the pinned tree (`$SQLITE_SRC` or `_src/sqlite-3.53.4`). Three C files are copied whole into this chapter directory and checked by [`SOURCES.sha256`](SOURCES.sha256): [`main.c`](main.c), [`prepare.c`](prepare.c), and [`status.c`](status.c). Seven other files (`src/btree.c`, `src/global.c`, `src/os_unix.c`, `src/pager.c`, `src/pcache1.c`, `src/pragma.c`, `src/wal.c`) are linked at the pinned tag.
+Every span below is verified in this chapter's line-span manifest [`SPANS.txt`](SPANS.txt) against SQLite `version-3.53.4` in the pinned tree (`$SQLITE_SRC` inside the `lab` container, or `_src/sqlite-3.53.4` on the host). Three C files are copied whole into this chapter directory and checksummed in [`SOURCES.sha256`](SOURCES.sha256): [`main.c`](main.c), [`prepare.c`](prepare.c), and [`status.c`](status.c). Seven other files (`src/btree.c`, `src/global.c`, `src/os_unix.c`, `src/pager.c`, `src/pcache1.c`, `src/pragma.c`, `src/wal.c`) are linked at the pinned tag.
 
 ### 3.1 Open: 100 bytes and an empty schema
 
-1. **`sqlite3_open` and `sqlite3_open_v2` → `openDatabase`** — [`src/main.c:3722-3728`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L3722-L3728), [`src/main.c:3729-3736`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L3729-L3736), and [`src/main.c:3360-3716`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L3360-L3716) (local copy: [`main.c`](main.c)). Note that the outline's single span `3360–3736` spans all three functions: `openDatabase` ends at line 3716, followed by the two one-line wrappers. `openDatabase` parses the URI and flags (`sqlite3ParseUri`), opens the main B-tree (`sqlite3BtreeOpen`), allocates empty `Schema` structs for `main` and `temp`, registers built-in functions and automatic extensions, allocates the lookaside buffer (`setupLookaside`, [`src/main.c:772-878`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L772-L878), default `1200, 40` at [`src/global.c:218-224`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/global.c#L218-L224) = `48 KiB`), and installs the default `wal_autocheckpoint` of `1000`. As lines 3642–3645 state directly:
+1. **`sqlite3_open` and `sqlite3_open_v2` → `openDatabase`** — [`src/main.c:3722-3728`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L3722-L3728), [`src/main.c:3729-3736`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L3729-L3736), and [`src/main.c:3360-3716`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L3360-L3716) (local copy: [`main.c`](main.c)). `openDatabase` spans lines `3360–3716`, followed by the two one-line public wrappers (`sqlite3_open` and `sqlite3_open_v2`, lines `3722–3736`). `openDatabase` parses the URI and flags (`sqlite3ParseUri`), opens the main B-tree (`sqlite3BtreeOpen`), allocates empty `Schema` structs for `main` and `temp`, registers built-in functions and automatic extensions, allocates the lookaside buffer (`setupLookaside`, [`src/main.c:772-878`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L772-L878), default `1200, 40` at [`src/global.c:218-224`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/global.c#L218-L224) = `48 KiB`), and installs the default `wal_autocheckpoint` of `1000`. As lines 3642–3645 state directly:
    ```c
    /* Register all built-in functions, but do not attempt to read the
    ** database schema yet. This is delayed until the first time the database
@@ -114,8 +114,71 @@ Every span below is verified in [`SPANS.txt`](SPANS.txt) against SQLite `version
 ### 3.2 First statement: lazy schema load, double page-1 read, and `default_cache_size`
 
 3. **`sqlite3ReadSchema` → `sqlite3Init` → `sqlite3InitOne` → `sqlite3InitCallback`** — [`src/prepare.c:470-484`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L470-L484), [`438-464`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L438-L464), [`199-427`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L199-L427), and [`96-189`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L96-L189) (local copy: [`prepare.c`](prepare.c)). When the parser compiles the first statement and resolves a table name, it calls `sqlite3ReadSchema`, which calls `sqlite3Init` (loading `main` first, then any attached databases). `sqlite3InitOne` starts a read transaction, reads the header metadata slots (schema cookie, file format, text encoding, default cache size), and runs `SELECT*FROM"main".sqlite_schema ORDER BY rowid` (line 366), invoking `sqlite3InitCallback` on every row to re-parse each `CREATE` statement into in-memory `Table` and `Index` objects. If a later prepare fails, `schemaIsValid` ([`src/prepare.c:492-533`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L492-L533)) compares each database's schema cookie against the loaded schema and resets stale ones.
-4. **Why page 1 is read twice in WAL mode (`lockBtree` and `btreeBeginTrans`)** — [`src/btree.c:3282-3459`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L3282-L3459) and [`src/btree.c:3598-3804`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L3598-L3804) (in the pinned tree). This is a refinement to the outline: on the first read transaction of a WAL file, `lockBtree` reads page 1, sees header byte 19 = `2` (WAL read version), opens `-wal` and `-shm` via `sqlite3PagerOpenWal`, and releases page 1 without keeping it (`src/btree.c:3333-3352`), because a newer version of page 1 might exist in the WAL. Its caller `btreeBeginTrans` loops `while( pBt->pPage1==0 && SQLITE_OK==(rc = lockBtree(pBt)) );` (line 3711) and reads page 1 a second time through the now-open WAL layer.
-5. **The `cache_size` exception (`BTREE_DEFAULT_CACHE_SIZE`)** — [`src/prepare.c:323-333`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L323-L333) (local copy: [`prepare.c`](prepare.c)). This is a second correction to the outline: although `PRAGMA cache_size` is per-connection, the deprecated `PRAGMA default_cache_size` writes a 4-byte integer into database header bytes 48–51. Because `modernc.org/sqlite` is not built with `SQLITE_OMIT_DEPRECATED`, `sqlite3InitOne` seeds every new connection's starting `cache_size` from that header field:
+4. **Why page 1 is read twice in WAL mode (`lockBtree` and `btreeBeginTrans`)** — [`src/btree.c:3282-3459`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L3282-L3459) and [`src/btree.c:3598-3804`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L3598-L3804) (in the pinned tree). On the first read transaction of a WAL file, `lockBtree` reads page 1, sees header byte 19 = `2` (WAL read version), opens `-wal` and `-shm` via `sqlite3PagerOpenWal`, and drops page 1 without keeping it (`src/btree.c:3333-3352`), because a newer version of page 1 might already exist in the WAL. Its caller `btreeBeginTrans` loops `while( pBt->pPage1==0 && SQLITE_OK==(rc = lockBtree(pBt)) );` (line 3711) and reads page 1 a second time through the now-open WAL layer.
+
+The sequence below traces that two-phase boundary across `sqlite3_open_v2` and the first SQL statement:
+
+<!-- draw-visual: diagrams/ch08-connection-and-database-lifecycle-open-vs-first-stmt.mmd -->
+```text
+┌─────┐     ┌────────┐     ┌──────────┐     ┌───────────┐
+│ App │     │ SQLite │     │ .db file │     │ -wal/-shm │
+└──┬──┘     └────┬───┘     └─────┬────┘     └─────┬─────┘
+   │             │               │                │
+  ┌────────────────────────────────────────────────┐
+  │            Phase 1: sqlite3_open_v2            │
+  └────────────────────────────────────────────────┘
+   │             │               │                │
+   │ 1. open_v2  │               │                │
+   ├────────────►│               │                │
+   │             │               │                │
+   │             │ 2. open, 100B │                │
+   │             ├──────────────►│                │
+   │             │               │                │
+   │             │ 3. header     │                │
+   │             │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤                │
+   │             │               │                │
+   │┌──────────────────────────┐ │                │
+   ││ SCHEMA_USED = 0, no lock │ │                │
+   │└──────────────────────────┘ │                │
+   │             │               │                │
+   │ 4. handle   │               │                │
+   │◄┈┈┈┈┈┈┈┈┈┈┈┈┤               │                │
+   │             │               │                │
+  ┌────────────────────────────────────────────────┐
+  │          Phase 2: first SQL statement          │
+  └────────────────────────────────────────────────┘
+   │             │               │                │
+   │ 5. SELECT   │               │                │
+   ├────────────►│               │                │
+   │             │               │                │
+   │             │ 6. read p1    │                │
+   │             ├──────────────►│                │
+   │             │               │                │
+   │             │ 7. byte 19=2  │                │
+   │             │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤                │
+   │             │               │                │
+   │             │ 8. open -wal, mmap -shm        │
+   │             ├───────────────────────────────►│
+   │             │               │                │
+   │┌──────────────────────────┐ │                │
+   ││ drop p1, retry lockBtree │ │                │
+   │└──────────────────────────┘ │                │
+   │             │               │                │
+   │             │ 9. read p1    │                │
+   │             ├──────────────►│                │
+   │             │               │                │
+   │             │ 10. p1 (WAL)  │                │
+   │             │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤                │
+   │             │               │                │
+   │             │ 11. schema    │                │
+   │             ├──────────────►│                │
+   │             │               │                │
+   │ 12. rows    │               │                │
+   │◄┈┈┈┈┈┈┈┈┈┈┈┈┤               │                │
+   │             │               │                │
+```
+
+5. **The `cache_size` exception (`BTREE_DEFAULT_CACHE_SIZE`)** — [`src/prepare.c:323-333`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L323-L333) (local copy: [`prepare.c`](prepare.c)). Although `PRAGMA cache_size` is per-connection, the deprecated `PRAGMA default_cache_size` writes a 4-byte integer into database header bytes 48–51. Because `modernc.org/sqlite` is not built with `SQLITE_OMIT_DEPRECATED`, `sqlite3InitOne` seeds every new connection's starting `cache_size` from that header field:
    ```c
    if( pDb->pSchema->cache_size==0 ){
    #ifndef SQLITE_OMIT_DEPRECATED
@@ -128,20 +191,66 @@ Every span below is verified in [`SPANS.txt`](SPANS.txt) against SQLite `version
      sqlite3BtreeSetCacheSize(pDb->pBt, pDb->pSchema->cache_size);
    }
    ```
-   Notice `sqlite3AbsInt32`: a negative KiB value written via `default_cache_size` is converted to a positive page count on reopen (confirmed by adversarial test `OPN-04b`). A platform must therefore set `PRAGMA cache_size` explicitly on every open instead of trusting SQLite's default.
+   Notice `sqlite3AbsInt32`: a negative KiB value written via `default_cache_size` is converted to a positive page count on reopen (confirmed by stress test `OPN-04b`, under "What attacked this chapter" in Section 6). A platform must therefore set `PRAGMA cache_size` explicitly on every open instead of trusting SQLite's default.
 
 ### 3.3 Close, WAL checkpointing, memory counters, and descriptor parking
 
-6. **Close and zombie handles** — [`src/main.c:1266-1486`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L1266-L1486) (`sqlite3Close`, [`sqlite3_close`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L1363) at 1363, [`sqlite3_close_v2`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L1364) at 1364, and [`sqlite3LeaveMutexAndCloseZombie`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L1375-L1486), local copy: [`main.c`](main.c)). `sqlite3_close` returns `SQLITE_BUSY` if unfinalized statements or unfinished backups remain; `sqlite3_close_v2` (which `modernc.org/sqlite` calls in `conn.Close`) instead marks the handle `SQLITE_STATE_ZOMBIE`, deferring teardown until the last statement finishes. When `database/sql` closes a `*sql.DB` while a `*sql.Rows` is still open (Experiment 8.3 B2), the deferral happens one layer higher: `(*sql.DB).Close` closes only idle connections in its pool and does not call the driver's `Close` until `rows.Close()` finalizes the statement and returns the connection. Once teardown runs in `sqlite3LeaveMutexAndCloseZombie`, it closes every B-tree, freeing schemas and lookaside.
-7. **Pager close and WAL teardown** — [`src/pager.c:4222-4279`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L4222-L4279) (`sqlite3PagerClose`), [`src/pager.c:4188-4205`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L4188-L4205) (`databaseIsUnmoved`), [`src/os_unix.c:1623-1632`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L1623-L1632) (`fileHasMoved`), [`src/wal.c:2507-2571`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2507-L2571) (`sqlite3WalClose`), and [`src/wal.c:1619-1630`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L1619-L1630) (`walIndexClose`, all in the pinned tree). `sqlite3PagerClose` passes a checkpoint page buffer to `sqlite3WalClose` only when `SQLITE_NoCkptOnClose` is off and `databaseIsUnmoved` confirms the path still stats to the open descriptor's inode (`fileHasMoved`). Inside `sqlite3WalClose`, SQLite tries to take an `EXCLUSIVE` lock on the database file—which succeeds only if no other connection anywhere holds a lock—runs a `PASSIVE` checkpoint, and if that returns `SQLITE_OK`, deletes `-wal` and unlinks `-shm` (`walIndexClose` with `isDelete=1`) unless `SQLITE_FCNTL_PERSIST_WAL` is set (in which case `-wal` and `-shm` stay on disk, and `-wal` is truncated only if `journal_size_limit >= 0`).
-8. **Per-connection memory counters and `PRAGMA shrink_memory`** — [`src/status.c:203-421`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/status.c#L203-L421) (`sqlite3_db_status64`, local copy: [`status.c`](status.c)) and [`src/pager.c:6881-6887`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L6881-L6887) (`sqlite3PagerMemUsed`). `CACHE_USED` sums `sqlite3PagerMemUsed` (page cache buffers plus the `Pager` struct, which embeds the file paths); `SCHEMA_USED` and `STMT_USED` set `db->pnBytesFreed` and dry-run the schema and statement destructors to count bytes without freeing anything; `LOOKASIDE_USED` counts slots, not bytes, and none of the three byte counters includes the 48 KiB lookaside slab. `PRAGMA shrink_memory` ([`src/pragma.c:2439-2442`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pragma.c#L2439-L2442)) calls `sqlite3_db_release_memory` ([`src/main.c:897-915`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L897-L915)) → `sqlite3PagerShrink` → `pcache1Shrink` ([`src/pcache1.c:839-851`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L839-L851)) → `pcache1EnforceMaxPage` ([`src/pcache1.c:621-637`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L621-L637)). Because `modernc.org/sqlite` compiles with `SQLITE_ENABLE_MEMORY_MANAGEMENT`, every connection shares one `pcache1` group; temporarily setting the group's `nMaxPage` to `0` evicts unpinned pages from **every** connection in the process.
-9. **Descriptor parking on Unix** — [`src/os_unix.c:246-250`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L246-L250) (`UnixUnusedFd`), [`2341-2371`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L2341-L2371) (`unixClose`), [`2101-2109`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L2101-L2109) (`setPendingFd`), [`1471-1482`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L1471-L1482) (`closePendingFds`), and [`6369-6414`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L6369-L6414) (`findReusableFd`). When `unixClose` closes a connection to an inode whose lock count (`pInode->nLock`) is still nonzero because another connection in the same process holds a lock, it parks the file descriptor in `pUnused` via `setPendingFd` instead of calling `close()`. A later `unixOpen` on the same file with compatible flags can reuse that parked descriptor (`findReusableFd`), and `closePendingFds` finally closes all parked descriptors once `pInode->nLock` reaches `0`.
+6. **Close and zombie handles** — [`src/main.c:1266-1486`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L1266-L1486) (`sqlite3Close`, [`sqlite3_close`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L1363) at 1363, [`sqlite3_close_v2`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L1364) at 1364, and [`sqlite3LeaveMutexAndCloseZombie`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L1375-L1486), local copy: [`main.c`](main.c)). `sqlite3_close` returns `SQLITE_BUSY` if unfinalized statements or unfinished backups remain; `sqlite3_close_v2` (which `modernc.org/sqlite` calls in `conn.Close`) instead marks the handle `SQLITE_STATE_ZOMBIE` and defers teardown until the last statement finishes. When `database/sql` closes a `*sql.DB` while a `*sql.Rows` is still open (Experiment 8.3 B2), the deferral happens one layer higher: `(*sql.DB).Close` closes only idle connections in its pool and does not call the driver's `Close` until `rows.Close()` finalizes the statement and returns the connection. Once teardown runs in `sqlite3LeaveMutexAndCloseZombie`, it closes every B-tree and frees schemas and lookaside.
+7. **Pager close and WAL teardown** — [`src/pager.c:4222-4279`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L4222-L4279) (`sqlite3PagerClose`), [`src/pager.c:4188-4205`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L4188-L4205) (`databaseIsUnmoved`), [`src/os_unix.c:1623-1632`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L1623-L1632) (`fileHasMoved`), [`src/wal.c:2507-2571`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2507-L2571) (`sqlite3WalClose`), and [`src/wal.c:1619-1630`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L1619-L1630) (`walIndexClose`, all in the pinned tree). `sqlite3PagerClose` passes a checkpoint page buffer to `sqlite3WalClose` only when `SQLITE_NoCkptOnClose` is off and `databaseIsUnmoved` confirms the path still stats to the open descriptor's inode (`fileHasMoved`). Inside `sqlite3WalClose`, SQLite tries to take an `EXCLUSIVE` lock on `.db`—succeeding only if no other connection anywhere holds a lock—runs a `PASSIVE` checkpoint, and if that returns `SQLITE_OK`, deletes `-wal` and unlinks `-shm` (`walIndexClose` with `isDelete=1`) unless `SQLITE_FCNTL_PERSIST_WAL` is set (in which case `-wal` and `-shm` stay on disk, and `-wal` is truncated only if `journal_size_limit >= 0`).
+8. **Per-connection memory counters and `PRAGMA shrink_memory`** — [`src/status.c:203-421`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/status.c#L203-L421) (`sqlite3_db_status64`, local copy: [`status.c`](status.c)) and [`src/pager.c:6881-6887`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L6881-L6887) (`sqlite3PagerMemUsed`). `CACHE_USED` sums `sqlite3PagerMemUsed` (page cache buffers plus the `Pager` struct, which embeds the file paths). `SCHEMA_USED` and `STMT_USED` set `db->pnBytesFreed` and dry-run the schema and statement destructors to count bytes without freeing anything. `LOOKASIDE_USED` counts slots, not bytes, and none of the three byte counters includes the 48 KiB lookaside slab. `PRAGMA shrink_memory` ([`src/pragma.c:2439-2442`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pragma.c#L2439-L2442)) calls `sqlite3_db_release_memory` ([`src/main.c:897-915`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/main.c#L897-L915)) → `sqlite3PagerShrink` → `pcache1Shrink` ([`src/pcache1.c:839-851`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L839-L851)) → `pcache1EnforceMaxPage` ([`src/pcache1.c:621-637`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L621-L637)). Because `modernc.org/sqlite` compiles with `SQLITE_ENABLE_MEMORY_MANAGEMENT`, every connection shares one `pcache1` group; temporarily setting the group's `nMaxPage` to `0` evicts unpinned pages from **every** connection in the process.
+9. **Descriptor parking on Unix** — [`src/os_unix.c:246-250`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L246-L250) (`UnixUnusedFd`), [`2341-2371`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L2341-L2371) (`unixClose`), [`2101-2109`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L2101-L2109) (`setPendingFd`), [`1471-1482`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L1471-L1482) (`closePendingFds`), and [`6369-6414`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L6369-L6414) (`findReusableFd`). When `unixClose` closes a connection to an inode whose lock count (`pInode->nLock`) is still nonzero because another connection in the same process holds a lock, it parks the file descriptor in `pUnused` via `setPendingFd` instead of calling `close()`. A later `unixOpen` on the same file with compatible flags can reuse that parked descriptor (`findReusableFd`), and `closePendingFds` closes all parked descriptors once `pInode->nLock` reaches `0`.
+
+The sequence below shows how two WAL connections to the same file share `-shm`, park a closed `.db` descriptor, and release all descriptors when the last connection closes:
+
+<!-- draw-visual: diagrams/ch08-connection-and-database-lifecycle-fd-parking.mmd -->
+```text
+┌────────┐     ┌────────┐     ┌───────────┐
+│ Conn 1 │     │ Conn 2 │     │ os_unix.c │
+└────┬───┘     └────┬───┘     └─────┬─────┘
+     │              │               │
+    ┌────────────────────────────────┐
+    │  Same WAL file in one process  │
+    └────────────────────────────────┘
+     │              │               │
+     │ 1. 1st read  │               │
+     ├─────────────────────────────►│
+     │              │               │
+     │           ┌─────────────────────────────────────┐
+     │           │ open .db,-wal,-shm (nLock=1, 3 FDs) │
+     │           └─────────────────────────────────────┘
+     │              │               │
+     │              │ 2. 1st read   │
+     │              ├──────────────►│
+     │              │               │
+     │        ┌────────────────────────────────────────────┐
+     │        │ open .db,-wal; share -shm (nLock=2, 5 FDs) │
+     │        └────────────────────────────────────────────┘
+     │              │               │
+     │              │ 3. close      │
+     │              ├──────────────►│
+     │              │               │
+     │         ┌─────────────────────────────────────────┐
+     │         │ close -wal; nLock>0 -> park .db (4 FDs) │
+     │         └─────────────────────────────────────────┘
+     │              │               │
+     │ 4. close     │               │
+     ├─────────────────────────────►│
+     │              │               │
+     │             ┌─────────────────────────────────┐
+     │             │ ckpt, unlink -wal/-shm; nLock=0 │
+     │             └─────────────────────────────────┘
+     │              │               │
+     │         ┌─────────────────────────────────────────┐
+     │         │ closePendingFds -> close 2x .db (0 FDs) │
+     │         └─────────────────────────────────────────┘
+     │              │               │
+```
 
 ### 3.4 Experiment 8.1 — `open-cost-and-where-settings-live`
 
 - **Claim:** Opening a database opens only the `.db` file and reads only its 100-byte header (`SCHEMA_USED = 0`). The schema is read and parsed at the first statement, at an I/O and memory cost that grows with table count, and in WAL mode page 1 is read twice (once before `-wal`/`-shm` open and once after). Across a plain copy, the six persistent file settings (`page_size`, `journal_mode=wal`, `auto_vacuum`, `encoding`, `user_version`, `application_id`) plus the deprecated `default_cache_size` survive in the header, while all per-connection settings (`synchronous`, `foreign_keys`, `cache_size`, `busy_timeout`, `wal_autocheckpoint`, `secure_delete`, and rollback journal modes) reset to SQLite defaults; `VACUUM INTO` keeps every file setting except `journal_mode`, outputting a rollback-mode file with header bytes 18–19 = `1`.
 - **Evidence form:** `EXACT` (syscall counts, page sets, `SCHEMA_USED` bytes, setting values, header bytes, SHA-256).
-- **Why kept:** The second half produces the exact list of settings a platform must store outside the database file to remake a database that behaves the same; forgotten per-connection settings are a recurring production failure, and here the table is measured and written as machine-readable tables (B2, B4) verified against [`internal/sqlitex/placement.go`](../internal/sqlitex/placement.go).
+- **Why this matters:** Part B produces the exact list of settings a platform must store outside the database file to rebuild a database that behaves the same; forgotten per-connection settings are a recurring production failure, and here the list is measured and written as machine-readable tables (B2, B4) verified against [`internal/sqlitex/placement.go`](../internal/sqlitex/placement.go).
 - **Linux only (Part A syscall traces):** Part A's `strace` read counts require Linux; on macOS, `SCHEMA_USED` and all of Part B run natively, and `course run` runs the full experiment in the Linux `lab` container.
 
 <!-- include: experiments/8.1-open-cost-and-where-settings-live/main.go -->
@@ -1140,7 +1249,7 @@ Experiment verdict: OPEN COST AND WHERE SETTINGS LIVE OK
 
 #### Reading the Experiment 8.1 evidence
 
-- **Pin check (the experiment's own output, shown when it is run directly):** Confirms `modernc.org/sqlite v1.60.1` reports the exact pinned Fossil check-in `bf7c7f30…` (`3.53.4`).
+- **Pin check (the experiment's own output, shown when run directly):** Confirms `modernc.org/sqlite v1.60.1` reports the exact pinned Fossil check-in `bf7c7f30…` (`3.53.4`).
 - **A1–A5 (Part A — open versus first statement across 1, 100, and 1,000 empty 4-column tables):**
 
 | Tables | File size (pages) | `open` phase events | `first statement` `.db` whole-page reads (distinct) | `sqlite_schema` pages (`dbstat`) | `SCHEMA_USED` at open → after 1st stmt | Bytes / table |
@@ -1149,14 +1258,14 @@ Experiment verdict: OPEN COST AND WHERE SETTINGS LIVE OK
 | `100` | `105` | `2` (`open .db`, `read 100 bytes at 0`) | `7` (`6`: `1-2,34,36,69,102`) | `5` | `0` → `26601` | `266` |
 | `1000` | `1036` | `2` (`open .db`, `read 100 bytes at 0`) | `38` (`37`: `1-2,34,36,69,102,…,1032`) | `36` | `0` → `251601` | `251` |
 
-  - At `open`, every database—whether `2` pages or `1,036` pages—issues exactly two events: `open schema-N.db` and `read 100 bytes at 0`, with `SCHEMA_USED` `0` bytes. Neither `-wal` nor `-shm` is opened yet.
-  - At `first statement` (`SELECT count(*) FROM t0001`), the first four events for every size are identical: `read page 1`, `open schema-N.db-wal`, `open schema-N.db-shm`, `read page 1`. That is `lockBtree` reading page 1, seeing header byte 19 = `2`, opening the WAL, and `btreeBeginTrans` re-reading page 1 (Section 3.2). After that second page-1 read, SQLite reads every remaining `sqlite_schema` B-tree page (`1`, `5`, and `36` pages, spaced ~30 pages apart because the tables were created in one transaction with each table's root page allocated between schema pages) plus `t0001`'s root page (`page 2`). Zero reads hit `-wal` or `-shm` because the file started at rest (`-wal` is empty and `-shm` is `mmap`'d; adversarial test `OPN-03b` shows that when a killed writer leaves frames in `-wal`, the first statement reads `-wal` during recovery while `open` still touches only the 100-byte `.db` header).
+  - At `open`, every database—whether `2` pages or `1,036` pages—issues exactly two events: `open schema-N.db` and `read 100 bytes at 0`, leaving `SCHEMA_USED` at `0` bytes. Neither `-wal` nor `-shm` opens yet.
+  - At `first statement` (`SELECT count(*) FROM t0001`), the first four events for every size are identical: `read page 1`, `open schema-N.db-wal`, `open schema-N.db-shm`, `read page 1`. That is `lockBtree` reading page 1, seeing header byte 19 = `2`, opening the WAL, and `btreeBeginTrans` re-reading page 1 (Section 3.2). After that second page-1 read, SQLite reads every remaining `sqlite_schema` B-tree page (`1`, `5`, and `36` pages, spaced ~30 pages apart because the tables were created in one transaction with each table's root page allocated between schema pages) plus `t0001`'s root page (`page 2`). Zero reads hit `-wal` or `-shm` because the file started at rest (`-wal` is empty and `-shm` is `mmap`'d; stress test `OPN-03b`, under "What attacked this chapter" in Section 6, shows that when a killed writer leaves frames in `-wal`, the first statement reads `-wal` during recovery while `open` still touches only the 100-byte `.db` header).
   - `SCHEMA_USED` grows linearly with schema size (`827` → `26,601` → `251,601` bytes, roughly `251` bytes per 4-column table at 1,000 tables). Run-dependent wall-clock times (printed by `course run`, not stored) rose from about `58µs` to `210µs` to `1.5ms` in one lab run (timing is informational, never a pass condition).
   - At `close`, `0` opens or reads occur (unlinking `-shm` and `-wal` is not in the traced open/read set).
 - **B1–B2 (Part B — file settings versus connection settings):**
-  - `original.db` is created with every course setting changed from SQLite's default, closed cleanly (at rest, `24576` bytes, sha256 `6d566c95…`), and copied byte for byte (`copy.db` has the identical SHA-256—R5 in one line).
-  - Opening `copy.db` with a plain driver connection (no PRAGMAs applied) separates the 12 settings cleanly:
-    - **Six file settings survive the copy:** `page_size` (`8192`), `journal_mode=wal` (`wal`), `auto_vacuum` (`2`), `encoding` (`utf-16le`), `user_version` (`7`), `application_id` (`1397836120`, ASCII `SQIX`).
+  - `original.db` is created with every tested setting changed from SQLite's default, closed cleanly (at rest, `24576` bytes, sha256 `6d566c95…`), and copied byte for byte (`copy.db` has the identical SHA-256—R5 in one line).
+  - Opening `copy.db` with a plain driver connection (no PRAGMAs applied) splits the 12 settings cleanly:
+    - **Six file settings survive the copy:** `page_size` (`8192`), `journal_mode=wal` (`wal`), `auto_vacuum` (`2`), `encoding` (`utf-16le`), `user_version` (`7`), `application_id` (`1397836120`, ASCII `SQIX`, this repository's `sqlitex.CourseApplicationID` tag).
     - **Six connection settings revert to defaults:** `synchronous` (`1` → `2`, `FULL`), `foreign_keys` (`1` → `0`), `cache_size` (`-8000` → `-2000`), `busy_timeout` (`3000` → `0`), `wal_autocheckpoint` (`200` → `1000`), `secure_delete` (`1` → `0`).
   - `VACUUM INTO` (`vacuum-into.db`) preserves every file setting (`page_size=8192`, `auto_vacuum=2`, `encoding=utf-16le`, `user_version=7`, `application_id=1397836120`) **except** `journal_mode`, which reads `delete`—and the experiment reads `vacuum-into.db`'s header directly to verify bytes 18–19 = `1` (rollback format).
 - **B3–B4 (rollback journal mode, `default_cache_size`, and the placement list):**
@@ -1168,12 +1277,12 @@ Experiment verdict: OPEN COST AND WHERE SETTINGS LIVE OK
 
 ## 4. Timeline
 
-Tracing one connection from open to close shows exactly when each file descriptor and each memory allocation appears and disappears (combining Experiments 8.1 A and 8.2 A–D, measured on Linux):
+Tracing one connection from open to close shows when each file descriptor and each memory allocation appears and disappears (combining Experiments 8.1 A and 8.2 A–D, measured on Linux):
 
 | Lifecycle point | `DELETE` FDs | `WAL` FDs | Open files (`WAL`) | Side files on disk (`WAL`) | Connection memory state |
 | --- | --- | --- | --- | --- | --- |
 | 1. `sqlite3_open_v2` | `1` | `1` | `.db` | none | `SCHEMA_USED = 0`; lookaside (`48 KiB`) allocated; 100-byte header read; no lock |
-| 2. First statement | `1` | `3` | `.db`, `-wal`, `-shm` | `-wal`, `-shm` | Page 1 read twice; `sqlite_schema` parsed (`SCHEMA_USED` jumps to `1,347` B for recipe, `251,601` B for 1,000 tables); `-shm` mmapped |
+| 2. First statement | `1` | `3` | `.db`, `-wal`, `-shm` | `-wal`, `-shm` | Page 1 read twice; `sqlite_schema` parsed (`SCHEMA_USED` jumps to `1,347` B for Chapter 1's 3-table recipe, `251,601` B for 1,000 tables); `-shm` mmapped |
 | 3. Idle (after scan + 1 prepared stmt) | `1` | `3` | `.db`, `-wal`, `-shm` | `-wal`, `-shm` | `CACHE_USED` (run-dependent: about `52,835` B in one lab run) + `SCHEMA_USED` (`1,347` B) + `STMT_USED` (`5,008` B) + `~162 KiB` uncounted RSS (for 3-table schema) |
 | 4. `PRAGMA shrink_memory` (conn 0) | `1` | `3` | `.db`, `-wal`, `-shm` | `-wal`, `-shm` | `CACHE_USED` drops about `52,835` → `4,963` B on **all** connections (shared `pcache1` group); `SCHEMA_USED` and `STMT_USED` unchanged |
 | 5. Inside write transaction | `2` (`.db`, `-journal`) | `3` | `.db`, `-wal`, `-shm` | `-wal`, `-shm` | Dirty pages pinned in cache (resist `shrink_memory` until `COMMIT`/`ROLLBACK`) |
@@ -1184,9 +1293,9 @@ Tracing one connection from open to close shows exactly when each file descripto
 
 ### 4.1 Experiment 8.2 — `idle-cost`
 
-- **Claim:** An idle connection holds `1` file descriptor in `DELETE` mode (`2` during a write transaction) and `3` in `WAL` mode (`1` before its first statement). Across `N >= 20` idle WAL connections to 3-table recipe databases, descriptors equal exactly `3N`, per-connection memory breaks down into `CACHE_USED`, `SCHEMA_USED`, and `STMT_USED`, and process RSS grows by at least their sum and at most their sum plus `256 KiB` per connection (this `256 KiB` margin is specific to 8.2's 3-table, 1-statement workload and grows with schema size—see `IDL-03a` in Section 6). Running `PRAGMA shrink_memory` on connection 0 alone drops `CACHE_USED` under 1/8 on every connection in the process while leaving `SCHEMA_USED` and `STMT_USED` intact. Opening a second connection to the same WAL file in one process uses `5` descriptors (shared `-shm`), and closing it parks its `.db` descriptor (`4` held) until the first connection closes (`0` held).
+- **Claim:** An idle connection holds `1` file descriptor in `DELETE` mode (`2` during a write transaction) and `3` in `WAL` mode (`1` before its first statement). Across `N >= 20` idle WAL connections to Chapter 1's 3-table recipe databases, descriptors equal exactly `3N`, per-connection memory breaks down into `CACHE_USED`, `SCHEMA_USED`, and `STMT_USED`, and process RSS grows by at least their sum and at most their sum plus `256 KiB` per connection (this `256 KiB` margin is specific to 8.2's 3-table, 1-statement workload and grows with schema size—see stress test `IDL-03a` under "What attacked this chapter" in Section 6). Running `PRAGMA shrink_memory` on connection 0 alone drops `CACHE_USED` under 1/8 on every connection in the process while leaving `SCHEMA_USED` and `STMT_USED` intact. Opening a second connection to the same WAL file in one process uses `5` descriptors (shared `-shm`), and closing it parks its `.db` descriptor (`4` held) until the first connection closes (`0` held).
 - **Evidence form:** `EXACT` for descriptor counts, `SCHEMA_USED`, and `STMT_USED`; `BOUND` for process RSS growth and post-shrink `CACHE_USED`.
-- **Linux only (descriptor target names and memory-margin measurement):** Listing open filenames (`t.db t.db-shm t.db-wal`, and `200` each of `db`, `-wal` and `-shm` targets in B2) requires Linux `/proc/self/fd`; run directly on macOS, descriptor counts (`/dev/fd`) and RSS (`ps`) still run, and `course run` runs the full experiment in the Linux `lab` container. The `256 KiB` per-connection margin was measured on Linux only.
+- **Linux only (descriptor target names and memory-margin measurement):** Listing open filenames (`t.db t.db-shm t.db-wal`, and `200` each of `db`, `-wal`, and `-shm` targets in B2) requires Linux `/proc/self/fd`; run directly on macOS, descriptor counts (`/dev/fd`) and RSS (`ps`) still run, and `course run` runs the full experiment in the Linux `lab` container. The `256 KiB` per-connection margin was measured on Linux only.
 
 <!-- include: experiments/8.2-idle-cost/main.go -->
 ```go
@@ -1956,9 +2065,9 @@ Experiment verdict: IDLE COST OK
 - **B1–B3 (Part B — 200 idle WAL connections, each to a 39-page, 159,744-byte recipe step-3 file):**
   - Exactly `600` descriptors (`3.0` per connection): `db` `200`, `-wal` `200`, `-shm` `200`.
   - Every connection reports identical `SCHEMA_USED` (`1,347` bytes) and `STMT_USED` (`5,008` bytes), and `CACHE_USED` of about `52,835` bytes in one lab run (run-dependent, printed by `course run`, because `Pager` embeds the file path length).
-  - **Outline correction (uncounted RSS overhead):** In one lab run (RSS and `CACHE_USED` are run-dependent values that `course run` prints), the sum of all three counters across 200 connections is `11.3 MiB` (`10.1 MiB` cache + `0.3 MiB` schema + `1.0 MiB` statements), yet process RSS grew from `11.5 MiB` to `54.5 MiB`—a **`43.0 MiB` growth, `3.81×` the summed counters**. The uncounted portion is about `31.7 MiB` (`162 KiB` per connection). Known contributors are the `48 KiB` per-connection lookaside buffer (`src/global.c:218-224`, excluded from all three byte counters), `modernc.org/sqlite` + `modernc.org/libc` per-connection Go/C state, and allocator size-class rounding (4.3 KiB page allocations landing in 8 KiB slots, measured in Chapter 4). Because a fixed per-process component dominates at tiny `n` (`280 KiB/conn` at `-n 5`), Experiment 8.2 requires `-n >= 20`. And because adversarial test `IDL-03a` measured `319–321 KiB/conn` uncounted with 1,000-table schemas, treat `256 KiB` as the bound for this 3-table workload—not a universal constant.
+  - **Uncounted RSS overhead:** In one lab run (RSS and `CACHE_USED` are run-dependent values that `course run` prints), the three counters sum to `11.3 MiB` across 200 connections (`10.1 MiB` cache + `0.3 MiB` schema + `1.0 MiB` statements), yet process RSS grew from `11.5 MiB` to `54.5 MiB`—a **`43.0 MiB` growth, `3.81×` the summed counters**. The uncounted portion is about `31.7 MiB` (`162 KiB` per connection). Known contributors are the `48 KiB` per-connection lookaside buffer (`src/global.c:218-224`, excluded from all three byte counters), `modernc.org/sqlite` + `modernc.org/libc` per-connection Go/C state, and allocator size-class rounding (4.3 KiB page allocations landing in 8 KiB slots, measured in Chapter 4). Because a fixed per-process component dominates at tiny `n` (`280 KiB/conn` at `-n 5`), Experiment 8.2 requires `-n >= 20`. And because stress test `IDL-03a` (Section 6) measured `319–321 KiB/conn` uncounted with 1,000-table schemas, treat `256 KiB` as the bound for this 3-table workload—not a universal constant.
 - **C1 (Part C — `PRAGMA shrink_memory`):**
-  - **Outline correction (process-wide shrink):** Running `PRAGMA shrink_memory` on connection 0 **alone** dropped connection 0's `CACHE_USED` from about `52,835` to `4,963` bytes in one lab run *and* dropped connection 1's (and all 199 other connections') `CACHE_USED` by the same amount (`src/pcache1.c:839-851` shrinks the shared `pcache1` group). Running `PRAGMA shrink_memory` on connections 1..199 afterward released `0` additional bytes.
+  - **Process-wide shrink:** Running `PRAGMA shrink_memory` on connection 0 **alone** dropped connection 0's `CACHE_USED` from about `52,835` to `4,963` bytes in one lab run *and* dropped connection 1's (and all 199 other connections') `CACHE_USED` by the same amount (`src/pcache1.c:839-851` shrinks the shared `pcache1` group). Running `PRAGMA shrink_memory` on connections 1..199 afterward released `0` additional bytes.
   - Cache memory fell from `10.1 MiB` to `0.9 MiB` (the floor of about `4,963` bytes per connection is the `Pager` struct plus one page buffer, well below 1/8 of `52,835`), while `SCHEMA_USED` (`0.3 MiB`) and `STMT_USED` (`1.0 MiB`) stayed unchanged. Process RSS dropped only partly (about `54.5` → `47.8 MiB` for `9.1 MiB` of freed cache) because Go/libc allocators retain freed pages for reuse. Closing all 200 connections returned descriptors to `0` and left all 200 files at rest.
 - **D1 (Part D — two connections to one WAL file in one process):**
   - Connection 1 open after a read: `3` (`t.db t.db-shm t.db-wal`).
@@ -1970,14 +2079,14 @@ Experiment verdict: IDLE COST OK
 
 ## 5. Lab
 
-To serve 1,000 databases inside fixed descriptor and memory budgets and prove rung R5 (at-rest state), this chapter introduces two shared packages—`internal/procstat` and `internal/connmgr`—and exercises them in Experiment 8.3. Both packages are inlined in full once here; Chapter 10 imports them directly.
+To serve 1,000 databases inside fixed descriptor and memory budgets and prove rung R5 (at-rest state), this chapter introduces two shared Go packages—`internal/procstat` and `internal/connmgr`—and exercises them in Experiment 8.3. Both packages are inlined in full once here; Chapter 10 imports them directly.
 
 ### 5.1 Shared package `internal/procstat`
 
 `internal/procstat` provides portable, standard-library-only measurement of a process's open file descriptors, RSS memory, and `RLIMIT_NOFILE`:
 
-- `DescriptorCount()` and `Descriptors()` open `DescriptorDir` (`/proc/self/fd` on Linux, `/dev/fd` elsewhere) and exclude the directory's own `dir.Fd()` so two consecutive counts are equal and opening *N* files adds exactly *N*.
-- `DescriptorsUnder(dir)` and `RelativeTargets(dir, ds)` normalize `dir` with `filepath.Abs` and `filepath.EvalSymlinks` (ensuring relative paths and `"/"` match Linux's absolute `/proc/self/fd` symlink targets without matching a sibling directory like `dir-sibling`). Off Linux, `TargetsSupported` is `false` and `DescriptorsUnder` returns `ErrTargetsUnsupported`.
+- `DescriptorCount()` and `Descriptors()` open `DescriptorDir` (`/proc/self/fd` on Linux, `/dev/fd` elsewhere) and exclude the directory's own `dir.Fd()` so two consecutive counts match and opening *N* files adds exactly *N*.
+- `DescriptorsUnder(dir)` and `RelativeTargets(dir, ds)` normalize `dir` with `filepath.Abs` and `filepath.EvalSymlinks` (ensuring relative paths and `"/"` match Linux's absolute `/proc/self/fd` symlink targets without matching a sibling directory such as `dir-sibling`). Off Linux, `TargetsSupported` is `false` and `DescriptorsUnder` returns `ErrTargetsUnsupported`.
 - `ReadMemory()` parses `/proc/self/status` (`VmRSS`, `RssAnon`, `RssFile`, `RssShmem`) on Linux and `ps -o rss= -p <pid>` elsewhere. Both parsers use `kibToBytes`, rejecting non-numeric, negative, duplicate, or `int64`-overflowing KiB values (above `math.MaxInt64/1024`).
 - `FileLimit()` calls `syscall.Getrlimit(syscall.RLIMIT_NOFILE, ...)`.
 
@@ -2292,11 +2401,75 @@ func ReadMemory() (Memory, error) {
 
 `internal/connmgr` implements a bounded LRU connection manager and the strict R5 at-rest verifier `CheckAtRest`:
 
-- **`CheckAtRest(path)` (`atrest.go`):** Refuses to call a file at rest if: (1) `.db` is missing, (2) `-wal` exists with size `> 0` (a 0-byte `-wal` carries no frames), (3) a hot rollback `-journal` exists (nonzero size and nonzero first byte, matching `hasHotJournal`), (4) `-shm` exists at any size, or (5) another process holds a POSIX lock on SQLite's lock region (`0x40000000`, length `512` bytes: `PENDING`, `RESERVED`, and the 510-byte `SHARED` range), probed via `fcntl(F_GETLK)` on the same file descriptor that hashes `.db`. Because `CheckAtRest` opens and closes `path` (which drops the calling process's own POSIX locks on Unix), it must only run when this process has no open connection to `path`.
+- **`CheckAtRest(path)` (`atrest.go`):** Refuses to call a file at rest if: (1) `.db` is missing, (2) `-wal` exists with size `> 0` (a 0-byte `-wal` carries no frames), (3) a hot rollback `-journal` exists (nonzero size and nonzero first byte, matching `hasHotJournal` in `src/pager.c`, Chapter 4), (4) `-shm` exists at any size, or (5) another process holds a POSIX lock on SQLite's lock region (`0x40000000`, length `512` bytes: `PENDING`, `RESERVED`, and the 510-byte `SHARED` range, Chapter 6), probed via `fcntl(F_GETLK)` on the same file descriptor that hashes `.db`. Because `CheckAtRest` opens and closes `path` (which drops the calling process's own POSIX locks on Unix, Chapter 6), callers must invoke it only when this process has no open connection to `path`.
 - **`Manager` (`connmgr.go`):** Keeps at most `Capacity` open `*sqlitex.DB` entries in an LRU list protected by one mutex.
   - `Acquire(ctx, id)` returns an existing open entry immediately (moving it to the front of the LRU and bumping `Hits`). On a miss, it checks `ctx.Err()` **before** evicting any idle database, evicts the least recently used entry with `refs == 0` if at capacity (or blocks until `Handle.Release()` or `ctx.Done()`), runs `verifyBeforeOpen` if an at-rest record exists for `id` (returning `*ChangedWhileClosedError` on any mismatch or non-at-rest state, or counting `StatusFailures` on an I/O error), and opens the file. `Misses` and `VerifiedReopens`/`UnverifiedOpens` increment only after `Open` succeeds, preserving `Misses == VerifiedReopens + UnverifiedOpens`.
-  - `evictLocked` calls `db.Close()`, then checks both `CloseErr != nil` and `db.Stats().OpenConnections > 0`. If either is true—for example, when an unclosed `*sql.Rows` kept a connection checked out in `database/sql`—it skips `CheckAtRest` (avoiding the POSIX lock-drop hazard!), marks the eviction not at rest, and drops any stored hash record. Only when `OpenConnections == 0` does it call `CheckAtRest(path)` and save the SHA-256 record.
+  - `evictLocked` calls `db.Close()`, then checks both `CloseErr != nil` and `db.Stats().OpenConnections > 0`. If either holds—for example, when an unclosed `*sql.Rows` kept a connection checked out in `database/sql`—it skips `CheckAtRest` (avoiding the POSIX lock-drop hazard), marks the eviction not at rest, and drops any stored hash record. Only when `OpenConnections == 0` does it call `CheckAtRest(path)` and save the SHA-256 record.
   - `OnEvict` hooks run after releasing `m.mu`, so hooks may safely call `Stats()` or `Record()`. `Forget(id)` clears a stored record for a deliberate external change such as a restore.
+
+The diagram below traces `Acquire(ctx, id)` on a miss at capacity `K`, including the `OpenConnections` branch during eviction and the pre-open digest check:
+
+<!-- draw-visual: diagrams/ch08-connection-and-database-lifecycle-connmgr-miss-evict.mmd -->
+```text
+┌────────┐     ┌─────────┐     ┌───────────┐     ┌───────────┐
+│ Caller │     │ Manager │     │ Victim DB │     │ Target DB │
+└────┬───┘     └────┬────┘     └─────┬─────┘     └─────┬─────┘
+     │              │                │                 │
+    ┌───────────────────────────────────────────────────┐
+    │      Acquire(ctx, id) on miss at capacity K       │
+    └───────────────────────────────────────────────────┘
+     │              │                │                 │
+     │ 1. Acquire   │                │                 │
+     ├─────────────►│                │                 │
+     │              │                │                 │
+     ┌─────────────────────────────┐ │                 │
+     │ miss; check ctx.Err() first │ │                 │
+     └─────────────────────────────┘ │                 │
+     │              │                │                 │
+     │              │ 2. db.Close()  │                 │
+     │              ├───────────────►│                 │
+  ┌─[alt OpenConnections == 0]───────────────────────────┐
+  │  │              │                │                 │ │
+  │  │              │ 3. CheckAtRest │                 │ │
+  │  │              ├───────────────►│                 │ │
+  │  │              │                │                 │ │
+  │  │              │ 4. SHA-256     │                 │ │
+  │  │              │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤                 │ │
+  │  │              │                │                 │ │
+  │  │     ┌──────────────────┐      │                 │ │
+  │  │     │ save hash record │      │                 │ │
+  │  │     └──────────────────┘      │                 │ │
+  ├┈[OpenConnections > 0 (open Rows/Tx)]┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤
+  │  │              │                │                 │ │
+  │┌─────────────────────────────────┐                 │ │
+  ││ skip CheckAtRest (no lock drop) │                 │ │
+  │└─────────────────────────────────┘                 │ │
+  │  │              │                │                 │ │
+  └──────────────────────────────────────────────────────┘
+     │            ┌─[alt Target has recorded SHA-256]────┐
+     │            │ │                │                 │ │
+     │            │ │ 5. verifyBeforeOpen              │ │
+     │            │ ├─────────────────────────────────►│ │
+     │            │ │                │                 │ │
+     │            │ │ 6. match / err │                 │ │
+     │            │ │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤ │
+     │            │ │                │                 │ │
+     │            └──────────────────────────────────────┘
+     │              │                │                 │
+     │              │ 7. Open target │                 │
+     │              ├─────────────────────────────────►│
+     │              │                │                 │
+     │              │ 8. *sqlitex.DB │                 │
+     │              │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤
+     │              │                │                 │
+     │┌───────────────────────────┐  │                 │
+     ││ bump Misses after Open ok │  │                 │
+     │└───────────────────────────┘  │                 │
+     │              │                │                 │
+     │ 9. Handle    │                │                 │
+     │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┤                │                 │
+     │              │                │                 │
+```
 
 <!-- include: ../internal/connmgr/atrest.go -->
 ```go
@@ -2891,7 +3064,7 @@ func (m *Manager) Forget(id string) bool {
 
 ### 5.3 Experiment 8.3 — `bounded-manager` (rung R5)
 
-- **Claim:** A bounded LRU manager capped at `K` open connections serves 1,000 WAL databases using at most `3K` descriptors (`3` per open connection at every sample, `0` after `Close`) and bounded process memory (`<= K * (2 * cache budget + 256 KiB) + 32 MiB`), verifying every reopen against the SHA-256 recorded at eviction and producing exact recipe states for all 1,000 files. Conversely, a closed WAL database is **not** a single checkpointed file at rest when another process still holds it open (B1), when an unclosed `*sql.Rows` keeps a `database/sql` connection checked out (B2), when a writer is killed before closing (B3), when `SQLITE_FCNTL_PERSIST_WAL` is enabled (B4), or when the file is renamed while open (B5); and an outside write while closed is caught on reopen by its changed SHA-256 (B6).
+- **Claim:** A bounded LRU manager capped at `K` open connections serves 1,000 WAL databases using at most `3K` descriptors (`3` per open connection at every sample, `0` after `Close`) and bounded process memory (`<= K * (2 * cache budget + 256 KiB) + 32 MiB`), verifying every reopen against the SHA-256 recorded at eviction and producing exact Chapter 1 recipe states for all 1,000 files. Conversely, a closed WAL database is **not** a single checkpointed file at rest when another process still holds it open (B1), when an unclosed `*sql.Rows` keeps a `database/sql` connection checked out (B2), when a writer is killed before closing (B3), when `SQLITE_FCNTL_PERSIST_WAL` is enabled (B4), or when the file is renamed while open (B5); and an outside write while closed is caught on reopen by its changed SHA-256 (B6).
 - **Evidence form:** `BOUND` for memory, `EXACT` for descriptor counts, eviction/reopen counters, SHA-256 hashes, recipe matches, and Part B outcomes, and `SHAPE` for bounded-vs-unbounded RSS contrast and warm-vs-cold latency.
 - **Portability:** Fully portable across Linux and macOS (re-executes itself for child processes; no `strace` or `/proc/self/fd` target names required). Captured evidence below was measured on Linux.
 
@@ -4155,7 +4328,7 @@ Experiment verdict: BOUNDED MANAGER OK
   - Every one of the `401` descriptor samples in both runs held **exact** `3 × open` descriptors—stronger than an inequality with a slack constant (`192` peak for `K = 64` vs `2,598` peak for unbounded).
   - Bounded peak memory growth was about `22.8 MiB` in one lab run against the budget `64 × (2 × 256 KiB cache + 256 KiB) + 32.0 MiB = 80.0 MiB`, about `9×` lower than the unbounded run's `208.3 MiB`.
   - Cold reads in the bounded run averaged about `306µs` versus `12µs` warm in one lab run (`~26×` slower, SHAPE), because a miss at capacity pays for evicting an idle database (checkpoint + `fsync` at `synchronous=FULL` + SHA-256 hash) before hashing and opening the requested database.
-  - All `1,000` databases in both runs ended at their exact expected recipe step (`0` wrong). The `30` (bounded) and `120` (unbounded) files marked `equal except the change counter` had two or more recipe steps applied on the same open WAL connection (which increments page 1's change counter once per connection that writes page 1, accepted only when header bytes 24–27 equal 92–95). Notice why `bounded` has fewer (`30` vs `120`): frequent evictions closed connections between writes.
+  - All `1,000` databases in both runs ended at their exact expected recipe step (`0` wrong). The `30` (bounded) and `120` (unbounded) files marked `equal except the change counter` had two or more recipe steps applied on the same open WAL connection (which increments page 1's change counter from Chapter 2 once per connection that writes page 1, accepted only when header bytes 24–27 equal 92–95). Notice why `bounded` has fewer (`30` vs `120`): frequent evictions closed connections between writes.
 - **B1–B8 (Part B — six cases where a closed WAL database is not a single file at rest, or changes while closed):**
   - Every step-1 commit produces a `90,672`-byte `-wal` (`32`-byte header + `22` frames × `4,120` bytes) and checkpoints into a `90,112`-byte (`22`-page) `.db` file with SHA-256 `6d8cfc77…18924`.
   - **B1 (another process holds the database open):** The manager's `Evict` cannot take `EXCLUSIVE` in `sqlite3WalClose`, leaving `-wal` (`90,672` bytes) and `-shm` (`32,768` bytes). The manager flags both problems and drops the record. Once the child reader closes (now the last connection), its close checkpoints and deletes the side files, leaving `db-0000.db` at rest with exact step-1 bytes.
@@ -4171,7 +4344,7 @@ Experiment verdict: BOUNDED MANAGER OK
 
 ### 6.1 When a closed WAL database is not at rest—and what `CheckAtRest` can and cannot see
 
-Experiment 8.3 Part B and the pinned source establish **seven** ways a WAL database fails the simple assumption "closed = single fully checkpointed file":
+Experiment 8.3 Part B and the pinned source establish **seven** ways a WAL database fails the simple assumption "closed = single fully checkpointed file" (parenthetical codes such as `ATR-01a/b`, `ATR-02`, and `MGR-01` name standalone stress tests listed under "What attacked this chapter" below):
 
 | # | Condition | Source / Experiment | What lands on disk | Caught by `connmgr`? |
 | --- | --- | --- | --- | --- |
@@ -4185,11 +4358,11 @@ Experiment 8.3 Part B and the pinned source establish **seven** ways a WAL datab
 
 **What `CheckAtRest` can and cannot detect.** Side-file checks (`-wal`, `-shm`, hot `-journal`) alone are **not** enough: an open WAL connection using `PRAGMA locking_mode=EXCLUSIVE` keeps its wal-index in heap memory and creates **no** `-shm` file (`ATR-01b`), and an active rollback-mode reader creates no sidecar file at all. Adding the `fcntl(F_GETLK)` probe on SQLite's lock range (`0x40000000..+512`) catches both because both hold POSIX locks on `.db`.
 
-One class of external connection remains **invisible** to any file or lock check: a connection in another process that currently holds **no lock**—specifically an idle rollback-mode connection, or a connection that called `sqlite3_open_v2` without yet running a statement (`ATR-01a` case 3). And `F_GETLK` never reports locks held by the calling process itself, so `CheckAtRest` must never run while this process has another `*sql.DB` open to the same file (that would also trigger the POSIX lock-drop hazard). "At rest" therefore proves **"the `.db` file is complete right now and nobody holds a lock on it right now"**—not "no other process has an idle file descriptor." Ownership (ensuring only the platform's manager opens the file) is a platform invariant, not something SQLite's files can enforce alone.
+One class of external connection remains **invisible** to any file or lock check: a connection in another process that currently holds **no lock**—specifically an idle rollback-mode connection, or a connection that called `sqlite3_open_v2` without yet running a statement (`ATR-01a` case 3). And `F_GETLK` never reports locks held by the calling process itself, so `CheckAtRest` must never run while this process has another `*sql.DB` open to the same file (that would also trigger Chapter 6's POSIX lock-drop hazard). "At rest" therefore proves **"the `.db` file is complete right now and nobody holds a lock on it right now"**—not "no other process has an idle file descriptor." Ownership (ensuring only the platform's manager opens the file) is a platform invariant, not something SQLite's files can enforce alone.
 
 ### 6.2 Version notes
 
-From the pinned-tree research inventory ([`docs/knowledge/source-inventory-ch05-09.md`](../docs/knowledge/source-inventory-ch05-09.md) §8.8) and the copied C source:
+From this repository's C source inventory ([`docs/knowledge/source-inventory-ch05-09.md`](../docs/knowledge/source-inventory-ch05-09.md) §8.8) and the copied C source:
 
 - **SQLite 3.49.0:** added `SQLITE_DBCONFIG_ENABLE_ATTACH_CREATE` and `SQLITE_DBCONFIG_ENABLE_ATTACH_WRITE` to let an application prevent `ATTACH` from creating new files or writing to attached files.
 - **SQLite 3.49.1:** hardened `SQLITE_DBCONFIG_LOOKASIDE`.
@@ -4200,29 +4373,29 @@ From the pinned-tree research inventory ([`docs/knowledge/source-inventory-ch05-
 
 <!-- adversarial-results -->
 
-Four adversarial programs (`29` attacks total, driven by [`run-all.sh`](../agent_work/ch08/adversarial/run-all.sh)) attacked Chapter 8's claims and shared packages against SQLite 3.53.4:
+Four standalone Go stress-test programs in this repository (`29` attacks total, driven by [`run-all.sh`](../agent_work/ch08/adversarial/run-all.sh)) tried to break Chapter 8's claims and shared packages against SQLite `3.53.4` (`HELD` means the code or claim stood up to the test; `BROKEN` means the test exposed a bug or an overly broad claim):
 
 - [`open-settings-edge`](../agent_work/ch08/adversarial/open-settings-edge/main.go) (`OPN-01`–`OPN-06`): missing files with `mode=rw`/`ro` (`SQLITE_CANTOPEN`, code `14`, no file created) vs `mode=rwc` (0-byte file at open, `8,192` bytes after DDL); non-database files (random 4 KiB, ASCII text, truncated 50-byte file — plain open succeeds, `SQLITE_NOTADB` code `26` arrives on the first statement, while `sqlitex.Open` fails immediately; 0-byte file queries cleanly); `strace` contrast in rollback `DELETE` mode (page 1 read once, no `-wal`/`-shm`) and on a killed-writer dirty WAL (`open` still reads only 100 bytes, first statement reads `-wal` 3 times during recovery); all five rollback journal modes reverting to `delete` and `WAL -> delete` resetting header bytes 18–19 to `1,1`; negative `PRAGMA default_cache_size=-500` reopening as positive `cache_size=500` (`src/prepare.c:325`); `VACUUM INTO` preserving `default_cache_size=777`; auditing 8.1's `settings-json`; and pin-mismatch enforcement across Experiments 8.1, 8.2, and 8.3.
 - [`idle-cost-limits`](../agent_work/ch08/adversarial/idle-cost-limits/main.go) (`IDL-01`–`IDL-06b`): exhausting `RLIMIT_NOFILE=1024` across 1,000 WAL files (failed at `339/1000`, `1023/1024` FDs, `SQLITE_CANTOPEN` code `14`); running 8.2 at `-n 1000` (`3,000` exact FDs, `165 KiB/conn` uncounted); 50 WAL connections with 1,000-table schemas (`SCHEMA_USED = 251,601 B`) and 5 prepared statements (`STMT_USED = 28,240 B`) plus `PRAGMA shrink_memory` across them; `PRAGMA shrink_memory` while dirty pages are pinned in `BEGIN IMMEDIATE` (`166,188 -> 153,132 B`) versus after `ROLLBACK` (`5,164 B`); same-file WAL sequential open/close reuse (`findReusableFd` caps 10 cycles at `5` open / `4` parked) and 5 simultaneous connections (`11 -> 7 -> 0`); rollback-mode lock-dependent descriptor parking (`1 -> 2 -> 1` when idle vs `1 -> 2 -> 2 -> 1 -> 0` when holding a `SHARED` lock); and `procstat` overflow and path-resolution edge cases.
 - [`manager-kills-and-limits`](../agent_work/ch08/adversarial/manager-kills-and-limits/main.go) (`MGR-01`–`MGR-03b`): 5 rounds of `SIGKILL` against a running bounded manager (60 DBs, `K = 12`, `249` acknowledged writes — `0` integrity failures, `0` step violations, `0` files left not at rest after recovery); Experiment 8.3 at `K = 1` (`peak open = 1`, `peak FDs = 3`); 8 concurrent goroutines × 20 ops at `Capacity = 1` with a re-entrant `OnEvict` hook (`0` errors, `0` deadlocks); `Capacity = 200` under `RLIMIT_NOFILE = 128` (`EMFILE` at DB 40, `126` FDs before and after, already-open DB servable, manual `Evict` unblocks); and Experiment 8.3's preflight descriptor-limit check under `RLIMIT_NOFILE = 128`.
 - [`atrest-and-connmgr-edge`](../agent_work/ch08/adversarial/atrest-and-connmgr-edge/main.go) (`ATR-01a`–`ATR-05`): cross-process open readers (active writer + WAL, active reader + 0-byte WAL, opened-only with no statement); cross-process `PRAGMA locking_mode=EXCLUSIVE` WAL reader (no `-shm`) and active rollback reader; rollback-mode eviction with open `*sql.Rows` testing POSIX lock preservation against a second process; `connmgr.Stats()` accounting under `Open` failures; `Acquire` with a pre-cancelled context at capacity; and `CheckAtRest` on a directory, 32-byte header-only `-wal`, orphaned `-wal` without `-shm`, and 0-byte/cold/hot `-journal`.
 
-**Run 1** ([`results-run1.txt`](../agent_work/ch08/adversarial/results-run1.txt)) produced **20 HELD, 9 BROKEN**. Seven broken attacks exposed real bugs that were fixed in code (alongside the code-review corrections, including removing the false claim that Experiment 8.3 B2 is `sqlite3_close_v2`'s zombie path, requiring `-n >= 20` in 8.2, reading `vacuum-into.db` header bytes 18–19 directly in 8.1, checking `whole` and `Result == 100` in 8.1's `strace` checks, and strengthening 8.3 B4/B5 checks):
+**Run 1** ([`results-run1.txt`](../agent_work/ch08/adversarial/results-run1.txt)) produced **20 HELD, 9 BROKEN**. Seven broken attacks exposed real bugs that were fixed in code:
 
 - `OPN-05`: Experiment 8.1 left every `observed[].placement` struct empty in `settings-json`. Fixed by populating `Placement: placement` and regenerating `evidence/8.1-open-cost-and-where-settings-live.txt`.
 - `IDL-06a`: `procstat.ParseStatus` and `ParsePSRSS` silently overflowed `int64` on `2^53` and `2^54` KiB inputs, returning `0` or negative bytes with `err == nil`. Fixed via `kibToBytes` rejecting values above `math.MaxInt64/1024`.
 - `IDL-06b`: `procstat.DescriptorsUnder` and `RelativeTargets` returned zero matches for relative directories and `"/"` (producing `"//"`). Fixed by resolving `filepath.Abs` + `filepath.EvalSymlinks` in `directoryPrefix`.
-- `ATR-01b`: A cross-process WAL connection using `PRAGMA locking_mode=EXCLUSIVE` created no `-shm`, refuting the draft claim that every open WAL connection keeps `-shm` and causing `CheckAtRest` to return `AtRest=true`. Fixed by adding `lockedByAnotherProcess` (`fcntl(F_GETLK)` on SQLite's lock bytes `0x40000000..+512`), which now catches both WAL exclusive-mode and active rollback-mode readers.
+- `ATR-01b`: A cross-process WAL connection using `PRAGMA locking_mode=EXCLUSIVE` created no `-shm`, showing that not every open WAL connection keeps `-shm` on disk and causing `CheckAtRest` to return `AtRest=true`. Fixed by adding `lockedByAnotherProcess` (`fcntl(F_GETLK)` on SQLite's lock bytes `0x40000000..+512`), which now catches both WAL exclusive-mode and active rollback-mode readers.
 - `ATR-02`: Evicting a rollback-mode database while `*sql.Rows` was open falsely reported `AtRest=true` **and** `CheckAtRest`'s `os.Open` + `Close` stripped the open cursor's POSIX `SHARED` lock, allowing a second process to write. Fixed by checking `e.db.Stats().OpenConnections > 0` (and `CloseErr != nil`) in `evictLocked` and skipping `CheckAtRest`.
 - `ATR-03`: `verifyBeforeOpen` incremented `UnverifiedOpens`/`VerifiedReopens` before `Open` ran, breaking `Misses == VerifiedReopens + UnverifiedOpens` whenever `Open` failed, and counted `CheckAtRest` I/O errors as `RefusedReopens` instead of `StatusFailures`. Fixed by incrementing open counters only after `Open` succeeds.
 - `ATR-04`: `Acquire` with a pre-cancelled context at capacity evicted a healthy idle database before returning `context.Canceled`. Fixed by checking `ctx.Err()` right after the cache-hit check and before eviction.
 
-Two broken attacks from Run 1 remained broken in **Run 2** ([`results-run2.txt`](../agent_work/ch08/adversarial/results-run2.txt): **27 HELD, 2 BROKEN**) and narrowed the chapter's claims rather than changing code:
+Two broken attacks from Run 1 remained broken in **Run 2** ([`results-run2.txt`](../agent_work/ch08/adversarial/results-run2.txt): **27 HELD, 2 BROKEN**) and exposed claim-scope boundaries:
 
-- `IDL-03a` measured `319–321 KiB/conn` of uncounted RSS across 50 WAL connections with 1,000-table schemas (`21.3 MiB` counter sum vs `36.9 MiB` RSS growth), exceeding Experiment 8.2's `256 KiB/conn` margin. Sections 4 and 7 now state plainly that `256 KiB/conn` is specific to 8.2's 3-table workload and that uncounted overhead grows with schema size.
-- `MGR-03a` showed that setting `Capacity = 200` under `RLIMIT_NOFILE = 128` fails at database 40 with `SQLITE_CANTOPEN` (`14`) without automatically evicting an idle entry (because `modernc.org/sqlite` does not surface `EMFILE` distinctly from other `CANTOPEN` errors), while leaking zero descriptors (`126` before and after), keeping open databases servable, and unblocking on manual `Evict`. Section 7 states the sizing rule `K <= (soft limit - reserve) / 3` in WAL mode and treats exceeding the OS descriptor limit as a configuration error caught at startup (as Experiment 8.3's preflight does, `MGR-03b`).
+- `IDL-03a`: Measured `319–321 KiB/conn` of uncounted RSS across 50 WAL connections with 1,000-table schemas (`21.3 MiB` counter sum vs `36.9 MiB` RSS growth), exceeding Experiment 8.2's `256 KiB/conn` margin. Sections 4 and 7 restrict `256 KiB/conn` to Experiment 8.2's 3-table workload and note that uncounted overhead grows with schema size.
+- `MGR-03a`: Setting `Capacity = 200` under `RLIMIT_NOFILE = 128` failed at database 40 with `SQLITE_CANTOPEN` (`14`) without automatically evicting an idle entry (because `modernc.org/sqlite` does not surface `EMFILE` distinctly from other `CANTOPEN` errors), while leaking zero descriptors (`126` before and after), keeping open databases servable, and unblocking on manual `Evict`. Section 7 states the sizing rule `K <= (soft limit - reserve) / 3` in WAL mode and treats exceeding the OS descriptor limit as a startup configuration error (as Experiment 8.3's preflight does, `MGR-03b`).
 
-After updating `IDL-03a` and `MGR-03a` to assert those narrowed, documented contracts, the final run ([`results.txt`](../agent_work/ch08/adversarial/results.txt)) passed **29 HELD, 0 BROKEN**.
+After aligning `IDL-03a` and `MGR-03a` with those verified bounds, the final run ([`results.txt`](../agent_work/ch08/adversarial/results.txt)) passed **29 HELD, 0 BROKEN**.
 
 ---
 
@@ -4235,7 +4408,7 @@ Every capacity number and operational rule below comes directly from this chapte
 3. **Price cold opens by schema size and eviction `fsync` cost (Experiments 8.1 A; 8.3 A).** Opening a file costs only one 100-byte read, but the first statement reads page 1 twice, opens `-wal` and `-shm`, and scans every `sqlite_schema` page (`1` page for 1 table, `5` for 100, `36` for 1,000). Under a full LRU manager, a cold read also pays for evicting an idle database (checkpoint + `fsync` + SHA-256) and hashing the target before opening—averaging about `306µs` cold versus `12µs` warm in one lab run of Experiment 8.3 A (run-dependent, `SHAPE`). Keep `K` large enough to hold the hot working set (`K = 64` held 8.3's `50` hot databases).
 4. **Never copy, move, or declare a WAL file at rest until every handle is closed and `CheckAtRest` passes (Experiments 8.1 B; 8.3 A, B1–B6; `ATR-01a/b`, `ATR-02`).** Before copying a database file for rung R5 capture or relocation: (a) ensure all `*sql.Rows`, `*sql.Tx`, and `*sql.Conn` are closed (`OpenConnections == 0` after `db.Close()`, B2), (b) run `CheckAtRest` only when this process holds no open connection to the file, (c) require zero `-wal` bytes, no `-shm`, no hot `-journal`, and no cross-process lock (`F_GETLK`), (d) never rename or move a database while a connection is open (B5 leaves committed data in the old `-wal` while the moved file looks at rest), and (e) record the SHA-256 on eviction and verify it before reopening (B6).
 5. **Store per-connection settings in the platform catalog and reapply them on every open (Experiment 8.1 B; `OPN-04a/b/c`).** A copied database carries only `page_size`, `journal_mode=wal`, `auto_vacuum`, `encoding`, `user_version`, `application_id`, and (if set) the deprecated `default_cache_size`. The platform catalog must store and reapply `synchronous`, `foreign_keys`, `cache_size` (explicitly, to override any foreign `default_cache_size`), `busy_timeout`, `wal_autocheckpoint`, and `secure_delete` on every connection—recorded in machine-readable form by [`internal/sqlitex/placement.go`](../internal/sqlitex/placement.go) and Experiment 8.1's placement tables (B2, B4). Whenever a rebuild uses `VACUUM INTO`, also reapply `PRAGMA journal_mode=wal`, because `VACUUM INTO` outputs a rollback-mode file.
-6. **Do not use `ATTACH` to span tenant databases (from the SQLite documentation and [`docs/knowledge/source-inventory-ch05-09.md`](../docs/knowledge/source-inventory-ch05-09.md), not demonstrated here).** `SQLITE_LIMIT_ATTACHED` defaults to `10` attached databases per connection, and per the SQLite documentation a transaction across attached WAL-mode databases is atomic per file only—not across files. A multi-database platform holding thousands of files should isolate each database to its own connection and never rely on cross-database `ATTACH` transactions.
+6. **Do not use `ATTACH` to span tenant databases (from the SQLite documentation and this repository's C source inventory [`docs/knowledge/source-inventory-ch05-09.md`](../docs/knowledge/source-inventory-ch05-09.md), not demonstrated here).** `SQLITE_LIMIT_ATTACHED` defaults to `10` attached databases per connection, and per the SQLite documentation a transaction across attached WAL-mode databases is atomic per file only—not across files. A multi-database platform holding thousands of files should isolate each database to its own connection and never rely on cross-database `ATTACH` transactions.
 
 ---
 

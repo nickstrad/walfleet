@@ -1,0 +1,18 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant S as SQLite pager
+  participant M as t.db-shm
+  participant D as t.db
+  participant W as t.db-wal
+  Note over S,W: BEGIN IMMEDIATE (OP_Transaction)
+  S->>M: READ0 & WRITE
+  Note over S,W: INSERT (OP_Insert -- zero writes)
+  S->>D: pread64 page 2 (4096B)
+  Note over S,W: COMMIT (vdbeCommit -- zero t.db writes)
+  S->>M: READ0->READ1
+  S->>W: pwrite64 32B WAL hdr
+  S->>W: sync t.db-wal & dir .
+  S->>W: append frame 1 (24B + p2 4096B)
+  S->>W: sync t.db-wal (COMMIT POINT)
+  S->>M: unlock both

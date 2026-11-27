@@ -1,0 +1,19 @@
+%% draw-visual:
+sequenceDiagram
+  participant Coord as Coordinator
+  participant A as Node a
+  participant B as Node b
+  participant S3 as SeaweedFS S3
+  Note over Coord,A: 1. FenceEpoch -> (b, e2)
+  Note over A,B: a writable (local step 4)
+  Coord->>A: 2. SealSource
+  Note over A,B: 0 writable (steps 2-5)
+  Coord->>A: 3. ShipFinal
+  A->>S3: put seg 4-5, close .db = H
+  Coord->>B: 4. Rebuild (.staged)
+  S3-->>B: restore slot 5
+  Note over Coord,B: 5. Verify P == 5, sha256 == H
+  Coord->>B: 6. Activate e2
+  B->>S3: put 6 (e2=H)
+  Note over B,S3: install .db/.owner
+  Coord->>A: 7. RetireSource

@@ -1,0 +1,22 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant B as backup_step
+  participant S as src pager
+  participant W as writer
+  participant D as dest.db
+  B->>S: read, copy 5p
+  S-->>D: pages 1..5 (iNext=6)
+  B->>S: end read txn
+  alt same-conn COMMIT
+    S->>D: backupUpdate (iPage<iNext)
+    Note over S: iNext unchanged
+  else external COMMIT
+    W->>S: commit step
+    B->>S: next step
+    Note over S: pager_reset -> Restart
+    S-->>B: iNext = 1
+  else same-conn ROLLBACK
+    Note over S: pagerUndoCallback
+    S-->>B: iNext = 1
+  end

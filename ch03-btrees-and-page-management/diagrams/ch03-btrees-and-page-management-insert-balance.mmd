@@ -1,0 +1,19 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant I as BtreeInsert
+  participant B as balance
+  participant P as Pager
+  I->>P: insertCellFast
+  Note over I,P: cell fits -> return (1 leaf dirty)
+  I->>B: overflow cell queued
+  loop while overflow or >2/3 free
+    alt root page
+      B->>P: balance_deeper (new pChild)
+    else rightmost intKeyLeaf append
+      B->>P: balance_quick (skip old leaf)
+    else other page or WITHOUT ROWID
+      B->>P: balance_nonroot (siblings)
+    end
+    Note over B,P: next: pChild or pParent
+  end

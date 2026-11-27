@@ -12,56 +12,56 @@
 
 > **How to run the experiments**
 >
-> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to start the runner from the host. Build the `lab` image once, from the repository root:
+> - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to invoke this repository's experiment runner (`cmd/course`) from the host. Build the `lab` container image (`Dockerfile.lab`) once from the repository root:
 >   ```text
 >   docker compose build lab
 >   ```
->   The image already contains the pinned SQLite `3.53.4` source tree (for inspecting the linked C files), the C tools (none of Chapter 9's four experiments invokes the C `sqlite3` CLI; only the adversarial script `capture-falsify` does, to reproduce CLI `.backup` lock contention), `strace` (Experiment 9.2's syscall cross-check and kill sweep), and the DuckDB CLI that presents the results.
-> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment in it, and prints its walkthrough; add `-i` (`go run ./cmd/course run -i 9.4`) to stay in DuckDB afterwards with the tables loaded:
+>   The image bundles the pinned SQLite `3.53.4` source tree (for inspecting the linked C files), the compiled SQLite C tools (none of Chapter 9's four experiments invokes the C `sqlite3` CLI; only the standalone stress-test script `capture-falsify` in Section 6 does, to reproduce CLI `.backup` lock contention), `strace` (used for Experiment 9.2's syscall cross-check and kill sweep), and the DuckDB CLI that renders each experiment's CSV tables as a walkthrough.
+> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`go run ./cmd/course run -i 9.4`) to stay in the DuckDB shell afterwards with all tables loaded:
 >   ```text
 >   go run ./cmd/course run 9.1
 >   go run ./cmd/course run 9.2
 >   go run ./cmd/course run 9.3
 >   go run ./cmd/course run 9.4
 >   ```
->   Experiment 9.2 also accepts `-portable` to run the non-`strace` path on Linux. `course run` cannot pass experiment flags, so run that variant directly in the container: `docker compose run --rm lab go run ./ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss -portable`. In the container, scratch files and tables are written under `/work/9.1/` through `/work/9.4/` (the `lab-work` volume); run directly, under `_work/9.1/` through `_work/9.4/`, which are git-ignored and safe to delete.
-> - **Running an experiment directly:** an experiment is still an ordinary Go program (`go run ./ch09-backup-crash-recovery-integrity/experiments/9.4-point-in-time-rebuild`). Run this way it prints only its verdict and leaves its tables under `_work/9.4/results/`.
-> - **Linux-only parts and macOS:** Experiments 9.1, 9.3, and 9.4, plus `internal/walship` and Experiment 9.2's power-cut model (Part B's rule calculation and recovery), are portable. Experiment 9.2's `strace` confirmation of synced bytes (Part B) and syscall kill sweep (Part A) are **Linux only**; `course run` runs them in the Linux `lab` container. Run directly on macOS, Experiment 9.2 runs the process-crash test and the rule-based power-cut model natively and prints `LINUX-ONLY:` notices for the `strace` parts.
+>   Experiment 9.2 also accepts `-portable` to run the non-`strace` path on Linux. Because `course run` cannot pass experiment flags, run that variant directly in the container: `docker compose run --rm lab go run ./ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss -portable`. Inside the container, scratch files and result tables are written under `/work/9.1/` through `/work/9.4/` (the Docker `lab-work` volume); when run directly on the host, they go under `_work/9.1/` through `_work/9.4/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** Each experiment is an ordinary Go program (`go run ./ch09-backup-crash-recovery-integrity/experiments/9.4-point-in-time-rebuild`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/9.4/results/`.
+> - **Linux-only parts and macOS:** Experiments 9.1, 9.3, and 9.4, plus `internal/walship` and Experiment 9.2's power-cut model (Part B's rule calculation and recovery), are portable. Experiment 9.2's `strace` confirmation of synced bytes (Part B) and syscall kill sweep (Part A) are **Linux only**; `course run` runs them in full inside the Linux `lab` container. Run directly on macOS, Experiment 9.2 runs the process-crash test and the rule-based power-cut model natively and prints `LINUX-ONLY:` notices for the `strace` parts.
 > - **Measurement environment:** The stored evidence in this chapter, including the `strace` counts and kill sweeps, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; nothing was run on macOS.
 
 ---
 
 ## 1. Model
 
-Running a platform that holds thousands of SQLite databases requires answering three operational questions with precision: how to save a live database without stopping writers, what commits survive a crash versus a power cut, and how to prove a restored database holds the right data.
+Running a platform that holds thousands of SQLite databases requires answering three operational questions with precision: how to save a live database without stopping writers, which commits survive a crash versus a power cut, and how to prove a restored database holds the right data.
 
 ### Three families of capture
 
-An SQLite database in **WAL** (write-ahead log) mode consists of fixed-size **pages** (4,096 bytes in the course recipe) stored in the main `.db` file, plus committed **frames** (each a 24-byte header and one full page image) appended to the `-wal` file and indexed in shared memory via `-shm` (the **wal-index**). Every way to capture a database's state belongs to one of three families, each reaching a specific level of the course's **equality ladder** (`internal/equal`):
+An SQLite database in **WAL** (write-ahead log, Chapter 5) mode consists of fixed-size **pages** (4,096 bytes in the Chapter 1 recipe) stored in the main `.db` file, plus committed **frames** (each a 24-byte header and one full page image) appended to the `-wal` file and indexed in shared memory via `-shm` (the **wal-index**). Every way to capture a database's state belongs to one of three families, each reaching a specific level of this book's **equality ladder** (Chapter 2, `internal/equal`):
 
 1. **Physical page captures** copy raw pages directly:
-   - A **closed-file copy** (Chapter 8, rung R5) copies `.db` after the last connection closes cleanly. It reaches **E1 bytes** (exact SHA-256 match). On a live WAL database, copying `.db` alone without `-wal` misses uncommitted-to-`.db` WAL frames and yields a stale (or, under a concurrent checkpoint, torn) file.
+   - A **closed-file copy** (Chapter 8, rung R5) copies `.db` after the last connection closes cleanly. It reaches **E1 bytes** (exact SHA-256 match). On a live WAL database, copying `.db` alone without `-wal` misses WAL frames not yet checkpointed into `.db` and yields a stale (or, under a concurrent checkpoint, torn) file.
    - **Reading every page through `sqlite_dbpage` inside one read transaction** (Chapter 6, rung R4) asks SQLite's pager to resolve each page `1..N` from the snapshot pinned by that transaction. Writing those pages out in order reaches **E1 bytes** without blocking writers.
    - The **online backup API** (`sqlite3_backup_init` / `sqlite3_backup_step` / `sqlite3_backup_finish`) copies pages into a destination database connection, either all at once (`nPage = -1`) or in fixed-size steps. Because SQLite rewrites page-1 header fields on the destination—specifically bytes `24–27` (change counter), `40–43` (schema cookie), and `92–99` (version-valid-for and SQLite version)—a backup reaches **E2 pages** (identical pages outside those declared header ranges), not E1 bytes.
 2. **Logical captures** rebuild a new database from the SQL schema and row values:
-   - **`VACUUM INTO`** opens a read transaction on the source, creates a fresh destination database, executes `INSERT INTO … SELECT * FROM …` for every table, increments the schema cookie, and commits. Because it repacks every B-tree and always outputs a rollback-mode file (header bytes `18–19 = 1`), its output is neither E1 nor E2 equal to a WAL source, and under the course's **E3 logical** hash (which includes `PRAGMA journal_mode`) it matches **E3 except `journal_mode`**, and reaches **E1 between canonical forms** (`VACUUM INTO` of both files).
+   - **`VACUUM INTO`** (Chapter 3) opens a read transaction on the source, creates a fresh destination database, executes `INSERT INTO … SELECT * FROM …` for every table, increments the schema cookie, and commits. Because it repacks every B-tree and always outputs a rollback-mode file (header bytes `18–19 = 1`), its output is neither E1 nor E2 equal to a WAL source. Under the **E3 logical** hash (which includes `PRAGMA journal_mode`), it matches **E3 except `journal_mode`**, and it reaches **E1 between canonical forms** (`VACUUM INTO` of both files).
 3. **Log captures** save a base image plus committed WAL frames and replay them:
-   - **Copying `.db` then `-wal` under a held read transaction** prevents any checkpoint from overwriting pages older than the reader's snapshot; replaying `-wal` onto `.db` with `internal/walfile` reaches **E1 bytes** for the last commit present in `-wal` when it was copied.
-   - **Continuous WAL shipping (`internal/walship`, rung R6)** turns that one-shot technique into a stream: one base **snapshot** (taken through `sqlite_dbpage`) followed by numbered, hash-chained **segments** of raw WAL frames copied before the shipper runs its own `PASSIVE` **checkpoint** (copying committed WAL frames back into `.db`, called **backfilling**). Restoring replays a snapshot plus segments up to any chosen commit point and proves **E1 bytes** against the state at that commit.
+   - **Copying `.db` then `-wal` under a held read transaction** prevents any checkpoint from overwriting pages older than the reader's snapshot; replaying `-wal` onto `.db` with `internal/walfile` (Chapter 5) reaches **E1 bytes** for the last commit present in `-wal` when it was copied.
+   - **Continuous WAL shipping (this chapter's `internal/walship`, rung R6)** turns that one-shot technique into a stream: one base **snapshot** (taken through `sqlite_dbpage`) followed by numbered, hash-chained **segments** of raw WAL frames copied before the shipper runs its own `PASSIVE` **checkpoint** (copying committed WAL frames back into `.db`, called **backfilling**). Restoring replays a snapshot plus segments up to any chosen commit point and proves **E1 bytes** against the state at that commit.
 
 ### Two families of failure
 
 Do not treat a process crash and a power cut as the same failure:
 
-1. **Process crash (`SIGKILL`, panic, OOM kill):** the user-space process dies instantly, but the operating system kernel stays up. Every `pwrite64` or `write` syscall that already returned sits intact in the kernel's **page cache** (OS memory buffers waiting to be written to disk). When the next connection opens the database, SQLite scans `-wal` (`walIndexRecover`), stops at the first incomplete or invalid frame, and keeps every committed transaction whose commit frame reached the kernel—regardless of `PRAGMA synchronous`.
-2. **Power loss (or kernel crash):** volatile RAM disappears, including the OS page cache. Only bytes flushed to durable storage by **`fsync`** or **`fdatasync`** are guaranteed to survive. In WAL mode, `PRAGMA synchronous` controls which operations call `fsync`:
+1. **Process crash (`SIGKILL`, panic, OOM kill):** The user-space process dies instantly, but the operating system kernel stays up. Every `pwrite64` or `write` syscall that already returned sits intact in the kernel's **page cache** (OS memory buffers waiting to be written to disk). When the next connection opens the database, SQLite scans `-wal` (`walIndexRecover`), stops at the first incomplete or invalid frame, and keeps every committed transaction whose commit frame reached the kernel—regardless of `PRAGMA synchronous`.
+2. **Power loss (or kernel crash):** Volatile RAM disappears, including the OS page cache. Only bytes flushed to durable storage by **`fsync`** or **`fdatasync`** (Chapter 7) are guaranteed to survive. In WAL mode, `PRAGMA synchronous` controls which operations call `fsync`:
    - `OFF`: zero syncs on either `-wal` or `.db`—even a checkpoint writes `.db` without syncing it.
    - `NORMAL`: syncs `-wal` when writing a new WAL header and during checkpoints, and syncs `.db` when a checkpoint backfills every frame; **zero syncs on normal commits**. A power cut can roll the database back to the last checkpoint while leaving it internally consistent.
    - `FULL` (SQLite's default): adds one `-wal` `fsync` after every commit frame. Every acknowledged commit has already been synced before `COMMIT` returns.
 
 ### Verification: structure versus content
 
-`PRAGMA integrity_check` walks B-tree page headers, cell bounds, key order, freelist pointers, and table-versus-index cross-checks. It proves the database file is structurally valid and self-consistent. It does **not** prove the bytes inside your rows are unchanged—a flipped byte in an unindexed column or a freelist leaf passes `integrity_check` with `ok`. Proving restored content requires cryptographic hashes: either a per-page SHA-256 **manifest** (`internal/capture`) or the full-image **state hash** recorded per commit in `internal/walship`.
+`PRAGMA integrity_check` walks B-tree page headers, cell bounds, key order, freelist pointers, and table-versus-index cross-checks. It proves the database file is structurally valid and self-consistent. It does **not** prove the bytes inside your rows are unchanged—a flipped byte in an unindexed column or a freelist leaf passes `integrity_check` with `ok`. Proving restored content requires cryptographic hashes: either a per-page SHA-256 **manifest** (`internal/capture`, Chapter 2) or the full-image **state hash** recorded per commit in `internal/walship`.
 
 ```text
   CAPTURE FAMILIES                            FAILURE BOUNDARIES
@@ -85,7 +85,7 @@ Do not treat a process crash and a power cut as the same failure:
                                               +-----------------------------+
 ```
 
-**WAL mode as the platform default (ruling 10).** Every experiment in Chapter 9 runs in WAL mode (`journal_mode=wal`). The table below summarizes how WAL behaves across this chapter's measurements:
+**WAL mode as the platform default.** Every experiment in Chapter 9 runs in WAL mode (`journal_mode=wal`). The table below summarizes how WAL behaves across this chapter's measurements:
 
 | Operational property | WAL behavior | Supporting evidence |
 | --- | --- | --- |
@@ -96,32 +96,32 @@ Do not treat a process crash and a power cut as the same failure:
 | Power cut at `synchronous=FULL` | Loses zero acknowledged commits; costs one extra `-wal` `fsync` per commit | Experiment 9.2 Part B |
 | Plain file copy of live `.db` (no `-wal`) | Valid but stale (missed committed WAL frames; Chapter 6 shows torn copies under checkpoint) | Experiment 9.1 Part B |
 
-**Recorded exception:** `VACUUM INTO` of a WAL database always creates a rollback-mode output file (header bytes `18–19 = 1`, matching Chapter 3 and Chapter 8). A platform restoring from a canonical `VACUUM INTO` file must switch it back to `PRAGMA journal_mode=wal` after comparing hashes. Nothing in this chapter argues against WAL as the platform default; for durability against power loss, pair WAL with `synchronous=FULL` (local-durable) or `synchronous=NORMAL` with acknowledgement delayed until the WAL segment is durable in object storage (store-durable, built in Chapter 10).
+**Recorded exception:** `VACUUM INTO` of a WAL database always creates a rollback-mode output file (header bytes `18–19 = 1`, matching Chapters 3 and 8). A platform restoring from a canonical `VACUUM INTO` file must switch it back to `PRAGMA journal_mode=wal` after comparing hashes. Nothing in this chapter argues against WAL as the platform default; for durability against power loss, pair WAL with `synchronous=FULL` (local-durable) or `synchronous=NORMAL` with acknowledgement delayed until the WAL segment is durable in object storage (store-durable, built in Chapter 10).
 
-**Where this chapter sits on the Rebuild Ladder (rung R6).** Rung **R6 (Point in time)** combines R1's page images with R3's WAL replay into a continuous capture stream: one base snapshot plus ordered, hash-chained WAL segments shipped across checkpoints and WAL restarts, rebuilding any committed position *k* byte-for-byte equal (**E1 bytes**) to the recipe's at-rest state for step *k*.
+**Where this chapter sits on the Rebuild Ladder (rung R6).** Rung **R6 (Point in time)** combines R1's page images (Chapter 2) with R3's WAL replay (Chapter 5) into a continuous capture stream: one base snapshot plus ordered, hash-chained WAL segments shipped across checkpoints and WAL restarts, rebuilding any committed position *k* byte-for-byte equal (**E1 bytes**) to the recipe's at-rest state for step *k*.
 
 ---
 
 ## 2. Question
 
-Which methods of saving a live SQLite database produce a trustworthy copy and at what equality level, what survives a process crash versus what a power cut can take away at each `synchronous` level, why does `PRAGMA integrity_check` fail to prove content, and how can a continuous WAL shipper rebuild any committed state byte for byte across checkpoints?
+Which methods of saving a live SQLite database produce a trustworthy copy, and at what equality level? What survives a process crash versus what a power cut can erase at each `synchronous` level? Why does `PRAGMA integrity_check` fail to prove content, and how can a continuous WAL shipper rebuild any committed state byte for byte across checkpoints?
 
-This chapter reuses shared packages from earlier chapters (linked here, not inlined), with five small backward-compatible additions made for Chapter 9:
+This chapter reuses shared Go packages from earlier chapters (linked here, not inlined), with five small backward-compatible additions made for Chapter 9:
 
-- [`internal/sqlitex`](../internal/sqlitex/): opens databases with explicit settings, checks `sqlite_source_id()`, and wraps `Conn.Raw` APIs. Added in [`raw.go`](../internal/sqlitex/raw.go): `SourceExecer` and `BackupWithSourceExec`, which let Experiment 9.1 commit SQL on the backup's own raw driver connection between steps while `Conn.Raw` holds `*sql.Conn` locked.
-- [`internal/procs`](../internal/procs/): multi-process child harness and scripted SQL/copier roles. Added in [`sqlrole.go`](../internal/procs/sqlrole.go): action `recipe-session K`, which opens a fresh `SingleConnection` handle with `_txlock=immediate`, applies recipe step `K`, and closes that handle while the role's held connection keeps the WAL alive—reproducing the canonical recipe's page-1 change counter for exact E1 comparison.
-- [`internal/dbfile`](../internal/dbfile/): read-only database file parser. Added in [`record.go`](../internal/dbfile/record.go): `RecordColumn`, returning the exact byte offset, length, and serial type of one column inside a record payload (used by Experiment 9.3 to flip one byte in a chosen column).
-- [`internal/capture`](../internal/capture/): rung R1 page-manifest capture. Added in [`capture.go`](../internal/capture/capture.go): `VerifyImage`, hashing every page of a raw image against a manifest without parsing B-tree structures (so it identifies damaged pages even when `BuildManifest`'s census rejects a structurally broken header).
-- [`internal/trace`](../internal/trace/): Linux `strace` runner, parser, and `KillAt` syscall injector. Added in [`sync.go`](../internal/trace/sync.go) (portable): `SyncsOf` and `SyncRecord`, summarizing successful `fsync`/`fdatasync` calls and every write (`pwrite64`, `pwrite`, `write`, `writev`, `ftruncate`) issued to a file after its last sync.
-- [`internal/recipe`](../internal/recipe/), [`internal/equal`](../internal/equal/), and [`internal/walfile`](../internal/walfile/): deterministic workload, E1/E2/E3 comparison, and WAL parser/replayer.
+- [`internal/sqlitex`](../internal/sqlitex/) (Chapter 1): opens databases with explicit settings, checks `sqlite_source_id()`, and wraps `Conn.Raw` APIs. Added in [`raw.go`](../internal/sqlitex/raw.go): `SourceExecer` and `BackupWithSourceExec`, which let Experiment 9.1 commit SQL on the backup's own raw driver connection between steps while `Conn.Raw` holds `*sql.Conn` locked.
+- [`internal/procs`](../internal/procs/) (Chapter 6): multi-process child harness and scripted SQL/copier roles. Added in [`sqlrole.go`](../internal/procs/sqlrole.go): action `recipe-session K`, which opens a fresh `SingleConnection` handle with `_txlock=immediate`, applies recipe step `K`, and closes that handle while the role's held connection keeps the WAL alive—reproducing the canonical recipe's page-1 change counter for exact E1 comparison.
+- [`internal/dbfile`](../internal/dbfile/) (Chapter 2): read-only database file parser. Added in [`record.go`](../internal/dbfile/record.go): `RecordColumn`, returning the exact byte offset, length, and serial type of one column inside a record payload (used by Experiment 9.3 to flip one byte in a chosen column).
+- [`internal/capture`](../internal/capture/) (Chapter 2): rung R1 page-manifest capture. Added in [`capture.go`](../internal/capture/capture.go): `VerifyImage`, hashing every page of a raw image against a manifest without parsing B-tree structures (so it identifies damaged pages even when `BuildManifest`'s census rejects a structurally broken header).
+- [`internal/trace`](../internal/trace/) (Chapter 1): Linux `strace` runner, parser, and `KillAt` syscall injector. Added in [`sync.go`](../internal/trace/sync.go) (portable): `SyncsOf` and `SyncRecord`, summarizing successful `fsync`/`fdatasync` calls and every write (`pwrite64`, `pwrite`, `write`, `writev`, `ftruncate`) issued to a file after its last sync.
+- [`internal/recipe`](../internal/recipe/) (Chapter 1), [`internal/equal`](../internal/equal/) (Chapter 2), and [`internal/walfile`](../internal/walfile/) (Chapter 5): deterministic workload, E1/E2/E3 comparison, and WAL parser/replayer.
 
-This chapter introduces one new shared package: **`internal/walship`** (rung R6: object-store interface, `DirStore`, snapshot/segment wire format, WAL checksum-chain verification, catalog/planner/restore, and continuous `Shipper`), inlined in full and walked through in Section 5.
+This chapter introduces one new shared Go package: **`internal/walship`** (rung R6: object-store interface, `DirStore`, snapshot/segment wire format, WAL checksum-chain verification, catalog/planner/restore, and continuous `Shipper`), inlined in full and walked through in Section 5.
 
 ---
 
 ## 3. Call path
 
-Every span cited below is listed in [`SPANS.txt`](SPANS.txt) and verified against SQLite `version-3.53.4` in the pinned tree (`$SQLITE_SRC` or `_src/sqlite-3.53.4`). Two C files are copied whole into this chapter directory and verified by [`SOURCES.sha256`](SOURCES.sha256): [`backup.c`](backup.c) and [`vacuum.c`](vacuum.c). Five other files (`src/btree.c`, `src/pager.c`, `src/pragma.c`, `src/wal.c`, `src/wal.h`) are linked at the pinned tag.
+Every span cited below is verified in this chapter's line-span manifest [`SPANS.txt`](SPANS.txt) against SQLite `version-3.53.4` in the pinned tree (`$SQLITE_SRC` inside the `lab` container, or `_src/sqlite-3.53.4` on the host). Two C files are copied whole into this chapter directory and checksummed in [`SOURCES.sha256`](SOURCES.sha256): [`backup.c`](backup.c) and [`vacuum.c`](vacuum.c). Five other files (`src/btree.c`, `src/pager.c`, `src/pragma.c`, `src/wal.c`, `src/wal.h`) are linked at the pinned tag.
 
 ### 3.1 Online backup API: stepping, same-connection updates, and restarts
 
@@ -153,8 +153,60 @@ Every span cited below is listed in [`SPANS.txt`](SPANS.txt) and verified agains
 3. **Same-connection updates (`backupUpdate` / `sqlite3BackupUpdate`) vs external restarts (`sqlite3BackupRestart`)** — [`src/backup.c:688-712`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/backup.c#L688-L712), [`713-715`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/backup.c#L713-L715), and [`728-734`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/backup.c#L728-L734) (local copy: [`backup.c`](backup.c)), together with [`src/pager.c:3225-3282`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3225-L3282) (`pagerWalFrames`) and [`src/pager.c:1783-1787`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L1783-L1787) (`pager_reset`, linked).
    - When the backup's **own connection commits**, `pagerWalFrames` (line `3270`, or `pager_write_pagelist` in rollback mode) calls `sqlite3BackupUpdate` for each modified page. If `iPage < p->iNext`, `backupUpdate` copies the updated page straight into the destination and leaves `p->iNext` untouched—no restart.
    - When **another connection commits**, the source pager sees a changed database at the next read transaction and calls `pager_reset` (`src/pager.c:1785`), which calls `sqlite3BackupRestart` and resets `p->iNext = 1`. Every previously copied page must be copied again.
-   - A **same-connection write transaction that rolls back** in WAL mode also calls `sqlite3BackupRestart` (via `pagerUndoCallback`, `src/pager.c:3185`), resetting `iNext = 1` (confirmed by adversarial test `CAP-03a`). The no-restart guarantee applies to same-connection **commits**, not rollbacks.
-4. **Why CLI `.backup` can return `"database is locked"` under WAL writers** — [`src/wal.c:2507-2571`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2507-L2571) (`sqlite3WalClose`, linked). The `sqlite3` CLI's `.backup` command loops `sqlite3_backup_step(p, 100)` with no busy timeout unless the caller sets `.timeout`. When a short-lived WAL writer process closes and is the **last** connection to the database, `sqlite3WalClose` acquires an `EXCLUSIVE` lock on the `.db` file (lines `2520–2529`) to checkpoint and unlink `-wal`/`-shm`. Any `sqlite3_backup_step` that tries to begin a source read transaction (`src/backup.c:361-364`) during that window receives `SQLITE_BUSY` (`Error: database is locked`). Setting a busy timeout (or keeping one persistent connection open so writers are never the last to close) eliminates the failure (proven by adversarial tests `CAP-02a/b/c`).
+   - A **same-connection write transaction that rolls back** in WAL mode also calls `sqlite3BackupRestart` (via `pagerUndoCallback`, `src/pager.c:3185`), resetting `iNext = 1` (confirmed by stress test `CAP-03a` under "What attacked this chapter" in Section 6). The no-restart guarantee applies to same-connection **commits**, not rollbacks.
+
+The sequence below contrasts those three outcomes after `sqlite3_backup_step` copies pages `1..5` and releases its read transaction:
+
+<!-- draw-visual: diagrams/ch09-backup-crash-recovery-integrity-backup-step-vs-restart.mmd -->
+```text
+┌─────────────┐     ┌───────────┐     ┌────────┐     ┌─────────┐
+│ backup_step │     │ src pager │     │ writer │     │ dest.db │
+└──────┬──────┘     └─────┬─────┘     └────┬───┘     └────┬────┘
+       │                  │                │              │
+       │ 1. read, copy 5p │                │              │
+       ├─────────────────►│                │              │
+       │                  │                │              │
+       │                  │ 2. pages 1..5 (iNext=6)       │
+       │                  ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈►│
+       │                  │                │              │
+       │ 3. end read txn  │                │              │
+       ├─────────────────►│                │              │
+     ┌─[alt same-conn COMMIT]───────────────────────────────┐
+     │ │                  │                │              │ │
+     │ │                  │ 4. backupUpdate (iPage<iNext) │ │
+     │ │                  ├──────────────────────────────►│ │
+     │ │                  │                │              │ │
+     │ │         ┌─────────────────┐       │              │ │
+     │ │         │ iNext unchanged │       │              │ │
+     │ │         └─────────────────┘       │              │ │
+     ├┈[external COMMIT]┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤
+     │ │                  │                │              │ │
+     │ │                  │ 5. commit step │              │ │
+     │ │                  │◄───────────────┤              │ │
+     │ │                  │                │              │ │
+     │ │ 6. next step     │                │              │ │
+     │ ├─────────────────►│                │              │ │
+     │ │                  │                │              │ │
+     │ │      ┌────────────────────────┐   │              │ │
+     │ │      │ pager_reset -> Restart │   │              │ │
+     │ │      └────────────────────────┘   │              │ │
+     │ │                  │                │              │ │
+     │ │ 7. iNext = 1     │                │              │ │
+     │ │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤                │              │ │
+     ├┈[same-conn ROLLBACK]┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤
+     │ │                  │                │              │ │
+     │ │        ┌───────────────────┐      │              │ │
+     │ │        │ pagerUndoCallback │      │              │ │
+     │ │        └───────────────────┘      │              │ │
+     │ │                  │                │              │ │
+     │ │ 8. iNext = 1     │                │              │ │
+     │ │◄┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤                │              │ │
+     │ │                  │                │              │ │
+     └──────────────────────────────────────────────────────┘
+       │                  │                │              │
+```
+
+4. **Why CLI `.backup` can return `"database is locked"` under WAL writers** — [`src/wal.c:2507-2571`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2507-L2571) (`sqlite3WalClose`, linked). The `sqlite3` CLI's `.backup` command loops `sqlite3_backup_step(p, 100)` with no busy timeout unless the caller sets `.timeout`. When a short-lived WAL writer process closes and is the **last** connection to the database, `sqlite3WalClose` acquires an `EXCLUSIVE` lock on the `.db` file (lines `2520–2529`) to checkpoint and unlink `-wal`/`-shm`. Any `sqlite3_backup_step` that tries to begin a source read transaction (`src/backup.c:361-364`) during that window receives `SQLITE_BUSY` (`Error: database is locked`). Setting a busy timeout (or keeping one persistent connection open so writers are never the last to close) eliminates the failure (proven by stress tests `CAP-02a/b/c` in Section 6).
 
 ### 3.2 `VACUUM INTO`
 
@@ -162,7 +214,7 @@ Every span cited below is listed in [`SPANS.txt`](SPANS.txt) and verified agains
    ```c
    rc = sqlite3BtreeBeginTrans(pMain, pOut==0 ? 2 : 0, 0);
    ```
-   A plain `VACUUM` (`pOut == 0`) passes `2` (write transaction), blocking writers; `VACUUM INTO` passes `0` (read transaction), so it runs concurrently even while another connection holds an active write transaction. It replays `sqlite_schema` DDL into the output, runs `INSERT INTO vacuum_db.x SELECT * FROM main.x` for each table, copies the five metadata fields in `aCopy[]` (lines `358–364`: `BTREE_SCHEMA_VERSION` incremented by `1`, plus `DEFAULT_CACHE_SIZE`, `TEXT_ENCODING`, `USER_VERSION`, and `APPLICATION_ID` unchanged), skips `sqlite3BtreeCopyFile` (lines `378–380`), and commits the output. Because the attached output is a newly created database file, its `journal_mode` is rollback (`DELETE`, header bytes `18–19 = 1`), even when the source is in WAL mode. And because `VACUUM INTO` adds `1` to the source's existing schema cookie, running `VACUUM INTO` on a backup-API copy (cookie `1`) versus the original source (cookie `4`) yields canonical files with cookies `2` versus `5`—differing at header byte `43`.
+   A plain `VACUUM` (`pOut == 0`) passes `2` (write transaction), blocking writers; `VACUUM INTO` passes `0` (read transaction), so it runs concurrently even while another connection holds an active write transaction. It replays `sqlite_schema` DDL into the output, runs `INSERT INTO vacuum_db.x SELECT * FROM main.x` for each table, copies the five metadata fields in `aCopy[]` (lines `358–364`: `BTREE_SCHEMA_VERSION` incremented by `1`, plus `DEFAULT_CACHE_SIZE`, `TEXT_ENCODING`, `USER_VERSION`, and `APPLICATION_ID` unchanged), skips `sqlite3BtreeCopyFile` (lines `378–380`), and commits the output. Because the attached output is a newly created database file, its `journal_mode` is rollback (`DELETE`, header bytes `18–19 = 1`), even when the source is in WAL mode. Because `VACUUM INTO` adds `1` to the source's existing schema cookie, running `VACUUM INTO` on a backup-API copy (cookie `1`) versus the original source (cookie `4`) yields canonical files with cookies `2` versus `5`—differing at header byte `43`.
 
 ### 3.3 WAL recovery, sync flags, and checkpoint read marks
 
@@ -195,7 +247,10 @@ Every span cited below is listed in [`SPANS.txt`](SPANS.txt) and verified agains
 
 ### 3.5 Experiment 9.1 — `capture-comparison`
 
-- **Claim:** On a quiet WAL database, closed-file copy, `sqlite_dbpage` in one read transaction, and file+WAL replay all reach **E1 bytes**; the online backup API reaches **E2 pages** (differing at header bytes `27`, `43`, `95` inside `24–27`, `40–43`, `92–99`) and does **not** reach E1 after `VACUUM INTO` because `backup.c:448` resets the destination schema cookie (`1` vs source `4`, leaving byte `43` different after `VACUUM INTO`); and `VACUUM INTO` reaches **E3 except `journal_mode`** (producing a rollback file) and **E1 between canonical forms**. Under an active writer committing recipe steps: a plain file copy of `.db` without `-wal` yields a valid but **stale** older state; `sqlite_dbpage`, file+WAL under a held read transaction, `VACUUM INTO` (running while the writer holds an uncommitted write transaction), and the backup API all return exact recipe states at their expected levels without blocking the writer. In a stepped backup, same-connection **commits** advance the copied count (`pagecount - remaining`) steadily (`5, 10, 15, 20, 25`) even as `remaining` rises when the database grows; a commit by another connection restarts the backup from page `1` (`copied` drops back to `5`), and a commit by another connection after every step prevents the backup from finishing. (A same-connection write followed by `ROLLBACK` does restart the backup via `src/pager.c:3185`, shown in `CAP-03a`.)
+- **Claim:**
+  - **Quiet WAL database (Part A):** Closed-file copy, `sqlite_dbpage` in one read transaction, and file+WAL replay all reach **E1 bytes**. The online backup API reaches **E2 pages** (differing at header bytes `27`, `43`, `95` inside `24–27`, `40–43`, `92–99`) and does **not** reach E1 after `VACUUM INTO`, because `backup.c:448` resets the destination schema cookie (`1` vs source `4`, leaving byte `43` different after `VACUUM INTO`). `VACUUM INTO` reaches **E3 except `journal_mode`** (producing a rollback file) and **E1 between canonical forms**.
+  - **Active writer committing recipe steps (Part B):** A plain file copy of `.db` without `-wal` yields a valid but **stale** older state. `sqlite_dbpage`, file+WAL under a held read transaction, `VACUUM INTO` (running while the writer holds an uncommitted write transaction), and the backup API all return exact recipe states at their expected levels without blocking the writer.
+  - **Stepped backup (Part B):** Same-connection **commits** advance the copied count (`pagecount - remaining`) steadily (`5, 10, 15, 20, 25`) even as `remaining` rises when the database grows. A commit by another connection restarts the backup from page `1` (`copied` drops back to `5`), and a commit by another connection after every step prevents the backup from finishing. (A same-connection write followed by `ROLLBACK` does restart the backup via `src/pager.c:3185`, shown in stress test `CAP-03a` in Section 6.)
 - **Evidence form:** `EXACT` (every stored table must match on every run).
 
 <!-- include: experiments/9.1-capture-comparison/main.go -->
@@ -916,7 +971,7 @@ go run ./cmd/course run 9.1
 
 Add `-i` (`go run ./cmd/course run -i 9.1`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/9.1-capture-comparison/`](evidence/9.1-capture-comparison/), and `go run ./cmd/course check evidence ch09` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it are stored in [`evidence/9.1-capture-comparison/`](evidence/9.1-capture-comparison/), and this repository's evidence checker (`go run ./cmd/course check evidence ch09`) compares a fresh run against them byte for byte.
 
 <!-- include: evidence/9.1-capture-comparison.txt -->
 ```text
@@ -1123,16 +1178,16 @@ Experiment verdict: CAPTURE COMPARISON OK
 
 - **A1–A3 (Part A — quiet database at recipe step 6):**
   - Closed-file copy, `sqlite_dbpage` pages in one read transaction, and file+WAL under a held transaction each show `true` across all five columns (`e1`, `e2`, `e3`, `e3_but_jm` for E3-except-journal_mode, `e1_vacuumed` for E1-after-VACUUM-INTO).
-  - **Backup API (A1–A3):** E1 `false`, E2 `true`, E3 `true`, E3-except-journal_mode `true`, **E1-after-VACUUM-INTO `false`**. A2 shows the raw E2 difference is confined to bytes `[27 43 95]` (the low bytes of change counter `24–27`, schema cookie `40–43`, and version-valid-for `92–95`). A2 and A3 explain the outline correction discovered when `E1-after-VACUUM-INTO` was measured directly: after running `VACUUM INTO` on both the backup copy and the source, the two canonical files still differ at **byte 43** because `sqlite3_backup_step` set the backup's schema cookie to `1` (`0 + 1` at `src/backup.c:448`) while the source's cookie was `4`, and `VACUUM INTO` incremented both by `1` (`2` vs `5` at `src/vacuum.c:359`). A backup API capture reaches E2, never E1-after-`VACUUM INTO`.
-  - **`VACUUM INTO` (A1, A3):** E1 `false`, E2 `false`, **E3 `false`**, E3-except-journal_mode `true`, E1-after-VACUUM-INTO `true`. This is a second outline correction: because `equal.LogicalPragmas` records `journal_mode`, and `VACUUM INTO` writes a `rollback` file from a `wal` source (A3), it reaches E3 except `journal_mode` and E1 between canonical forms.
+  - **Backup API (A1–A3):** E1 `false`, E2 `true`, E3 `true`, E3-except-journal_mode `true`, **E1-after-VACUUM-INTO `false`**. A2 shows the raw E2 difference is confined to bytes `[27 43 95]` (the low bytes of change counter `24–27`, schema cookie `40–43`, and version-valid-for `92–95`). A2 and A3 show why `E1-after-VACUUM-INTO` is `false`: after running `VACUUM INTO` on both the backup copy and the source, the two canonical files still differ at **byte 43** because `sqlite3_backup_step` set the backup's schema cookie to `1` (`0 + 1` at `src/backup.c:448`) while the source's cookie was `4`, and `VACUUM INTO` incremented both by `1` (`2` vs `5` at `src/vacuum.c:359`). A backup API capture reaches E2, never E1-after-`VACUUM INTO`.
+  - **`VACUUM INTO` (A1, A3):** E1 `false`, E2 `false`, **E3 `false`**, E3-except-journal_mode `true`, E1-after-VACUUM-INTO `true`. Because `equal.LogicalPragmas` records `journal_mode`, and `VACUUM INTO` writes a `rollback` file from a `wal` source (A3), `VACUUM INTO` reaches E3 except `journal_mode` and E1 between canonical forms.
 - **B1–B2 (Part B — live captures under a concurrent writer child):**
-  - **Plain copy of live `.db`:** after the writer commits step `7`, copying `live.db` alone yields a valid database equal at E1 to **recipe step 6**—silently missing step 7, which still lives in `-wal`.
-  - **Pages in one read transaction:** the parent opens a read transaction at step `7`, reads pages `1..N/2`, the writer commits step `8`, and the parent reads pages `N/2+1..N`. The assembled file equals **recipe step 7 at E1**.
-  - **File + WAL under a held read transaction:** inside a read transaction opened at step `8`, the copier copies `live.db`, the writer commits step `9`, and the copier copies `-wal`. Replaying `-wal` onto the copied `live.db` produces **recipe step 9 at E1**.
-  - **`VACUUM INTO` under a held write transaction:** the writer executes `BEGIN IMMEDIATE` and `recipe-exec 10` (holding the write lock with step 10 uncommitted). While that write transaction is open, the parent's `VACUUM INTO` completes without blocking (`VACUUM INTO finished while the writer held its write transaction open`), and after the writer commits step `10`, the output equals **recipe step 9** (the last committed state) at `E3-except-journal_mode` and `E1-after-VACUUM-INTO`.
+  - **Plain copy of live `.db`:** After the writer commits step `7`, copying `live.db` alone yields a valid database equal at E1 to **recipe step 6**—silently missing step 7, which still lives in `-wal`.
+  - **Pages in one read transaction:** The parent opens a read transaction at step `7`, reads pages `1..N/2`, the writer commits step `8`, and the parent reads pages `N/2+1..N`. The assembled file equals **recipe step 7 at E1**.
+  - **File + WAL under a held read transaction:** Inside a read transaction opened at step `8`, the copier copies `live.db`, the writer commits step `9`, and the copier copies `-wal`. Replaying `-wal` onto the copied `live.db` produces **recipe step 9 at E1**.
+  - **`VACUUM INTO` under a held write transaction:** The writer executes `BEGIN IMMEDIATE` and `recipe-exec 10` (holding the write lock with step 10 uncommitted). While that write transaction is open, the parent's `VACUUM INTO` completes without blocking (`VACUUM INTO finished while the writer held its write transaction open`), and after the writer commits step `10`, the output equals **recipe step 9** (the last committed state) at `E3-except-journal_mode` and `E1-after-VACUUM-INTO`.
 - **B3–B4 (Part B — stepped backup API, 5 pages per step):**
-  - **Same-connection commits vs another connection's commit (B3):** This demonstrates another outline correction. When the backup's own connection commits step `11` after step 2 and step `12` after step 3, the database grows (`100 -> 108 -> 118` pages), so `sqlite3_backup_remaining` **rises** (`95 -> 90 -> 93 -> 98 -> 93`) even though nothing restarted. Tracking `copied = pagecount - remaining` (`= iNext - 1`) shows steady progress: `5, 10, 15, 20, 25`. After step 5, the **writer child** commits step `13`; step 6 immediately drops `copied` back to **`5`** (`remaining 119 of 124`) because `pager_reset` called `sqlite3BackupRestart`. With no further external writes, steps `6..30` finish cleanly (`remaining 0 of 124`), matching **step 13 at E2**.
-  - **Starvation under a steady writer (B4):** with the writer child committing steps `14..21` after every 5-page backup step, `remaining` climbs `119, 127, 139, 155, 157, 165, 166, 179` across 8 steps before giving up. A stepped backup can starve indefinitely under continuous external writes.
+  - **Same-connection commits vs another connection's commit (B3):** When the backup's own connection commits step `11` after step 2 and step `12` after step 3, the database grows (`100 -> 108 -> 118` pages), so `sqlite3_backup_remaining` **rises** (`95 -> 90 -> 93 -> 98 -> 93`) even though nothing restarted. Tracking `copied = pagecount - remaining` (`= iNext - 1`) shows steady progress: `5, 10, 15, 20, 25`. After step 5, the **writer child** commits step `13`; step 6 immediately drops `copied` back to **`5`** (`remaining 119 of 124`) because `pager_reset` called `sqlite3BackupRestart`. With no further external writes, steps `6..30` finish cleanly (`remaining 0 of 124`), matching **step 13 at E2**.
+  - **Starvation under a steady writer (B4):** With the writer child committing steps `14..21` after every 5-page backup step, `remaining` climbs `119, 127, 139, 155, 157, 165, 166, 179` across 8 steps before giving up. A stepped backup can starve indefinitely under continuous external writes.
 - **Section C (summary):** All 15 checks pass (verdict `CAPTURE COMPARISON OK`).
 
 ---
@@ -1207,7 +1262,7 @@ This section runs the crash-versus-power-loss lab (Experiment 9.2) and then walk
     - At `synchronous=FULL`: **zero** acknowledged commits lost (recovers step `11`).
     - At `synchronous=NORMAL`: a consistent database that **loses the 4 acknowledged commits** written after the last checkpoint (recovers step `7`). When the checkpoint copied every frame (`74/74`) and the next commit restarted the WAL, the last WAL sync was the restarted 32-byte header (`cut = 32` of `321,392` bytes). When a concurrent reader from step `5` stopped the checkpoint early (`36/74` frames) so the WAL did **not** restart, the last WAL sync was the checkpoint's own WAL sync (`wal.c:2277`, `cut = 304,912` of `626,272` bytes), and the checkpoint left `15` unsynced writes in `.db` (`wal.c:2328-2335`); both the post-checkpoint `.db` and the pre-checkpoint `.db` recover step `7` because those pages are covered by synced WAL frames.
     - At `synchronous=OFF`: the WAL-truncation model **does not apply**, because the checkpoint wrote `44` unsynced `pwrite64`s to `.db` with `0` syncs on either `.db` or `-wal`, so a power cut can leave any arbitrary mix of old and new database pages.
-- **Scope statement:** The power-cut model shows **one** outcome of a power cut—the simplest one, where every synced byte survives and every unsynced byte disappears. It does not simulate torn sector writes, reordered writes, or disks that lie about `fsync`. SQLite's defenses against torn or reordered WAL writes (salts and per-frame cumulative checksums, `src/wal.c:1390-1614`) are read in the source rather than hardware-simulated. This experiment is the whole of the course's power-loss material.
+- **Scope statement:** The power-cut model shows **one** outcome of a power cut—the simplest one, where every synced byte survives and every unsynced byte disappears. It does not simulate torn sector writes, reordered writes, or disks that lie about `fsync`. SQLite's defenses against torn or reordered WAL writes (salts and per-frame cumulative checksums, `src/wal.c:1390-1614`) are read in the source rather than hardware-simulated. This experiment covers the whole of this book's power-loss material.
 - **Evidence form:** `EXACT` (every stored table must match on every run).
 - **Linux only (Part B `strace` cross-check and Part A kill sweep):** The portable rule calculation and recovery run natively on Linux and macOS (try `-portable` on Linux to observe the non-`strace` path). `course run` runs the full `strace` cross-check and kill sweep in the Linux `lab` container; the `-portable` variant is run directly in the container with `docker compose run --rm lab go run ./ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss -portable`.
 
@@ -1946,7 +2001,7 @@ go run ./cmd/course run 9.2
 
 Add `-i` (`go run ./cmd/course run -i 9.2`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/9.2-crash-versus-power-loss/`](evidence/9.2-crash-versus-power-loss/), and `go run ./cmd/course check evidence ch09` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it are stored in [`evidence/9.2-crash-versus-power-loss/`](evidence/9.2-crash-versus-power-loss/), and this repository's evidence checker (`go run ./cmd/course check evidence ch09`) compares a fresh run against them byte for byte.
 
 <!-- include: evidence/9.2-crash-versus-power-loss.txt -->
 ```text
@@ -2200,11 +2255,54 @@ Experiment verdict: CRASH VERSUS POWER LOSS OK
 
 #### Reading the Experiment 9.2 evidence
 
-- **Section B, variant `off` (Part B — `synchronous=OFF`):** The writer commits steps `4–11`, checkpoints all `74` frames after step `7`, restarts the WAL for steps `8–11`, and calls `os.Exit(0)` without closing. Copying `.db` and `-wal` as left recovers **step 11** (`integrity_check ok`; the change-counter-only note is because one connection committed multiple steps, Chapter 1 correction 1). `strace` records **`0` syncs** on `-wal` (`306` unsynced writes from offset `0`) and **`0` syncs** on `.db` (`44` unsynced writes from offset `0`), matching `ruleCut`. Because `.db` itself was modified without syncing either `.db` or `-wal`, the power-cut model is marked not applicable. (Note on the wording of the Part B check `"only synchronous=OFF leaves database-file writes that were never synced"`: it was written before the fourth model run was added in the repair round; as B4 shows, a reader-pinned partial checkpoint at `NORMAL` also leaves unsynced `.db` writes, but at `OFF` uniquely the backing WAL frames were *also* never synced, leaving the power-cut outcome undefined.)
+- **Section B, variant `off` (Part B — `synchronous=OFF`):** The writer commits steps `4–11`, checkpoints all `74` frames after step `7`, restarts the WAL for steps `8–11`, and calls `os.Exit(0)` without closing. Copying `.db` and `-wal` as left recovers **step 11** (`integrity_check ok`; the change-counter-only note appears because one connection committed multiple steps, incrementing the page-1 change counter once per session rather than once per step, Chapter 2). `strace` records **`0` syncs** on `-wal` (`306` unsynced writes from offset `0`) and **`0` syncs** on `.db` (`44` unsynced writes from offset `0`), matching `ruleCut`. Because `.db` itself was modified without syncing either `.db` or `-wal`, the power-cut model is marked not applicable. (Although the Part B check's label says `"only synchronous=OFF leaves database-file writes that were never synced"`, B4 shows that a reader-pinned partial checkpoint at `NORMAL` also leaves unsynced `.db` writes; what is unique to `OFF` is that the backing WAL frames were *also* never synced, leaving the power-cut outcome undefined.)
 - **Variant `normal` (Part B — `synchronous=NORMAL`, full checkpoint):** Process crash again recovers **step 11**. `strace` counts **`3` syncs** on `-wal` (initial header, checkpoint WAL sync, restarted header) with `156` unsynced writes starting at byte `32`, and **`1` sync** on `.db` (checkpoint DB sync, zero writes after). Truncating `-wal` to byte `32` of `321,392` and removing `-shm` recovers **step 7** (`integrity_check ok`): all **4** acknowledged commits after the checkpoint (steps `8–11`) vanish, while the database stays consistent.
 - **Variant `full` (Part B — `synchronous=FULL`):** Process crash recovers **step 11**. `strace` counts **`11` syncs** on `-wal` (the `3` from `NORMAL` plus `8` per-commit syncs) and `1` sync on `.db`, with **zero** writes after the last sync of either file. Keeping all `321,392` bytes of `-wal` recovers **step 11** with `0` acknowledged commits lost.
-- **Variant `normal-reader-5` (Part B — `synchronous=NORMAL` with a reader from step `5`, repair-round addition):** The reader holds a read mark at step `5`, so the `PASSIVE` checkpoint copies only **`36` of `74` frames** and steps `8–11` stay in the **same WAL generation** (`wal_not_restarted` `true` in B1). `strace` confirms the corrected `NORMAL` rule: `-wal` has **`2` syncs** (initial header + checkpoint's `wal.c:2277` sync), leaving `156` unsynced writes starting at offset **`304,912`** (the exact end of step 7's commit frame, not byte `32`), and `.db` has **`0` syncs** with `15` unsynced writes from offset `73,728` (because `wal.c:2328-2335` skips syncing `.db` on a partial checkpoint). Truncating `-wal` to `304,912` of `626,272` bytes recovers **step 7** (`4` commits lost), and substituting the pre-checkpoint `.db` (dropping all `15` unsynced `.db` writes) also recovers **step 7** (`integrity_check ok`), because every page the partial checkpoint touched was already synced in `-wal` first.
+- **Variant `normal-reader-5` (Part B — `synchronous=NORMAL` with a reader from step `5`):** The reader holds a read mark at step `5`, so the `PASSIVE` checkpoint copies only **`36` of `74` frames** and steps `8–11` stay in the **same WAL generation** (`wal_not_restarted` `true` in B1). `strace` confirms the partial-checkpoint `NORMAL` rule: `-wal` has **`2` syncs** (initial header + checkpoint's `wal.c:2277` sync), leaving `156` unsynced writes starting at offset **`304,912`** (the exact end of step 7's commit frame, not byte `32`), and `.db` has **`0` syncs** with `15` unsynced writes from offset `73,728` (because `wal.c:2328-2335` skips syncing `.db` on a partial checkpoint). Truncating `-wal` to `304,912` of `626,272` bytes recovers **step 7** (`4` commits lost), and substituting the pre-checkpoint `.db` (dropping all `15` unsynced `.db` writes) also recovers **step 7** (`integrity_check ok`), because every page the partial checkpoint touched was already synced in `-wal` first.
 - **A1–A3 (Part A — `strace --inject=SIGKILL` sweep, Linux only):** Across **`36` kill runs** (`6` at `OFF`: `0` syncs + `6` `pwrite64`s; `11` at `NORMAL`: `5` syncs including directory `fsync .` + `6` `pwrite64`s; `19` at `FULL`: `13` syncs including directory `fsync .` + `6` `pwrite64`s), every single kill recovers `integrity_check ok` and an exact recipe step equal to `acknowledged` or `acknowledged + 1`. Look closely at `FULL` kills `#3–#6` and `#10–#13` in A2: killing on entry to a commit's `fsync r.db-wal` recovers the step **being committed** (acknowledged `3`, recovered `4`, up to acknowledged `10`, recovered `11`). All 53 checks pass (verdict `CRASH VERSUS POWER LOSS OK`).
+
+The sequence below compares the two `synchronous=NORMAL` power-cut cases—a full checkpoint that lets the WAL restart versus a reader-pinned partial checkpoint that keeps steps `8–11` in the same WAL generation:
+
+<!-- draw-visual: diagrams/ch09-backup-crash-recovery-integrity-normal-checkpoint-power-cut.mmd -->
+```text
+┌────────┐     ┌────────────┐     ┌──────┐     ┌─────┐
+│ Writer │     │ Checkpoint │     │ -wal │     │ .db │
+└────┬───┘     └──────┬─────┘     └───┬──┘     └──┬──┘
+   ┌─[alt No reader (full 74/74)]─────────────────────────────┐
+   │ │                │               │           │           │
+   │ │                │ 1. fsync -wal │           │           │
+   │ │                ├──────────────►│           │           │
+   │ │                │               │           │           │
+   │ │                │ 2. copy 74f, fsync .db    │           │
+   │ │                ├──────────────────────────►│           │
+   │ │                │               │           │           │
+   │ │ 3. restart, fsync 32B hdr      │           │           │
+   │ ├───────────────────────────────►│           │           │
+   │ │                │               │           │           │
+   │ │ 4. steps 8..11 (no sync)       │           │           │
+   │ ├───────────────────────────────►│           │           │
+   │ │                │               │           │           │
+   │ │                │     ┌───────────────────────────────┐ │
+   │ │                │     │ Power cut -> byte 32 (step 7) │ │
+   │ │                │     └───────────────────────────────┘ │
+   ├┈[Reader at step 5 (36/74)]┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤
+   │ │                │               │           │           │
+   │ │                │ 5. fsync -wal │           │           │
+   │ │                ├──────────────►│           │           │
+   │ │                │               │           │           │
+   │ │                │ 6. copy 36f (no fsync)    │           │
+   │ │                ├──────────────────────────►│           │
+   │ │                │               │           │           │
+   │ │ 7. steps 8..11 (same gen)      │           │           │
+   │ ├───────────────────────────────►│           │           │
+   │ │                │               │           │           │
+   │ │                │      ┌──────────────────────────────┐ │
+   │ │                │      │ Cut -> 304,912 (15 .db safe) │ │
+   │ │                │      └──────────────────────────────┘ │
+   │ │                │               │           │           │
+   └──────────────────────────────────────────────────────────┘
+     │                │               │           │
+```
 
 ---
 
@@ -2214,7 +2312,7 @@ Experiment verdict: CRASH VERSUS POWER LOSS OK
 
 #### 1. The object-store contract and `DirStore` (`store.go`)
 
-`walship` talks to storage through a four-method `Store` interface (`PutIfAbsent`, `Get`, `List`, `Delete`). Three properties are load-bearing for Chapter 10's S3 adapter (verified against SeaweedFS in Phase 1):
+`walship` talks to storage through a four-method `Store` interface (`PutIfAbsent`, `Get`, `List`, `Delete`). Three properties are load-bearing for Chapter 10's S3 adapter (verified against SeaweedFS, the S3-compatible object store used in Chapter 10):
 
 - **`PutIfAbsent` is atomic and exclusive:** readers see either the entire object or nothing, and an existing key fails with `ErrExists` without modifying the stored bytes (in S3, `PutObject` with `If-None-Match: *`).
 - **Read-after-write and list-after-write:** once `PutIfAbsent` returns `nil`, `Get` and `List` see the key immediately.
@@ -2455,7 +2553,7 @@ func (s *DirStore) Delete(ctx context.Context, key string) error {
 
 #### 2. Self-contained object wire format (`format.go`)
 
-Each snapshot and segment is encoded as one immutable object: a magic header line (`walship snapshot v1` or `walship segment v1`), one strict JSON metadata line (decoded with `DisallowUnknownFields()` and rejecting trailing values), and the raw binary body (either the full database image or raw WAL frames `FirstFrame..LastFrame` exactly as SQLite wrote them). Putting metadata and body in one object means a single `PutIfAbsent` publishes both atomically. Every snapshot records its `StateSHA256` (whole-image SHA-256) and `WALPosition`; every segment records `BeforeSHA256`, `AfterSHA256`, `SeedChecksum`, `LastChecksum`, and a `CommitPoint` (position, frame, pages, `user_version`, and state SHA-256) for every commit frame it contains.
+Each snapshot and segment is encoded as one immutable object: a magic header line (`walship snapshot v1` or `walship segment v1`), one strict JSON metadata line (decoded with `DisallowUnknownFields()` and rejecting trailing values), and the raw binary body (either the full database image or raw WAL frames `FirstFrame..LastFrame` as SQLite wrote them). Putting metadata and body in one object means a single `PutIfAbsent` publishes both atomically. Every snapshot records its `StateSHA256` (whole-image SHA-256) and `WALPosition`. Every segment records `BeforeSHA256`, `AfterSHA256`, `SeedChecksum`, `LastChecksum`, and a `CommitPoint` (position, frame, pages, `user_version`, and state SHA-256) for each commit frame it contains.
 
 <!-- include: ../internal/walship/format.go -->
 ```go
@@ -2831,7 +2929,7 @@ func userVersion(image []byte) uint32 {
 
 #### 3. Frame verification and replay (`apply.go`)
 
-Before any page is ever applied during restore, `VerifySegmentFrames` validates the segment's 32-byte WAL generation header with `walfile.Parse` (magic, format version `3007000`, page size matching `meta.PageSize`, header checksum), verifies every frame's salts and non-zero page number, checks a one-to-one correspondence between non-zero frame commit sizes (frame header bytes `4–7`) and `meta.Commits`, and walks SQLite's cumulative WAL checksum chain from `SeedChecksum` to `LastChecksum`. Because a segment starting at `FirstFrame > 1` originally chained its checksums from an earlier frame rather than from the WAL header, `StandaloneWAL` re-chains frames `FirstFrame..throughFrame` from the header checksum so Chapter 5's `walfile.Replay` can validate and replay the segment cleanly in `ApplySegment`.
+Before any page is applied during restore, `VerifySegmentFrames` validates the segment's 32-byte WAL generation header with `walfile.Parse` (magic, format version `3007000`, page size matching `meta.PageSize`, and header checksum). It then checks every frame's salts and non-zero page number, confirms a one-to-one match between non-zero frame commit sizes (frame header bytes `4–7`) and `meta.Commits`, and walks SQLite's cumulative WAL checksum chain from `SeedChecksum` to `LastChecksum`. Because a segment starting at `FirstFrame > 1` originally chained its checksums from an earlier frame rather than from the WAL header, `StandaloneWAL` re-chains frames `FirstFrame..throughFrame` from the header checksum so Chapter 5's `walfile.Replay` can validate and replay the segment cleanly in `ApplySegment`.
 
 <!-- include: ../internal/walship/apply.go -->
 ```go
@@ -2983,7 +3081,7 @@ func ApplySegment(image []byte, meta SegmentMeta, frames []byte, throughFrame in
 
 #### 4. Catalog, restore planning, execution, and pruning (`catalog.go`)
 
-`LoadCatalog` fetches every snapshot and segment, verifies key names against metadata positions, and runs `VerifySegmentFrames` on every segment. Any object that fails validation is quarantined in `Catalog.Damaged` instead of aborting the load, so an intact older snapshot can still serve restores even if a later periodic snapshot is corrupted (verified by adversarial test `SHIP-03e`). `Catalog.Plan(target)` picks the newest usable snapshot `<= target` and delegates to `PlanFrom`, which checks every segment's `BeforeSHA256`, WAL generation, frame continuity, and seed checksum **before** `Plan.Execute` touches any page. Because positions exist only at `CommitPoint` entries, restoring to the middle of a transaction is impossible by construction. `Prune(ctx, store, keepFrom)` keeps the newest snapshot `<= keepFrom` and everything after it, returning only the keys actually deleted before any error.
+`LoadCatalog` fetches every snapshot and segment, verifies key names against metadata positions, and runs `VerifySegmentFrames` on every segment. Any object that fails validation is quarantined in `Catalog.Damaged` instead of aborting the load, so an intact older snapshot can still serve restores even if a later periodic snapshot is corrupted (verified by stress test `SHIP-03e` under "What attacked this chapter" in Section 6). `Catalog.Plan(target)` picks the newest usable snapshot `<= target` and delegates to `PlanFrom`, which checks every segment's `BeforeSHA256`, WAL generation, frame continuity, and seed checksum **before** `Plan.Execute` touches any page. Because positions exist only at `CommitPoint` entries, restoring to the middle of a transaction is impossible by construction. `Prune(ctx, store, keepFrom)` keeps the newest snapshot `<= keepFrom` and everything after it, returning only the keys actually deleted before any error.
 
 <!-- include: ../internal/walship/catalog.go -->
 ```go
@@ -3367,10 +3465,10 @@ func CopyStore(ctx context.Context, from, to Store) (int, error) {
 
 `Shipper` owns two connections to the WAL database (`wal_autocheckpoint=0`): **`control`** and **`pin`**.
 
-- **Between cycles**, `pin` holds an open read transaction (`BEGIN` + `SELECT count(*) FROM sqlite_schema`). By `src/wal.c:2233-2260`, a read mark on slot `1–4` caps any checkpoint at `mxSafeFrame` (which is at or below the last frame the shipper already shipped), while a read mark on slot `0` (acquired when the WAL was fully backfilled) blocks any backfill because backfilling requires an exclusive lock on slot `0` (`wal.c:2259-2260`). A writer may restart the WAL after a full backfill (`walRestartLog`, `wal.c:3875-3915`), and that restart loses nothing because every old frame was already shipped and backfilled.
-- **During each `Cycle`**, `control` acquires `BEGIN IMMEDIATE` so no commit can race the shipper while it reads `-wal` via `os.ReadFile` (POSIX-lock-safe because SQLite puts advisory locks on `.db` and `-shm`, never on `-wal`—verified by `TestReadingTheWALInAProcessWithAConnectionKeepsItsLocks`).
-- **Discontinuity detection (`classify`):** Because SQLite's `nCkpt` and `salt-1` are per-connection fields (`src/wal.c:2152-2166, 4095-4096`), a changed header is accepted as `WALNewGeneration` **only** when the shipper held its pin continuously (`s.continuous == true`) and its last checkpoint backfilled every shipped frame. On resume (`!s.continuous`), if the WAL header changed—or if there is no WAL now and none at the last shipped position, yet `ReadPages` does not hash to `s.state` (offline commits checkpointed away while down)—`classify` returns `WALDiscontinuity` and `Cycle` re-bases with a full snapshot.
-- **Resume safety and mirror verification:** On `Open`, `resume` refuses with `ErrBrokenChain` if any damaged object in the store has a key position past `LastPosition()`, preventing a silent rewind over a corrupted tail. (Note one narrow boundary: if a store contains *only* damaged objects—zero usable snapshots or segments—and `Open` is called with a different `Origin`, `start` takes the fresh-store branch; with the same `Origin`, `PutIfAbsent` still fails closed with `ErrExists`.) On every periodic snapshot (`SnapshotEvery` segments), `snapshot` hashes SQLite's live pages from `sqlite_dbpage` against the shipper's locally replayed `s.state` and aborts with `ErrMirrorDiverged` if they ever disagree.
+- **Between cycles**, `pin` holds an open read transaction (`BEGIN` + `SELECT count(*) FROM sqlite_schema`). By `src/wal.c:2233-2260`, a read mark on slot `1–4` caps any checkpoint at `mxSafeFrame` (at or below the last frame the shipper already shipped), while a read mark on slot `0` (acquired when the WAL was fully backfilled) blocks any backfill because backfilling requires an exclusive lock on slot `0` (`wal.c:2259-2260`). A writer may restart the WAL after a full backfill (`walRestartLog`, `wal.c:3875-3915`), and that restart loses nothing because every old frame was already shipped and backfilled.
+- **During each `Cycle`**, `control` acquires `BEGIN IMMEDIATE` so no commit can race the shipper while it reads `-wal` via `os.ReadFile`. Reading `-wal` directly in the owning process is POSIX-lock-safe (Chapter 6) because SQLite puts advisory locks on `.db` and `-shm`, never on `-wal`—verified by unit test `TestReadingTheWALInAProcessWithAConnectionKeepsItsLocks` in `internal/walship/walship_test.go`.
+- **Discontinuity detection (`classify`):** Because SQLite's `nCkpt` and `salt-1` are per-connection fields (`src/wal.c:2152-2166, 4095-4096`), a changed header is accepted as `WALNewGeneration` **only** when the shipper held its pin continuously (`s.continuous == true`) and its last checkpoint backfilled every shipped frame. On resume (`!s.continuous`), `classify` returns `WALDiscontinuity` and `Cycle` re-bases with a full snapshot whenever the WAL header changed—or whenever there is no WAL now and none at the last shipped position, yet `ReadPages` does not hash to `s.state` (meaning offline commits were checkpointed away while the shipper was stopped).
+- **Resume safety and mirror verification:** On `Open`, `resume` refuses with `ErrBrokenChain` if any damaged object in the store has a key position past `LastPosition()`, preventing a silent rewind over a corrupted tail. (One narrow boundary remains: if a store contains *only* damaged objects—zero usable snapshots or segments—and `Open` is called with a different `Origin`, `start` takes the fresh-store branch; with the same `Origin`, `PutIfAbsent` still fails closed with `ErrExists`.) On every periodic snapshot (`SnapshotEvery` segments), `snapshot` hashes SQLite's live pages from `sqlite_dbpage` against the shipper's locally replayed `s.state` and aborts with `ErrMirrorDiverged` if they ever disagree.
 
 <!-- include: ../internal/walship/shipper.go -->
 ```go
@@ -3980,7 +4078,7 @@ func (s *Shipper) closeConnections() error {
 
 - **Claim:** `PRAGMA integrity_check` verifies B-tree structure and index-to-table consistency, not row content or unused pages: it catches a damaged B-tree page header and an indexed-column mismatch against its index, but returns `ok` when a byte is flipped inside an unindexed column or a freelist leaf page. `PRAGMA quick_check` skips index checks (`src/pragma.c:2058`) and misses the indexed-column mismatch too. The E3 logical hash catches every data-value change but misses the freelist leaf. Only the Chapter 2 per-page SHA-256 manifest (`capture.VerifyImage`) detects all four sites and names the exact damaged page.
 - **Evidence form:** `EXACT` (every stored table must match on every run).
-- **Why kept:** "The restore passed `integrity_check`" is the usual proof offered for a rebuilt database, and it is not one. The Rebuild Ladder's hashes are.
+- **Why this matters:** "The restore passed `integrity_check`" is the usual proof offered for a rebuilt database, and it is not one. The Rebuild Ladder's hashes are.
 
 <!-- include: experiments/9.3-integrity-check-limits/main.go -->
 ```go
@@ -4325,7 +4423,7 @@ go run ./cmd/course run 9.3
 
 Add `-i` (`go run ./cmd/course run -i 9.3`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/9.3-integrity-check-limits/`](evidence/9.3-integrity-check-limits/), and `go run ./cmd/course check evidence ch09` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it are stored in [`evidence/9.3-integrity-check-limits/`](evidence/9.3-integrity-check-limits/), and this repository's evidence checker (`go run ./cmd/course check evidence ch09`) compares a fresh run against them byte for byte.
 
 <!-- include: evidence/9.3-integrity-check-limits.txt -->
 ```text
@@ -5015,7 +5113,7 @@ go run ./cmd/course run 9.4
 
 Add `-i` (`go run ./cmd/course run -i 9.4`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/9.4-point-in-time-rebuild/`](evidence/9.4-point-in-time-rebuild/), and `go run ./cmd/course check evidence ch09` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it are stored in [`evidence/9.4-point-in-time-rebuild/`](evidence/9.4-point-in-time-rebuild/), and this repository's evidence checker (`go run ./cmd/course check evidence ch09`) compares a fresh run against them byte for byte.
 
 <!-- include: evidence/9.4-point-in-time-rebuild.txt -->
 ```text
@@ -5282,23 +5380,63 @@ Experiment verdict: POINT IN TIME OK
 #### Reading the Experiment 9.4 evidence
 
 - **A1 (initial snapshot):** Opening the shipper against an empty store at recipe step `2` captures `snapshots/000000000002` (reason `initial`; `29` pages, `user_version` `2`, state `69490a2dc9c1980f`, after WAL frame `none (no WAL yet)`).
-- **A2–A3 (Phase 1 — continuous shipping across 8 checkpoints and 8 WAL generations):** The writer commits steps `3–14` in batches `{3}`, `{4,5}`, `{6}`, `{7,8,9}`, `{10}`, `{11,12}`, `{13}`, `{14}`. After every batch, `Cycle` finds a new WAL generation after the shipper's full checkpoint, publishes one segment chained by `before`/`after` state hashes (for example, segment `segments/000000000004` covers positions `4–5`, frames `1–36` of WAL generation `#2`, before `329eb15614fee435`, after `4078a0bbc3758ed2`; B5 lists the chain), runs a `PASSIVE` checkpoint that copies every shipped frame (`copied 36 of 36`), and writes periodic snapshots every `3` segments: `snapshots/000000000006` (`60` pages, state `2d7996f5c596c99e`) and `snapshots/000000000012` (`118` pages, state `649990133c619869`). All 8 segments come from 8 distinct WAL generations because the writer restarted the WAL after each full backfill.
-- **B1–B5 (Phase 2 — shipper stopped + outside `TRUNCATE` checkpoint):** While the shipper is closed, the writer commits steps `15` and `16`, `outsider` runs `checkpoint TRUNCATE` (`busy=0 log=0 checkpointed=0`), folding steps `15–16` into `.db` and emptying `-wal`, and the writer commits step `17`. When the shipper reopens (resumed from the store at position `14`), `Cycle` sees WAL generation `#9` without a held read mark (`discontinuity: the WAL header changed while the shipper held no read mark`), ships no segment, checkpoints its `13` frames, and publishes `snapshots/000000000015` (reason `discontinuity`; `162` pages, `user_version` `17`, state `4a1f971701e2b5cd`). Steps `18` and `19–20` then ship normally as segments `16` (WAL generation `#10`, `25` frames) and `17–18` (WAL generation `#11`, `36` frames).
+- **A2–A3 (Experiment 9.4 Phase 1 — continuous shipping across 8 checkpoints and 8 WAL generations):** The writer commits steps `3–14` in batches `{3}`, `{4,5}`, `{6}`, `{7,8,9}`, `{10}`, `{11,12}`, `{13}`, `{14}`. After each batch, `Cycle` sees a new WAL generation following the shipper's full checkpoint, publishes one segment chained by `before`/`after` state hashes (for example, `segments/000000000004` covers positions `4–5`, frames `1–36` of WAL generation `#2`, before `329eb15614fee435`, after `4078a0bbc3758ed2`; B5 lists the chain), runs a `PASSIVE` checkpoint that copies every shipped frame (`copied 36 of 36`), and writes periodic snapshots every `3` segments: `snapshots/000000000006` (`60` pages, state `2d7996f5c596c99e`) and `snapshots/000000000012` (`118` pages, state `649990133c619869`). All 8 segments come from 8 distinct WAL generations because the writer restarted the WAL after each full backfill.
+- **B1–B5 (Experiment 9.4 Phase 2 — shipper stopped + outside `TRUNCATE` checkpoint):** While the shipper is closed, the writer commits steps `15` and `16`, `outsider` runs `checkpoint TRUNCATE` (`busy=0 log=0 checkpointed=0`), folding steps `15–16` into `.db` and emptying `-wal`, and the writer commits step `17`. When the shipper reopens (resumed from the store at position `14`), `Cycle` sees WAL generation `#9` without a held read mark (`discontinuity: the WAL header changed while the shipper held no read mark`), ships no segment, checkpoints its `13` frames, and publishes `snapshots/000000000015` (reason `discontinuity`; `162` pages, `user_version` `17`, state `4a1f971701e2b5cd`). Steps `18` and `19–20` then ship normally as segments `16` (WAL generation `#10`, `25` frames) and `17–18` (WAL generation `#11`, `36` frames).
 - **C1–C5 (point-in-time restore across all 17 positions):** The store holds `4` snapshots (`2 6 12 15`), `10` segments, and `0` damaged objects. Every position `2..18` restores byte-identical (**E1 equal `true`**) to `recipe.StepHashes` for its `user_version`. Every older snapshot before the discontinuity restores identical bytes for positions `2..14`, and all `3` pre-discontinuity snapshots (`2`, `6`, `12`) refuse to cross the gap to positions `15..18` (`older_cannot_reach` `3` in C3). Worst-case replay from the newest snapshot is `3` segments (`== snapshotEvery`). Only steps `15` and `16` lack restore points (C4). Writing position `18` to `restored.db` yields `integrity_check` `ok` and exact E1 bytes equal to the closed live database (step `20`, `e769f5c3b1663de2`).
 - **D1–D2 (damaged stores refused at plan time):** Deleting segment `7` (`no segment starts at position 7`), swapping segments `10` and `11` (`key names first position 10, metadata says 11`), and flipping one byte of segment `13` (`body sha256 does not match its metadata`) are each rejected with `ErrBrokenChain` during `Catalog.Plan`, before any page is replayed. All 34 checks pass (verdict `POINT IN TIME OK`).
+
+The sequence below contrasts those two regimes: a live shipper holding its slot-0 read mark (blocking outsider checkpoints while allowing safe WAL restarts) versus a stopped shipper re-basing after an outside `TRUNCATE` checkpoint:
+
+<!-- draw-visual: diagrams/ch09-backup-crash-recovery-integrity-walship-pin-and-discontinuity.mmd -->
+```text
+   ┌─────────┐     ┌──────────┐     ┌────────┐     ┌──────────┐
+   │ Shipper │     │ -wal/.db │     │ Writer │     │ Outsider │
+   └────┬────┘     └─────┬────┘     └────┬───┘     └─────┬────┘
+┌─[alt Shipper alive (pin on slot 0)]──────────────────────┐
+│       │                │               │               │ │
+│       │ 1. pin slot 0  │               │               │ │
+│       ├───────────────►│               │               │ │
+│       │                │               │               │ │
+│       │                │ 2. ckpt (slot 0 busy)         │ │
+│       │                │×┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤ │
+│       │                │               │               │ │
+│       │                │ 3. restart WAL│               │ │
+│       │                │◄──────────────┤               │ │
+│       │                │               │               │ │
+│      ┌──────────────────────────────────┐              │ │
+│      │ slots 1..4 free, old gen shipped │              │ │
+│      └──────────────────────────────────┘              │ │
+├┈[Shipper stopped (no pin)]┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤
+│       │                │               │               │ │
+│       │                │ 4. TRUNCATE ckpt 15..16       │ │
+│       │                │◄──────────────────────────────┤ │
+│       │                │               │               │ │
+│       │                │ 5. step 17    │               │ │
+│       │                │◄──────────────┤               │ │
+│       │                │               │               │ │
+│       │ 6. resume, read│               │               │ │
+│       ├───────────────►│               │               │ │
+│       │                │               │               │ │
+│┌──────────────────────────────┐        │               │ │
+││ WALDiscontinuity -> snapshot │        │               │ │
+│└──────────────────────────────┘        │               │ │
+│       │                │               │               │ │
+└──────────────────────────────────────────────────────────┘
+        │                │               │               │
+```
 
 ---
 
 ### 6.3 Version notes
 
-From the pinned-tree research inventory ([`docs/knowledge/source-inventory-ch05-09.md`](../docs/knowledge/source-inventory-ch05-09.md) §9.9) and [`OUTLINE.md`](../OUTLINE.md):
+From this repository's C source inventory ([`docs/knowledge/source-inventory-ch05-09.md`](../docs/knowledge/source-inventory-ch05-09.md) §9.9) and project technical notes ([`OUTLINE.md`](../OUTLINE.md)):
 
 - **SQLite 3.40.0:** `VACUUM INTO` honors `PRAGMA synchronous` on the output file.
 - **SQLite 3.41.0:** Deserialized databases report an empty filename `""`.
 - **SQLite 3.44.0+:** `PRAGMA integrity_check` also invokes virtual table `xIntegrity` methods (such as FTS5 and R-Tree).
 - **SQLite 3.47.0 / 3.50.0 / 3.50.1 / 3.53.0:** `sqlite3_rsync` was added in 3.47.0 for consistent live database replication; 3.50.0 dropped its WAL-only requirement, 3.50.1 fixed a last-page off-by-one bug, and 3.53.0 added `-p`/`--port`.
 - **SQLite 3.51.0:** Added `SQLITE_CHECKPOINT_NOOP`.
-- **SQLite 3.51.3 / 3.53.0:** Included the WAL-reset corruption fix already present in our pinned `3.53.4`.
+- **SQLite 3.51.3 / 3.53.0:** Included the WAL-reset corruption fix already present in the pinned `3.53.4` release.
 - **SQLite 3.53.0:** `VACUUM INTO 'file:x?reserve=N'` sets reserve bytes on the output file (`src/vacuum.c:250-257`).
 
 ---
@@ -5307,31 +5445,31 @@ From the pinned-tree research inventory ([`docs/knowledge/source-inventory-ch05-
 
 <!-- adversarial-results -->
 
-Four adversarial programs (`40` attacks total, driven by [`run-all.sh`](../agent_work/ch09/adversarial/run-all.sh)) attacked Chapter 9's experiments and `internal/walship` against SQLite `3.53.4`:
+Four standalone Go stress-test programs in this repository (`40` attacks total, driven by [`run-all.sh`](../agent_work/ch09/adversarial/run-all.sh)) tried to break Chapter 9's experiments and `internal/walship` against SQLite `3.53.4` (`HELD` means the code or claim stood up to the test; `BROKEN` means the test exposed a bug or an overly broad claim):
 
 - [`capture-falsify`](../agent_work/ch09/adversarial/capture-falsify/main.go) (`CAP-01`–`CAP-07`): concurrent stress of all four live capture methods under an active writer and `PASSIVE` checkpoints (`32/32` exact recipe matches); reproducing CLI `.backup` `"Error: database is locked"` under fresh-process WAL writers (`CAP-02a`: `9/40` to `11/40` locked without `.timeout`), isolating `sqlite3WalClose`'s last-connection `EXCLUSIVE` lock (`CAP-02b`: `0/40` locked when one idle connection stays open), and verifying `.timeout 5000` mitigation (`CAP-02c`); testing same-connection write + `ROLLBACK` (`CAP-03a`: restarts backup via `src/pager.c:3185`) vs empty `BEGIN IMMEDIATE; COMMIT` (`CAP-03b`: no restart); concurrent `VACUUM INTO` overlapping writer commits (`CAP-04`: `5/5` exact steps, `0` writer errors); `file + WAL` under a held read transaction torn mid-copy by a `PASSIVE` checkpoint (`CAP-05`: E1 rebuild of step `10`); must-fail torn captures (`CAP-06a`: split `sqlite_dbpage` across two read transactions -> `40` integrity problems; `CAP-06b`: file+WAL across a `TRUNCATE` checkpoint without a read transaction -> `7` integrity problems); and `sqlitex.BackupWithSourceExec` error boundaries (`CAP-07`).
 - [`crash-power-falsify`](../agent_work/ch09/adversarial/crash-power-falsify/main.go) (`CRASH-01`–`CRASH-07`): `1,200` real `SIGKILL` iterations at seeded random delays (`400` each at `OFF`, `NORMAL`, `FULL`; `1200/1200` recovered in `[lastAck, lastAck+1]` with `integrity_check ok`, `0` failures); `22/22` `strace`-injected `SIGKILL`s on `.db` backfill `pwrite64` and `ftruncate` calls inside `PASSIVE` and `TRUNCATE` checkpoints (`CRASH-02`); `10/10` single-kills plus a consecutive double-kill inside `walIndexRecover` (`CRASH-03`: always recovered step `11`); `15/15` mid-header and mid-frame WAL cuts matching `walfile.Replay` byte for byte (`CRASH-04`); `NORMAL` power cut keeping a synced generation-2 header over stale generation-1 frames (`CRASH-05`: salt mismatch stopped recovery at frame `1`, recovering step `7`); `NORMAL` commits after a reader-pinned partial `PASSIVE` checkpoint (`CRASH-06`); and `trace.SyncsOf` edge cases (`CRASH-07`).
 - [`integrity-sweep`](../agent_work/ch09/adversarial/integrity-sweep/main.go) (`INT-01`–`INT-04`): a seeded sweep of `500` uniform random 1-bit flips across the `483,328`-byte step-12 database (`INT-01`: `integrity_check` caught `8/500` = `1.6%`, `quick_check` caught `2/500` = `0.4%`, E3 caught `445/500` = `89.0%`, and the page manifest caught `500/500` = `100.0%` naming the exact page every time); targeted flips in an overflow page payload (`INT-02a`, missed by `integrity_check`/`quick_check`), unallocated table-leaf free space (`INT-02b`), freelist trunk unused tail (`INT-02c`), and reserved database header bytes (`INT-02d`, all three caught **only** by the page manifest); a coordinated `account_id` `54 -> 55` flip in **both** the table leaf (page `66`) and index leaf (page `89`) passing `integrity_check` with `ok` while caught by E3 and the manifest (`INT-03`); and boundary validation of `dbfile.RecordColumn` and `capture.VerifyImage` (`INT-04`).
 - [`walship-falsify`](../agent_work/ch09/adversarial/walship-falsify/main.go) (`SHIP-01a`–`SHIP-07`): `strace`-injected `SIGKILL`s during `walship.Open` (`4/4`) and `walship.Cycle` (`8/8`, covering segment puts, `PASSIVE` checkpoint writes/syncs, and periodic snapshot puts) all resuming cleanly with `0` `.tmp` leaks and E1 restore; outside checkpoints behind a live shipper pinned on slot `0` (`SHIP-02a`) and slot `>= 1` (`SHIP-02b`), plus an outside `RESTART` checkpoint while down (`SHIP-02c`); six store-tampering attacks (`SHIP-03a`–`SHIP-03f`: raw body flip, recomputed body hash caught by WAL checksum chain, forged checksum chain caught by `AfterSHA256` during `Execute`, forged non-commit `CommitPoint.Frame`, damaged periodic snapshot falling back to snapshot `2`, and damaged latest segment on resume); multi-statement transaction atomicity plus spilled `ROLLBACK` and crashed uncommitted spills (`SHIP-04`); shrinking database via `DELETE` + plain `VACUUM` (`483,328 -> 20,480` bytes, `SHIP-05`); page sizes `1024` and `8192` plus `ErrNotWAL` (`SHIP-06`); and 8-way concurrent `DirStore.PutIfAbsent` races (`50/50` rounds, `0` `.tmp` leaks) plus `WriteDatabase` sidecar refusals (`SHIP-07`).
 
-**Run 1** ([`results-run1.txt`](../agent_work/ch09/adversarial/results-run1.txt)) produced **`35 HELD, 5 BROKEN`** (`CAP-02a`, `CAP-03a`, `CRASH-06`, `SHIP-03d`, `SHIP-03f`). Alongside the independent code review ([`REVIEW-1.md`](../agent_work/ch09/REVIEW-1.md)), the repair round ([`REPAIR-REPORT.md`](../agent_work/ch09/REPAIR-REPORT.md)) fixed three real defects exposed by the attacks and seven code-review findings:
+**Run 1** ([`results-run1.txt`](../agent_work/ch09/adversarial/results-run1.txt)) produced **`35 HELD, 5 BROKEN`** (`CAP-02a`, `CAP-03a`, `CRASH-06`, `SHIP-03d`, `SHIP-03f`). Together with the code review ([`REVIEW-1.md`](../agent_work/ch09/REVIEW-1.md)), the subsequent fixes ([`REPAIR-REPORT.md`](../agent_work/ch09/REPAIR-REPORT.md)) resolved three real defects exposed by the attacks and seven code-review findings:
 
 - **`CRASH-06` (fixed):** Experiment 9.2's original portable `NORMAL` rule always cut at byte `32`, which failed when a concurrent reader prevented a `PASSIVE` checkpoint from backfilling every frame and prevented WAL restart. `ruleCut` was fixed to cut at the checkpoint's WAL end (`304,912`) when the WAL stayed in the same generation and to predict unsynced `.db` writes on partial checkpoints (`src/wal.c:2277, 2328-2335`); Experiment 9.2 gained its fourth model run demonstrating this directly.
 - **`SHIP-03d` & Review Finding 3 (fixed):** `VerifySegmentFrames` did not validate the 32-byte WAL header or match frame commit sizes one-to-one against `meta.Commits`, allowing a forged non-commit `CommitPoint.Frame` to pass `LoadCatalog` and `Plan` and fail only in `Execute`. Fixed so both malformations are quarantined as `Damaged` before any page is applied.
 - **`SHIP-03f` (fixed):** `walship.Open` silently rewound past a corrupted latest segment (`segments/000000000008`) to position `7`. Fixed so `resume` fails closed with `ErrBrokenChain` whenever any damaged object has a key position past `LastPosition()`.
 - **Review Findings 1, 2, 4, 5, 6, 7 (fixed):** `Shipper.classify` now hashes live pages via `ReadPages` when resuming with no WAL so offline commits whose `-wal` was deleted trigger a discontinuity snapshot instead of silent corruption (Finding 1); Experiment 9.1 Part B now checks exact equality levels on every capture, checks the stale plain copy explicitly, and runs `VACUUM INTO` while the writer holds an uncommitted write transaction (Finding 2); a tautological WAL-movement check in `snapshot` was removed (Finding 4); measuring `E1-after-VACUUM-INTO` directly for every capture exposed that the backup API's canonical form differs from the source's at byte `43` (Finding 5); `Prune` returns only keys deleted before an error (Finding 6); and `DecodeSnapshot` rejects impossible page sizes/counts while `walship.Open` matches `"wal"` case-insensitively (Finding 7).
 
-**Run 2** ([`results-run2.txt`](../agent_work/ch09/adversarial/results-run2.txt)) passed `SHIP-03d` and `SHIP-03f` (**`37 HELD, 3 BROKEN`**). The remaining three lines narrowed claims or reflected an attack script that still hardcoded the old rule:
+**Run 2** ([`results-run2.txt`](../agent_work/ch09/adversarial/results-run2.txt)) passed `SHIP-03d` and `SHIP-03f` (**`37 HELD, 3 BROKEN`**). The remaining three lines reflected claim-scope boundaries or an attack script that still hardcoded the old rule:
 
-- **`CAP-02a`** (narrowed/confirmed): CLI `.backup` without `.timeout` hit `Error: database is locked` (`5–11` of `40` attempts across runs) against fresh closing WAL writers, while `CAP-02b` (`0/40` with one persistent connection) and `CAP-02c` (`.timeout 5000` waits and succeeds) proved `sqlite3WalClose`'s last-connection `EXCLUSIVE` lock is the cause. Section 3.1 states this explicitly.
-- **`CAP-03a`** (narrowed): same-connection write + `ROLLBACK` reset `copied` to `[5 10 5 10]` via `src/pager.c:3185`, while `CAP-03b` confirmed an empty `BEGIN IMMEDIATE; COMMIT` does not restart. Section 3.1 and Experiment 9.1 state plainly that same-connection **commits**—not rollbacks—avoid restarting a backup.
-- **`CRASH-06`** (aligned to the fixed rule): Run 2 still hardcoded `ruleCut = 32` in the attack script; after aligning the expectations in `CAP-02a`, `CAP-03a`, and `CRASH-06` to the verified behavior, the final run ([`results.txt`](../agent_work/ch09/adversarial/results.txt) and [`results-run3.txt`](../agent_work/ch09/adversarial/results-run3.txt)) passed **`40 HELD, 0 BROKEN`**.
+- **`CAP-02a`** (scope boundary confirmed): CLI `.backup` without `.timeout` hit `Error: database is locked` (`5–11` of `40` attempts across runs) against fresh closing WAL writers, while `CAP-02b` (`0/40` with one persistent connection) and `CAP-02c` (`.timeout 5000` waits and succeeds) proved `sqlite3WalClose`'s last-connection `EXCLUSIVE` lock is the cause. Section 3.1 states this behavior explicitly.
+- **`CAP-03a`** (scope boundary confirmed): same-connection write + `ROLLBACK` reset `copied` to `[5 10 5 10]` via `src/pager.c:3185`, while `CAP-03b` confirmed an empty `BEGIN IMMEDIATE; COMMIT` does not restart. Section 3.1 and Experiment 9.1 specify that same-connection **commits**—not rollbacks—avoid restarting a backup.
+- **`CRASH-06`** (aligned to the fixed rule): Run 2 still hardcoded `ruleCut = 32` in the attack script; after aligning `CAP-02a`, `CAP-03a`, and `CRASH-06` with the verified behavior, the final run ([`results.txt`](../agent_work/ch09/adversarial/results.txt) and [`results-run3.txt`](../agent_work/ch09/adversarial/results-run3.txt)) passed **`40 HELD, 0 BROKEN`**.
 
 ---
 
 ## 7. Platform implications
 
-Every rule below follows directly from this chapter's experiments and adversarial runs:
+Every rule below follows directly from this chapter's experiments and stress tests:
 
 1. **Choose the capture method by the equality level and writer concurrency you need (Experiment 9.1; `CAP-01`–`CAP-06b`).**
    - Need **E1 bytes** on a live database without blocking writers: read every page through `sqlite_dbpage` in one read transaction, or copy `.db` then `-wal` under a held read transaction and replay.
@@ -5339,7 +5477,7 @@ Every rule below follows directly from this chapter's experiments and adversaria
    - Avoid stepped `sqlite3_backup_step` on busy multi-writer databases: every external commit restarts it from page `1` (starving indefinitely in Experiment 9.1), it reaches only **E2** (not E1 even after `VACUUM INTO`, because of byte `43`'s schema cookie), and without a busy timeout it fails with `SQLITE_BUSY` if a closing last connection triggers `sqlite3WalClose` (`CAP-02a/c`).
    - Never copy a live WAL `.db` file alone: Experiment 9.1 showed it produces a valid but silently **stale** database (`step 6` while the writer was at `step 7`).
 2. **State durability in terms of `fsync`, never "committed" (Experiment 9.2; `CRASH-01`–`CRASH-06`).** A process kill lost zero acknowledged commits at `OFF`, `NORMAL`, and `FULL` (`36` syscall kills in 9.2 plus `1,200` random `SIGKILL`s in `CRASH-01`, `22` mid-checkpoint kills in `CRASH-02`, and `10` mid-recovery kills in `CRASH-03`). Power loss is governed strictly by `fsync`: at `NORMAL` the power-cut model lost all `4` acknowledged commits written since the last checkpoint (`321,360` WAL bytes in the restarted run); at `FULL` it lost `0`; at `OFF` the database file itself received `44` unsynced checkpoint writes, leaving the outcome outside any file-level guarantee.
-3. **Treat the acknowledgement rule as a fleet-wide platform decision (Experiment 9.2; Experiment 7.2).** A single host losing power drops the unsynced tail of **every** database on that host at once. At `synchronous=NORMAL`, every database loses all commits since its last checkpoint; at `synchronous=FULL`, every commit pays one additional `-wal` `fsync` (`11` vs `3` WAL syncs across `8` commits in Experiment 9.2). A platform therefore chooses explicitly between **local-durable** acknowledgement (acknowledge after `COMMIT` at `WAL + synchronous=FULL`) and **store-durable** acknowledgement (acknowledge only after `walship` puts the segment into durable object storage)—the two durability modes tested in Chapter 10.
+3. **Treat the acknowledgement rule as a fleet-wide platform decision (Experiment 9.2; Chapter 7 Experiment 7.2).** A single host losing power drops the unsynced tail of **every** database on that host at once. At `synchronous=NORMAL`, every database loses all commits since its last checkpoint; at `synchronous=FULL`, every commit pays one additional `-wal` `fsync` (`11` vs `3` WAL syncs across `8` commits in Experiment 9.2). A platform therefore chooses explicitly between **local-durable** acknowledgement (acknowledge after `COMMIT` at `WAL + synchronous=FULL`) and **store-durable** acknowledgement (acknowledge only after `walship` puts the segment into durable object storage)—the two durability modes tested in Chapter 10.
 4. **Never accept `PRAGMA integrity_check` as proof of restored content (Experiment 9.3; `INT-01`–`INT-03`).** Across `500` random 1-bit flips in `INT-01`, `integrity_check` caught only `1.6%` (`8/500`) and `quick_check` caught `0.4%` (`2/500`), missing unindexed column payloads (`events.note`), overflow payloads (`INT-02a`), freelist pages, unallocated page space, and even coordinated table+index flips (`INT-03`). Prove captures and restores with cryptographic hashes—either a per-page manifest (`capture.VerifyImage`, `100%` detection in `INT-01`) or `walship`'s per-commit whole-image `StateSHA256` chain.
 5. **Continuous point-in-time capture (rung R6) requires three SQLite invariants and one store invariant (Experiment 9.4; `internal/walship`; `SHIP-01a`–`SHIP-07`).**
    - Disable `wal_autocheckpoint` (`= 0`) on every writer connection so only the shipper checkpoints.

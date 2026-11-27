@@ -1,0 +1,18 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant C as Conn C
+  participant S as -shm / -wal
+  participant W as Writer W
+  Note over C,W: Case 1: Conn C runs TRUNCATE (both nCkpt = 0)
+  C->>S: TRUNCATE
+  Note over C: C.nCkpt = 1
+  Note over S: shm salt1+1, -wal 0 B
+  W->>S: write iFrame=0
+  Note over W: W.nCkpt is still 0
+  W->>S: random, seq=0
+  Note over C,W: Case 2: Writer W runs TRUNCATE (W.nCkpt = 0)
+  W->>S: TRUNCATE
+  Note over W: W.nCkpt = 1
+  W->>S: write iFrame=0
+  W->>S: salt1+1, seq=1

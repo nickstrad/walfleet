@@ -1,0 +1,24 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant P as Pager
+  participant J as t.db-journal
+  participant D as t.db
+  P->>J: cold 0x00 hdr
+  P->>J: orig pages
+  Note over P,D: syncJournal (EXCLUSIVE)
+  alt synchronous=FULL
+    P->>J: fsync + dir
+    P->>J: 0xd9 + nRec
+    P->>J: fsync jnl
+  else synchronous=NORMAL
+    P->>J: 0xd9 + nRec
+    P->>J: fsync + dir
+  end
+  Note over J: journal is hot
+  P->>D: sorted dirty pages
+  P->>D: fsync t.db
+  Note over P,D: commit point (pager_end_transaction)
+  P->>J: del/trunc/0
+  Note over P,D: post-commit only if file shrank
+  P->>D: ftruncate t.db

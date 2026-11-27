@@ -1,0 +1,18 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant C as Conn (page cache)
+  participant W as -wal (frames)
+  participant D as .db (file)
+  Note over C,D: Step 27 base: .db counter = 29
+  C->>D: readDbPage(1)
+  D-->>C: dbFileVers = 29
+  Note over C,D: C1: page 1 stays cached
+  C->>W: step 28: pg 1 (30)
+  C->>W: step 29: pg 1 (30)
+  Note over C,D: C4: PRAGMA shrink_memory evicts pg 1
+  C->>W: readDbPage(1)
+  W-->>C: dbFileVers = 30
+  C->>W: step 29: pg 1 (31)
+  Note over C,D: Last connection closes
+  W->>D: checkpoint pg 1

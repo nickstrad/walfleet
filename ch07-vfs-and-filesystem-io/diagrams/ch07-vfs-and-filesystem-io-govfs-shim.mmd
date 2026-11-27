@@ -1,0 +1,21 @@
+%% draw-visual:
+sequenceDiagram
+  autonumber
+  participant S as SQLite core
+  participant G as govfs shim
+  participant U as unix (os_unix.c)
+  S->>G: xOpen(pFile)
+  G->>U: xOpen(inner)
+  U-->>G: real pMethods
+  Note over G: set shim table at pFile
+  G-->>S: SQLITE_OK
+  S->>G: xWrite/xSync
+  alt N-th matching call
+    Note over G: skip unix, record Injected
+    G-->>S: SQLITE_IOERR
+  else normal call
+    G->>U: call(inner)
+    U-->>G: rc
+    Note over G: record Call
+    G-->>S: rc
+  end
