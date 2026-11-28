@@ -14,17 +14,17 @@
 >
 > - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to launch the repository's experiment runner (`cmd/course`) from the host. Build the `lab` Docker image (`Dockerfile.lab`) once, from the repository root:
 >   ```text
->   docker compose build lab
+>   make docker-build
 >   ```
 >   The image bundles the pinned SQLite `3.53.4` source tree, SQLite's C tools (`sqlite3`, `showwal`, `dbhash`), `strace`, and the DuckDB CLI that renders result tables.
-> - **Run the experiments** from the repository root. Each command starts the `lab` container, executes the Go experiment inside it, and prints a formatted DuckDB walkthrough; add `-i` (`go run ./cmd/course run -i 1.2`) to stay in the DuckDB shell afterwards with the result tables loaded:
+> - **Run the experiments** from the repository root. Each command starts the `lab` container, executes the Go experiment inside it, and prints a formatted DuckDB walkthrough; add `-i` (`make run EXP=1.2 ARGS='-i'`) to stay in the DuckDB shell afterwards with the result tables loaded:
 >   ```text
->   go run ./cmd/course run 1.1
->   go run ./cmd/course run 1.2
->   go run ./cmd/course run 1.3
+>   make run EXP=1.1
+>   make run EXP=1.2
+>   make run EXP=1.3
 >   ```
 >   Inside the container, scratch databases and result tables are written under `/work/1.1/`, `/work/1.2/`, and `/work/1.3/` (the `lab-work` Docker volume). When run directly on the host, they go under `_work/1.1/`, `_work/1.2/`, and `_work/1.3/`, which are git-ignored and safe to delete.
-> - **Running an experiment directly:** each experiment is a standalone Go program (for example, `go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert`). Run directly, it prints only its verdict and leaves its CSV result tables under `_work/1.2/results/`. Host runs that cross-check against SQLite's C `sqlite3` CLI require building the pinned C tools first (`go run ./cmd/course fetch-source`, then `go run ./cmd/course build-tools`). On macOS, direct host runs skip sections marked **Linux only** (in this chapter, the `strace`, twin check, `ANALYZE` limit, and `-vfstrace` parts of Experiment 1.2).
+> - **Running an experiment directly:** each experiment is a standalone Go program (for example, `make run-native EXP=1.2`). Run directly, it prints only its verdict and leaves its CSV result tables under `_work/1.2/results/`. Host runs that cross-check against SQLite's C `sqlite3` CLI require building the pinned C tools first (`make fetch-source`, then `make build-tools`). On macOS, direct host runs skip sections marked **Linux only** (in this chapter, the `strace`, twin check, `ANALYZE` limit, and `-vfstrace` parts of Experiment 1.2).
 > - **Measured platform:** The stored evidence in this chapter, including the syscall and VFS traces, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). Run-dependent values—the CLI binary's path, its optional compile flags, and which sync syscall it calls—are printed during a run and excluded from the stored evidence.
 
 ---
@@ -111,7 +111,7 @@ Before tracing that `INSERT`, we verify the exact SQLite builds under test. Ever
 - **Evidence form:** `EXACT` (every stored CSV table in `evidence/1.1-pin-check/` must match on every run; the run-dependent `info` tables are excluded).
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./cmd/course run 1.1
+  make run EXP=1.1
   ```
 
 <!-- include: experiments/1.1-pin-check/main.go -->
@@ -457,9 +457,9 @@ SELECT name, driver, cli, CASE WHEN same THEN 'same' ELSE 'DIFFERENT' END AS ver
 FROM format_options ORDER BY name;
 ```
 
-`go run ./cmd/course run 1.1` also prints machine-specific values excluded from the stored evidence: the path of the `sqlite3` CLI binary it found and the compile options enabled in only one of the two builds.
+`make run EXP=1.1` also prints machine-specific values excluded from the stored evidence: the path of the `sqlite3` CLI binary it found and the compile options enabled in only one of the two builds.
 
-Captured evidence below shows the walkthrough as rendered in the `lab` container. The underlying CSV tables live in [`evidence/1.1-pin-check/`](evidence/1.1-pin-check/), and `go run ./cmd/course check evidence ch01` verifies a fresh run against them byte for byte.
+Captured evidence below shows the walkthrough as rendered in the `lab` container. The underlying CSV tables live in [`evidence/1.1-pin-check/`](evidence/1.1-pin-check/), and `make check ARGS='evidence ch01'` verifies a fresh run against them byte for byte.
 
 <!-- include: evidence/1.1-pin-check.txt -->
 ```text
@@ -639,9 +639,9 @@ Experiment verdict: PIN CHECK OK
 - **A1–A2 (pin and linked modules).** The driver's `sqlite_source_id()`, read from an in-memory database opened through `database/sql`, is checked against `sqlite/PIN` (shown in full in A1). The module rows in A2 read Go's compiled-in `runtime/debug.ReadBuildInfo()` rather than `go.mod`, proving the binary linked `modernc.org/sqlite v1.60.1` and `modernc.org/libc v1.77.1`, and the `sqlite_version()` rows confirm `3.53.4`.
 - **A3–A4 (driver compile options).** `PRAGMA compile_options` reports 56 options in the Go driver (A4). A3 verifies the three options later experiments rely on: `ENABLE_DBPAGE_VTAB`, `ENABLE_DBSTAT_VTAB`, and `DEFAULT_WAL_SYNCHRONOUS=2`.
 - **A5 (virtual table smoke test).** After creating table `t` and inserting one row, both `sqlite_dbpage` and `dbstat` return 2 rows: page 1 (`sqlite_schema`) and page 2 (table `t`).
-- **A2 and B1 (C CLI check).** `sqlitex.LocateCLI` locates the pinned C `sqlite3` binary. Its filesystem path is run-dependent—printed by `go run ./cmd/course run 1.1` and excluded from stored evidence—because a host may use either a system binary or the CLI built by `go run ./cmd/course build-tools`. Its source ID, release version (A2), and three required options (B1) match the pin.
+- **A2 and B1 (C CLI check).** `sqlitex.LocateCLI` locates the pinned C `sqlite3` binary. Its filesystem path is run-dependent—printed by `make run EXP=1.1` and excluded from stored evidence—because a host may use either a system binary or the CLI built by `make build-tools`. Its source ID, release version (A2), and three required options (B1) match the pin.
 - **B2 (file-format and I/O parity).** Both builds agree on all 15 options controlling page size (`4096`), default cache size (`-2000`, meaning 2,000 KiB), mmap default (`0`), and sync defaults (`2` = `FULL`).
-- **Optional feature differences (run-dependent, printed by `go run ./cmd/course run 1.1`).** The two builds differ on optional features outside that 15-option table. The Go driver enables `ENABLE_STAT4` and `ENABLE_SNAPSHOT` (compiled into its C-to-Go translated library even though the Go API does not expose `sqlite3_snapshot_*`), whereas this CLI enables `ENABLE_BYTECODE_VTAB`, `ENABLE_STMTVTAB`, and `ENABLE_EXPLAIN_COMMENTS` (so `bytecode()` and `sqlite_stmt` exist only in the CLI). Most optional flags never touch storage, but `ENABLE_STAT4` changes on-disk tables whenever `ANALYZE` (SQLite's query-planner statistics command) runs—a boundary Experiment 1.2 measures directly.
+- **Optional feature differences (run-dependent, printed by `make run EXP=1.1`).** The two builds differ on optional features outside that 15-option table. The Go driver enables `ENABLE_STAT4` and `ENABLE_SNAPSHOT` (compiled into its C-to-Go translated library even though the Go API does not expose `sqlite3_snapshot_*`), whereas this CLI enables `ENABLE_BYTECODE_VTAB`, `ENABLE_STMTVTAB`, and `ENABLE_EXPLAIN_COMMENTS` (so `bytecode()` and `sqlite_stmt` exist only in the CLI). Most optional flags never touch storage, but `ENABLE_STAT4` changes on-disk tables whenever `ANALYZE` (SQLite's query-planner statistics command) runs—a boundary Experiment 1.2 measures directly.
 
 ---
 
@@ -781,11 +781,11 @@ Behavior differences across SQLite releases relevant to this chapter (from this 
   - For SQL statements whose behavior does not depend on compile options differing between the two builds, `modernc.org/sqlite` and the C CLI issue the same writes, syncs, reads, locks, opens, unlinks, and closes in the same order and leave byte-identical files, differing only in extra `fcntl(F_SETFD)` calls issued by `modernc.org/libc`'s musl-derived `open()`.
   - Where compile options do differ (`ENABLE_STAT4` on `ANALYZE`), the two builds diverge and write different files.
 - **Evidence form:** `EXACT` (every stored CSV table in `evidence/1.2-one-insert/` must match on every run; the run-dependent `info` tables are excluded).
-- **Platform:** **Linux only** for `strace`, the Go-vs-CLI twin check, its `ANALYZE` limit, and the `-vfstrace` merged trace; `go run ./cmd/course run 1.2` executes inside the Linux `lab` container, so it runs in full on any host. On macOS, running the experiment directly (`go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert`) does not require the C CLI: it prints a `LINUX-ONLY:` line, records `EXPLAIN` and the changed page hashes with their expected-page checks (`[1 2]` in rollback mode, `[2]` in WAL mode), and exits 0.
+- **Platform:** **Linux only** for `strace`, the Go-vs-CLI twin check, its `ANALYZE` limit, and the `-vfstrace` merged trace; `make run EXP=1.2` executes inside the Linux `lab` container, so it runs in full on any host. On macOS, running the experiment directly (`make run-native EXP=1.2`) does not require the C CLI: it prints a `LINUX-ONLY:` line, records `EXPLAIN` and the changed page hashes with their expected-page checks (`[1 2]` in rollback mode, `[2]` in WAL mode), and exits 0.
 - **Why this check matters:** every later experiment relies on the pure-Go `modernc.org/sqlite` driver; this twin check establishes where its storage I/O matches SQLite's C build and where compile-option differences break parity.
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./cmd/course run 1.2
+  make run EXP=1.2
   ```
 
 <!-- include: experiments/1.2-one-insert/main.go -->
@@ -2012,9 +2012,9 @@ FROM analyze_runs
 ORDER BY stage = 'base' DESC, build;
 ```
 
-`go run ./cmd/course run 1.2` also prints machine-specific values excluded from the stored evidence: the work directory, which sync syscall each build called (`fsync` or `fdatasync`), and the VFS calls where the CLI first asks for randomness.
+`make run EXP=1.2` also prints machine-specific values excluded from the stored evidence: the work directory, which sync syscall each build called (`fsync` or `fdatasync`), and the VFS calls where the CLI first asks for randomness.
 
-Captured evidence below shows the walkthrough as rendered in the `lab` container. The underlying CSV tables live in [`evidence/1.2-one-insert/`](evidence/1.2-one-insert/), and `go run ./cmd/course check evidence ch01` verifies a fresh run against them byte for byte.
+Captured evidence below shows the walkthrough as rendered in the `lab` container. The underlying CSV tables live in [`evidence/1.2-one-insert/`](evidence/1.2-one-insert/), and `make check ARGS='evidence ch01'` verifies a fresh run against them byte for byte.
 
 <!-- include: evidence/1.2-one-insert.txt -->
 ```text
@@ -2537,14 +2537,14 @@ Experiment verdict: ONE INSERT OK
    - **Database writes (B2, B3):** `pwrite64 t.db off=0 len=4096` equals `(page 1 - 1) * 4096`, and `off=4096 len=4096` equals `(page 2 - 1) * 4096`. Every write to `t.db` is one whole page, matching `[1 2]` exactly.
    - **Syncs (B2):** 4 syncs in order: `fsync t.db-journal`, `fsync .` (makes the new journal directory entry durable), `fsync t.db-journal` (after writing the 12-byte journal header with the page count), and `fsync t.db`.
    - **Errors and short reads (B2 and B4):** `normalized` keeps errno on failed calls and byte counts on short transfers, so SQLite's probe past end-of-file prints `pread64 t.db-journal off=9216 len=8 = 0` in both builds.
-   - **Twin check (B5–B6):** Comparing the Go driver against the C `sqlite3` CLI running the same `INSERT` yields 33 Go syscalls versus 31 CLI syscalls. Writes (10), syncs (4), all 31 non-`F_SETFD` calls, and the closed at-rest database file (`47bae5ed0c8207f2`, distinct from base `0aec0e95a3f65e0c`) match identically. The sole difference (listed below table B5) is two `fcntl(..., F_SETFD)` calls from `modernc.org/libc v1.77.1`: its musl-derived `open()` calls `fcntl(fd, F_SETFD, FD_CLOEXEC)` after `O_CLOEXEC`, whereas `os_unix.c`'s `robust_open` ([`src/os_unix.c:867-869`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L867-L869)) skips `F_SETFD` when `O_CLOEXEC` is defined. `./configure`-built CLIs also call `fdatasync` where the Go driver and system CLI call `fsync`, and `openat` vs `open` varies by libc. The experiment normalizes those pairs and records the raw sync syscall in a run-dependent `info` table printed by `go run ./cmd/course run 1.2`.
+   - **Twin check (B5–B6):** Comparing the Go driver against the C `sqlite3` CLI running the same `INSERT` yields 33 Go syscalls versus 31 CLI syscalls. Writes (10), syncs (4), all 31 non-`F_SETFD` calls, and the closed at-rest database file (`47bae5ed0c8207f2`, distinct from base `0aec0e95a3f65e0c`) match identically. The sole difference (listed below table B5) is two `fcntl(..., F_SETFD)` calls from `modernc.org/libc v1.77.1`: its musl-derived `open()` calls `fcntl(fd, F_SETFD, FD_CLOEXEC)` after `O_CLOEXEC`, whereas `os_unix.c`'s `robust_open` ([`src/os_unix.c:867-869`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L867-L869)) skips `F_SETFD` when `O_CLOEXEC` is defined. `./configure`-built CLIs also call `fdatasync` where the Go driver and system CLI call `fsync`, and `openat` vs `open` varies by libc. The experiment normalizes those pairs and records the raw sync syscall in a run-dependent `info` table printed by `make run EXP=1.2`.
 
 3. **WAL mode (`journal_mode=wal`, the platform default, section C).**
    - **Changed pages (C1):** `[2]` only. Page 1 is untouched during this `INSERT`, so its change counter does not move.
    - **WAL writes vs database writes (C2–C3):** Zero `pwrite64` calls hit `t.db` (C3). Because closing the base database (`5de4f3aefd26bcea`) checkpointed and removed its WAL, this `INSERT` creates a fresh WAL: it writes the 32-byte WAL header (`t.db-wal off=0 len=32`), syncs `t.db-wal` and `.`, appends frame 1's 24-byte header (`off=32 len=24`) and page 2's 4,096-byte image (`off=56 len=4096`), and syncs `t.db-wal`. Reading `t.db-wal` before `db.Close()` confirms frame 1 holds page 2 with commit size 2 (table C3), and a check verifies the exact write list with nothing extra.
    - **Syncs (C2):** 3 syncs total (`t.db-wal`, `.`, `t.db-wal`). The first two pay for creating the fresh WAL header and directory entry; only the third is the per-commit sync at `synchronous=FULL`.
    - **Twin check (C5–C6):** 18 Go syscalls vs 17 CLI syscalls (the single extra call is `fcntl . F_SETFD`, listed in C5). Writes (3), syncs (3), all 17 other syscalls, and the closed at-rest database file (`1afce8154bf3124c`) match identically.
-   - **Marker files and `xRandomness`:** Both processes bracket statements by opening empty marker files (`marker-1`, `marker-2`, and so on) because CLI stdout is buffered; an `open`/`openat` syscall marks the exact statement boundary in `strace`. Some CLI builds call `VFS xRandomness` here on their first PRNG use to seed a journal nonce or WAL salts. The experiment records that call in a run-dependent `info` table (printed by `go run ./cmd/course run 1.2`, not stored), so the stored evidence matches across both a system-installed CLI and the CLI built by `go run ./cmd/course build-tools`.
+   - **Marker files and `xRandomness`:** Both processes bracket statements by opening empty marker files (`marker-1`, `marker-2`, and so on) because CLI stdout is buffered; an `open`/`openat` syscall marks the exact statement boundary in `strace`. Some CLI builds call `VFS xRandomness` here on their first PRNG use to seed a journal nonce or WAL salts. The experiment records that call in a run-dependent `info` table (printed by `make run EXP=1.2`, not stored), so the stored evidence matches across both a system-installed CLI and the CLI built by `make build-tools`.
 
 4. **A limit of the twin check: `ANALYZE` and `ENABLE_STAT4` (section D).** Starting from two byte-identical copies (`cd808b1713871cd6`) of a 100-row table `s` with index `s_by_k`, `ANALYZE` in the Go driver (`ENABLE_STAT4 = 1`) creates `[sqlite_stat1 sqlite_stat4]` (`2f6ce76122bda45c`), while the C CLI (`ENABLE_STAT4 = 0`) creates only `[sqlite_stat1]` (`490d8405dea7402c`). Twin parity holds only for statements whose behavior does not depend on compile options differing between the two builds.
 
@@ -2704,7 +2704,7 @@ Two structural differences stand out: `OP_Insert` performs zero writes in WAL mo
 
 Every later chapter verifies snapshots, WAL replays, crash recoveries, or fleet rebuilds against a known ground truth: a realistic workload whose closed database file has one exact SHA-256 hash after every numbered step *k*. That baseline is **Rebuild Ladder rung R0 (Recipe)**.
 
-This chapter introduces the shared Go package `internal/recipe`, inlined in full below. Its unit tests live in [`internal/recipe/recipe_test.go`](../internal/recipe/recipe_test.go) and [`internal/recipe/repair_test.go`](../internal/recipe/repair_test.go) and run from the repository root with `go test ./internal/recipe/`.
+This chapter introduces the shared Go package `internal/recipe`, inlined in full below. Its unit tests live in [`internal/recipe/recipe_test.go`](../internal/recipe/recipe_test.go) and [`internal/recipe/repair_test.go`](../internal/recipe/repair_test.go) and run from the repository root with `make test PACKAGE=./internal/recipe`.
 
 ### 5.1 The `internal/recipe` package
 
@@ -3675,7 +3675,7 @@ func (r Recipe) writeHashCache(path string, hashes []FileHashes) error {
 - **Platform:** Portable (runs natively on Linux and macOS without `strace`).
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with the tables loaded):
   ```text
-  go run ./cmd/course run 1.3
+  make run EXP=1.3
   ```
 
 <!-- include: experiments/1.3-recipe-rebuild/main.go -->
@@ -4696,9 +4696,9 @@ SELECT id, first_page, pages_differ, differing_pages, page1_bytes, file_pages FR
 SELECT id, page, bytes_differing, bytes_outside_unused, kind FROM unused_pages WHERE id LIKE '7%' ORDER BY id, page;
 ```
 
-`go run ./cmd/course run 1.3` also prints machine-specific values excluded from the stored evidence: the work directory, build duration, and the SHA-256 digests of variant files whose bytes intentionally differ between runs (`random()`, the wall clock, and random rowid assignment).
+`make run EXP=1.3` also prints machine-specific values excluded from the stored evidence: the work directory, build duration, and the SHA-256 digests of variant files whose bytes intentionally differ between runs (`random()`, the wall clock, and random rowid assignment).
 
-Captured evidence below shows the walkthrough as rendered in the `lab` container. The underlying CSV tables live in [`evidence/1.3-recipe-rebuild/`](evidence/1.3-recipe-rebuild/), and `go run ./cmd/course check evidence ch01` verifies a fresh run against them byte for byte.
+Captured evidence below shows the walkthrough as rendered in the `lab` container. The underlying CSV tables live in [`evidence/1.3-recipe-rebuild/`](evidence/1.3-recipe-rebuild/), and `make check ARGS='evidence ch01'` verifies a fresh run against them byte for byte.
 
 <!-- include: evidence/1.3-recipe-rebuild.txt -->
 ```text
@@ -5016,7 +5016,7 @@ Experiment verdict: RECIPE REBUILD OK
 **Reading the R0 evidence (opening tables and section A):**
 
 - **Opening tables (recipe plan).** Show the persistent file settings, per-connection settings, and all 31 step summaries (step 0 with 3 `CREATE TABLE` statements; steps 1–30 with inserts, updates, periodic deletes, and the single `CREATE INDEX` at step 5).
-- **A1 (two independent builds).** Building the 30-step WAL recipe into `run-1/recipe.db` and `run-2/elsewhere/another-name.db` takes under a second (about `87ms` in one lab run; timing is run-dependent, printed by `go run ./cmd/course run 1.3` and not stored). Both builds produce `270` pages (`1,105,920` bytes) with identical SHA-256 `24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74` (step 0: `7470585af706eb3de499f126d74bdc98396e1e9853ee11643e2e85f61ef0cdb9`; table A2 prints the first 16 hex digits per step, and the stored CSV has all 64). Directory path and file name never enter the database bytes.
+- **A1 (two independent builds).** Building the 30-step WAL recipe into `run-1/recipe.db` and `run-2/elsewhere/another-name.db` takes under a second (about `87ms` in one lab run; timing is run-dependent, printed by `make run EXP=1.3` and not stored). Both builds produce `270` pages (`1,105,920` bytes) with identical SHA-256 `24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74` (step 0: `7470585af706eb3de499f126d74bdc98396e1e9853ee11643e2e85f61ef0cdb9`; table A2 prints the first 16 hex digits per step, and the stored CSV has all 64). Directory path and file name never enter the database bytes.
 - **A2–A3 (per-step hashes and lookup).** All 31 per-step hashes match identically between run 1 and run 2, all 31 are distinct, and `recipe.StepHashes` matches the fresh build. A separate database built to step 12 is identified by `recipe.MatchStep` as step `12` with exact bytes.
 - **A1 and A4 (WAL vs rollback).** The same recipe in rollback mode (`journal_mode=delete`) also rebuilds byte for byte at every step (`0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57`). Comparing the closed WAL file against the closed rollback file shows only 4 differing bytes in the entire `1,105,920`-byte database, all on page 1: bytes `18` and `19` (file format write/read versions: `2` for WAL vs `1` for rollback) and bytes `27` and `95` (the low byte of the 4-byte file change counter and version-valid-for field).
 

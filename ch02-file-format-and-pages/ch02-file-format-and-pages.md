@@ -14,17 +14,17 @@
 >
 > - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to invoke the repository's experiment runner (`cmd/course`) from the host. Build the `lab` container image (`Dockerfile.lab`) once from the repository root:
 >   ```text
->   docker compose build lab
+>   make docker-build
 >   ```
 >   The image bundles the pinned SQLite `3.53.4` source tree, the compiled SQLite C tools (`sqlite3`, `showwal`, `dbhash`; Experiment 2.1 cross-checks its header decode against the `sqlite3` CLI's `.dbinfo` command), `strace`, and the DuckDB CLI that renders each experiment's CSV results as a walkthrough.
-> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered walkthrough; add `-i` (`go run ./cmd/course run -i 2.2`) to stay in the DuckDB shell afterwards with all result tables loaded:
+> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered walkthrough; add `-i` (`make run EXP=2.2 ARGS='-i'`) to stay in the DuckDB shell afterwards with all result tables loaded:
 >   ```text
->   go run ./cmd/course run 2.1
->   go run ./cmd/course run 2.2
->   go run ./cmd/course run 2.3
+>   make run EXP=2.1
+>   make run EXP=2.2
+>   make run EXP=2.3
 >   ```
 >   Inside the container, scratch databases and CSV tables are written under `/work/2.1/`, `/work/2.2/`, and `/work/2.3/` (the Docker `lab-work` volume). When run directly on the host, they go under `_work/2.1/`, `_work/2.2/`, and `_work/2.3/`, which are git-ignored and safe to delete.
-> - **Running an experiment directly:** Each experiment is an ordinary Go program (`go run ./ch02-file-format-and-pages/experiments/2.2-page-census`). Run directly on the host, it prints only its verdict and writes its CSV tables under `_work/2.2/results/`. Experiment 2.1's `.dbinfo` cross-check then requires a matching `sqlite3` CLI on the host (`go run ./cmd/course fetch-source` to fetch the pinned SQLite source, then `go run ./cmd/course build-tools` to compile the C tools). If no `sqlite3` CLI is found anywhere, Experiment 2.1 still runs, prints `NO-CLI:`, and leaves the `.dbinfo` column as `?`. If `$SQLITE3_BIN` names a missing path or any discovered CLI reports a different `sqlite_source_id()`, Experiment 2.1 fails with exit status 1.
+> - **Running an experiment directly:** Each experiment is an ordinary Go program (`make run-native EXP=2.2`). Run directly on the host, it prints only its verdict and writes its CSV tables under `_work/2.2/results/`. Experiment 2.1's `.dbinfo` cross-check then requires a matching `sqlite3` CLI on the host (`make fetch-source` to fetch the pinned SQLite source, then `make build-tools` to compile the C tools). If no `sqlite3` CLI is found anywhere, Experiment 2.1 still runs, prints `NO-CLI:`, and leaves the `.dbinfo` column as `?`. If `$SQLITE3_BIN` names a missing path or any discovered CLI reports a different `sqlite_source_id()`, Experiment 2.1 fails with exit status 1.
 > - **Cross-platform notes and macOS:** Nothing in Chapter 2 is **Linux only** (no `strace`, no `/proc`). Experiment 2.2 part E creates and deletes a 1 GiB **sparse file** (a file whose unwritten middle is recorded as a hole rather than allocated disk blocks; APFS on macOS also supports sparse files). On macOS, all three experiments also run directly on the host.
 > - **Measured platform:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26).
 
@@ -105,7 +105,7 @@ This chapter introduces three new shared packages—`internal/dbfile` (read-only
 
 ## 3. Call path
 
-This section walks the pinned SQLite `version-3.53.4` C source for every file-format rule that `internal/dbfile` re-implements. Three files are copied whole into this chapter directory (`btreeInt.h`, `btree.c`, `util.c`); `vdbeaux.c` and `pager.c` are linked in the pinned SQLite source tree (`$SQLITE_SRC` inside the `lab` container, or `_src/sqlite-3.53.4` on the host after `go run ./cmd/course fetch-source`).
+This section walks the pinned SQLite `version-3.53.4` C source for every file-format rule that `internal/dbfile` re-implements. Three files are copied whole into this chapter directory (`btreeInt.h`, `btree.c`, `util.c`); `vdbeaux.c` and `pager.c` are linked in the pinned SQLite source tree (`$SQLITE_SRC` inside the `lab` container, or `_src/sqlite-3.53.4` on the host after `make fetch-source`).
 
 ### 3.1 File-format specification and the 100-byte database header
 
@@ -193,7 +193,7 @@ Behavior differences across SQLite releases relevant to the database file format
 - **Evidence form:** `EXACT` (every stored CSV table must match a fresh run byte for byte).
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the rendered walkthrough; add `-i` to stay in the DuckDB shell afterwards with all result tables loaded):
   ```text
-  go run ./cmd/course run 2.1
+  make run EXP=2.1
   ```
 
 <!-- include: experiments/2.1-header-and-what-a-commit-changes/main.go -->
@@ -1061,7 +1061,7 @@ SELECT requested, byte16, byte17, stored, decoded, sqlite_reports
 FROM page_sizes ORDER BY requested;
 ```
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/2.1-header-and-what-a-commit-changes/`](evidence/2.1-header-and-what-a-commit-changes/), and `go run ./cmd/course check evidence ch02` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/2.1-header-and-what-a-commit-changes/`](evidence/2.1-header-and-what-a-commit-changes/), and `make check ARGS='evidence ch02'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/2.1-header-and-what-a-commit-changes.txt -->
 ```text
@@ -1524,7 +1524,7 @@ This section builds three shared Go packages (`internal/dbfile`, `internal/equal
 
 ### 5.1 The `internal/dbfile` package
 
-`internal/dbfile` parses SQLite database files in pure Go without importing any SQLite driver. Its unit tests and fuzz target live in [`internal/dbfile/dbfile_test.go`](../internal/dbfile/dbfile_test.go) (`go test ./internal/dbfile/` from the repository root). The suite covers varint boundaries, four page sizes (`512`, `1024`, `4096`, `65536`), UTF-16 schemas, local payload boundaries, multi-trunk freelists, auto-vacuum pointer maps, `WITHOUT ROWID` tables, a sparse > 1 GiB lock-byte file, page-header and last-overflow-page corruption, `WALMode()` read-version handling, 3,000 single-bit flips plus 8 truncations (0 panics), and the `FuzzParse` fuzz target.
+`internal/dbfile` parses SQLite database files in pure Go without importing any SQLite driver. Its unit tests and fuzz target live in [`internal/dbfile/dbfile_test.go`](../internal/dbfile/dbfile_test.go) (`make test PACKAGE=./internal/dbfile` from the repository root). The suite covers varint boundaries, four page sizes (`512`, `1024`, `4096`, `65536`), UTF-16 schemas, local payload boundaries, multi-trunk freelists, auto-vacuum pointer maps, `WITHOUT ROWID` tables, a sparse > 1 GiB lock-byte file, page-header and last-overflow-page corruption, `WALMode()` read-version handling, 3,000 single-bit flips plus 8 truncations (0 panics), and the `FuzzParse` fuzz target.
 
 #### `internal/dbfile/errors.go`
 
@@ -3394,7 +3394,7 @@ Edge key: `100` = B-tree header at offset 100 on page 1; `52` = auto-vacuum flag
 
 ### 5.2 The `internal/equal` package
 
-`internal/equal` implements the book's three-level equality ladder (E1 exact bytes, E2 pages ignoring volatile header bytes, and E3 logical schema and row hashes) and its per-page manifest format. Chapter 2 adds level **E1 bytes** (`E1Bytes`); Chapter 3 adds levels E2 and E3 without breaking E1's `Result` type. Unit tests live in [`internal/equal/equal_test.go`](../internal/equal/equal_test.go) (`go test ./internal/equal/`).
+`internal/equal` implements the book's three-level equality ladder (E1 exact bytes, E2 pages ignoring volatile header bytes, and E3 logical schema and row hashes) and its per-page manifest format. Chapter 2 adds level **E1 bytes** (`E1Bytes`); Chapter 3 adds levels E2 and E3 without breaking E1's `Result` type. Unit tests live in [`internal/equal/equal_test.go`](../internal/equal/equal_test.go) (`make test PACKAGE=./internal/equal`).
 
 #### `internal/equal/equal.go`
 
@@ -3777,7 +3777,7 @@ func CompareManifests(a, b Manifest) ManifestDiff {
 
 ### 5.3 The `internal/capture` package
 
-`internal/capture` implements Rebuild Ladder rung **R1 (Pages)** on top of `internal/dbfile` and `internal/equal`. Unit tests live in [`internal/capture/capture_test.go`](../internal/capture/capture_test.go) (`go test ./internal/capture/`).
+`internal/capture` implements Rebuild Ladder rung **R1 (Pages)** on top of `internal/dbfile` and `internal/equal`. Unit tests live in [`internal/capture/capture_test.go`](../internal/capture/capture_test.go) (`make test PACKAGE=./internal/capture`).
 
 #### `internal/capture/capture.go`
 
@@ -4221,7 +4221,7 @@ End to end, a rung R1 capture and verified rebuild pass through these gates:
 - **Scope:** The page census lets a platform account for every byte of a stored database file, and its page walk is reused by rungs R1, R3 (WAL replay), R4 (live snapshot), and R6 (point-in-time restore). Decoding every record type in every kind of table is not needed for page accounting and is out of scope.
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the rendered walkthrough; add `-i` to stay in the DuckDB shell afterwards with all result tables loaded):
   ```text
-  go run ./cmd/course run 2.2
+  make run EXP=2.2
   ```
 
 <!-- include: experiments/2.2-page-census/main.go -->
@@ -5262,7 +5262,7 @@ FROM texts, generate_series(0, (length(text) - 1) // 85) AS g(i)
 ORDER BY CAST(substr(case_no, 2) AS INTEGER), ord, g.i;
 ```
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/2.2-page-census/`](evidence/2.2-page-census/), and `go run ./cmd/course check evidence ch02` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/2.2-page-census/`](evidence/2.2-page-census/), and `make check ARGS='evidence ch02'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/2.2-page-census.txt -->
 ```text
@@ -5943,7 +5943,7 @@ Experiment verdict: CENSUS OK
 - **Evidence form:** `EXACT` (every stored CSV table must match a fresh run byte for byte).
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the rendered walkthrough; add `-i` to stay in the DuckDB shell afterwards with all result tables loaded):
   ```text
-  go run ./cmd/course run 2.3
+  make run EXP=2.3
   ```
 
 <!-- include: experiments/2.3-page-manifest/main.go -->
@@ -6487,7 +6487,7 @@ WHERE scenario = 'D2'
 ORDER BY not_at_rest.seq, g.i;
 ```
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/2.3-page-manifest/`](evidence/2.3-page-manifest/), and `go run ./cmd/course check evidence ch02` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/2.3-page-manifest/`](evidence/2.3-page-manifest/), and `make check ARGS='evidence ch02'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/2.3-page-manifest.txt -->
 ```text

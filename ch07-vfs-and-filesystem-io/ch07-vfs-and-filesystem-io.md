@@ -14,22 +14,22 @@
 >
 > - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to invoke this repository's experiment runner (`cmd/course`) from the host. Build the `lab` container image (`Dockerfile.lab`) once from the repository root:
 >   ```text
->   docker compose build lab
+>   make docker-build
 >   ```
 >   The image bundles the pinned SQLite `3.53.4` source tree, the compiled SQLite C tools (`sqlite3`, `showwal`—SQLite's WAL dump utility—and `dbhash`, SQLite's logical-content hash tool; Experiments 7.1 and 7.3 invoke the pinned `sqlite3` CLI), `strace` (Experiments 7.1 and 7.2), and the DuckDB CLI that renders each experiment's CSV tables as a walkthrough.
 > - **Start SeaweedFS** (optional; required only for the `-s3` route of Experiment 7.4, using the local S3-compatible store defined in `compose.yaml`):
 >   ```text
->   docker compose up -d seaweedfs
+>   make docker-up
 >   ```
-> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`go run ./cmd/course run -i 7.1`) to stay in the DuckDB shell afterwards with all tables loaded:
+> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`make run EXP=7.1 ARGS='-i'`) to stay in the DuckDB shell afterwards with all tables loaded:
 >   ```text
->   go run ./cmd/course run 7.1
->   go run ./cmd/course run 7.2
->   go run ./cmd/course run 7.3
->   go run ./cmd/course run 7.4
+>   make run EXP=7.1
+>   make run EXP=7.2
+>   make run EXP=7.3
+>   make run EXP=7.4
 >   ```
->   `go run ./cmd/course run 7.4` runs the default HTTP route. Because `course run` cannot pass experiment flags, run the `-s3` route directly in the container (where `http://seaweedfs:8333` is preconfigured): `docker compose run --rm lab go run ./ch07-vfs-and-filesystem-io/experiments/7.4-read-only-snapshot-vfs -s3`. Inside the container, scratch databases and result tables are written under `/work/7.1/` through `/work/7.4/` (the Docker `lab-work` volume); when run directly on the host, they go under `_work/7.1/` through `_work/7.4/`, which are git-ignored and safe to delete.
-> - **Running an experiment directly:** Each experiment is an ordinary Go program (`go run ./ch07-vfs-and-filesystem-io/experiments/7.3-go-vfs-shim`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/7.3/results/`; Experiments 7.1 and 7.3 then require the pinned `sqlite3` CLI on the host (`go run ./cmd/course fetch-source`, then `go run ./cmd/course build-tools`).
+>   `make run EXP=7.4` runs the default HTTP route. Because `course run` cannot pass experiment flags, run the `-s3` route directly in the container (where `http://seaweedfs:8333` is preconfigured): `make docker-run-raw EXP=7.4 ARGS='-s3'`. Inside the container, scratch databases and result tables are written under `/work/7.1/` through `/work/7.4/` (the Docker `lab-work` volume); when run directly on the host, they go under `_work/7.1/` through `_work/7.4/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** Each experiment is an ordinary Go program (`make run-native EXP=7.3`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/7.3/results/`; Experiments 7.1 and 7.3 then require the pinned `sqlite3` CLI on the host (`make fetch-source`, then `make build-tools`).
 > - **Linux-only experiments on macOS:** Experiments 7.1 (merged syscall stream) and 7.2 (strace I/O counting) are **Linux only** because they use `strace`; `course run` runs them in full inside the Linux `lab` container. Run directly on macOS, Experiment 7.1 records the CLI `-vfstrace` call list without syscalls, and Experiment 7.2 runs its 12 workloads uncounted. Experiments 7.3 and 7.4 do not use `strace` and run natively on Linux and macOS.
 > - **Measurement environment:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26; its `./configure` CLI build calls `fdatasync`). macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; `internal/govfs`'s startup self-check and unit tests were not run on macOS.
 
@@ -279,7 +279,7 @@ Behavior differences across SQLite releases relevant to the VFS layer (from this
 
 - **Claim:** Every byte SQLite reads or writes passes through a VFS method, and each VFS call maps to a specific `os_unix.c` function and specific kernel syscalls. At SQLite's default `PRAGMA mmap_size=0`, every `xRead` executes one `pread64` and every `xWrite` executes one `pwrite64` at the exact same file, offset, and length. No `pread64`, `pwrite64`, `read`, `write`, or `writev` on database, journal, WAL, or shm files occurs outside `xRead`, `xWrite`, or `xShmMap`. Every `xSync` executes one `fsync`/`fdatasync` of its own file, the parent directory is synced once inside the first `xSync` of a newly created `-journal` or `-wal`, and `-wal`/`-shm` are created on first use and unlinked on last close.
 - **Evidence form:** `EXACT` (every stored table must match identically on every run; the run-dependent `info` tables are excluded).
-- **Platform:** **Linux only** for the merged syscall stream (`strace`). Requires the pinned `sqlite3` CLI (`go run ./cmd/course build-tools`). Run directly on macOS, the program records the CLI `-vfstrace` call list without syscalls; `course run` runs the full Linux experiment in the `lab` container.
+- **Platform:** **Linux only** for the merged syscall stream (`strace`). Requires the pinned `sqlite3` CLI (`make build-tools`). Run directly on macOS, the program records the CLI `-vfstrace` call list without syscalls; `course run` runs the full Linux experiment in the `lab` container.
 
 <!-- include: experiments/7.1-vfs-calls-to-syscalls/main.go -->
 ```go
@@ -889,14 +889,14 @@ SELECT name FROM files_left ORDER BY name;
 Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 7.1
+make run EXP=7.1
 ```
 
-Add `-i` (`go run ./cmd/course run -i 7.1`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+Add `-i` (`make run EXP=7.1 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
 `course run` also prints the run-dependent values, which are not part of the stored evidence: where the CLI build first asked the VFS for random bytes (`xRandomness`).
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/7.1-vfs-calls-to-syscalls/`](evidence/7.1-vfs-calls-to-syscalls/), and `go run ./cmd/course check evidence ch07` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/7.1-vfs-calls-to-syscalls/`](evidence/7.1-vfs-calls-to-syscalls/), and `make check ARGS='evidence ch07'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/7.1-vfs-calls-to-syscalls.txt -->
 ```text
@@ -2141,12 +2141,12 @@ ORDER BY cell;
 Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 7.2
+make run EXP=7.2
 ```
 
-Add `-i` (`go run ./cmd/course run -i 7.2`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+Add `-i` (`make run EXP=7.2 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/7.2-io-cost-by-pattern/`](evidence/7.2-io-cost-by-pattern/), and `go run ./cmd/course check evidence ch07` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/7.2-io-cost-by-pattern/`](evidence/7.2-io-cost-by-pattern/), and `make check ARGS='evidence ch07'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/7.2-io-cost-by-pattern.txt -->
 ```text
@@ -2341,7 +2341,7 @@ Experiment verdict: IO COST BY PATTERN OK
 
 ### 5.2 Shared package `internal/govfs`
 
-`internal/govfs` registers a pure-Go forwarding VFS shim on top of `modernc.org/sqlite`'s default `"unix"` VFS with no **cgo** (Go's C foreign-function bridge) and no custom C. It intercepts all 9 filesystem-level VFS methods and all 18 per-file `sqlite3_io_methods` slots (versions 1–3), records every call in memory, and injects single-shot errors on `xRead`, `xWrite`, `xSync`, or `xTruncate`. Its unit tests live in [`internal/govfs/govfs_test.go`](../internal/govfs/govfs_test.go), [`internal/govfs/inject_test.go`](../internal/govfs/inject_test.go), [`internal/govfs/vfsname_test.go`](../internal/govfs/vfsname_test.go), and [`internal/govfs/signature_test.go`](../internal/govfs/signature_test.go) (`go test ./internal/govfs/`).
+`internal/govfs` registers a pure-Go forwarding VFS shim on top of `modernc.org/sqlite`'s default `"unix"` VFS with no **cgo** (Go's C foreign-function bridge) and no custom C. It intercepts all 9 filesystem-level VFS methods and all 18 per-file `sqlite3_io_methods` slots (versions 1–3), records every call in memory, and injects single-shot errors on `xRead`, `xWrite`, `xSync`, or `xTruncate`. Its unit tests live in [`internal/govfs/govfs_test.go`](../internal/govfs/govfs_test.go), [`internal/govfs/inject_test.go`](../internal/govfs/inject_test.go), [`internal/govfs/vfsname_test.go`](../internal/govfs/vfsname_test.go), and [`internal/govfs/signature_test.go`](../internal/govfs/signature_test.go) (`make test PACKAGE=./internal/govfs`).
 
 #### `internal/govfs/cfunc.go`
 
@@ -3829,7 +3829,7 @@ func ForwardTargets() []Target {
   - **Part A (in-process VFS parity):** Through `internal/govfs`, the Go driver's VFS calls for one committed `INSERT` match the C CLI's `-vfstrace` call for call—same methods, order, files, offsets, lengths, lock levels, shared-memory slots, file controls, and sync labels—in `delete/NORMAL`, `delete/FULL`, `wal/NORMAL`, and `wal/FULL`, while revealing that SQLite passes `SQLITE_SYNC_NORMAL` (`0x2`) to every `xSync` in all default configurations.
   - **Part B (deterministic I/O fault injection):** Failing the N-th `xWrite` or `xSync` of a multi-statement recipe commit with `SQLITE_IOERR` (`10`), for every N from 1 through the commit's call count, in both WAL and `DELETE` modes at `synchronous=FULL`, makes the transaction fail and leaves the database passing `integrity_check` and byte-identical to the pre-step recipe state (step 3).
 - **Evidence form:** `EXACT` (every stored table must match on every run).
-- **Platform:** Portable (no `strace`; Part A needs the pinned `sqlite3` CLI, which the `lab` container includes; run directly on the host it needs `go run ./cmd/course build-tools`). Measured in the Debian `lab` container; macOS was cross-built and cross-vetted only.
+- **Platform:** Portable (no `strace`; Part A needs the pinned `sqlite3` CLI, which the `lab` container includes; run directly on the host it needs `make build-tools`). Measured in the Debian `lab` container; macOS was cross-built and cross-vetted only.
 
 <!-- include: experiments/7.3-go-vfs-shim/main.go -->
 ```go
@@ -4584,12 +4584,12 @@ ORDER BY journal DESC, method DESC, n;
 Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 7.3
+make run EXP=7.3
 ```
 
-Add `-i` (`go run ./cmd/course run -i 7.3`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+Add `-i` (`make run EXP=7.3 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/7.3-go-vfs-shim/`](evidence/7.3-go-vfs-shim/), and `go run ./cmd/course check evidence ch07` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/7.3-go-vfs-shim/`](evidence/7.3-go-vfs-shim/), and `make check ARGS='evidence ch07'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/7.3-go-vfs-shim.txt -->
 ```text
@@ -5038,7 +5038,7 @@ Experiment verdict: GO VFS SHIM OK
 
 ### 5.4 Shared package `internal/rangefs`
 
-`internal/rangefs` adapts any byte-range object store (`HTTPSource` or `S3Source`) into a read-only Go `io/fs.FS` and `fs.StatFS` that logs every metadata lookup and byte-range read. Passed to `modernc.org/sqlite/vfs.New`, it lets SQLite query a remote snapshot page by page with no local copy, no caching, and no read-ahead. Its unit tests live in [`internal/rangefs/rangefs_test.go`](../internal/rangefs/rangefs_test.go) and [`internal/rangefs/edge_test.go`](../internal/rangefs/edge_test.go) (`go test ./internal/rangefs/`).
+`internal/rangefs` adapts any byte-range object store (`HTTPSource` or `S3Source`) into a read-only Go `io/fs.FS` and `fs.StatFS` that logs every metadata lookup and byte-range read. Passed to `modernc.org/sqlite/vfs.New`, it lets SQLite query a remote snapshot page by page with no local copy, no caching, and no read-ahead. Its unit tests live in [`internal/rangefs/rangefs_test.go`](../internal/rangefs/rangefs_test.go) and [`internal/rangefs/edge_test.go`](../internal/rangefs/edge_test.go) (`make test PACKAGE=./internal/rangefs`).
 
 #### `internal/rangefs/rangefs.go`
 
@@ -5575,8 +5575,8 @@ func (s S3Source) ReadRange(ctx context.Context, name string, offset int64, p []
 ### 5.5 Experiment 7.4 — Read-only snapshot VFS over HTTP and S3 (`7.4-read-only-snapshot-vfs`)
 
 - **Claim:** A fully checkpointed 30-step WAL recipe snapshot (`1,105,920` bytes, `270` pages) can be queried remotely through `modernc.org/sqlite/vfs` + `internal/rangefs` over HTTP or S3/SeaweedFS with results identical to the local file. Each query pays one range request per page miss (no read-ahead) and zero requests on repeat queries whose working set still fits in the connection's page cache (`immutable=1` keeps cached pages valid, not pinned; shrinking `cache_size=4` forces re-fetches of evicted pages). Both `immutable=1` and a fully checkpointed, truly immutable object are mandatory for WAL-format snapshots: omitting `immutable=1` fails with `SQLITE_CANTOPEN` (14), publishing an uncheckpointed database alongside its `-wal` silently serves stale pre-WAL data under `immutable=1`, and overwriting an object key in place behind an open `immutable=1` connection produces `SQLITE_CORRUPT` (`11`).
-- **Evidence form:** `EXACT` (every stored table must match on every run). The checked evidence is the HTTP route; the `-s3` walkthrough below differs from it only in the route tables and is not checked by `go run ./cmd/course check evidence ch07`.
-- **Platform:** Portable (no `strace`). Default HTTP route runs everywhere with no services. The `-s3` route requires SeaweedFS (`docker compose up -d seaweedfs`) and runs directly in the `lab` container because `course run` cannot pass experiment flags.
+- **Evidence form:** `EXACT` (every stored table must match on every run). The checked evidence is the HTTP route; the `-s3` walkthrough below differs from it only in the route tables and is not checked by `make check ARGS='evidence ch07'`.
+- **Platform:** Portable (no `strace`). Default HTTP route runs everywhere with no services. The `-s3` route requires SeaweedFS (`make docker-up`) and runs directly in the `lab` container because `course run` cannot pass experiment flags.
 
 <!-- include: experiments/7.4-read-only-snapshot-vfs/main.go -->
 ```go
@@ -6418,18 +6418,18 @@ ORDER BY 1;
 Run from the repository root (HTTP route, always runnable; this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 7.4
+make run EXP=7.4
 ```
 
-Add `-i` (`go run ./cmd/course run -i 7.4`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+Add `-i` (`make run EXP=7.4 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
-Run against SeaweedFS S3 (after `docker compose up -d seaweedfs`) directly in the container; it prints only its verdict and leaves its tables in the container's work directory:
+Run against SeaweedFS S3 (after `make docker-up`) directly in the container; it prints only its verdict and leaves its tables in the container's work directory:
 
 ```text
-docker compose run --rm lab go run ./ch07-vfs-and-filesystem-io/experiments/7.4-read-only-snapshot-vfs -s3
+make docker-run-raw EXP=7.4 ARGS='-s3'
 ```
 
-Captured evidence — HTTP route: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/7.4-read-only-snapshot-vfs/`](evidence/7.4-read-only-snapshot-vfs/), and `go run ./cmd/course check evidence ch07` compares a fresh run with them byte for byte.
+Captured evidence — HTTP route: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/7.4-read-only-snapshot-vfs/`](evidence/7.4-read-only-snapshot-vfs/), and `make check ARGS='evidence ch07'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/7.4-read-only-snapshot-vfs.txt -->
 ```text

@@ -14,17 +14,17 @@
 >
 > - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to invoke this repository's experiment runner (`cmd/course`) from the host. Build the `lab` container image (`Dockerfile.lab`) once, from the repository root:
 >   ```text
->   docker compose build lab
+>   make docker-build
 >   ```
 >   The image bundles the pinned SQLite `3.53.4` source tree, the compiled SQLite C tools (`sqlite3`, `showwal`, and `dbhash` in `/opt/course-tools/bin`; `dbhash` computes a logical SHA-1 digest of a database and backs Experiment 3.3's `dbhash` cross-check column), `strace`, and the DuckDB CLI that renders each experiment's CSV results as a walkthrough.
-> - **Run the experiments** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered walkthrough; add `-i` (`go run ./cmd/course run -i 3.1`) to stay in the DuckDB shell afterwards with all result tables loaded:
+> - **Run the experiments** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered walkthrough; add `-i` (`make run EXP=3.1 ARGS='-i'`) to stay in the DuckDB shell afterwards with all result tables loaded:
 >   ```text
->   go run ./cmd/course run 3.1
->   go run ./cmd/course run 3.2
->   go run ./cmd/course run 3.3
+>   make run EXP=3.1
+>   make run EXP=3.2
+>   make run EXP=3.3
 >   ```
 >   Inside the container, scratch databases and CSV tables are written under `/work/3.1/`, `/work/3.2/`, and `/work/3.3/` (the Docker `lab-work` volume). When run directly on the host, they go under `_work/3.1/`, `_work/3.2/`, and `_work/3.3/`, which are git-ignored and safe to delete.
-> - **Running an experiment directly:** Each experiment is an ordinary Go program (`go run ./ch03-btrees-and-page-management/experiments/3.1-pages-per-insert`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/3.1/results/`. Nothing in Chapter 3 is Linux-only (no `strace`, no `/proc`, and no required `sqlite3` CLI), so all three experiments run in full on macOS too. Experiment 3.3's `dbhash` column then needs `_tools/bin/dbhash` (`go run ./cmd/course fetch-source` to fetch the pinned SQLite source tree, then `go run ./cmd/course build-tools` to compile the C tools, which requires a C compiler such as Xcode Command Line Tools); without it, Experiment 3.3 prints a `NO-DBHASH:` line, skips the `dbhash` checks, and still exits 0.
+> - **Running an experiment directly:** Each experiment is an ordinary Go program (`make run-native EXP=3.1`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/3.1/results/`. Nothing in Chapter 3 is Linux-only (no `strace`, no `/proc`, and no required `sqlite3` CLI), so all three experiments run in full on macOS too. Experiment 3.3's `dbhash` column then needs `_tools/bin/dbhash` (`make fetch-source` to fetch the pinned SQLite source tree, then `make build-tools` to compile the C tools, which requires a C compiler such as Xcode Command Line Tools); without it, Experiment 3.3 prints a `NO-DBHASH:` line, skips the `dbhash` checks, and still exits 0.
 > - **Measured platform:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26).
 
 ---
@@ -116,7 +116,7 @@ Chapter 2 introduced `internal/equal` with level E1 and page manifests in [`inte
 
 ## 3. Call path
 
-All source citations below are at tag `version-3.53.4`. Two files are copied whole into this chapter directory: [`btree.c`](btree.c) and [`btreeInt.h`](btreeInt.h), verified by `SOURCES.sha256` against the pinned SQLite source tree (`$SQLITE_SRC` inside the `lab` container, or `_src/sqlite-3.53.4` on the host after `go run ./cmd/course fetch-source`). Four additional files cited for specific functions—`pager.c`, `backup.c`, `vacuum.c`, and `tool/dbhash.c`—are linked in that pinned tree. Every line span below is listed in [`SPANS.txt`](SPANS.txt) (this chapter's cited-span manifest) and verified against the pinned source by `go run ./cmd/course check spans ch03`.
+All source citations below are at tag `version-3.53.4`. Two files are copied whole into this chapter directory: [`btree.c`](btree.c) and [`btreeInt.h`](btreeInt.h), verified by `SOURCES.sha256` against the pinned SQLite source tree (`$SQLITE_SRC` inside the `lab` container, or `_src/sqlite-3.53.4` on the host after `make fetch-source`). Four additional files cited for specific functions—`pager.c`, `backup.c`, `vacuum.c`, and `tool/dbhash.c`—are linked in that pinned tree. Every line span below is listed in [`SPANS.txt`](SPANS.txt) (this chapter's cited-span manifest) and verified against the pinned source by `make check ARGS='spans ch03'`.
 
 ### 3.1 Cells, freeblocks, and page space
 
@@ -1413,12 +1413,12 @@ ORDER BY w.seq, e.pages_changed;
 Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 3.1
+make run EXP=3.1
 ```
 
-Add `-i` (`go run ./cmd/course run -i 3.1`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+Add `-i` (`make run EXP=3.1 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/3.1-pages-per-insert/`](evidence/3.1-pages-per-insert/), and `go run ./cmd/course check evidence ch03` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/3.1-pages-per-insert/`](evidence/3.1-pages-per-insert/), and `make check ARGS='evidence ch03'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/3.1-pages-per-insert.txt -->
 ```text
@@ -3807,12 +3807,12 @@ SELECT location, rows_readable, rows_total FROM wal_residue ORDER BY seq;
 Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 3.2
+make run EXP=3.2
 ```
 
-Add `-i` (`go run ./cmd/course run -i 3.2`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+Add `-i` (`make run EXP=3.2 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/3.2-delete-and-reuse/`](evidence/3.2-delete-and-reuse/), and `go run ./cmd/course check evidence ch03` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/3.2-delete-and-reuse/`](evidence/3.2-delete-and-reuse/), and `make check ARGS='evidence ch03'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/3.2-delete-and-reuse.txt -->
 ```text
@@ -5131,12 +5131,12 @@ ORDER BY l.seq;
 Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 3.3
+make run EXP=3.3
 ```
 
-Add `-i` (`go run ./cmd/course run -i 3.3`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+Add `-i` (`make run EXP=3.3 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/3.3-same-rows-different-bytes/`](evidence/3.3-same-rows-different-bytes/), and `go run ./cmd/course check evidence ch03` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/3.3-same-rows-different-bytes/`](evidence/3.3-same-rows-different-bytes/), and `make check ARGS='evidence ch03'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/3.3-same-rows-different-bytes.txt -->
 ```text

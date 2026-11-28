@@ -56,39 +56,39 @@ Prerequisites:
 Build the container image once from the repository root:
 
 ```text
-docker compose build lab
+make docker-build
 ```
 
 Run an experiment by its chapter and experiment number (for example, the first experiment in Chapter 3):
 
 ```text
-go run ./cmd/course run 3.1
+make run EXP=3.1
 ```
 
 - The command starts a temporary `lab` container with this repository mounted at `/src`, runs the experiment there, and prints a walkthrough of its results: short explanations, each followed by a table.
 - Each experiment program writes its measurements as CSV tables and prints only a verdict line; the runner then executes the DuckDB script `report.sql` next to `main.go` to render the walkthrough.
-- Add `-i` (`go run ./cmd/course run -i 3.1`) to stay in the DuckDB shell afterwards, with every table loaded, and run your own queries.
-- Without Go on the host, run the same command inside the container: `docker compose run --rm lab go run ./cmd/course run 3.1`.
+- Add `-i` (`make run EXP=3.1 ARGS='-i'`) to stay in the DuckDB shell afterwards, with every table loaded, and run your own queries.
+- Without Go on the host, run the same command inside the container: `make docker-run EXP=3.1`.
 
 For Chapter 10 (and Experiment 7.4 with `-s3`), start the local SeaweedFS container first:
 
 ```text
-docker compose up -d seaweedfs
-go run ./cmd/course run 10.1
+make docker-up
+make run EXP=10.1
 ```
 
-`docker compose up -d seaweedfs` starts SeaweedFS in the background and publishes its S3 API on host port `18333` (overridable with `COURSE_S3_HOST_PORT`). Inside the `lab` container, `COURSE_S3_ENDPOINT` is preconfigured to reach SeaweedFS.
+`make docker-up` starts SeaweedFS in the background and publishes its S3 API on host port `18333` (overridable with `COURSE_S3_HOST_PORT`). Inside the `lab` container, `COURSE_S3_ENDPOINT` is preconfigured to reach SeaweedFS.
 
 ### Running an experiment without the container
 
 Every package in this repository compiles and passes `go vet` on Linux and macOS. Because each experiment is an ordinary Go program, you can run it directly on the host:
 
 ```text
-go run ./ch03-btrees-and-page-management/experiments/3.1-pages-per-insert
+make run-native EXP=3.1
 ```
 
 - Run this way, the experiment prints its verdict and leaves its CSV tables under `_work/<experiment>/results/` (git-ignored and safe to delete) without running the DuckDB walkthrough.
-- Experiments that cross-check against SQLite's C tools require those tools on the host. Run `go run ./cmd/course fetch-source` to clone and verify SQLite `version-3.53.4` into `_src/sqlite-3.53.4`, then run `go run ./cmd/course build-tools` to compile `sqlite3`, `showwal`, and `dbhash` into `_tools/bin/`.
+- Experiments that cross-check against SQLite's C tools require those tools on the host. Run `make fetch-source` to clone and verify SQLite `version-3.53.4` into `_src/sqlite-3.53.4`, then run `make build-tools` to compile `sqlite3`, `showwal`, and `dbhash` into `_tools/bin/`.
 - Experiments that trace syscalls with `strace` (`1.2`, `4.1`, `7.1`, `7.2`, `8.1`, `9.2`, `10.2` Part A) or inspect `/proc` (`4.2` Part E, `6.1` `/proc/locks`, `8.2` open file-descriptor target names) are gated by Go build tags: on macOS they print a `LINUX-ONLY:` notice and skip the Linux-specific section. The container runs them in full.
 
 ## Repository layout
@@ -98,4 +98,4 @@ go run ./ch03-btrees-and-page-management/experiments/3.1-pages-per-insert
 - **Course outline and specification:** [OUTLINE.md](OUTLINE.md) records the chapter plan, technical decisions (the SQLite pin, pure-Go driver, and SeaweedFS store), and project constraints; [docs/course-source.md](docs/course-source.md) holds the original course specification.
 - **Research reports and chapter findings:** [docs/knowledge/](docs/knowledge/) holds the SQLite C source inventories (mapping functions and structs to file and line spans), technical feasibility probes, and per-chapter verified findings.
 - **Working and adversarial scripts:** [agent_work/INDEX.md](agent_work/INDEX.md) indexes every probe, build note, and adversarial falsification script (edge-case tests that try to break each chapter's claims) under `agent_work/`.
-- **Course CLI and checks:** [cmd/course/](cmd/course/) is the repository Go tool that builds and verifies the static site (`go run ./cmd/course site -check -base /walfleet/`), runs experiments (`run`), synchronizes Go code snippets inlined in the chapter Markdown (`inline`), and checks copied C sources, line spans, Go formatting, saved evidence, and Markdown paths (`check all`).
+- **Course CLI and checks:** [cmd/course/](cmd/course/) is the repository Go tool that builds and verifies the static site (`make site ARGS='-check -base /walfleet/'`), runs experiments (`run`), synchronizes Go code snippets inlined in the chapter Markdown (`inline`), and checks copied C sources, line spans, Go formatting, saved evidence, and Markdown paths (`check all`).

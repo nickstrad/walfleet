@@ -14,16 +14,16 @@
 >
 > - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to invoke this repository's experiment runner (`cmd/course`) from the host. Build the `lab` container image (`Dockerfile.lab`) once from the repository root:
 >   ```text
->   docker compose build lab
+>   make docker-build
 >   ```
 >   The image bundles the pinned SQLite `3.53.4` source tree, the compiled SQLite C tools (`sqlite3`, `showwal`, and `dbhash`; Experiment 4.1's C-vs-Go twin check uses the C `sqlite3` CLI), `strace`, and the DuckDB CLI that renders each experiment's CSV results as a walkthrough.
-> - **Run the experiments** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`go run ./cmd/course run -i 4.1`) to stay in the DuckDB shell afterwards with all tables loaded:
+> - **Run the experiments** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`make run EXP=4.1 ARGS='-i'`) to stay in the DuckDB shell afterwards with all tables loaded:
 >   ```text
->   go run ./cmd/course run 4.1
->   go run ./cmd/course run 4.2
+>   make run EXP=4.1
+>   make run EXP=4.2
 >   ```
 >   Inside the container, scratch databases and result tables are written under `/work/4.1/` and `/work/4.2/` (the Docker `lab-work` volume). When run directly on the host, they go under `_work/4.1/` and `_work/4.2/`, which are git-ignored and safe to delete.
-> - **Running an experiment directly:** Each experiment is an ordinary Go program (`go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/4.2/results/`. Experiment 4.1's C-vs-Go twin check then needs the C `sqlite3` CLI on the host (`go run ./cmd/course fetch-source` to clone and verify the pinned SQLite source tree, then `go run ./cmd/course build-tools` to compile the C tools). Because `course run` does not forward experiment flags, flag variants such as Experiment 4.1's `-step` run directly inside the container: `docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-journal -step 3`.
+> - **Running an experiment directly:** Each experiment is an ordinary Go program (`make run-native EXP=4.2`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/4.2/results/`. Experiment 4.1's C-vs-Go twin check then needs the C `sqlite3` CLI on the host (`make fetch-source` to clone and verify the pinned SQLite source tree, then `make build-tools` to compile the C tools). Because `course run` does not forward experiment flags, flag variants such as Experiment 4.1's `-step` run directly inside the container: `make docker-run-raw EXP=4.1 ARGS='-step 3'`.
 > - **Linux-only notes and the macOS route:**
 >   - **Experiment 4.1** relies on Linux `strace` (including `--inject=...:signal=SIGKILL`) for Part A's traced children and Parts D, D2, E, and F (**Linux only**). `course run` runs it in full in the Linux `lab` container. On macOS, running the package directly executes Part A's portable header checks, Part B, and Part C (decoding the live rollback journal with `internal/journalfile`), prints a `LINUX-ONLY:` notice, and commits the step in-process at `FULL`, `NORMAL`, and `OFF`.
 >   - **Experiment 4.2** is portable. On Linux it reads `/proc/self/status` for total resident memory (`VmRSS`) and its breakdown into anonymous (`RssAnon`), file-backed (`RssFile`), and shared (`RssShmem`) memory. On macOS it falls back to `ps -o rss= -p <pid>`, reporting total RSS only; the anonymous-versus-file-backed check in Part E is **Linux only** and is skipped there.
@@ -401,9 +401,9 @@ Behavior differences across SQLite releases that affect the pager and page cache
 - **Linux only (Part A's traced children, plus Parts D, D2, E, and F):** `course run` runs them in the Linux `lab` container.
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment, and prints its DuckDB walkthrough; add `-i` to stay in DuckDB afterwards with all tables loaded):
   ```text
-  go run ./cmd/course run 4.1
+  make run EXP=4.1
   ```
-  Optional flags: `-step 3` (traced and killed recipe step), `-exact-step 1` (freelist-free step; `0` skips Part D2), `-workers 4` (parallel kill workers). Because `course run` does not forward experiment flags, run flag variants directly inside the container—for example, `docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-journal -exact-step 0`.
+  Optional flags: `-step 3` (traced and killed recipe step), `-exact-step 1` (freelist-free step; `0` skips Part D2), `-workers 4` (parallel kill workers). Because `course run` does not forward experiment flags, run flag variants directly inside the container—for example, `make docker-run-raw EXP=4.1 ARGS='-exact-step 0'`.
 
 <!-- include: experiments/4.1-atomic-commit-and-hot-journal/main.go -->
 ```go
@@ -2443,7 +2443,7 @@ FROM journals WHERE part = 'F' ORDER BY seq;
 
 #### Captured evidence (`4.1-atomic-commit-and-hot-journal.txt`)
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/4.1-atomic-commit-and-hot-journal/`](evidence/4.1-atomic-commit-and-hot-journal/), and `go run ./cmd/course check evidence ch04` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/4.1-atomic-commit-and-hot-journal/`](evidence/4.1-atomic-commit-and-hot-journal/), and `make check ARGS='evidence ch04'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/4.1-atomic-commit-and-hot-journal.txt -->
 ```text
@@ -3823,7 +3823,7 @@ Walk-through of `internal/journalfile`:
 Unit tests and a live test against an open SQLite transaction live in [`internal/journalfile/journalfile_test.go`](../internal/journalfile/journalfile_test.go) and run from the repository root with:
 
 ```text
-go test ./internal/journalfile/
+make test PACKAGE=./internal/journalfile
 ```
 
 ---
@@ -3840,9 +3840,9 @@ go test ./internal/journalfile/
 - **Portable (Linux-only split in Part E):** Runs on Linux and macOS; the `RssFile`/`RssAnon` split in Part E requires `/proc/self/status` (**Linux only**; `course run` runs it in the Linux `lab` container).
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment, and prints its DuckDB walkthrough; add `-i` to stay in DuckDB afterwards with all tables loaded):
   ```text
-  go run ./cmd/course run 4.2
+  make run EXP=4.2
   ```
-  Optional flags: `-n 64` (unbounded connection count), `-k 8` (pool cap), `-cache-size -2000` (must represent a budget of at least `1 MiB`; positive page counts are verified in pages rather than bytes), `-rows 1000` (must be at least `1.2 × max(200, budget pages)` so the database exceeds both the 200-page calibration cache and the requested budget). Because `course run` does not forward experiment flags, run flag variants directly inside the container—for example, `docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget -k 4`.
+  Optional flags: `-n 64` (unbounded connection count), `-k 8` (pool cap), `-cache-size -2000` (must represent a budget of at least `1 MiB`; positive page counts are verified in pages rather than bytes), `-rows 1000` (must be at least `1.2 × max(200, budget pages)` so the database exceeds both the 200-page calibration cache and the requested budget). Because `course run` does not forward experiment flags, run flag variants directly inside the container—for example, `make docker-run-raw EXP=4.2 ARGS='-k 4'`.
 
 <!-- include: experiments/4.2-cache-budget/main.go -->
 ```go
@@ -4736,7 +4736,7 @@ ORDER BY p.seq, c.conn;
 
 #### Captured evidence (`4.2-cache-budget.txt`)
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/4.2-cache-budget/`](evidence/4.2-cache-budget/), and `go run ./cmd/course check evidence ch04` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/4.2-cache-budget/`](evidence/4.2-cache-budget/), and `make check ARGS='evidence ch04'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/4.2-cache-budget.txt -->
 ```text

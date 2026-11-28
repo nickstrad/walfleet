@@ -14,17 +14,17 @@
 >
 > - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to invoke this repository's experiment runner (`cmd/course`) from the host. Build the `lab` container image (`Dockerfile.lab`) once from the repository root:
 >   ```text
->   docker compose build lab
+>   make docker-build
 >   ```
 >   The image bundles the pinned SQLite `3.53.4` source tree (for browsing the linked C files), the compiled SQLite C tools (none of Chapter 8's experiments invokes the C `sqlite3` CLI), `strace` (used for Experiment 8.1's per-phase syscall breakdown), and the DuckDB CLI that renders each experiment's CSV tables as a walkthrough.
-> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`go run ./cmd/course run -i 8.1`) to stay in the DuckDB shell afterwards with all tables loaded:
+> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`make run EXP=8.1 ARGS='-i'`) to stay in the DuckDB shell afterwards with all tables loaded:
 >   ```text
->   go run ./cmd/course run 8.1
->   go run ./cmd/course run 8.2
->   go run ./cmd/course run 8.3
+>   make run EXP=8.1
+>   make run EXP=8.2
+>   make run EXP=8.3
 >   ```
->   Optional flags: Experiment 8.2 accepts `-n` (default `200`, minimum `20`) and `-step` (default `3`); Experiment 8.3 accepts `-dbs` (`1000`), `-k` (`64`), `-ops` (`4000`), `-seed` (`1`), `-max-step` (`4`), `-write-percent` (`20`), `-hot-percent` (`50`), `-cache-size` (`-256`), `-sample-every` (`10`), and `-memory-every` (`100`). Because `course run` cannot pass experiment flags, run a flag variant directly in the container—for example, `docker compose run --rm lab go run ./ch08-connection-and-database-lifecycle/experiments/8.3-bounded-manager -k 32`. Inside the container, scratch databases and result tables are written under `/work/8.1/` through `/work/8.3/` (the Docker `lab-work` volume); when run directly on the host, they go under `_work/8.1/` through `_work/8.3/`, which are git-ignored and safe to delete.
-> - **Running an experiment directly:** Each experiment is an ordinary Go program (`go run ./ch08-connection-and-database-lifecycle/experiments/8.3-bounded-manager`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/8.3/results/`.
+>   Optional flags: Experiment 8.2 accepts `-n` (default `200`, minimum `20`) and `-step` (default `3`); Experiment 8.3 accepts `-dbs` (`1000`), `-k` (`64`), `-ops` (`4000`), `-seed` (`1`), `-max-step` (`4`), `-write-percent` (`20`), `-hot-percent` (`50`), `-cache-size` (`-256`), `-sample-every` (`10`), and `-memory-every` (`100`). Because `course run` cannot pass experiment flags, run a flag variant directly in the container—for example, `make docker-run-raw EXP=8.3 ARGS='-k 32'`. Inside the container, scratch databases and result tables are written under `/work/8.1/` through `/work/8.3/` (the Docker `lab-work` volume); when run directly on the host, they go under `_work/8.1/` through `_work/8.3/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** Each experiment is an ordinary Go program (`make run-native EXP=8.3`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/8.3/results/`.
 > - **Linux-only parts and macOS:** Experiment 8.1's `strace` phase breakdown and Experiment 8.2's descriptor target filenames (`/proc/self/fd` symlinks) are **Linux only**; `course run` runs them in full inside the Linux `lab` container. Run directly on macOS, Experiment 8.1 still measures `SCHEMA_USED` and runs all of Part B, Experiment 8.2 still counts descriptors from `/dev/fd` and reads memory from `ps -o rss= -p <pid>`, and Experiment 8.3 runs natively.
 > - **Measurement environment:** The stored evidence in this chapter, including the `strace` traces and descriptor target names, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). Timings, process memory, and raw `CACHE_USED` bytes vary between runs: `course run` prints them, and they are not part of the stored evidence. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; nothing was run on macOS.
 
@@ -1037,14 +1037,14 @@ SELECT name, pragma, home, header_bytes FROM placements ORDER BY seq;
 Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 8.1
+make run EXP=8.1
 ```
 
-Add `-i` (`go run ./cmd/course run -i 8.1`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+Add `-i` (`make run EXP=8.1 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
 `course run` also prints the run-dependent values, which are not part of the stored evidence: the time of the first statement, per schema.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/8.1-open-cost-and-where-settings-live/`](evidence/8.1-open-cost-and-where-settings-live/), and `go run ./cmd/course check evidence ch08` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/8.1-open-cost-and-where-settings-live/`](evidence/8.1-open-cost-and-where-settings-live/), and `make check ARGS='evidence ch08'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/8.1-open-cost-and-where-settings-live.txt -->
 ```text
@@ -1909,14 +1909,14 @@ ORDER BY seq;
 Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 8.2
+make run EXP=8.2
 ```
 
-Add `-i` (`go run ./cmd/course run -i 8.2`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+Add `-i` (`make run EXP=8.2 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
 `course run` also prints the run-dependent values, which are not part of the stored evidence: `CACHE_USED` of one connection before and after `shrink_memory`, process memory (RSS) at three moments of Part B, and `RLIMIT_NOFILE` as the Go process sees it.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/8.2-idle-cost/`](evidence/8.2-idle-cost/), and `go run ./cmd/course check evidence ch08` compares a fresh run with them byte for byte. The run uses the defaults `-n 200 -step 3`.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/8.2-idle-cost/`](evidence/8.2-idle-cost/), and `make check ARGS='evidence ch08'` compares a fresh run with them byte for byte. The run uses the defaults `-n 200 -step 3`.
 
 <!-- include: evidence/8.2-idle-cost.txt -->
 ```text
@@ -4076,14 +4076,14 @@ ORDER BY min(seq);
 Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 8.3
+make run EXP=8.3
 ```
 
-Add `-i` (`go run ./cmd/course run -i 8.3`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+Add `-i` (`make run EXP=8.3 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
 `course run` also prints the run-dependent values, which are not part of the stored evidence: for each stream run, the peak process-memory growth, the mean warm and cold read latency and the run time, and `RLIMIT_NOFILE` as the Go process sees it.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/8.3-bounded-manager/`](evidence/8.3-bounded-manager/), and `go run ./cmd/course check evidence ch08` compares a fresh run with them byte for byte. The run uses the defaults `-dbs 1000 -k 64 -ops 4000`.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/8.3-bounded-manager/`](evidence/8.3-bounded-manager/), and `make check ARGS='evidence ch08'` compares a fresh run with them byte for byte. The run uses the defaults `-dbs 1000 -k 64 -ops 4000`.
 
 <!-- include: evidence/8.3-bounded-manager.txt -->
 ```text

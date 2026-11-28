@@ -14,18 +14,18 @@
 >
 > - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to invoke this repository's experiment runner (`cmd/course`) from the host. Build the `lab` container image (`Dockerfile.lab`) once from the repository root:
 >   ```text
->   docker compose build lab
+>   make docker-build
 >   ```
 >   The image bundles the pinned SQLite `3.53.4` source tree, the compiled SQLite C tools (`sqlite3`, `showwal`—SQLite's WAL dump utility—and `dbhash`; Experiments 6.1–6.4 use pure Go child processes, and the `sqlite3` CLI is needed only by the standalone cross-build stress-test scripts under `agent_work/ch06/adversarial/`), `strace`, and the DuckDB CLI that renders each experiment's CSV results as a walkthrough.
-> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`go run ./cmd/course run -i 6.1`) to stay in the DuckDB shell afterwards with all tables loaded:
+> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`make run EXP=6.1 ARGS='-i'`) to stay in the DuckDB shell afterwards with all tables loaded:
 >   ```text
->   go run ./cmd/course run 6.1
->   go run ./cmd/course run 6.2
->   go run ./cmd/course run 6.3
->   go run ./cmd/course run 6.4
+>   make run EXP=6.1
+>   make run EXP=6.2
+>   make run EXP=6.3
+>   make run EXP=6.4
 >   ```
->   Experiment 6.4 also accepts `-hold read` (the default, stored as evidence) or `-hold immediate`. Because `course run` cannot pass experiment flags, run the variant directly in the container: `docker compose run --rm lab go run ./ch06-locking-and-concurrency/experiments/6.4-live-snapshot -hold immediate`. Inside the container, scratch databases and result tables are written under `/work/6.1/` through `/work/6.4/` (the Docker `lab-work` volume); when run directly on the host, they go under `_work/6.1/` through `_work/6.4/`, which are git-ignored and safe to delete.
-> - **Running an experiment directly:** Each experiment is an ordinary Go program (`go run ./ch06-locking-and-concurrency/experiments/6.2-busy-rules`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/6.2/results/`.
+>   Experiment 6.4 also accepts `-hold read` (the default, stored as evidence) or `-hold immediate`. Because `course run` cannot pass experiment flags, run the variant directly in the container: `make docker-run-raw EXP=6.4 ARGS='-hold immediate'`. Inside the container, scratch databases and result tables are written under `/work/6.1/` through `/work/6.4/` (the Docker `lab-work` volume); when run directly on the host, they go under `_work/6.1/` through `_work/6.4/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** Each experiment is an ordinary Go program (`make run-native EXP=6.2`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/6.2/results/`.
 > - **Linux only (Experiment 6.1 `/proc/locks` view) and macOS:** Experiment 6.1's `/proc/locks` kernel lock listing (and its 11 `/proc/locks:` checks) is **Linux only**; `course run` runs it in full inside the Linux `lab` container. Run directly on macOS, Experiment 6.1 prints a `LINUX-ONLY:` notice, skips `/proc/locks`, and still runs the portable `fcntl(F_GETLK)` probe and all 32 remaining checks. Experiments 6.2, 6.3, and 6.4 use nothing Linux-specific and also run directly on macOS.
 > - **Measurement environment:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). Process ids and the work directory differ between runs and are excluded from the stored evidence.
 
@@ -202,7 +202,7 @@ Locking behavior differences across SQLite releases (from this repository's C so
 - **Linux only (partial):** The `/proc/locks` listing and its 11 `/proc/locks:` checks run on Linux only; the `fcntl(F_GETLK)` probe and all 32 behavioral checks run on both Linux and macOS. `course run` runs the full Linux version in the `lab` container.
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
-  go run ./cmd/course run 6.1
+  make run EXP=6.1
   ```
 
 <!-- include: experiments/6.1-locks-belong-to-the-process/main.go -->
@@ -786,7 +786,7 @@ SELECT moment, file, state FROM files WHERE part = 'D' ORDER BY seq;
 
 `course run` also prints the run-dependent values, which are not part of the stored evidence: the work directory, `GOOS`, and the process ids of the two children in each part.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/6.1-locks-belong-to-the-process/`](evidence/6.1-locks-belong-to-the-process/), and `go run ./cmd/course check evidence ch06` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/6.1-locks-belong-to-the-process/`](evidence/6.1-locks-belong-to-the-process/), and `make check ARGS='evidence ch06'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/6.1-locks-belong-to-the-process.txt -->
 ```text
@@ -1188,7 +1188,7 @@ Lock bytes on `.db`: `1073741824` (`PENDING`), `1073741825` (`RESERVED`), `10737
 - **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
-  go run ./cmd/course run 6.2
+  make run EXP=6.2
   ```
 
 <!-- include: experiments/6.2-busy-rules/main.go -->
@@ -1632,7 +1632,7 @@ FROM steps WHERE part = 'E' ORDER BY seq;
 SELECT user_version, matched_step, exact FROM recipe_result ORDER BY part;
 ```
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/6.2-busy-rules/`](evidence/6.2-busy-rules/), and `go run ./cmd/course check evidence ch06` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/6.2-busy-rules/`](evidence/6.2-busy-rules/), and `make check ARGS='evidence ch06'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/6.2-busy-rules.txt -->
 ```text
@@ -4302,7 +4302,7 @@ func FileInode(path string) (uint64, error) { return 0, ErrNoProcLocks }
 - **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
-  go run ./cmd/course run 6.3
+  make run EXP=6.3
   ```
 
 <!-- include: experiments/6.3-torn-copy/main.go -->
@@ -4613,7 +4613,7 @@ SELECT n, problem FROM integrity_problems WHERE part = 'B' ORDER BY n;
 
 `course run` also prints the run-dependent values, which are not part of the stored evidence: the work directory, and the size of the database file when the copier copied it.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/6.3-torn-copy/`](evidence/6.3-torn-copy/), and `go run ./cmd/course check evidence ch06` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/6.3-torn-copy/`](evidence/6.3-torn-copy/), and `make check ARGS='evidence ch06'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/6.3-torn-copy.txt -->
 ```text
@@ -4764,9 +4764,9 @@ A live capture works only when it cooperates with SQLite's WAL snapshot mechanis
 - **Evidence form:** `EXACT` (every stored table must match on every run; the run-dependent `info` tables are excluded).
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
-  go run ./cmd/course run 6.4
+  make run EXP=6.4
   ```
-  (To repeat the experiment holding `BEGIN IMMEDIATE` instead of a read transaction, run it directly in the container with `-hold immediate`: `docker compose run --rm lab go run ./ch06-locking-and-concurrency/experiments/6.4-live-snapshot -hold immediate`.)
+  (To repeat the experiment holding `BEGIN IMMEDIATE` instead of a read transaction, run it directly in the container with `-hold immediate`: `make docker-run-raw EXP=6.4 ARGS='-hold immediate'`.)
 
 <!-- include: experiments/6.4-live-snapshot/main.go -->
 ```go
@@ -5202,7 +5202,7 @@ SELECT split_part(name, ' (', 1) AS name, sha256[:16] AS sha256, user_version, m
 SELECT split_part(name, ' (', 1) AS name, integrity FROM databases ORDER BY seq;
 ```
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The walkthrough is of the default `-hold read`. The tables behind it are stored in [`evidence/6.4-live-snapshot/`](evidence/6.4-live-snapshot/), and `go run ./cmd/course check evidence ch06` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The walkthrough is of the default `-hold read`. The tables behind it are stored in [`evidence/6.4-live-snapshot/`](evidence/6.4-live-snapshot/), and `make check ARGS='evidence ch06'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/6.4-live-snapshot.txt -->
 ```text

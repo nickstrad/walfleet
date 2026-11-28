@@ -14,18 +14,18 @@
 >
 > - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to invoke this repository's experiment runner (`cmd/course`) from the host. Build the `lab` container image (`Dockerfile.lab`) once from the repository root:
 >   ```text
->   docker compose build lab
+>   make docker-build
 >   ```
 >   The image bundles the pinned SQLite `3.53.4` source tree (for inspecting the linked C files), the compiled SQLite C tools (none of Chapter 9's four experiments invokes the C `sqlite3` CLI; only the standalone stress-test script `capture-falsify` in Section 6 does, to reproduce CLI `.backup` lock contention), `strace` (used for Experiment 9.2's syscall cross-check and kill sweep), and the DuckDB CLI that renders each experiment's CSV tables as a walkthrough.
-> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`go run ./cmd/course run -i 9.4`) to stay in the DuckDB shell afterwards with all tables loaded:
+> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`make run EXP=9.4 ARGS='-i'`) to stay in the DuckDB shell afterwards with all tables loaded:
 >   ```text
->   go run ./cmd/course run 9.1
->   go run ./cmd/course run 9.2
->   go run ./cmd/course run 9.3
->   go run ./cmd/course run 9.4
+>   make run EXP=9.1
+>   make run EXP=9.2
+>   make run EXP=9.3
+>   make run EXP=9.4
 >   ```
->   Experiment 9.2 also accepts `-portable` to run the non-`strace` path on Linux. Because `course run` cannot pass experiment flags, run that variant directly in the container: `docker compose run --rm lab go run ./ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss -portable`. Inside the container, scratch files and result tables are written under `/work/9.1/` through `/work/9.4/` (the Docker `lab-work` volume); when run directly on the host, they go under `_work/9.1/` through `_work/9.4/`, which are git-ignored and safe to delete.
-> - **Running an experiment directly:** Each experiment is an ordinary Go program (`go run ./ch09-backup-crash-recovery-integrity/experiments/9.4-point-in-time-rebuild`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/9.4/results/`.
+>   Experiment 9.2 also accepts `-portable` to run the non-`strace` path on Linux. Because `course run` cannot pass experiment flags, run that variant directly in the container: `make docker-run-raw EXP=9.2 ARGS='-portable'`. Inside the container, scratch files and result tables are written under `/work/9.1/` through `/work/9.4/` (the Docker `lab-work` volume); when run directly on the host, they go under `_work/9.1/` through `_work/9.4/`, which are git-ignored and safe to delete.
+> - **Running an experiment directly:** Each experiment is an ordinary Go program (`make run-native EXP=9.4`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/9.4/results/`.
 > - **Linux-only parts and macOS:** Experiments 9.1, 9.3, and 9.4, plus `internal/walship` and Experiment 9.2's power-cut model (Part B's rule calculation and recovery), are portable. Experiment 9.2's `strace` confirmation of synced bytes (Part B) and syscall kill sweep (Part A) are **Linux only**; `course run` runs them in full inside the Linux `lab` container. Run directly on macOS, Experiment 9.2 runs the process-crash test and the rule-based power-cut model natively and prints `LINUX-ONLY:` notices for the `strace` parts.
 > - **Measurement environment:** The stored evidence in this chapter, including the `strace` counts and kill sweeps, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; nothing was run on macOS.
 
@@ -966,12 +966,12 @@ SELECT method, blocks_the_writer FROM summary ORDER BY seq;
 Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 9.1
+make run EXP=9.1
 ```
 
-Add `-i` (`go run ./cmd/course run -i 9.1`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+Add `-i` (`make run EXP=9.1 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it are stored in [`evidence/9.1-capture-comparison/`](evidence/9.1-capture-comparison/), and this repository's evidence checker (`go run ./cmd/course check evidence ch09`) compares a fresh run against them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it are stored in [`evidence/9.1-capture-comparison/`](evidence/9.1-capture-comparison/), and this repository's evidence checker (`make check ARGS='evidence ch09'`) compares a fresh run against them byte for byte.
 
 <!-- include: evidence/9.1-capture-comparison.txt -->
 ```text
@@ -1264,7 +1264,7 @@ This section runs the crash-versus-power-loss lab (Experiment 9.2) and then walk
     - At `synchronous=OFF`: the WAL-truncation model **does not apply**, because the checkpoint wrote `44` unsynced `pwrite64`s to `.db` with `0` syncs on either `.db` or `-wal`, so a power cut can leave any arbitrary mix of old and new database pages.
 - **Scope statement:** The power-cut model shows **one** outcome of a power cut—the simplest one, where every synced byte survives and every unsynced byte disappears. It does not simulate torn sector writes, reordered writes, or disks that lie about `fsync`. SQLite's defenses against torn or reordered WAL writes (salts and per-frame cumulative checksums, `src/wal.c:1390-1614`) are read in the source rather than hardware-simulated. This experiment covers the whole of this book's power-loss material.
 - **Evidence form:** `EXACT` (every stored table must match on every run).
-- **Linux only (Part B `strace` cross-check and Part A kill sweep):** The portable rule calculation and recovery run natively on Linux and macOS (try `-portable` on Linux to observe the non-`strace` path). `course run` runs the full `strace` cross-check and kill sweep in the Linux `lab` container; the `-portable` variant is run directly in the container with `docker compose run --rm lab go run ./ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss -portable`.
+- **Linux only (Part B `strace` cross-check and Part A kill sweep):** The portable rule calculation and recovery run natively on Linux and macOS (try `-portable` on Linux to observe the non-`strace` path). `course run` runs the full `strace` cross-check and kill sweep in the Linux `lab` container; the `-portable` variant is run directly in the container with `make docker-run-raw EXP=9.2 ARGS='-portable'`.
 
 <!-- include: experiments/9.2-crash-versus-power-loss/main.go -->
 ```go
@@ -1996,12 +1996,12 @@ ORDER BY CASE synchronous WHEN 'OFF' THEN 1 WHEN 'NORMAL' THEN 2 ELSE 3 END;
 Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 9.2
+make run EXP=9.2
 ```
 
-Add `-i` (`go run ./cmd/course run -i 9.2`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+Add `-i` (`make run EXP=9.2 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it are stored in [`evidence/9.2-crash-versus-power-loss/`](evidence/9.2-crash-versus-power-loss/), and this repository's evidence checker (`go run ./cmd/course check evidence ch09`) compares a fresh run against them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it are stored in [`evidence/9.2-crash-versus-power-loss/`](evidence/9.2-crash-versus-power-loss/), and this repository's evidence checker (`make check ARGS='evidence ch09'`) compares a fresh run against them byte for byte.
 
 <!-- include: evidence/9.2-crash-versus-power-loss.txt -->
 ```text
@@ -4418,12 +4418,12 @@ ORDER BY p.seq, p.pragma, p.problem_no;
 Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 9.3
+make run EXP=9.3
 ```
 
-Add `-i` (`go run ./cmd/course run -i 9.3`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+Add `-i` (`make run EXP=9.3 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it are stored in [`evidence/9.3-integrity-check-limits/`](evidence/9.3-integrity-check-limits/), and this repository's evidence checker (`go run ./cmd/course check evidence ch09`) compares a fresh run against them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it are stored in [`evidence/9.3-integrity-check-limits/`](evidence/9.3-integrity-check-limits/), and this repository's evidence checker (`make check ARGS='evidence ch09'`) compares a fresh run against them byte for byte.
 
 <!-- include: evidence/9.3-integrity-check-limits.txt -->
 ```text
@@ -5108,12 +5108,12 @@ ORDER BY seq, i;
 Run from the repository root (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 9.4
+make run EXP=9.4
 ```
 
-Add `-i` (`go run ./cmd/course run -i 9.4`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
+Add `-i` (`make run EXP=9.4 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it are stored in [`evidence/9.4-point-in-time-rebuild/`](evidence/9.4-point-in-time-rebuild/), and this repository's evidence checker (`go run ./cmd/course check evidence ch09`) compares a fresh run against them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it are stored in [`evidence/9.4-point-in-time-rebuild/`](evidence/9.4-point-in-time-rebuild/), and this repository's evidence checker (`make check ARGS='evidence ch09'`) compares a fresh run against them byte for byte.
 
 <!-- include: evidence/9.4-point-in-time-rebuild.txt -->
 ```text

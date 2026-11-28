@@ -15,27 +15,27 @@
 >
 > - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to invoke this repository's experiment runner (`cmd/course`) from the host. Build the `lab` container image (defined in `Dockerfile.lab` and `compose.yaml` at the repository root) once:
 >   ```text
->   docker compose build lab
+>   make docker-build
 >   ```
 >   The image bundles the pinned SQLite `3.53.4` source tree (including the linked `src/os_unix.c`), the compiled SQLite C tools (none of Chapter 10's four experiments invokes the C `sqlite3` CLI), `strace` (for Experiment 10.2 Part A), and the DuckDB CLI that formats each experiment's walkthrough.
 > - **Start SeaweedFS** (the local S3-compatible object store, `SeaweedFS 4.48`, defined in `compose.yaml`) from the repository root before running any S3-backed experiment (`10.1-one-writer -model-only` runs Part A without a store):
 >   ```text
->   docker compose up -d seaweedfs
+>   make docker-up
 >   ```
 >   Every S3-backed experiment exits `1` with `STORE UNREACHABLE:` if the endpoint does not answer within `10` seconds. Inside the `lab` container, `COURSE_S3_ENDPOINT` is preconfigured to `http://seaweedfs:8333`.
-> - **Run the experiments** from the repository root. Each command starts a temporary `lab` container, runs the experiment inside it, and prints its DuckDB walkthrough. Add `-i` (`go run ./cmd/course run -i 10.4`) to stay in the DuckDB shell afterwards with the result tables loaded:
+> - **Run the experiments** from the repository root. Each command starts a temporary `lab` container, runs the experiment inside it, and prints its DuckDB walkthrough. Add `-i` (`make run EXP=10.4 ARGS='-i'`) to stay in the DuckDB shell afterwards with the result tables loaded:
 >   ```text
->   go run ./cmd/course run 10.1
->   go run ./cmd/course run 10.2
->   go run ./cmd/course run 10.3
->   go run ./cmd/course run 10.4
+>   make run EXP=10.1
+>   make run EXP=10.2
+>   make run EXP=10.3
+>   make run EXP=10.4
 >   ```
 >   Experiment 10.4 defaults to `500` databases (`-databases 500 -writers 8 -capacity 32`). Because `course run` does not forward extra experiment flags, run flag variants directly in the container; the full `2,000`-database run is:
 >   ```text
->   docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.4-rebuild-the-fleet -databases 2000 -prefix exp-10-4-2000
+>   make docker-run-raw EXP=10.4 ARGS='-databases 2000 -prefix exp-10-4-2000'
 >   ```
 >   Inside the container, scratch files and CSV tables go under `/work/10.1/` through `/work/10.4/` (the `lab-work` Docker volume); when run directly on the host, they go under git-ignored `_work/10.1/` through `_work/10.4/`. Both directories are wiped at the start of each run. Each experiment writes to its own S3 key prefix (`exp-10-1/` in bucket `course-ch10a`; `exp-10-2/`, `exp-10-3/`, and `exp-10-4/` in bucket `course-ch10b`).
-> - **Running an experiment directly:** Each experiment is an ordinary Go program (`go run ./ch10-multi-database-platform-capstone/experiments/10.4-rebuild-the-fleet`). Run this way on the host, it prints only its verdict line and leaves its CSV result tables under `_work/10.4/results/` without running the DuckDB walkthrough.
+> - **Running an experiment directly:** Each experiment is an ordinary Go program (`make run-native EXP=10.4`). Run this way on the host, it prints only its verdict line and leaves its CSV result tables under `_work/10.4/results/` without running the DuckDB walkthrough.
 > - **Linux-only parts and macOS:** Experiments 10.1, 10.3, and 10.4 are portable (S3 over HTTP, `SIGKILL`, and descriptor/RSS sampling via the repository's process-metrics package `internal/procstat`, introduced in Chapter 8). **Linux only:** Experiment 10.2 Part A kills the node process on entry to a chosen `fsync`/`fdatasync` call using `strace`; `course run` runs it in the Linux `lab` container (which provides `strace` and `SYS_PTRACE`). Run directly on macOS—or on Linux with `-portable`—Part A prints a `LINUX-ONLY:` notice while Parts B and C run natively and exit `0`.
 > - **Measurement environment:** The stored evidence in this chapter, including the `strace` kill sweeps and SeaweedFS runs, was captured in the Debian `lab` container on `linux/arm64` (Go 1.26, SeaweedFS 4.48). The standalone stress-test suites under "What attacked this chapter" in Section 6 ran separately on a `linux/amd64` host (4 shared cores, 7.7 GiB RAM, descriptor soft limit `1,048,576`). Timings, byte totals, and memory readings are run-dependent and printed by `course run`. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and cross-vetted only; nothing was run on macOS.
 
@@ -5750,17 +5750,17 @@ SELECT database, restored_position, restored_state, file_equals_store FROM catal
 SELECT database, mode, epoch, user_version, position, in_store FROM acks ORDER BY seq;
 ```
 
-Run from the repository root, with SeaweedFS running via `docker compose up -d seaweedfs` (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
+Run from the repository root, with SeaweedFS running via `make docker-up` (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 10.1
+make run EXP=10.1
 ```
 
-Add `-i` (`go run ./cmd/course run -i 10.1`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries. To run Part A without SeaweedFS, or to see the main check fail and exit `1`, run a flag variant directly in the container: `docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.1-one-writer -model-only` (or `-mutant store-accepts-every-put` / `-mutant resume-from-global-end`).
+Add `-i` (`make run EXP=10.1 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries. To run Part A without SeaweedFS, or to see the main check fail and exit `1`, run a flag variant directly in the container: `make docker-run-raw EXP=10.1 ARGS='-model-only'` (or `-mutant store-accepts-every-put` / `-mutant resume-from-global-end`).
 
 `course run` also prints the run-dependent values, which are not part of the stored evidence: where the store and the work directory were, and the bounds sample each node sent after a command, with its memory reading.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it live in [`evidence/10.1-one-writer/`](evidence/10.1-one-writer/), and this repository's evidence checker (`go run ./cmd/course check evidence ch10`) compares a fresh run against them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The CSV tables behind it live in [`evidence/10.1-one-writer/`](evidence/10.1-one-writer/), and this repository's evidence checker (`make check ARGS='evidence ch10'`) compares a fresh run against them byte for byte.
 
 <!-- include: evidence/10.1-one-writer.txt -->
 ```text
@@ -6708,14 +6708,14 @@ FROM problems;
 Run from the repository root, with SeaweedFS running (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 10.2
+make run EXP=10.2
 ```
 
-Add `-i` (`go run ./cmd/course run -i 10.2`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries. To watch Parts A and B fail with `2 check(s) FAILED` and exit `1`, run the mutant directly in the container: `docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.2-acknowledged-writes-survive -mutant ack-before-put`.
+Add `-i` (`make run EXP=10.2 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries. To watch Parts A and B fail with `2 check(s) FAILED` and exit `1`, run the mutant directly in the container: `make docker-run-raw EXP=10.2 ARGS='-mutant ack-before-put'`.
 
 `course run` also prints the run-dependent values, which are not part of the stored evidence: where the store and the work directory were, how long the write loop of each unkilled interactive run took, and each random kill draw with its delay and the `user_version`s acknowledged and recovered per database.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/10.2-acknowledged-writes-survive/`](evidence/10.2-acknowledged-writes-survive/), and `go run ./cmd/course check evidence ch10` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/10.2-acknowledged-writes-survive/`](evidence/10.2-acknowledged-writes-survive/), and `make check ARGS='evidence ch10'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/10.2-acknowledged-writes-survive.txt -->
 ```text
@@ -7713,14 +7713,14 @@ FROM problems;
 Run from the repository root, with SeaweedFS running (this starts the `lab` container, runs the experiment in it, and prints the walkthrough):
 
 ```text
-go run ./cmd/course run 10.3
+make run EXP=10.3
 ```
 
-Add `-i` (`go run ./cmd/course run -i 10.3`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries. To run one case (`-case N`), or `-mutant skip-fence -case 1` to see the invariant check fail and exit `1`, run the experiment directly in the container: `docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.3-interrupted-relocation -case N`.
+Add `-i` (`make run EXP=10.3 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries. To run one case (`-case N`), or `-mutant skip-fence -case 1` to see the invariant check fail and exit `1`, run the experiment directly in the container: `make docker-run-raw EXP=10.3 ARGS='-case N'`.
 
 `course run` also prints the run-dependent values, which are not part of the stored evidence: where the store and the work directory were (node directories under `nodes/`), and how many node replies carried a bounds check.
 
-Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/10.3-interrupted-relocation/`](evidence/10.3-interrupted-relocation/), and `go run ./cmd/course check evidence ch10` compares a fresh run with them byte for byte.
+Captured evidence: the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/10.3-interrupted-relocation/`](evidence/10.3-interrupted-relocation/), and `make check ARGS='evidence ch10'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/10.3-interrupted-relocation.txt -->
 ```text
@@ -8787,14 +8787,14 @@ FROM problems;
 Run from the repository root, with SeaweedFS running (this starts the `lab` container, runs the experiment in it, and prints the walkthrough; `500` databases by default, about `9` seconds in the lab container):
 
 ```text
-go run ./cmd/course run 10.4
+make run EXP=10.4
 ```
 
-Add `-i` (`go run ./cmd/course run -i 10.4`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries. For the full `2,000`-database fleet, run the experiment directly in the container: `docker compose run --rm lab go run ./ch10-multi-database-platform-capstone/experiments/10.4-rebuild-the-fleet -databases 2000 -prefix exp-10-4-2000` (about `40` seconds in the lab container).
+Add `-i` (`make run EXP=10.4 ARGS='-i'`) to stay in the DuckDB shell afterwards with the tables loaded, for your own queries. For the full `2,000`-database fleet, run the experiment directly in the container: `make docker-run-raw EXP=10.4 ARGS='-databases 2000 -prefix exp-10-4-2000'` (about `40` seconds in the lab container).
 
 `course run` also prints the run-dependent values, which are not part of the stored evidence: where the store and the work directory were, the descriptor limit and bounds, byte counts, the passes of the concurrent checker, the standing-bounds summary of each writer when it closed, and how long each phase took.
 
-Captured evidence (`500` databases, default): the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/10.4-rebuild-the-fleet/`](evidence/10.4-rebuild-the-fleet/), and `go run ./cmd/course check evidence ch10` compares a fresh run with them byte for byte.
+Captured evidence (`500` databases, default): the walkthrough as the `lab` container rendered it. The tables behind it are stored in [`evidence/10.4-rebuild-the-fleet/`](evidence/10.4-rebuild-the-fleet/), and `make check ARGS='evidence ch10'` compares a fresh run with them byte for byte.
 
 <!-- include: evidence/10.4-rebuild-the-fleet.txt -->
 ```text

@@ -14,18 +14,18 @@
 >
 > - **Prerequisites:** Docker with Docker Compose, and Go 1.26 (`go.mod` specifies `go 1.26.0`) to invoke this repository's experiment runner (`cmd/course`) from the host. Build the `lab` container image (`Dockerfile.lab`) once from the repository root:
 >   ```text
->   docker compose build lab
+>   make docker-build
 >   ```
 >   The image bundles the pinned SQLite `3.53.4` source tree, the compiled SQLite C tools (`sqlite3`, `showwal`—SQLite's WAL dump utility—and `dbhash`; Experiment 5.1 cross-checks its Go parser against `showwal`), `strace`, and the DuckDB CLI that renders each experiment's CSV results as a walkthrough.
-> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`go run ./cmd/course run -i 5.1`) to stay in the DuckDB shell afterwards with all tables loaded:
+> - **Run an experiment** from the repository root. Each command starts the `lab` container, runs the experiment inside it, and prints the rendered DuckDB walkthrough; add `-i` (`make run EXP=5.1 ARGS='-i'`) to stay in the DuckDB shell afterwards with all tables loaded:
 >   ```text
->   go run ./cmd/course run 5.1
->   go run ./cmd/course run 5.2
->   go run ./cmd/course run 5.3
->   go run ./cmd/course run 5.4
+>   make run EXP=5.1
+>   make run EXP=5.2
+>   make run EXP=5.3
+>   make run EXP=5.4
 >   ```
 >   Inside the container, scratch databases and result tables are written under `/work/5.1/` through `/work/5.4/` (the Docker `lab-work` volume). When run directly on the host, they go under `_work/5.1/` through `_work/5.4/`, which are git-ignored and safe to delete.
-> - **Running an experiment directly:** Each experiment is an ordinary Go program (`go run ./ch05-wal-transactions-checkpoints/experiments/5.1-wal-inspector`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/5.1/results/`. Experiment 5.1's `showwal` cross-check then needs the C tools on the host (`go run ./cmd/course fetch-source` to clone and verify the pinned SQLite source tree, then `go run ./cmd/course build-tools` to compile the C tools); without `showwal`, Experiment 5.1 still runs, prints a `NO-SHOWWAL:` line, and skips that cross-check.
+> - **Running an experiment directly:** Each experiment is an ordinary Go program (`make run-native EXP=5.1`). Run directly on the host, it prints only its verdict and leaves its CSV tables under `_work/5.1/results/`. Experiment 5.1's `showwal` cross-check then needs the C tools on the host (`make fetch-source` to clone and verify the pinned SQLite source tree, then `make build-tools` to compile the C tools); without `showwal`, Experiment 5.1 still runs, prints a `NO-SHOWWAL:` line, and skips that cross-check.
 > - **Cross-platform notes and macOS:** Nothing in Chapter 5 is Linux-only (no `strace`, no `/proc`). All four experiments copy live files by re-executing themselves as a child process and parse bytes in plain Go, so they also run directly on macOS.
 > - **Measured platform:** The stored evidence in this chapter was captured in the Debian `lab` container on `linux/arm64` (Go 1.26). WAL salts, the checksums derived from them, and checkpoint timings vary across runs: `course run` prints them in run-dependent `info` tables, and they are excluded from the stored evidence.
 
@@ -286,7 +286,7 @@ Behavior differences across SQLite releases relevant to WAL mode (from this repo
 - **Evidence form:** `EXACT` (every stored CSV table must match byte for byte on every run; run-dependent `info` tables are excluded).
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
-  go run ./cmd/course run 5.1
+  make run EXP=5.1
   ```
 
 <!-- include: experiments/5.1-wal-inspector/main.go -->
@@ -673,7 +673,7 @@ FROM sequences WHERE part = 'C' ORDER BY run;
 
 `course run` also prints the run-dependent values excluded from the stored evidence: the random salts, the checksums derived from them, and how many bytes differ between run 1 and run 2.
 
-Captured evidence: the walkthrough rendered by the `lab` container. Its backing CSV tables live in [`evidence/5.1-wal-inspector/`](evidence/5.1-wal-inspector/), and `go run ./cmd/course check evidence ch05` compares a fresh run against them byte for byte.
+Captured evidence: the walkthrough rendered by the `lab` container. Its backing CSV tables live in [`evidence/5.1-wal-inspector/`](evidence/5.1-wal-inspector/), and `make check ARGS='evidence ch05'` compares a fresh run against them byte for byte.
 
 <!-- include: evidence/5.1-wal-inspector.txt -->
 ```text
@@ -1022,7 +1022,7 @@ When a write transaction spills dirty pages out of a small page cache (`cache_si
 - **Evidence form:** `EXACT` throughout (scripted two-connection order with child-process sampling and no sleeps, so every stored CSV table matches byte for byte on every run).
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
-  go run ./cmd/course run 5.3
+  make run EXP=5.3
   ```
 
 <!-- include: experiments/5.3-reader-pins-the-wal/main.go -->
@@ -1496,7 +1496,7 @@ SELECT moment, wal_bytes, mx_frame, n_backfill, read_marks
 FROM samples WHERE part = 'B' AND moment = 'reader ended + PASSIVE' ORDER BY seq;
 ```
 
-Captured evidence: the walkthrough rendered by the `lab` container. Its backing CSV tables live in [`evidence/5.3-reader-pins-the-wal/`](evidence/5.3-reader-pins-the-wal/), and `go run ./cmd/course check evidence ch05` compares a fresh run against them byte for byte.
+Captured evidence: the walkthrough rendered by the `lab` container. Its backing CSV tables live in [`evidence/5.3-reader-pins-the-wal/`](evidence/5.3-reader-pins-the-wal/), and `make check ARGS='evidence ch05'` compares a fresh run against them byte for byte.
 
 <!-- include: evidence/5.3-reader-pins-the-wal.txt -->
 ```text
@@ -3262,7 +3262,7 @@ func ReadLiveState(ctx context.Context, database, scratchDirectory string) (Live
 - **Evidence form:** `EXACT` (every stored CSV table must match byte for byte on every run; run-dependent `info` tables are excluded).
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
-  go run ./cmd/course run 5.2
+  make run EXP=5.2
   ```
 
 <!-- include: experiments/5.2-wal-replay/main.go -->
@@ -3776,7 +3776,7 @@ SELECT against, user_version, integrity_check, unchanged_by_open
 FROM comparisons WHERE part = 'C' AND user_version IS NOT NULL ORDER BY seq;
 ```
 
-Captured evidence: the walkthrough rendered by the `lab` container. Its backing CSV tables live in [`evidence/5.2-wal-replay/`](evidence/5.2-wal-replay/), and `go run ./cmd/course check evidence ch05` compares a fresh run against them byte for byte.
+Captured evidence: the walkthrough rendered by the `lab` container. Its backing CSV tables live in [`evidence/5.2-wal-replay/`](evidence/5.2-wal-replay/), and `make check ARGS='evidence ch05'` compares a fresh run against them byte for byte.
 
 <!-- include: evidence/5.2-wal-replay.txt -->
 ```text
@@ -4042,7 +4042,7 @@ Experiment verdict: WAL REPLAY OK
 - **Evidence form:** `EXACT` (elapsed times go to a run-dependent `info` table printed by `course run`, excluded from stored evidence and not pass conditions).
 - **Run command** (from the repository root; starts the `lab` container, runs the experiment inside it, and prints the DuckDB walkthrough; add `-i` to stay in the DuckDB shell afterwards with all tables loaded):
   ```text
-  go run ./cmd/course run 5.4
+  make run EXP=5.4
   ```
 
 <!-- include: experiments/5.4-checkpoint-modes/main.go -->
@@ -4511,7 +4511,7 @@ FROM own_truncate ORDER BY seq;
 
 `course run` also prints the run-dependent values excluded from the stored evidence: how long each checkpoint took (the ones near 300 ms waited out the checkpointer's `busy_timeout`).
 
-Captured evidence: the walkthrough rendered by the `lab` container. Its backing CSV tables live in [`evidence/5.4-checkpoint-modes/`](evidence/5.4-checkpoint-modes/), and `go run ./cmd/course check evidence ch05` compares a fresh run against them byte for byte.
+Captured evidence: the walkthrough rendered by the `lab` container. Its backing CSV tables live in [`evidence/5.4-checkpoint-modes/`](evidence/5.4-checkpoint-modes/), and `make check ARGS='evidence ch05'` compares a fresh run against them byte for byte.
 
 <!-- include: evidence/5.4-checkpoint-modes.txt -->
 ```text
@@ -4632,7 +4632,7 @@ Experiment verdict: CHECKPOINT MODES OK
 
 ### 6.2 Failure cases and replay boundaries
 
-The experiments, unit tests (`go test ./internal/walfile`, including 3,000 mutated inputs, 200 random inputs, and `FuzzParseAndReplay` in `internal/walfile/walfile_test.go`), and standalone stress tests establish six concrete failure boundaries (parenthetical codes such as `REP-01`, `REP-02`, `REP-03`, `CHK-04`, and `CHK-05` name stress tests listed under "What attacked this chapter" below):
+The experiments, unit tests (`make test PACKAGE=./internal/walfile`, including 3,000 mutated inputs, 200 random inputs, and `FuzzParseAndReplay` in `internal/walfile/walfile_test.go`), and standalone stress tests establish six concrete failure boundaries (parenthetical codes such as `REP-01`, `REP-02`, `REP-03`, `CHK-04`, and `CHK-05` name stress tests listed under "What attacked this chapter" below):
 
 1. **Applying frames past `LastCommitFrame` corrupts the database.** Rolled-back and in-flight spilled frames stay in `-wal` (Experiment 5.2 B/C) and can still carry valid checksums. Applying all frames instead of stopping at `LastCommitFrame` leaks rolled-back bytes and fails `PRAGMA integrity_check` (`REP-03` below).
 2. **A stale-generation base cannot be caught from raw `base + WAL` bytes alone.** Neither `.db` nor `-wal` records which WAL generation `.db` has absorbed. Replaying a generation-2 WAL onto a generation-0 base succeeds with `err == nil` and produces a corrupt database (`REP-02` below). Safe replay requires capture metadata pairing base SHA-256 and WAL salts, built in Chapter 9 (`internal/walship`).
